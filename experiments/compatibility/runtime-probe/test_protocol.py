@@ -144,3 +144,65 @@ class Protocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_container([sys.executable,'-u','-c',source],startup_audit=audit)
         self.assertEqual(len(calls),1)
+
+    def test_complete_frame_and_verified_stopped_worker_retire_lingering_client(self):
+        frame = {'kind':'runtime-evidence','valid':True}
+        source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '%s\\n' \"$2\"; exec /bin/sleep 30"
+        args = ['/bin/sh','-c',source,'fixture',json.dumps(REQUEST),json.dumps(frame)]
+        seen = []
+        def completion(actual,remaining):
+            self.assertEqual(actual,frame)
+            self.assertGreater(remaining,0)
+            seen.append(actual)
+            return {'completed':True,'exit_code':0}
+        with ready_transport(args,'stdout'):
+            output = run_container(args,timeout=0.2,completion_observer=completion)
+        self.assertEqual(json.loads(output),frame)
+        self.assertEqual(seen,[frame])
+
+    def test_valid_result_alone_cannot_complete_a_running_worker(self):
+        frame = {'kind':'runtime-evidence','valid':True}
+        source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '%s\\n' \"$2\"; exec /bin/sleep 30"
+        args = ['/bin/sh','-c',source,'fixture',json.dumps(REQUEST),json.dumps(frame)]
+        with ready_transport(args,'stdout'), self.assertRaises(subprocess.TimeoutExpired):
+            run_container(args,timeout=0.2,completion_observer=lambda actual,remaining:{'completed':False})
+
+    def test_nonzero_unowned_and_invalid_frames_never_complete(self):
+        source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '%s\\n' \"$2\"; exec /bin/sleep 30"
+        frame = {'kind':'runtime-evidence','valid':True}
+        args = ['/bin/sh','-c',source,'fixture',json.dumps(REQUEST),json.dumps(frame)]
+        with ready_transport(args,'stdout'), self.assertRaises(RuntimeError):
+            run_container(args,timeout=0.2,completion_observer=lambda actual,remaining:{'completed':True,'exit_code':137})
+        def unowned(actual,remaining): raise RuntimeError('owned worker completion unverified')
+        with ready_transport(args,'stdout'), self.assertRaises(RuntimeError):
+            run_container(args,timeout=0.2,completion_observer=unowned)
+        badargs = args[:-1]+[json.dumps({'kind':'arbitrary-log'})]
+        called = []
+        with ready_transport(badargs,'stdout'), self.assertRaises(RuntimeError):
+            run_container(badargs,timeout=0.2,completion_observer=lambda actual,remaining:called.append(actual))
+        self.assertEqual(called,[])
+
+    def test_observer_confirmation_after_deadline_cannot_recover_success(self):
+        import time
+        frame = {'kind':'runtime-evidence','valid':True}
+        source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '%s\\n' \"$2\"; exec /bin/sleep 30"
+        args = ['/bin/sh','-c',source,'fixture',json.dumps(REQUEST),json.dumps(frame)]
+        def too_late(actual,remaining):
+            time.sleep(remaining+0.02)
+            return {'completed':True,'exit_code':0}
+        with ready_transport(args,'stdout'), self.assertRaises(subprocess.TimeoutExpired):
+            run_container(args,timeout=0.2,completion_observer=too_late)
+
+    def test_local_client_retirement_cannot_consume_deadline_and_return_success(self):
+        import time
+        frame = {'kind':'runtime-evidence','valid':True}
+        source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '%s\\n' \"$2\"; exec /bin/sleep 30"
+        args = ['/bin/sh','-c',source,'fixture',json.dumps(REQUEST),json.dumps(frame)]
+        with ready_transport(args,'stdout'):
+            process = subprocess.Popen()
+            wait = process.wait
+            def delayed_wait(**kwargs):
+                time.sleep(0.22)
+                return wait(**kwargs)
+            with patch.object(process,'wait',side_effect=delayed_wait), self.assertRaises(subprocess.TimeoutExpired):
+                run_container(args,timeout=0.2,completion_observer=lambda actual,remaining:{'completed':True,'exit_code':0})

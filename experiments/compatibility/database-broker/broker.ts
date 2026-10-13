@@ -39,7 +39,16 @@ export class Broker {
       cancelled();
       if (!connection) throw new Error('DATABASE_FAILURE');
       activeQuery=connection.unsafe(query.sql,query.params);
-      try {return z.array(z.unknown()).parse(await activeQuery);} finally {activeQuery=undefined;}
+      let rejectAbort:(()=>void)|undefined;
+      const deadline=new Promise<never>((_resolve,reject)=>{
+        rejectAbort=()=>reject(new Error('DEADLINE'));
+        abort.signal.addEventListener('abort',rejectAbort,{once:true});
+      });
+      try {return z.array(z.unknown()).parse(await Promise.race([activeQuery,deadline]));}
+      finally {
+        if (rejectAbort) abort.signal.removeEventListener('abort',rejectAbort);
+        activeQuery=undefined;
+      }
     };
     abort.signal.addEventListener('abort',onAbort);
     try {
@@ -61,7 +70,7 @@ export class Broker {
           const existing=await execute(db.select({id:exercises.id}).from(exercises).where(eq(exercises.id,input.id)).toSQL());
           throw new Error(existing.length ? 'VERSION_CONFLICT' : 'NOT_FOUND');
         }
-        await execute(db.insert(children).values({id:input.id,exerciseId:input.id,label:'child'}).toSQL());
+        await execute(db.insert(children).values({id:input.id,exerciseId:input.id,label:input.name}).onConflictDoUpdate({target:children.id,set:{label:input.name}}).toSQL());
         if (input.invalidChild) await execute({sql:'INSERT INTO exercise_child VALUES ($1,$2,$3)',params:[999999,999999,'bad reference']});
         try { value=output.parse(input.invalidOutput ? {...output.parse(rows[0]),version:0} : rows[0]); }
         catch { throw new Error('INVALID_OUTPUT'); }
@@ -87,15 +96,25 @@ export class Broker {
       workerSignal?.removeEventListener('abort',workerGone);
       abort.signal.removeEventListener('abort',onAbort);
       if (connection) {
-        // Await cancellation completion via failed query and rollback, then verify idle reuse.
+        const ownedConnection=connection;
+        // Never reuse authority unless rollback and subsequent idle work both complete.
+        let cleanupTimer:ReturnType<typeof setTimeout>|undefined;
         try {
-          if (!committed) await connection.unsafe('ROLLBACK');
-          await connection.unsafe('SELECT 1');
+          await Promise.race([
+            (async()=>{
+              if (!committed) await ownedConnection.unsafe('ROLLBACK');
+              await ownedConnection.unsafe('SELECT 1');
+            })(),
+            new Promise<never>((_resolve,reject)=>{
+              cleanupTimer=setTimeout(()=>reject(new Error('Cleanup deadline')),250);
+            }),
+          ]);
           connection.release();
         } catch {
-          // Never return an unverified connection to the pool.
-          await connection.close();
-        }
+          // A silent transport cannot prove cancellation. Destroy its connection.
+          await connection.close({timeout:0});
+        } finally {if (cleanupTimer) clearTimeout(cleanupTimer);}
+
       }
     }
   }

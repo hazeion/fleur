@@ -110,3 +110,62 @@ test('terminated request worker rolls back its written transaction and leaves he
  expect((await pool.unsafe('SELECT count(*)::integer AS count FROM exercise_child'))[0].count).toBe(0);
  } finally {worker.kill();await worker.exited;}
 });
+
+test('actual lost PostgreSQL COMMIT acknowledgement reports unknown with exactly one persisted write',async () => {
+ const {commitFaultProxy}=await import('./proxy');
+ const proxy=await commitFaultProxy(url,'drop');
+ const faulty=new SQL(proxy.url,{max:1});
+ try {
+ const writer=new Broker(faulty,mutationSession);
+ expect(await writer.dispatch(save(),1000)).toEqual({kind:'broker-response',ok:false,code:'OUTCOME_UNKNOWN'});
+ expect(proxy.intercepted()).toBe(1);
+ expect(await queryBroker.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ expect((await pool.unsafe('SELECT count(*)::integer AS count FROM exercise_child'))[0].count).toBe(1);
+ } finally {await faulty.close();await proxy.close();}
+});
+
+test('withheld COMMIT acknowledgement consumes the operation deadline and never reports rollback',async () => {
+ const {commitFaultProxy}=await import('./proxy');
+ const proxy=await commitFaultProxy(url,'hold');
+ const faulty=new SQL(proxy.url,{max:1});
+ try {
+ const start=performance.now();
+ expect(await new Broker(faulty,mutationSession).dispatch(save(),100)).toEqual({kind:'broker-response',ok:false,code:'OUTCOME_UNKNOWN'});
+ expect(performance.now()-start).toBeLessThan(2000);
+ expect(proxy.intercepted()).toBe(1);
+ expect(await queryBroker.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ } finally {await faulty.close();await proxy.close();}
+});
+
+test('successive current-version saves advance versions and update the child atomically',async () => {
+ expect((await broker.dispatch(save())).ok).toBe(true);
+ expect(await broker.dispatch(save({expectedVersion:2,name:'Second save'}))).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Second save',version:3}});
+ expect((await pool.unsafe('SELECT label FROM exercise_child WHERE exercise_id=1'))[0].label).toBe('Second save');
+ expect((await pool.unsafe('SELECT count(*)::integer AS count FROM exercise_child'))[0].count).toBe(1);
+});
+
+test('stalled rollback acknowledgement cannot leave the public operation pending or reuse uncertain authority',async () => {
+ const {commitFaultProxy}=await import('./proxy');
+ const proxy=await commitFaultProxy(url,'rollback');
+ const faulty=new SQL(proxy.url,{max:1});
+ try {
+ const start=performance.now();
+ expect(await new Broker(faulty,mutationSession).dispatch(save({invalidOutput:true}),1000)).toEqual({kind:'broker-response',ok:false,code:'INVALID_OUTPUT'});
+ expect(performance.now()-start).toBeLessThan(1000);
+ expect(proxy.intercepted()).toBe(1);
+ expect(await queryBroker.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
+ } finally {await faulty.close({timeout:0});await proxy.close();}
+});
+
+test('stalled idle verification discards authority while preserving established commit success',async () => {
+ const {commitFaultProxy}=await import('./proxy');
+ const proxy=await commitFaultProxy(url,'verification');
+ const faulty=new SQL(proxy.url,{max:1});
+ try {
+ const start=performance.now();
+ expect(await new Broker(faulty,mutationSession).dispatch(save(),1000)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ expect(performance.now()-start).toBeLessThan(1500);
+ expect(proxy.intercepted()).toBe(1);
+ expect(await queryBroker.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ } finally {await faulty.close({timeout:0});await proxy.close();}
+});

@@ -6,11 +6,13 @@ function launch(command:string[],environment:Record<string,string|undefined>) {
 }
 const live=new Set<ReturnType<typeof launch>>();
 process.once('exit',()=>{for(const child of live) child.kill('SIGKILL');});
-export function startOwnedControl(command:string[],input:unknown,environment:Record<string,string|undefined>,budgetMs=250) {
+function encode(input:unknown) {
  const encoded=JSON.stringify(input);
  if(typeof encoded!=='string'||new TextEncoder().encode(encoded).byteLength>4096)throw new Error('Control input invalid or exceeded bound');
- const started=performance.now();
- const child=launch(command,environment);
+ return encoded;
+}
+export function ownControl(child:ReturnType<typeof launch>,input:unknown,budgetMs=250,started=performance.now()) {
+ const encoded=encode(input);
  live.add(child);
  void child.exited.then(()=>live.delete(child),()=>{});
  const result=(async():Promise<ControlResult>=>{
@@ -61,4 +63,10 @@ export function startOwnedControl(command:string[],input:unknown,environment:Rec
   return value;
  })();
  return {child,result};
+}
+
+export function startOwnedControl(command:string[],input:unknown,environment:Record<string,string|undefined>,budgetMs=250) {
+ encode(input); // Reject unserializable input before allocating any process.
+ const started=performance.now();
+ return ownControl(launch(command,environment),input,budgetMs,started);
 }

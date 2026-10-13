@@ -1,4 +1,5 @@
 import os
+import selectors
 import sys
 import time
 import unittest
@@ -7,7 +8,17 @@ from rpc import TrustedBroker
 
 class RPCTests(unittest.TestCase):
     def broker(self, program, timeout=0.2):
-        return TrustedBroker([sys.executable, '-u', '-c', program], None, os.environ.copy(), timeout)
+        broker = TrustedBroker([sys.executable, '-u', '-S', '-c', "print('READY', flush=True);" + program], None, os.environ.copy(), timeout)
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(broker.process.stdout, selectors.EVENT_READ)
+                if not selector.select(2):
+                    raise RuntimeError('Owned fixture did not become ready')
+            self.assertEqual(broker.process.stdout.readline(), b'READY\n')
+            return broker
+        except Exception:
+            broker.close()
+            raise
 
     def test_registered_validated_response_admits_only_native_projection(self):
         broker = self.broker("import sys;sys.stdin.readline();print('{\"kind\":\"broker-response\",\"ok\":true,\"value\":{\"id\":1,\"name\":\"Squat\",\"version\":1}}')")

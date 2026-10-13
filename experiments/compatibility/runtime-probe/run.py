@@ -43,8 +43,11 @@ def main(architecture=None):
         expected_compiler = selected['compiler_sha256']
         REPORT.update({'architecture':architecture, 'base_image':base,
                        'expected_gcc_binary_sha256':expected_compiler,
-                       'compiler_status':'executed-pin' if expected_compiler is not None else 'candidate-recorded',
+                       'compiler_status':'executed-pin',
                        'compiler_pin_verified':False})
+        if type(expected_compiler) is not str or len(expected_compiler) != 64 or any(
+                character not in '0123456789abcdef' for character in expected_compiler):
+            raise RuntimeError('native compiler profile lacks an executed SHA-256 pin')
         compiler = shutil.which('gcc')
         if compiler is None:
             raise RuntimeError('gcc prerequisite missing; nothing installed')
@@ -53,11 +56,11 @@ def main(architecture=None):
                          'binary_sha256': hashlib.sha256(Path(compiler).read_bytes()).hexdigest()}
         if REPORT['gcc']['target'] != selected['compiler_target']:
             raise RuntimeError('compiler target differs from native architecture')
-        if expected_compiler is not None and REPORT['gcc']['binary_sha256'] != expected_compiler:
+        if REPORT['gcc']['binary_sha256'] != expected_compiler:
             raise RuntimeError('compiler binary differs from executed GCC pin')
         if version != REPORT['expected_gcc']:
             raise RuntimeError(f'compiler candidate mismatch: {version}')
-        REPORT['compiler_pin_verified'] = expected_compiler is not None
+        REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
                                                'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py')}

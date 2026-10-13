@@ -51,7 +51,7 @@ class DriverEvidence(unittest.TestCase):
         with patch.object(run.platform,'system',return_value='Linux'), \
              patch.object(run.platform,'machine',return_value=host_machine), \
              patch.object(run.shutil,'which',return_value=__file__), \
-             patch.object(run.hashlib,'sha256',return_value=SimpleNamespace(hexdigest=lambda:compiler_sha or PROFILES['amd64']['compiler_sha256'])), \
+             patch.object(run.hashlib,'sha256',return_value=SimpleNamespace(hexdigest=lambda:compiler_sha or PROFILES[architecture]['compiler_sha256'])), \
              patch.object(Path,'read_text',return_value='Linux'), \
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
@@ -97,16 +97,16 @@ class DriverEvidence(unittest.TestCase):
                 self.assertTrue(report['cleanup_complete'])
                 self.assertIn('evidence',report)
 
-    def test_native_arm64_uses_its_image_and_candidate_compiler_evidence(self):
+    def test_native_arm64_uses_its_image_and_executed_compiler_pin(self):
         monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
                    'memory_max':536870912,'swap_max':0}
         code, report = self.execute(json.dumps(monitor),container_exit=0,host_machine='aarch64')
         self.assertEqual(code,0)
         self.assertEqual(report['architecture'],'arm64')
         self.assertEqual(report['base_image'],PROFILES['arm64']['base'])
-        self.assertIsNone(report['expected_gcc_binary_sha256'])
-        self.assertFalse(report['compiler_pin_verified'])
-        self.assertEqual(report['compiler_status'],'candidate-recorded')
+        self.assertEqual(report['expected_gcc_binary_sha256'],'a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d')
+        self.assertTrue(report['compiler_pin_verified'])
+        self.assertEqual(report['compiler_status'],'executed-pin')
         self.assertEqual(report['gcc']['target'],'aarch64-linux-gnu')
 
     def test_wrong_compiled_native_machine_is_rejected_even_with_matching_compiler_label(self):
@@ -127,3 +127,22 @@ class DriverEvidence(unittest.TestCase):
                 self.assertEqual(code,1)
                 self.assertFalse(report['bounded_probe_passed'])
                 self.assertFalse(report['compiler_pin_verified'])
+
+    def test_changed_arm64_compiler_is_rejected_after_executed_pin_freeze(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,
+                                    host_machine='aarch64',compiler_sha='f'*64)
+        self.assertEqual(code,1)
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertFalse(report['compiler_pin_verified'])
+
+    def test_absent_compiler_pin_cannot_reenable_candidate_acceptance(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        incomplete = dict(PROFILES['arm64'],compiler_sha256=None)
+        with patch.dict(PROFILES,{'arm64':incomplete}):
+            code, report = self.execute(json.dumps(monitor),container_exit=0,
+                host_machine='aarch64',compiler_sha='a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d')
+        self.assertEqual(code,1)
+        self.assertFalse(report['bounded_probe_passed'])

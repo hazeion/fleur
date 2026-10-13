@@ -68,3 +68,41 @@ class HostedCapture(unittest.TestCase):
         raw=('goroutine 7 [IO wait]:\nruntime.gopark(0x1)\n'*300)+('goroutine 999 [chan receive]:\ngithub.com/docker/docker/container/stream.(*Config).Wait(0x1)\n')
         result=parse_stacks(raw)
         self.assertTrue(any('github.com/docker/docker/container/stream.(*Config).Wait' in row['functions'] for row in result['goroutines']))
+
+    def test_timeout_supervisor_and_cleanup_are_inside_privileged_command(self):
+        import os,subprocess
+        from unittest.mock import patch
+        from daemon_trace import capture_daemon_trace
+        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux','GITHUB_REPOSITORY':'hazeion/fleur','GITHUB_WORKFLOW':'Compatibility experiments','GITHUB_JOB':'runtime-probe'}
+        factory=subprocess.Popen
+        def launch(args,**kwargs):
+            self.assertEqual(args[:4],['sudo','-n','/bin/sh','-c'])
+            self.assertIn('/usr/bin/timeout --signal=TERM --kill-after=0.2s',args[4])
+            self.assertIn("trap 'cleanup || exit 126' EXIT",args[4])
+            self.assertIn('regular',args[4])
+            self.assertGreater(float(args[-1]),0)
+            self.assertLess(float(args[-1]),2)
+            return factory(['/bin/sh','-c','exit 4'],**kwargs)
+        with patch.dict(os.environ,env,clear=True),patch('daemon_trace.platform.system',return_value='Linux'),patch('daemon_trace.subprocess.Popen',side_effect=launch):
+            result=capture_daemon_trace(2)
+        self.assertEqual(result['outcome'],'command-failed')
+
+    def test_native_privileged_timeout_kills_its_group_and_removes_new_raw_dump(self):
+        from pathlib import Path
+        import os,shlex,subprocess,tempfile,time
+        from daemon_trace import eligible_host,ROOT_SUPERVISOR,TRACE_COMMAND
+        if not eligible_host():self.skipTest('privileged supervisor requires the verified native GitHub host')
+        with tempfile.TemporaryDirectory(prefix='fleur-root-trace-check-') as directory:
+            root=Path(directory);existing=root/'goroutine-stacks-existing.log';existing.write_text('preserve')
+            generated=root/'goroutine-stacks-fixture.log';pidfile=root/'pid';childfile=root/'child';uidfile=root/'uid'
+            fixture=f'printf private > {shlex.quote(str(generated))}; id -u > {shlex.quote(str(uidfile))}; printf "%s" "$$" > {shlex.quote(str(pidfile))}; trap "" TERM; sleep 30 & printf "%s" "$!" > {shlex.quote(str(childfile))}; wait'
+            command=ROOT_SUPERVISOR.replace(shlex.quote(TRACE_COMMAND),shlex.quote(fixture)).replace('/var/run/docker/goroutine-stacks-',str(root/'goroutine-stacks-'))
+            started=time.monotonic()
+            result=subprocess.run(['sudo','-n','/bin/sh','-c',command,'fleur-trace-selftest','0.400'],stdin=subprocess.DEVNULL,capture_output=True,timeout=2)
+            self.assertLess(time.monotonic()-started,2)
+            self.assertIn(result.returncode,(124,137))
+            self.assertTrue(existing.exists());self.assertFalse(generated.exists());self.assertEqual(uidfile.read_text().strip(),'0')
+            pid=int(pidfile.read_text())
+            with self.assertRaises(ProcessLookupError):os.kill(pid,0)
+            child=int(childfile.read_text());status=Path(f'/proc/{child}/stat')
+            if status.exists():self.assertEqual(status.read_text().rsplit(')',1)[1].split()[0],'Z')

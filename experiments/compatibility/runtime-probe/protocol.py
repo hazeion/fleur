@@ -171,9 +171,12 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                         raise RuntimeError('owned worker did not complete successfully')
                     if time.monotonic()-started >= timeout:
                         raise deadline_error()
-                    if waiter is not None and type(completed) is dict and completed.get('completed') is True:
+                    accepted = completed['completed']
+                    if waiter is not None and accepted:
                         completed = waiter.completion(timeout-(time.monotonic()-started))
-                    if waiter is not None and completed.get('completed') is False:
+                    if type(completed) is not dict or type(completed.get('completed')) is not bool:
+                        raise RuntimeError('owned worker completion observer result invalid')
+                    if waiter is not None and accepted and completed['completed'] is False:
                         if pending_since is None: pending_since = time.monotonic()
                         if completion_stall is not None and not stall_captured and time.monotonic()-pending_since >= 2:
                             stall_captured = True
@@ -230,7 +233,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         if waiter is not None:
             if diagnostics is not None and callable(getattr(waiter,'snapshot',None)):
                 try: diagnostics['waiter_observations'] = waiter.snapshot()
-                except (OSError,RuntimeError): diagnostics['waiter_observations'] = {'outcome':'unavailable'}
+                except (OSError,RuntimeError,ValueError): diagnostics['waiter_observations'] = {'outcome':'unavailable'}
             try:
                 waiter.close()
                 if diagnostics is not None: diagnostics['waiter_cleanup_verified'] = True

@@ -5,7 +5,7 @@ import os
 import platform
 import re
 import selectors
-import signal
+import shlex
 import subprocess
 import time
 
@@ -44,6 +44,27 @@ while [ "$tries" -lt 50 ]; do
 done
 exit 4
 '''
+
+
+# Runs entirely after sudo: timeout owns its command process group even when
+# sudo allocates a separate PTY/session. The outer root shell removes new raw
+# files after normal exit or timeout escalation; existing dumps are preserved.
+ROOT_SUPERVISOR = r'''set -u
+case "$1" in ''|*[!0-9.]* ) exit 2 ;; esac
+before=$(printf '%s\n' /var/run/docker/goroutine-stacks-*.log)
+cleanup() {
+    clean=0
+    for trace in /var/run/docker/goroutine-stacks-*.log; do
+        # Only new regular, non-symlink files produced by this diagnostic.
+        [ -f "$trace" ] && [ ! -L "$trace" ] || continue
+        seen=false
+        for old in $before; do [ "$trace" != "$old" ] || seen=true; done
+        if [ "$seen" = false ]; then rm -f -- "$trace" || clean=1; fi
+    done
+    return "$clean"
+}
+trap 'cleanup || exit 126' EXIT
+/usr/bin/timeout --signal=TERM --kill-after=0.2s "$1" /bin/sh -c ''' + shlex.quote(TRACE_COMMAND) + '\nexit $?\n'
 
 
 def parse_stacks(output):
@@ -90,7 +111,7 @@ def eligible_host():
 
 def capture_daemon_trace(remaining):
     if not eligible_host(): return {'outcome':'ineligible-host'}
-    if type(remaining) not in (int,float) or not math.isfinite(remaining) or remaining <= .5:
+    if type(remaining) not in (int,float) or not math.isfinite(remaining) or remaining <= 1:
         return {'outcome':'budget-unavailable'}
     budget = min(5,remaining)
     deadline = time.monotonic()+budget
@@ -98,7 +119,7 @@ def capture_daemon_trace(remaining):
     output, errors = bytearray(),bytearray()
     outcome = 'unavailable'
     try:
-        process = subprocess.Popen(['sudo','-n','/bin/sh','-c',TRACE_COMMAND],stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(['sudo','-n','/bin/sh','-c',ROOT_SUPERVISOR,'fleur-daemon-trace',format(math.floor((budget-.75)*1000)/1000,'.3f')],stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,
             env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'})
         with selectors.DefaultSelector() as selector:
@@ -128,8 +149,13 @@ def capture_daemon_trace(remaining):
         if process is not None:
             try:
                 if process.poll() is None:
-                    os.killpg(process.pid,signal.SIGKILL)
-                    process.wait(timeout=max(.001,deadline-time.monotonic()))
+                    # Give the privileged inner timeout and EXIT cleanup their
+                    # reserved budget even when parsing/read bounds fail.
+                    try: process.wait(timeout=max(.001,deadline-time.monotonic()-.05))
+                    except subprocess.TimeoutExpired:
+                        outcome = 'cleanup-unverified'
+                        process.kill()
+                        process.wait(timeout=max(.001,deadline-time.monotonic()))
             except (OSError,subprocess.TimeoutExpired): outcome = 'cleanup-unverified'
             for stream in (process.stdout,process.stderr):
                 if stream is not None: stream.close()

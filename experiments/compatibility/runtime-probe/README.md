@@ -21,8 +21,14 @@ Exit zero means the complete, correctly typed bounded report passed and owned re
 
 ## Evidence and limits
 
-Locally executed on macOS: the public report acceptance test failed first because the conservative placeholder rejected complete evidence. After implementing complete-report acceptance, both acceptance tests passed. Python syntax compilation passed. The driver rejected macOS with `bounded_probe_passed: false`. Native compilation and Linux execution have not yet occurred.
+Locally executed on macOS: the public report acceptance test failed first because the conservative placeholder rejected complete evidence. After implementing complete-report acceptance, both acceptance tests passed. Python syntax compilation passed. The driver rejected macOS with `bounded_probe_passed: false`. Native behavior required the later Linux runs below.
 
 This does not establish broker operations, database-proxy transactions, runtime module/import closure, inherited descriptor inventory/closure, hostile application FFI access, every existing Bun thread's behavior, long-lived async/JIT workload, future thread creation, CPU/memory/PID abuse, client islands or reactive refresh. TSYNC is requested for all existing threads, but this fixture directly witnesses only one pre-existing native thread. New process/thread creation is denied rather than claiming support for restricted future threads. Remaining tests and independent review are required before relying on the architecture. Unsupported platforms remain unresolved.
 
-Independent review fixes: cleanup failure and malformed-report regressions were demonstrated red. After enforcing typed fields and confirmed cleanup, all three report acceptance tests passed. The macOS rejection now reports both resources as never-created with cleanup complete. Linux runtime evidence remains pending.
+Independent review fixes: cleanup failure and malformed-report regressions were demonstrated red. After enforcing typed fields and confirmed cleanup, all three report acceptance tests passed. The macOS rejection now reports both resources as never-created with cleanup complete.
+
+## Executed Linux evidence
+
+On October 13, 2026, the [PR run](https://github.com/hazeion/fleur/actions/runs/38428505562) and [push run](https://github.com/hazeion/fleur/actions/runs/38428497621) executed commit `6b74e2a` on Ubuntu 24.04 x86_64, kernel `6.17.0-1022-azure`. Both bounded probes passed. Their reports contained integer-zero installation status, ten integer `-1` native controls, `<p>restricted render</p>`, denied Bun file access and integer `-1` from the pre-existing thread witness. Both owned containers and images were removed, with cleanup complete and `v1_gate_passed: false`.
+
+The executed compiler was GCC `13.3.0-6ubuntu2~24.04.1`; its binary SHA-256 was `1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26`. The compiled helper SHA-256 was `e3c17415630f6f665a115240d8a592ca68ce41349750cadba2d4078e9523fd97`. The immutable Bun base manifest is recorded in the driver; per-run image IDs, Docker versions and full bounded reports are retained as CI artifacts. Generated reports are not tracked source files. These executed results establish the bounded fixture only, with all limitations above still applying.

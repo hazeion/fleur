@@ -29,3 +29,17 @@ class Protocol(unittest.TestCase):
         bad = {"kind":"broker-response", "ok":True, "value":{"id":True,"name":"Squat"}}
         with self.assertRaises(RuntimeError):
             run_container([sys.executable, "-u", "-c", source], dispatch=lambda _: bad)
+
+    def test_observer_runs_at_pipe_pause_before_dispatch_and_ack(self):
+        source = "import json,sys; print(" + repr(json.dumps(REQUEST)) + ",flush=True); print(json.dumps({'reply':sys.stdin.readline().strip()}))"
+        events = []
+        def observe(request):
+            self.assertEqual(request,REQUEST)
+            events.append('observed')
+        def dispatch(request):
+            self.assertEqual(events,['observed'])
+            events.append('dispatched')
+            return fixture_dispatch(request)
+        output = run_container([sys.executable,'-u','-c',source],dispatch=dispatch,observer=observe)
+        self.assertEqual(json.loads(output),{'reply':'registered:Squat'})
+        self.assertEqual(events,['observed','dispatched'])

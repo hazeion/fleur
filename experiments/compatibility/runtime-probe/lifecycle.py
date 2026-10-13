@@ -64,6 +64,8 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                         return
                     # Ownership was verified while running; Docker labels are
                     # immutable. Do not postpone the deadline with inspection.
+                    if busy_name not in observed:
+                        raise RuntimeError('deadline worker ownership and restrictions unverified')
                     stopped['kill_requested_ms'] = round(1000*(time.monotonic()-started))
                     command(['kill', '--signal=KILL', busy_name])
                     state = inspect(busy_name)

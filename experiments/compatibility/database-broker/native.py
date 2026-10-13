@@ -54,6 +54,7 @@ def run_native(bun, root, environment, source_root):
             for filename in ('package.json', 'bun.lock'):
                 shutil.copyfile(source_root / 'rendering' / filename, context / filename)
             command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', str(runtime / 'filter.c'), '-o', str(context / 'filter.so')])
+            (context / 'profile.json').write_text(json.dumps({'architecture':'amd64','negative_controls':acceptance.CONTROLS['amd64']}))
             row['helper_sha256'] = hashlib.sha256((context / 'filter.so').read_bytes()).hexdigest()
             (context / 'Dockerfile').write_text(f'''FROM {BASE} AS prepare
 WORKDIR /probe
@@ -65,7 +66,7 @@ FROM {BASE}
 LABEL {LABEL}={owner}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
-COPY filter.so application.js ./
+COPY filter.so application.js profile.json ./
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
@@ -88,7 +89,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             finally:
                 with_broker.close()
             evidence = json.loads(output)
-            if not acceptance.accept(dict(evidence, cleanup_complete=True)):
+            if not acceptance.accept(dict(evidence, cleanup_complete=True),expected_architecture='amd64'):
                 raise RuntimeError('Restricted worker evidence incomplete')
             row['native_evidence'] = evidence
             row['passed'] = True

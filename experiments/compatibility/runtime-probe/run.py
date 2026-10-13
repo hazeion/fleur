@@ -13,6 +13,7 @@ from report import accept, CONTROLS
 from runtime_profile import select_profile, native_elf_identity
 from protocol import run_container
 from resources import accept_resources
+from threads import inspect_threads
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -59,7 +60,7 @@ def main(architecture=None):
         REPORT['compiler_pin_verified'] = expected_compiler is not None
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -101,15 +102,19 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 raise RuntimeError('built Docker image architecture differs from native runner')
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
+            def observe_worker(_request):
+                REPORT['host_threads'] = inspect_threads(container)
             output = run_container(['docker', 'run', '-i', '--name', container, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30)
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
             REPORT['evidence'] = json.loads(output)
             evidence = REPORT['evidence']
+            if isinstance(evidence, dict):
+                evidence['host_threads'] = REPORT.get('host_threads')
             if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True), architecture):
                 raise RuntimeError('incomplete, malformed or failed bounded runtime evidence')
             resources = {}

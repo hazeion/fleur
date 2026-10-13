@@ -40,6 +40,11 @@ class DriverEvidence(unittest.TestCase):
                 return SimpleNamespace(returncode=container_exit if mode == 'memory' else 0,
                                        stdout=output,stderr='')
             return SimpleNamespace(returncode=0,stdout='',stderr='')
+        threads = [{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},
+                   {'pid':7,'no_new_privs':1,'seccomp':2,'seccomp_filters':1}]
+        def run_container(args, **kwargs):
+            kwargs['observer']({})
+            return json.dumps(native)
         captured = io.StringIO()
         run.REPORT = {'scope':'fixture','v1_gate_passed':False,'expected_gcc':'13.3.0',
                       'expected_gcc_binary_sha256':PROFILES['amd64']['compiler_sha256']}
@@ -49,7 +54,8 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run.hashlib,'sha256',return_value=SimpleNamespace(hexdigest=lambda:compiler_sha or PROFILES['amd64']['compiler_sha256'])), \
              patch.object(Path,'read_text',return_value='Linux'), \
              patch.object(run,'command',side_effect=command), \
-             patch.object(run,'run_container',return_value=json.dumps(native)), \
+             patch.object(run,'run_container',side_effect=run_container), \
+             patch.object(run,'inspect_threads',return_value=threads), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
             code = run.main()

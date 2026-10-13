@@ -17,7 +17,7 @@ def fixture_dispatch(request):
             "value": {"id": 1, "name": "Squat"}}
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
@@ -36,7 +36,12 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30):
                 line.extend(byte)
                 if len(line) > 4096:
                     raise RuntimeError("broker request exceeded bound")
-        response = dispatch(json.loads(line))
+        request = json.loads(line)
+        if observer is not None:
+            observer(request)
+        response = dispatch(request)
+        if time.monotonic() - started >= timeout:
+            raise subprocess.TimeoutExpired(args, timeout)
         if json.dumps(response, sort_keys=True) != json.dumps({"kind": "broker-response", "ok": True,
                         "value": {"id": 1, "name": "Squat"}}, sort_keys=True):
             raise RuntimeError("registered broker reply failed")

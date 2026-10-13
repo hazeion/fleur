@@ -11,6 +11,19 @@ ARM64_CONTROLS[23] = 'unknown_syscall'
 CONTROLS = {'amd64': AMD64_CONTROLS, 'arm64': ARM64_CONTROLS}
 
 
+def accept_threads(rows):
+    if type(rows) is not list or not 2 <= len(rows) <= 64:
+        return False
+    fields = {'pid','no_new_privs','seccomp','seccomp_filters'}
+    if any(type(row) is not dict or set(row) != fields for row in rows):
+        return False
+    if any(type(row[key]) is not int for row in rows for key in fields):
+        return False
+    ids = [row['pid'] for row in rows]
+    return (1 in ids and len(set(ids)) == len(ids) and all(pid > 0 for pid in ids)
+            and all(row['no_new_privs'] == 1 and row['seccomp'] == 2 and row['seccomp_filters'] == 1 for row in rows))
+
+
 def accept(report, expected_architecture=None):
     if not isinstance(report, dict):
         return False
@@ -18,6 +31,8 @@ def accept(report, expected_architecture=None):
     if type(architecture) is not str or architecture not in CONTROLS or (expected_architecture is not None and architecture != expected_architecture):
         return False
     if report.get('negative_controls') != CONTROLS[architecture]:
+        return False
+    if not accept_threads(report.get('host_threads')):
         return False
     install = report.get('install')
     main = report.get('main')

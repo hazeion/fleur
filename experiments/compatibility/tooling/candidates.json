@@ -1,0 +1,98 @@
+[
+  {
+    "name": "bun",
+    "version": "1.4.3",
+    "provider": "github",
+    "url": "https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.3"
+  },
+  {
+    "name": "typescript",
+    "version": "7.0.2",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/typescript/7.0.2"
+  },
+  {
+    "name": "tsc-rs",
+    "version": "0.6.0",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/tsc-rs/0.6.0"
+  },
+  {
+    "name": "typescript-comparison",
+    "version": "7.1.0-dev.20261008.1",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/typescript/7.1.0-dev.20261008.1"
+  },
+  {
+    "name": "oxlint",
+    "version": "1.87.0",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/oxlint/1.87.0"
+  },
+  {
+    "name": "eslint",
+    "version": "10.12.0",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/eslint/10.12.0"
+  },
+  {
+    "name": "typescript-eslint",
+    "version": "8.71.2",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/typescript-eslint/8.71.2"
+  },
+  {
+    "name": "typescript-lint-engine",
+    "version": "6.0.3",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/typescript/6.0.3"
+  },
+  {
+    "name": "@playwright/test",
+    "version": "1.64.0",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/@playwright/test/1.64.0"
+  },
+  {
+    "name": "docker-engine",
+    "version": "29.9.0",
+    "provider": "github",
+    "url": "https://api.github.com/repos/moby/moby/releases/tags/docker-v29.9.0"
+  },
+  {
+    "name": "docker-compose",
+    "version": "5.6.0",
+    "provider": "github",
+    "url": "https://api.github.com/repos/docker/compose/releases/tags/v5.6.0"
+  },
+  {
+    "name": "zod",
+    "version": "4.6.7",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/zod/4.6.7"
+  },
+  {
+    "name": "@trpc/server",
+    "version": "11.19.0",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/@trpc/server/11.19.0"
+  },
+  {
+    "name": "@trpc/client",
+    "version": "11.19.0",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/@trpc/client/11.19.0"
+  },
+  {
+    "name": "drizzle-orm",
+    "version": "0.45.4",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/drizzle-orm/0.45.4"
+  },
+  {
+    "name": "@types/bun",
+    "version": "1.4.3",
+    "provider": "npm",
+    "url": "https://registry.npmjs.org/@types/bun/1.4.3"
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "name": "fleur-rendering-compatibility-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun ./node_modules/vite/bin/vite.js build",
+    "test": "bun test validation.test.ts artifacts.test.ts",
+    "browser": "bun ./node_modules/@playwright/test/cli.js test",
+    "types": "bun ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "lint": "bun ./node_modules/oxlint/bin/oxlint . && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs ."
+  },
+  "dependencies": {
+    "preact": "11.0.1",
+    "preact-render-to-string": "6.8.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@types/bun": "1.4.3",
+    "oxlint": "1.87.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  }
+}

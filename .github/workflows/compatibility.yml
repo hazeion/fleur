@@ -1,0 +1,286 @@
+name: Compatibility experiments
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# All code and browser dependency provisioning run on disposable hosted runners.
+# No deployment credentials, repository secrets, privileged PR triggers or caches.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  distro-fixtures:
+    name: Frozen userspace fixtures (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: debian-amd64}
+          - {runner: ubuntu-24.04-arm, target: debian-arm64}
+          - {runner: ubuntu-24.04, target: arch-amd64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Diagnostic failure and ownership regressions
+        run: python3 -m unittest discover -s experiments/compatibility/distro-fixtures -p 'test_*.py'
+      - name: Digest-pinned distribution and dated packages
+        run: python3 experiments/compatibility/distro-fixtures/run.py --target '${{ matrix.target }}' --out "$RUNNER_TEMP/fleur-distro-evidence"
+      - name: Retain userspace fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: distro-${{ matrix.target }}
+          path: ${{ runner.temp }}/fleur-distro-evidence/
+          retention-days: 7
+
+  database-broker:
+    name: PostgreSQL and restricted broker compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-database-bun" > "$RUNNER_TEMP/fleur-evidence/platform.json"
+      - name: Ownership and RPC diagnostic regressions
+        run: python3 -m unittest discover -s experiments/compatibility/database-broker -p 'test_*.py'
+      - name: Real owned PostgreSQL and restricted worker checks
+        run: python3 experiments/compatibility/database-broker/run.py --bun "$RUNNER_TEMP/fleur-database-bun/bun" > "$RUNNER_TEMP/fleur-evidence/database-broker.json"
+      - name: Retain database and broker evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: database-broker-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  isolation-diagnostic:
+    name: Isolation diagnostic only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Diagnostic requirements
+        run: python3 -m unittest discover -s experiments/compatibility/isolation -p 'test_*.py'
+      - name: Record deliberately blocked preflight
+        run: |
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          set +e
+          python3 experiments/compatibility/isolation/preflight.py > "$RUNNER_TEMP/fleur-evidence/isolation.json"
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/fleur-evidence/isolation.json"
+          test "$result" -eq 2
+      - name: Retain diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: isolation-diagnostic
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  native-platforms:
+    name: Native fixtures (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15-intel, system: Darwin, architecture: x86_64, ubuntu: ''}
+          - {runner: macos-15, system: Darwin, architecture: arm64, ubuntu: ''}
+          - {runner: ubuntu-24.04, system: Linux, architecture: x86_64, ubuntu: '24.04'}
+          - {runner: ubuntu-24.04-arm, system: Linux, architecture: arm64, ubuntu: '24.04'}
+          - {runner: ubuntu-26.04, system: Linux, architecture: x86_64, ubuntu: '26.04'}
+          - {runner: ubuntu-26.04-arm, system: Linux, architecture: arm64, ubuntu: '26.04'}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-verified Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          options=(--system '${{ matrix.system }}' --architecture '${{ matrix.architecture }}' --out "$RUNNER_TEMP/fleur-native-bun")
+          if test -n '${{ matrix.ubuntu }}'; then options+=(--ubuntu '${{ matrix.ubuntu }}'); fi
+          python3 experiments/compatibility/platforms/bootstrap.py "${options[@]}" > "$RUNNER_TEMP/fleur-evidence/native-platform.json"
+          echo "$RUNNER_TEMP/fleur-native-bun" >> "$GITHUB_PATH"
+      - name: Install frozen rendering graphs
+        working-directory: experiments/compatibility/rendering
+        run: |
+          bun install --frozen-lockfile
+          (cd lint && bun install --frozen-lockfile)
+      - name: Provision package-pinned browser
+        working-directory: experiments/compatibility/rendering
+        run: |
+          if test '${{ matrix.system }}' = Linux; then
+            bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+          else
+            bun ./node_modules/@playwright/test/cli.js install chromium
+          fi
+      - name: Build, strict types, independent lint and unit checks
+        working-directory: experiments/compatibility/rendering
+        run: |
+          bun run build
+          bun run types
+          bun run lint
+          bun run test
+      - name: Browser checks twice
+        working-directory: experiments/compatibility/rendering
+        run: |
+          set -o pipefail
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-first.txt"
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-second.txt"
+      - name: Full frozen tooling compatibility
+        run: python3 experiments/compatibility/tooling/run.py --bun "$RUNNER_TEMP/fleur-native-bun/bun" > "$RUNNER_TEMP/fleur-evidence/tooling.json"
+      - name: Retain native platform evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-platform-${{ matrix.runner }}
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  tooling:
+    name: Full tooling experiment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Obtain and verify exact Bun
+        run: |
+          test "$(uname -m)" = x86_64
+          mkdir -p "$RUNNER_TEMP/fleur-bun" "$RUNNER_TEMP/fleur-evidence"
+          curl --fail --location --silent --show-error https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip --output "$RUNNER_TEMP/fleur-bun/bun.zip"
+          echo "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/fleur-bun/bun.zip" -d "$RUNNER_TEMP/fleur-bun"
+          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
+          echo "FLEUR_EXPERIMENT_BUN=$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" >> "$GITHUB_ENV"
+          { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
+      - name: Runner diagnostic requirements
+        run: python3 -m unittest discover -s experiments/compatibility/tooling -p 'test_*.py'
+      - name: Full frozen tooling checks, failures remain failures
+        run: python3 experiments/compatibility/tooling/run.py --bun "$FLEUR_EXPERIMENT_BUN" > "$RUNNER_TEMP/fleur-evidence/tooling.json"
+      - name: Display scoped diagnostics
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/fleur-evidence/tooling.json"; then
+            cat "$RUNNER_TEMP/fleur-evidence/tooling.json"
+          fi
+      - name: Retain tooling diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tooling-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  rendering:
+    name: Rendering, types, full experiment lint and Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Obtain and verify exact Bun
+        run: |
+          test "$(uname -m)" = x86_64
+          mkdir -p "$RUNNER_TEMP/fleur-bun" "$RUNNER_TEMP/fleur-evidence"
+          curl --fail --location --silent --show-error https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip --output "$RUNNER_TEMP/fleur-bun/bun.zip"
+          echo "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/fleur-bun/bun.zip" -d "$RUNNER_TEMP/fleur-bun"
+          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
+          echo "$RUNNER_TEMP/fleur-bun/bun-linux-x64" >> "$GITHUB_PATH"
+          { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
+      - name: Install both frozen experiment graphs
+        working-directory: experiments/compatibility/rendering
+        run: |
+          bun install --frozen-lockfile
+          (cd lint && bun install --frozen-lockfile)
+      - name: Provision package-pinned Chromium and Linux OS dependencies
+        working-directory: experiments/compatibility/rendering
+        # Explicit apt provisioning is confined to this disposable CI runner.
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Production browser build
+        working-directory: experiments/compatibility/rendering
+        run: bun run build
+      - name: Strict compiler
+        working-directory: experiments/compatibility/rendering
+        run: bun run types
+      - name: Full experiment lint, both engines
+        working-directory: experiments/compatibility/rendering
+        run: bun run lint
+      - name: Unit requirements
+        working-directory: experiments/compatibility/rendering
+        run: bun run test
+      - name: Chromium requirements, first run
+        working-directory: experiments/compatibility/rendering
+        run: |
+          set -o pipefail
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-first.txt"
+      - name: Chromium requirements, second run
+        working-directory: experiments/compatibility/rendering
+        run: |
+          set -o pipefail
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-second.txt"
+      - name: Retain rendering diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rendering-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  runtime-probe:
+    name: Native pre-evaluation probe (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, architecture: amd64, machine: x86_64}
+          - {runner: ubuntu-24.04-arm, architecture: arm64, machine: aarch64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check existing disposable runner prerequisites
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          test "$(gcc -dumpfullversion -dumpversion)" = 13.3.0
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          { uname -srm; python3 --version; gcc --version; docker version; } > "$RUNNER_TEMP/fleur-evidence/runtime-platform.txt"
+      - name: Driver diagnostic requirements
+        run: python3 -m unittest discover -s experiments/compatibility/runtime-probe -p 'test_*.py'
+      - name: Bounded native feasibility probe, failures remain failures
+        # A scoped pass cannot set the aggregate v1 compatibility gate true.
+        run: python3 experiments/compatibility/runtime-probe/run.py --architecture '${{ matrix.architecture }}' > "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"
+      - name: Display native probe report
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"; then
+            cat "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"
+          fi
+      - name: Retain native probe diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-probe-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7

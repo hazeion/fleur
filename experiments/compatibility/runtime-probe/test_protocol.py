@@ -45,9 +45,9 @@ class Protocol(unittest.TestCase):
         self.assertEqual(events,['observed','dispatched'])
 
     def test_timeout_preserves_bounded_post_ack_stage_output(self):
-        source = "import json,sys,time; print(" + repr(json.dumps(REQUEST)) + ",flush=True); sys.stdin.readline(); print('[DEBUG-runtime] file-promise-created',file=sys.stderr,flush=True); print('partial-evidence',flush=True); time.sleep(30)"
+        source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '[DEBUG-runtime] file-promise-created\\n' >&2; printf 'partial-evidence\\n'; exec /bin/sleep 30"
         with self.assertRaises(subprocess.TimeoutExpired) as caught:
-            run_container([sys.executable,'-u','-c',source],timeout=0.2)
+            run_container(['/bin/sh','-c',source,'fixture',json.dumps(REQUEST)],timeout=0.2)
         self.assertIn(b'file-promise-created',caught.exception.stderr or b'')
         self.assertIn(b'partial-evidence',caught.exception.output or b'')
 
@@ -61,10 +61,10 @@ class Protocol(unittest.TestCase):
         self.assertLessEqual(len(diagnostics['stderr'].encode()),4096)
 
     def test_pre_request_timeout_retains_stage_and_classifies_phase(self):
-        source = "import sys,time; print('[DEBUG-runtime] prepare-start',file=sys.stderr,flush=True); time.sleep(30)"
+        source = "printf '[DEBUG-runtime] prepare-start\\n' >&2; exec /bin/sleep 30"
         diagnostics = {}
         with self.assertRaises(subprocess.TimeoutExpired) as caught:
-            run_container([sys.executable,'-u','-c',source],timeout=0.2,diagnostics=diagnostics)
+            run_container(['/bin/sh','-c',source],timeout=0.2,diagnostics=diagnostics)
         self.assertIn(b'prepare-start',caught.exception.stderr)
         self.assertEqual(caught.exception.protocol_phase,'waiting-broker-request')
         self.assertEqual(diagnostics['protocol_phase'],'waiting-broker-request')

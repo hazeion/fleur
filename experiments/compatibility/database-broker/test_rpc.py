@@ -7,7 +7,7 @@ from rpc import TrustedBroker
 
 class RPCTests(unittest.TestCase):
     def broker(self, program, timeout=0.2):
-        return TrustedBroker([sys.executable, '-u', '-c', program], None, os.environ.copy(), timeout)
+        return TrustedBroker([sys.executable, '-u', '-S', '-c', program], None, os.environ.copy(), timeout)
 
     def test_registered_validated_response_admits_only_native_projection(self):
         broker = self.broker("import sys;sys.stdin.readline();print('{\"kind\":\"broker-response\",\"ok\":true,\"value\":{\"id\":1,\"name\":\"Squat\",\"version\":1}}')")

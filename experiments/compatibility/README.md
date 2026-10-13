@@ -4,7 +4,7 @@ These disposable experiments establish the initial mechanism evidence required b
 
 [PR #39](https://github.com/hazeion/fleur/pull/39) merged after all fifteen checks passed at `ba3769df6debc468c6ff7a8ccacad52fdf30f2ee`. The [durable evidence record](evidence.md) records the actual tested platforms, exact pins, results and limitations. Earlier failed experiments remain documented as historical evidence; they are not the current check results.
 
-Issue #23 remains open while two final proofs are completed: inspect the effective restricted container configuration, and demonstrate that an actual restricted CPU-busy worker is terminated at its deadline while healthy work continues. Dependent implementation stays blocked until those proofs, applicable checks and independent review pass. No resource tuning or weakened isolation contract has been accepted.
+Five of issue #23's seven acceptance criteria have executed evidence: rendering/browser boundaries, pre-evaluation restrictions, effective container authority/resource limits, internal tooling, and the recorded platform matrix. [Run 38478108428](https://github.com/hazeion/fleur/actions/runs/38478108428) passed fourteen of fifteen checks at `683dc3855b9d9394a173e27d5ca4c12c049ee4c3`. AMD64 completed both restricted busy/healthy lifecycle repetitions; ARM64 emitted the healthy worker report but did not establish its exit before the deadline. The broker/lifecycle criterion and final consolidated verification remain open. Dependent implementation stays blocked until both architectures satisfy the required mechanism, applicable checks and independent review pass. Resource limits and the 30-second operation deadline remain unchanged.
 
 ## Experiments
 
@@ -30,7 +30,7 @@ GitHub runner images change. Their recorded OS/kernel/image identity is executed
 
 ## Historical red evidence
 
-The [first PR run](https://github.com/hazeion/fleur/actions/runs/38427572433) passed rendering but failed full strict Drizzle declarations. The exact source-backed declaration repair subsequently passed without `skipLibCheck` or runtime changes. The [early native run](https://github.com/hazeion/fleur/actions/runs/38428505562) established a smaller restriction probe; later runs added descriptor, all-thread, real broker and cgroup evidence. The original ambiguous memory exit failed its attribution requirement; direct kernel OOM counters and child signal now establish the cause. An ARM64 repeat timed out under the unchanged 30-second bound; the final PR run passed both native architectures with diagnostic instrumentation and the frozen compiler pins. It does not establish the cause or absence of all future stalls.
+The [first PR run](https://github.com/hazeion/fleur/actions/runs/38427572433) passed rendering but failed full strict Drizzle declarations. The exact source-backed declaration repair subsequently passed without `skipLibCheck` or runtime changes. The [early native run](https://github.com/hazeion/fleur/actions/runs/38428505562) established a smaller restriction probe; later runs added descriptor, all-thread, real broker and cgroup evidence. The original ambiguous memory exit failed its attribution requirement; direct kernel OOM counters and child signal now establish the cause. An ARM64 repeat timed out under the unchanged 30-second bound; the final PR #39 run passed both native architectures with diagnostic instrumentation and the frozen compiler pins. It does not establish the cause or absence of all future stalls.
 
 ## Implementation graph
 

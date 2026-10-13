@@ -6,6 +6,7 @@ Python 3 runs the read-only metadata probe. Provide Bun 1.4.3 explicitly to exec
 
 ```sh
 python3 experiments/compatibility/tooling/probe.py
+python3 experiments/compatibility/tooling/test_runner.py
 python3 experiments/compatibility/tooling/run.py --bun "$FLEUR_EXPERIMENT_BUN"
 ```
 
@@ -37,6 +38,8 @@ node_modules/drizzle-orm/mysql-core/query-builders/delete.d.ts(36,22): error TS2
 ```
 
 Other select-builder generic constraints reference absent `session`/`config` members. This experiment does not decide whether an approved internal packaging change can resolve them.
+
+The negative ESLint check parses JSON diagnostics and requires exactly the `invalid.ts` fixture's `@typescript-eslint/no-explicit-any` error, with no fatal or unrelated diagnostics. Its CLI regression uses an explicit fake Bun executable and disposable external directories. Before the fix, all six parser, fatal, wrong-file, unrelated-rule, mixed-rule and unstructured-output controls incorrectly passed. After the fix, those controls fail and the intended-rule control passes. The regression test passed on October 13, 2026. Rerunning the actual Bun 1.4.3 fixture confirmed the intended ESLint diagnostic while preserving the full strict Drizzle type failures and overall exit 1.
 
 An initial experiment used @types/bun 1.3.10 against runtime 1.4.3 and reported duplicate FFI identifiers and WebAssembly declaration conflicts. Inspection confirmed exactly one bun-types 1.3.10 dependency, rather than two compiler engines. Aligning declarations to exact @types/bun/bun-types 1.4.3 and explicitly including the disposable standard library removed those Bun failures. The current lockfile and saved diagnostics use the corrected configuration. No candidate default compiler or linter version changed.
 

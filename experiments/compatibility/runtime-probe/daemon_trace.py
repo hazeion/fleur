@@ -144,9 +144,13 @@ def capture_daemon_trace(remaining):
         process.wait(timeout=left)
         if process.returncode == 0 and output.startswith(b'trace-ready\n'):
             result = parse_stacks(output[12:].decode('utf-8'))
-            return dict(result,outcome='captured' if result['goroutines'] else 'empty-stack',
-                        snapshot_may_be_partial=True,cli_returncode=process.returncode,
-                        stack_input_bytes=len(output)-12)
+            result.update(outcome='captured' if result['goroutines'] else 'empty-stack',
+                          snapshot_may_be_partial=True,cli_returncode=process.returncode,
+                          stack_input_bytes=len(output)-12)
+            while len(json.dumps(result).encode('utf-8')) > OUTPUT_LIMIT:
+                result['goroutines'].pop()
+                result['truncated'] = True
+            return result
         outcome = 'command-failed'
     except (TimeoutError,subprocess.TimeoutExpired): outcome = 'timed-out'
     except (OSError,UnicodeError,ValueError): pass

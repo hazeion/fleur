@@ -163,3 +163,21 @@ class HostedCapture(unittest.TestCase):
             self.assertEqual(result['stack_input_bytes'],len(suffix.encode()))
             self.assertEqual(result['recognized_header_count'],0)
             self.assertNotIn('private',json.dumps(result))
+
+    def test_complete_capture_envelope_stays_within_output_limit(self):
+        import os,subprocess,tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from daemon_trace import capture_daemon_trace,OUTPUT_LIMIT
+        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux','GITHUB_REPOSITORY':'hazeion/fleur','GITHUB_WORKFLOW':'Compatibility experiments','GITHUB_JOB':'runtime-probe'}
+        factory=subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            payload=Path(directory)/'stack'
+            payload.write_text('trace-ready\n'+('goroutine 7 [running]:\ngithub.com/docker/aaaaaaa(0x1)\n'*1000))
+            with patch.dict(os.environ,env,clear=True),patch('daemon_trace.platform.system',return_value='Linux'),patch('daemon_trace.subprocess.Popen',side_effect=lambda args,**kwargs:factory(['/bin/cat',str(payload)],**kwargs)):
+                result=capture_daemon_trace(2)
+        self.assertEqual(result['outcome'],'captured')
+        self.assertEqual(result['recognized_header_count'],1000)
+        self.assertTrue(result['truncated'])
+        self.assertGreater(len(result['goroutines']),0)
+        self.assertLessEqual(len(json.dumps(result).encode()),OUTPUT_LIMIT)

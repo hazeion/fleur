@@ -1,4 +1,5 @@
 import { SQL } from 'bun';
+import { CleanupLease } from './cleanup';
 import { z } from 'zod';
 import { drizzle } from 'drizzle-orm/bun-sql';
 import { eq, and, sql as expression } from 'drizzle-orm';
@@ -33,18 +34,45 @@ export class Broker {
     let committed=false;
     let commitAttempted=false;
     let activeQuery:ReturnType<SQL['unsafe']>|undefined;
+    let pendingStatement:Promise<unknown>|undefined;
     const cancelled=() => { if (abort.signal.aborted) throw new Error('DEADLINE'); };
-    const onAbort=() => activeQuery?.cancel();
+    let backend:{pid:number;started:string}|undefined;
+    const controls=new Set<SQL>();
+    let cancellation:Promise<'applied'|'absent'|'failed'>|undefined;
+    const backendControl=async (action:'cancel'|'terminate'):Promise<'applied'|'absent'|'failed'> => {
+      if (!backend) return 'failed';
+      const control=new SQL({...this.pool.options,max:1,connectionTimeout:1});
+      controls.add(control);
+      let controlTimer:ReturnType<typeof setTimeout>|undefined;
+      try {
+        const statement=action==='cancel'
+          ? 'SELECT pg_cancel_backend(pid) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user'
+          : 'SELECT pg_terminate_backend(pid,200) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user';
+        const result=await Promise.race([
+          control.unsafe(statement,[backend.pid,backend.started]),
+          new Promise<never>((_resolve,reject)=>{controlTimer=setTimeout(()=>reject(new Error('Control deadline')),250);}),
+        ]);
+        const rows=z.array(z.strictObject({applied:z.boolean()})).parse(result);
+        return rows.length===0 ? 'absent' : rows.length===1 && rows[0]?.applied===true ? 'applied' : 'failed';
+      } catch {return 'failed';}
+      finally {if (controlTimer) clearTimeout(controlTimer);}
+    };
+    const onAbort=() => {
+      // One authoritative cancellation path avoids unawaitable late native CancelRequests.
+      // The trusted control connection targets only this verified borrowed backend.
+      cancellation=backendControl('cancel');
+    };
     const execute=async (query:{sql:string;params:unknown[]}) => {
       cancelled();
       if (!connection) throw new Error('DATABASE_FAILURE');
       activeQuery=connection.unsafe(query.sql,query.params);
+      pendingStatement=Promise.resolve(activeQuery);
       let rejectAbort:(()=>void)|undefined;
       const deadline=new Promise<never>((_resolve,reject)=>{
         rejectAbort=()=>reject(new Error('DEADLINE'));
         abort.signal.addEventListener('abort',rejectAbort,{once:true});
       });
-      try {return z.array(z.unknown()).parse(await Promise.race([activeQuery,deadline]));}
+      try {return z.array(z.unknown()).parse(await Promise.race([pendingStatement,deadline]));}
       finally {
         if (rejectAbort) abort.signal.removeEventListener('abort',rejectAbort);
         activeQuery=undefined;
@@ -54,6 +82,8 @@ export class Broker {
     try {
       connection=await this.pool.reserve({signal:abort.signal});
       cancelled();
+      const identity=await execute({sql:'SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()',params:[]});
+      backend=z.strictObject({pid:z.number().int().positive(),started:z.string().min(1)}).parse(identity[0]);
       await execute({sql:admitted.operation==='compat.query' ? 'BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY' : 'BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE',params:[]});
       // PostgreSQL is the second enforcement boundary even if a read helper leaks.
       await execute({sql:"SET LOCAL statement_timeout = '5s'",params:[]});
@@ -99,21 +129,27 @@ export class Broker {
         const ownedConnection=connection;
         // Never reuse authority unless rollback and subsequent idle work both complete.
         let cleanupTimer:ReturnType<typeof setTimeout>|undefined;
+        const cleanupLease=new CleanupLease();
         try {
           await Promise.race([
-            (async()=>{
-              if (!committed) await ownedConnection.unsafe('ROLLBACK');
-              await ownedConnection.unsafe('SELECT 1');
-            })(),
+            cleanupLease.verify(ownedConnection,cancellation,pendingStatement,!committed),
             new Promise<never>((_resolve,reject)=>{
-              cleanupTimer=setTimeout(()=>reject(new Error('Cleanup deadline')),250);
+              cleanupTimer=setTimeout(()=>{cleanupLease.expire();reject(new Error('Cleanup deadline'));},250);
             }),
           ]);
+          cleanupLease.assertActive();
+          cleanupLease.expire();
           connection.release();
         } catch {
-          // A silent transport cannot prove cancellation. Destroy its connection.
-          await connection.close({timeout:0});
-        } finally {if (cleanupTimer) clearTimeout(cleanupTimer);}
+          cleanupLease.expire();
+          // ReservedSQL.close closes the shared pool. Terminate only this exact owned backend instead.
+          const terminated=await backendControl('terminate');
+          if (terminated==='applied'||terminated==='absent') connection.release();
+          // Failed control leaves this reservation quarantined, never returned for reuse.
+        } finally {
+          if (cleanupTimer) clearTimeout(cleanupTimer);
+          for (const control of controls) {try {await control.close({timeout:0});} catch { /* Every pool owns one trusted control request. */ }}
+        }
 
       }
     }

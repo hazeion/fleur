@@ -44,6 +44,7 @@ test('deadline cancels PostgreSQL work, rolls back and safely reuses a one-slot 
  expect(performance.now()-start).toBeLessThan(2000);
  expect(await new Broker(single,querySession).dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
  expect((await single.unsafe('SELECT count(*)::integer AS count FROM exercise_child'))[0].count).toBe(0);
+ expect(await new Broker(single,mutationSession).dispatch(save())).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
  } finally {await single.close();}
 });
 test('slow work is isolated from an admitted healthy query',async () => {
@@ -65,7 +66,7 @@ test('Read Committed has statement snapshots and a real read-only runtime bounda
  expect((await connection.unsafe('SELECT name FROM exercise WHERE id=1'))[0].name).toBe('Squat');
  await pool.unsafe("UPDATE exercise SET name='Changed' WHERE id=1");
  expect((await connection.unsafe('SELECT name FROM exercise WHERE id=1'))[0].name).toBe('Changed');
- await expect(connection.unsafe("UPDATE exercise SET name='Denied' WHERE id=1")).rejects.toMatchObject({code:'25006'});
+ await expect(Promise.resolve(connection.unsafe("UPDATE exercise SET name='Denied' WHERE id=1"))).rejects.toMatchObject({code:'ERR_POSTGRES_SERVER_ERROR',errno:'25006'});
  await connection.unsafe('ROLLBACK');
  } finally {connection.release();}
 });
@@ -168,4 +169,22 @@ test('stalled idle verification discards authority while preserving established 
  expect(proxy.intercepted()).toBe(1);
  expect(await queryBroker.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
  } finally {await faulty.close({timeout:0});await proxy.close();}
+});
+
+test('delayed control cancellation acknowledgement retires the old backend before subsequent work',async()=>{
+ const {commitFaultProxy}=await import('./proxy');
+ const proxy=await commitFaultProxy(url,'cancel-control');
+ const isolated=new SQL(proxy.url,{max:1});
+ try {
+ const writer=new Broker(isolated,mutationSession);
+ const query=new Broker(isolated,querySession);
+ const oldBackend=await isolated.unsafe('SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()');
+ expect(await writer.dispatch(save({delayMs:3000}),100)).toEqual({kind:'broker-response',ok:false,code:'DEADLINE'});
+ expect(proxy.intercepted()).toBe(1);
+ expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
+ const newBackend=await isolated.unsafe('SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()');
+ expect(newBackend[0]).not.toEqual(oldBackend[0]);
+ expect(await writer.dispatch(save())).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ } finally {await isolated.close({timeout:0});await proxy.close();}
 });

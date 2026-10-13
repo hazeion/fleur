@@ -22,6 +22,14 @@ def load(path, name):
     return module
 
 
+def attach_host_threads(worker_evidence, observed_threads):
+    if type(worker_evidence) is not dict or 'host_threads' in worker_evidence:
+        raise RuntimeError('Worker cannot supply trusted thread observations')
+    if type(observed_threads) is not list:
+        raise RuntimeError('Trusted thread inspection did not complete')
+    return dict(worker_evidence, host_threads=observed_threads)
+
+
 def run_native(bun, root, environment, source_root):
     row = {'name': 'restricted-worker-real-postgresql', 'required': True, 'passed': False}
     owner = secrets.token_hex(16)
@@ -47,6 +55,7 @@ def run_native(bun, root, environment, source_root):
         runtime = source_root / 'runtime-probe'
         protocol = load(runtime / 'protocol.py', 'fleur_native_database_protocol')
         acceptance = load(runtime / 'report.py', 'fleur_native_database_acceptance')
+        threads = load(runtime / 'threads.py', 'fleur_native_database_thread_inspector')
         with tempfile.TemporaryDirectory(prefix='fleur-native-database-') as temporary:
             context = Path(temporary)
             for filename in ('bootstrap.ts', 'application.js'):
@@ -54,6 +63,7 @@ def run_native(bun, root, environment, source_root):
             for filename in ('package.json', 'bun.lock'):
                 shutil.copyfile(source_root / 'rendering' / filename, context / filename)
             command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', str(runtime / 'filter.c'), '-o', str(context / 'filter.so')])
+            (context / 'profile.json').write_text(json.dumps({'architecture':'amd64','negative_controls':acceptance.CONTROLS['amd64']}))
             row['helper_sha256'] = hashlib.sha256((context / 'filter.so').read_bytes()).hexdigest()
             (context / 'Dockerfile').write_text(f'''FROM {BASE} AS prepare
 WORKDIR /probe
@@ -65,7 +75,7 @@ FROM {BASE}
 LABEL {LABEL}={owner}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
-COPY filter.so application.js ./
+COPY filter.so application.js profile.json ./
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
@@ -76,6 +86,13 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             if metadata['Config']['Labels'].get(LABEL) != owner:
                 raise RuntimeError('Native image identity mismatch')
             row['image_id'] = metadata['Id']
+            observed_threads = None
+            def observe_threads(_request):
+                nonlocal observed_threads
+                identity = json.loads(command(['docker','inspect',container],timeout=5))[0]
+                if identity['Name'] != '/'+container or identity['Image'] != metadata['Id'] or identity['Config']['Labels'].get(LABEL) != owner:
+                    raise RuntimeError('Native container identity differs before inspection')
+                observed_threads = threads.inspect_threads(container)
             with_broker = TrustedBroker([bun, 'ipc.ts'], root, environment, timeout=8)
             try:
                 attempted_run = True
@@ -84,11 +101,11 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     '--label', LABEL + '=' + owner, '--network=none', '--read-only', '--cap-drop=ALL',
                     '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                     '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30)
+                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, observer=observe_threads)
             finally:
                 with_broker.close()
-            evidence = json.loads(output)
-            if not acceptance.accept(dict(evidence, cleanup_complete=True)):
+            evidence = attach_host_threads(json.loads(output), observed_threads)
+            if not acceptance.accept(dict(evidence, cleanup_complete=True),expected_architecture='amd64'):
                 raise RuntimeError('Restricted worker evidence incomplete')
             row['native_evidence'] = evidence
             row['passed'] = True

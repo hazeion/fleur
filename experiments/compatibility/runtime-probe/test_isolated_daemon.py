@@ -185,3 +185,20 @@ class OwnedCounterfactual(unittest.TestCase):
             self.assertNotIn('moby ',calls)
             self.assertFalse((root/'data').exists());self.assertFalse((root/'exec').exists())
             self.assertEqual((root/'unrelated').read_text(),'preserve')
+
+    def test_retirement_failure_journal_is_bounded_numeric_and_redacted(self):
+        from isolated_daemon import retirement_observations
+        with tempfile.TemporaryDirectory(prefix='fleur-retire-journal-') as temporary:
+            root=Path(temporary)
+            (root/'retirement.facts').write_text('1 1 0 1\n3 1 0 1\n4 1 124 1\n')
+            facts=retirement_observations(root,124,b'')
+            self.assertEqual(facts['cli_returncode'],124)
+            self.assertEqual(facts['last_stage'],4)
+            self.assertEqual(facts['last_namespace'],1)
+            self.assertEqual(facts['last_command_returncode'],124)
+            self.assertEqual(facts['last_count'],1)
+            for malformed in ('1 1 0 /private/path\n','99 1 0 1\n','1 3 0 1\n','x'*8193):
+                (root/'retirement.facts').write_text(malformed)
+                result=retirement_observations(root,1,b'')
+                self.assertTrue(result['journal_invalid'])
+                self.assertNotIn('private',str(result))

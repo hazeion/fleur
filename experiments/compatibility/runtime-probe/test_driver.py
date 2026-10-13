@@ -39,7 +39,7 @@ class DriverEvidence(unittest.TestCase):
                 metadata = {'Name':'/'+owner.get('container',''), 'Image':'sha256:'+'a'*64,
                             'Config':{'Image':'sha256:'+'a'*64,'User':'65534:65534','Labels':{'fleur.compatibility.runtime-owner':owner.get('value','')},
                             'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
-                                   'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin']},
+                                   'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0']},
                             'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
                             'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
                             'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',

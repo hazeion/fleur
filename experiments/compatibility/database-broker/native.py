@@ -80,6 +80,7 @@ LABEL {LABEL}={owner}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
 COPY filter.so application.js profile.json ./
+ENV GLIBC_TUNABLES=glibc.pthread.rseq=0
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')

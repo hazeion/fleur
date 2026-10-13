@@ -10,7 +10,7 @@ def metadata():
     return {'Name':'/worker','Image':IMAGE,
             'Config':{'Image':IMAGE,'User':'65534:65534','Labels':{OWNER_LABEL:'owner'},
                       'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
-                             'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin']},
+                             'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0']},
             'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
                           'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
                           'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
@@ -24,7 +24,7 @@ class ActualWorkerConfiguration(unittest.TestCase):
         result = audit_configuration(metadata(),'owner','worker',IMAGE)
         self.assertTrue(result['owned'])
         self.assertEqual(result['memory_bytes'],536870912)
-        self.assertEqual(result['environment_keys'],['BUN_INSTALL_BIN','BUN_RUNTIME_TRANSPILER_CACHE_PATH','PATH'])
+        self.assertEqual(result['environment_keys'],['BUN_INSTALL_BIN','BUN_RUNTIME_TRANSPILER_CACHE_PATH','GLIBC_TUNABLES','PATH'])
         self.assertTrue(result['host_canary_absent'])
         self.assertNotIn('Env',json.dumps(result))
 
@@ -57,3 +57,14 @@ class ActualWorkerConfiguration(unittest.TestCase):
                 audit_configuration(changed,'owner','worker',IMAGE)
             self.assertFalse(secret in str(caught.exception))
         self.assertFalse(secret in json.dumps(audit_configuration(metadata(),'owner','worker',IMAGE)))
+
+    def test_exact_worker_rseq_configuration_is_required_without_extra_tunables(self):
+        good = metadata()
+        result = audit_configuration(good,'owner','worker',IMAGE)
+        self.assertEqual(result['glibc_rseq_registration'],'disabled')
+        for value in (None,'glibc.pthread.rseq=1','glibc.pthread.rseq=0:glibc.malloc.check=1'):
+            changed = copy.deepcopy(good)
+            changed['Config']['Env'] = [entry for entry in changed['Config']['Env'] if not entry.startswith('GLIBC_TUNABLES=')]
+            if value is not None: changed['Config']['Env'].append('GLIBC_TUNABLES='+value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                audit_configuration(changed,'owner','worker',IMAGE)

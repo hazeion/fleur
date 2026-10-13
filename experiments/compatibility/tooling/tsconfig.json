@@ -13,10 +13,13 @@
       "ES2022",
       "DOM",
       "ESNext.Disposable"
-    ]
+    ],
+    "resolveJsonModule": true
   },
   "files": [
     "fixture.ts",
-    "fixture.test.ts"
+    "fixture.test.ts",
+    "declarations.ts",
+    "patch.test.ts"
   ]
 }

@@ -1,6 +1,7 @@
 import json, os
 from pathlib import Path
 import tempfile, unittest
+import subprocess
 from lifecycle import run_lifecycle
 # Shell avoids unrelated cold Python imports consuming the two-second fixture budget.
 FAKE = r'''#!/bin/sh
@@ -41,6 +42,11 @@ run)
   printf '%s\n' "$LIFECYCLE_EVIDENCE"
   sed 's/"Running":true/"Running":false/' "$root/$name" > "$root/$name.tmp"
   mv "$root/$name.tmp" "$root/$name"
+  if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
+   sed 's/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+   mv "$root/$name.tmp" "$root/$name"
+   exec sleep 30
+  fi
  fi
  ;;
 inspect) cat "$root/$1" ;;
@@ -51,6 +57,11 @@ kill)
  if [ ! "${LIFECYCLE_NO_KILL:-}" ]; then
   sed 's/"Running":true/"Running":false/;s/"ExitCode":0/"ExitCode":137/;s/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
   mv "$root/$name.tmp" "$root/$name"
+  if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
+   sed 's/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+   mv "$root/$name.tmp" "$root/$name"
+   exec sleep 30
+  fi
  fi
  printf '%s\n' "$name"
  ;;
@@ -95,4 +106,13 @@ class LifecycleTests(unittest.TestCase):
   result=self.run_probe()
   self.assertTrue(result['passed'])
   self.assertFalse((self.root/'healthy-too-early').exists())
+ def test_healthy_timeout_retains_correct_stopped_daemon_state_before_cleanup(self):
+  self.env['LIFECYCLE_KEEP_HEALTHY_OPEN']='1'
+  with self.assertRaises(subprocess.TimeoutExpired) as caught:self.run_probe()
+  self.assertEqual(getattr(caught.exception,'worker_role',None),'healthy')
+  self.assertEqual(caught.exception.worker_state['Running'],False)
+  self.assertEqual(caught.exception.worker_state['ExitCode'],0)
+  self.assertEqual(caught.exception.worker_state['FinishedAt'],'2026-10-13T00:00:01Z')
+  self.assertIn('runtime-evidence',caught.exception.worker_diagnostics['stdout'])
+  self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'kill-attempt'})
 if __name__=='__main__':unittest.main()

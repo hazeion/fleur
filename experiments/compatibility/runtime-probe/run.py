@@ -209,10 +209,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 'stdout':(error.output or b'')[:16384].decode('utf-8',errors='replace'),
                 'stderr':(error.stderr or b'')[:4096].decode('utf-8',errors='replace'),
             }
-            try:
-                REPORT['host_timeout_diagnostics'] = snapshot_worker(container)
-            except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired) as diagnostic_error:
-                REPORT['host_timeout_diagnostics'] = {'outcome':'timed-out' if isinstance(diagnostic_error,subprocess.TimeoutExpired) else 'unavailable'}
+            if getattr(error,'worker_role',None) == 'healthy':
+                REPORT['lifecycle_timeout'] = {'worker_role':'healthy','state':error.worker_state,
+                                               'protocol':error.worker_diagnostics}
+            else:
+                try:
+                    REPORT['host_timeout_diagnostics'] = snapshot_worker(container)
+                except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired) as diagnostic_error:
+                    REPORT['host_timeout_diagnostics'] = {'outcome':'timed-out' if isinstance(diagnostic_error,subprocess.TimeoutExpired) else 'unavailable'}
         result_code = 1
     finally:
         cleanup = []

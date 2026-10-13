@@ -1,10 +1,11 @@
-import {dlopen, FFIType} from 'bun:ffi';
+import {dlopen, FFIType, ptr} from 'bun:ffi';
 import {h} from 'preact';
 import render from 'preact-render-to-string';
 
 console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
 const native = dlopen('/probe/filter.so', {
+  finish_fixture: {args:[FFIType.ptr,FFIType.u32],returns:FFIType.void},
   trace: {args: [FFIType.i32], returns: FFIType.void},
   event_audit_ack: {returns:FFIType.i32}, event_replace: {returns:FFIType.i32},
   event_inventory_count:{returns:FFIType.i32},
@@ -83,6 +84,8 @@ native.trace(17);
 const thread = native.check_thread();
 native.trace(18);
 native.trace(19);
-console.log(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}));
+const frame = new TextEncoder().encode(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}) + '\n');
+// This trusted strong root remains live while FFI holds only its raw pointer.
+Object.defineProperty(globalThis,'__fleurCompatFixtureFrame',{value:frame,writable:false,configurable:false});
 native.trace(20);
-process.exit(0);
+native.finish_fixture(ptr(frame),frame.byteLength);

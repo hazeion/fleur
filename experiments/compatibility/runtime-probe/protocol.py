@@ -40,12 +40,32 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30):
         if json.dumps(response, sort_keys=True) != json.dumps({"kind": "broker-response", "ok": True,
                         "value": {"id": 1, "name": "Squat"}}, sort_keys=True):
             raise RuntimeError("registered broker reply failed")
-        output, errors = process.communicate(b"registered:Squat\n",
-                                            timeout=max(0.001, timeout-(time.monotonic()-started)))
+        process.stdin.write(b"registered:Squat\n")
+        process.stdin.flush()
+        process.stdin.close()
+        process.stdin = None
+        output, errors = bytearray(), bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, output)
+            selector.register(process.stderr, selectors.EVENT_READ, errors)
+            while selector.get_map():
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                ready = selector.select(remaining)
+                if not ready:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                for key, _ in ready:
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    key.data.extend(chunk)
+                    if len(output) > 16384 or len(errors) > 4096:
+                        raise RuntimeError("worker output exceeded bound")
+        process.wait(timeout=max(0.001, timeout-(time.monotonic()-started)))
         if process.returncode:
             raise RuntimeError(f"worker exited {process.returncode}: " + errors.decode(errors="replace")[-3000:])
-        if len(output) > 16384:
-            raise RuntimeError("probe output exceeded bound")
         return output.decode()
     finally:
         if process.poll() is None:

@@ -37,3 +37,7 @@ python3 experiments/compatibility/distro-fixtures/test_cli.py
 ```
 
 The first run failed because the driver did not yet exist. After implementation, the regression passed on the local macOS machine. Syntax checks also passed. Docker and actual distribution fixture execution are unavailable locally; only CI execution can establish those results. No platform pass is claimed from the local control checks.
+
+## Cleanup launch regression
+
+A simulated fixture timeout followed by an unavailable Docker executable during container ownership inspection originally aborted cleanup and suppressed the final JSON report. The public CLI regression reproduced that failure before the fix. The process wrapper now records the launch error class, continues ownership-checked cleanup of the other resource and writes the final failed report. It excludes private exception text from launch-error evidence. Both prerequisite and cleanup regressions passed after the fix. The synthetic process boundary establishes reporting behavior only, without claiming any actual Docker execution.

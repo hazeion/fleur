@@ -67,6 +67,11 @@ def main():
             report['commands'].append({'name': name, 'exit_code': result.returncode,
                                        'output_sha256': hashlib.sha256(output.encode()).hexdigest()})
             return result
+        except OSError as error:
+            error_class = type(error).__name__
+            (args.out / (name + '.txt')).write_text(json.dumps({'error_class': error_class}))
+            report['commands'].append({'name': name, 'exit_code': None, 'error_class': error_class})
+            return None
         except subprocess.TimeoutExpired as error:
             (args.out / (name + '.txt')).write_text(str(error))
             report['commands'].append({'name': name, 'exit_code': None, 'timeout': True})

@@ -11,7 +11,7 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
@@ -66,6 +66,7 @@ class DriverEvidence(unittest.TestCase):
             if args[-1] == 'event-replacement':
                 kwargs['diagnostics']['stderr'] = '[compat-event] replacement-fd=3\n'
                 raise run.StartupAuditRejected(audited['category'])
+            if primary_error is not None: raise primary_error
             kwargs['completion_observer'](native,30)
             return json.dumps(native)
         captured = io.StringIO()
@@ -199,3 +200,14 @@ class DriverEvidence(unittest.TestCase):
         self.assertEqual(report['lifecycle_failure']['observations']['stdout_bytes'],120)
         self.assertFalse(report['lifecycle_failure']['cleanup_verified'])
         self.assertEqual(report['lifecycle_failure']['state']['ExitCode'],0)
+
+    def test_primary_startup_rejection_retains_category_and_cleanup(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,
+                                    primary_error=run.StartupAuditRejected('class-mismatch'))
+        self.assertEqual(code,1)
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertEqual(report['startup_failure']['category'],'class-mismatch')
+        self.assertNotIn('observations',report['startup_failure'])
+        self.assertNotIn('completion_failure',report)
+        self.assertTrue(report['cleanup_complete'])

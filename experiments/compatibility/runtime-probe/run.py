@@ -17,7 +17,7 @@ from diagnostics import snapshot_worker
 from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL
 from lifecycle import run_lifecycle
 from descriptor_audit import inspect_event_inventory
-from completion import inspect_owned_completion
+from completion import inspect_owned_completion, CompletionUnverified
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -210,7 +210,9 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
-        if hasattr(error,'category'):
+        if isinstance(error,StartupAuditRejected):
+            REPORT['startup_failure'] = {'category':error.category}
+        if isinstance(error,CompletionUnverified):
             REPORT['completion_failure'] = {'category':error.category,'observations':error.observations}
         if hasattr(error,'worker_role') or hasattr(error,'lifecycle_cleanup'):
             REPORT['lifecycle_failure'] = {

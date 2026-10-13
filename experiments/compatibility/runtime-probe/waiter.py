@@ -71,6 +71,10 @@ class OwnedWaiter:
         except (OSError, ValueError):
             raise WaitUnverified('observation-failed', self._observations()) from None
 
+    def snapshot(self):
+        if self._process is not None: self._process.poll()
+        return self._observations()
+
     def close(self):
         if self._closed:
             return

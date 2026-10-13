@@ -264,3 +264,53 @@ class Protocol(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'owned worker did not complete successfully'):
             run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':137})
         self.assertEqual(events,['closed'])
+
+    def test_pending_trace_is_captured_once_before_waiter_cleanup(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="printf '%s\\n' \"$1\"; IFS= read -r startup; printf '%s\\n' \"$2\"; IFS= read -r reply; printf '{\"kind\":\"runtime-evidence\"}\\n'; exec /bin/sleep 30"
+        args=['/bin/sh','-c',source,'fixture',json.dumps(startup),json.dumps(REQUEST)]
+        events=[];diagnostics={}
+        class Waiter:
+            def completion(self,r):return {'completed':'trace' in events,'exit_code':0}
+            def snapshot(self):events.append('snapshot');return {'stdout_bytes':0,'stderr_bytes':0,'cli_returncode':None}
+            def close(self):events.append('closed')
+        def trace(remaining):
+            self.assertGreater(remaining,0);events.append('trace');return {'outcome':'captured','goroutines':[]}
+        output=run_container(args,timeout=4,startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':0},completion_stall=trace,diagnostics=diagnostics)
+        self.assertEqual(json.loads(output)['kind'],'runtime-evidence')
+        self.assertEqual(events,['trace','snapshot','closed'])
+        self.assertEqual(diagnostics['waiter_observations']['stdout_bytes'],0)
+        self.assertEqual(diagnostics['daemon_stall_trace']['outcome'],'captured')
+
+    def test_unaccepted_frame_cannot_trigger_privileged_stall_capture(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="printf '%s\\n' \"$1\"; IFS= read -r startup; printf '%s\\n' \"$2\"; IFS= read -r reply; printf '{\"kind\":\"runtime-evidence\"}\\n'; exec /bin/sleep 30"
+        args=['/bin/sh','-c',source,'fixture',json.dumps(startup),json.dumps(REQUEST)]
+        events=[]
+        class Waiter:
+            def completion(self,r):events.append('wait');return {'completed':False}
+            def close(self):pass
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_container(args,timeout=2.5,startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':False},completion_stall=lambda r:events.append('trace'))
+        self.assertEqual(events,[])
+
+    def test_malformed_waiter_result_preserves_typed_completion_rejection(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        class Waiter:
+            def completion(self,r):return None
+            def close(self):pass
+        with self.assertRaisesRegex(RuntimeError,'owned worker completion observer result invalid'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':0})
+
+    def test_snapshot_value_error_cannot_replace_original_failure_or_skip_cleanup(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        events=[]
+        class Waiter:
+            def completion(self,r):raise RuntimeError('original waiter fixture failure')
+            def snapshot(self):raise ValueError('snapshot fixture failure')
+            def close(self):events.append('closed')
+        with self.assertRaisesRegex(RuntimeError,'original waiter fixture failure'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':0},diagnostics={})
+        self.assertEqual(events,['closed'])

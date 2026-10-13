@@ -134,3 +134,37 @@ jobs:
           name: rendering-diagnostics
           path: ${{ runner.temp }}/fleur-evidence/
           retention-days: 7
+
+  runtime-probe:
+    name: Native pre-evaluation probe only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check existing disposable runner prerequisites
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          test "$(gcc -dumpfullversion -dumpversion)" = 13.3.0
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          { uname -srm; python3 --version; gcc --version; docker version; } > "$RUNNER_TEMP/fleur-evidence/runtime-platform.txt"
+      - name: Driver diagnostic requirements
+        run: python3 -m unittest discover -s experiments/compatibility/runtime-probe -p 'test_*.py'
+      - name: Bounded native feasibility probe, failures remain failures
+        # A scoped pass cannot set the aggregate v1 compatibility gate true.
+        run: python3 experiments/compatibility/runtime-probe/run.py > "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"
+      - name: Display native probe report
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"; then
+            cat "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"
+          fi
+      - name: Retain native probe diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-probe-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7

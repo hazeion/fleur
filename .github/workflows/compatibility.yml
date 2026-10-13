@@ -13,6 +13,57 @@ defaults:
     shell: bash
 
 jobs:
+  distro-fixtures:
+    name: Frozen userspace fixtures (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: debian-amd64}
+          - {runner: ubuntu-24.04-arm, target: debian-arm64}
+          - {runner: ubuntu-24.04, target: arch-amd64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Diagnostic failure and ownership regressions
+        run: python3 -m unittest discover -s experiments/compatibility/distro-fixtures -p 'test_*.py'
+      - name: Digest-pinned distribution and dated packages
+        run: python3 experiments/compatibility/distro-fixtures/run.py --target '${{ matrix.target }}' --out "$RUNNER_TEMP/fleur-distro-evidence"
+      - name: Retain userspace fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: distro-${{ matrix.target }}
+          path: ${{ runner.temp }}/fleur-distro-evidence/
+          retention-days: 7
+
+  database-broker:
+    name: PostgreSQL and restricted broker compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-database-bun" > "$RUNNER_TEMP/fleur-evidence/platform.json"
+      - name: Ownership and RPC diagnostic regressions
+        run: python3 -m unittest discover -s experiments/compatibility/database-broker -p 'test_*.py'
+      - name: Real owned PostgreSQL and restricted worker checks
+        run: python3 experiments/compatibility/database-broker/run.py --bun "$RUNNER_TEMP/fleur-database-bun/bun" > "$RUNNER_TEMP/fleur-evidence/database-broker.json"
+      - name: Retain database and broker evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: database-broker-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
   isolation-diagnostic:
     name: Isolation diagnostic only
     runs-on: ubuntu-24.04

@@ -98,10 +98,10 @@ def main():
             (context / 'Dockerfile').write_text(dockerfile)
             (args.out / 'Dockerfile').write_text(dockerfile)
             stage = 'snapshot image build'
+            built = True
             result = run('image-build', ['docker', 'build', '--platform', 'linux/' + arch, '-t', image, str(context)])
             if result is None or result.returncode:
                 raise ValueError('snapshot image provisioning failed')
-            built = True
             inspection = run('image-inspect', ['docker', 'image', 'inspect', image], 30)
             if inspection is None or inspection.returncode:
                 raise ValueError('image identity unavailable')
@@ -109,12 +109,12 @@ def main():
             if report['image']['Architecture'] != arch or report['image']['Config']['Labels'].get(LABEL) != owner:
                 raise ValueError('image identity rejected')
             stage = 'owned container create'
+            created = True
             result = run('container-create', ['docker', 'create', '--name', container,
                          '--label', LABEL + '=' + owner, '--cap-drop=ALL',
                          '--security-opt=no-new-privileges', '--pids-limit=512', image], 30)
             if result is None or result.returncode:
                 raise ValueError('container creation failed')
-            created = True
             stage = 'fixtures'
             result = run('fixtures', ['docker', 'start', '-a', container])
             copied = run('evidence-copy', ['docker', 'cp', container + ':/evidence/.', str(args.out)], 30)
@@ -137,8 +137,11 @@ def main():
             inspected = run('cleanup-inspect-' + kind, ['docker', kind, 'inspect', name], 30)
             owned = False
             if inspected and inspected.returncode == 0:
-                metadata = json.loads(inspected.stdout)[0]
-                owned = metadata.get('Config', {}).get('Labels', {}).get(LABEL) == owner
+                try:
+                    metadata = json.loads(inspected.stdout)[0]
+                    owned = metadata.get('Config', {}).get('Labels', {}).get(LABEL) == owner
+                except (ValueError, IndexError, AttributeError):
+                    owned = False
             if not owned:
                 report['passed'] = False
                 report.setdefault('cleanup_errors', []).append(kind + ' ownership unverified')

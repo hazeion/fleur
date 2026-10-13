@@ -100,10 +100,10 @@ class LifecycleTests(unittest.TestCase):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
   return {'configuration':{'container_id':('a' if name.endswith('-0') else 'b')*64},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=2,docker=str(self.cli))
+ def run_probe(self,timeout=2):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli))
  def test_deadline_terminates_daemon_worker_and_preserves_healthy_worker(self):
   result=self.run_probe();self.assertTrue(result['passed']);self.assertEqual(len(result['repeats']),2)
-  for row in result['repeats']:self.assertTrue(row['healthy_completed_while_busy_running']);self.assertEqual(row['terminated_exit'],137)
+  for row in result['repeats']:self.assertTrue(row['healthy_completed_while_busy_running']);self.assertEqual(row['terminated_exit'],137);self.assertEqual(row['deadline_seconds'],2)
   self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'kill-attempt'})
  def test_cli_termination_does_not_count_as_daemon_worker_termination(self):
   self.env['LIFECYCLE_NO_KILL']='1'
@@ -115,7 +115,9 @@ class LifecycleTests(unittest.TestCase):
   self.assertFalse((self.root/'kill-attempt').exists())
  def test_healthy_worker_starts_after_actual_busy_cpu_loop_entry(self):
   self.env['LIFECYCLE_DELAY_LOOP']='.7'
-  result=self.run_probe()
+  # Ordering needs startup margin; strict deadline/termination cases keep 2 s.
+  # Production native probes continue using 30 s and the same marker premise.
+  result=self.run_probe(timeout=4)
   self.assertTrue(result['passed'])
   self.assertFalse((self.root/'healthy-too-early').exists())
  def test_healthy_timeout_retains_correct_stopped_daemon_state_before_cleanup(self):

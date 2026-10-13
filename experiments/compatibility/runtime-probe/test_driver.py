@@ -11,14 +11,16 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
         native = {"event_probe":0,"event_negatives":[-1]*12,"host_canary_absent":True,"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
                   "application_open":True,"descriptors_closed":True,"broker_reply":"registered:Squat",
                   "cgroups":{"cpu":"100000 100000","memory":"536870912","pids":"64"}}
+        self.last_build_requests = []
         def command(args, **kwargs):
+            if args[:2] == ['docker','build']: self.last_build_requests.append(args)
             if '-dumpfullversion' in args: return '13.3.0'
             if '-dumpmachine' in args: return compiler_target or PROFILES[architecture]['compiler_target']
             if '--version' in args: return 'GCC 13.3.0'
@@ -90,7 +92,7 @@ class DriverEvidence(unittest.TestCase):
                  {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
-            code = run.main()
+            code = run.main(trusted_build_network=trusted_build_network)
         return code, json.loads(captured.getvalue())
 
     def test_native_monitor_cannot_overwrite_measured_process_status(self):
@@ -214,3 +216,11 @@ class DriverEvidence(unittest.TestCase):
         self.assertNotIn('observations',report['startup_failure'])
         self.assertNotIn('completion_failure',report)
         self.assertTrue(report['cleanup_complete'])
+
+    def test_host_network_is_explicit_for_trusted_build_only(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,trusted_build_network='host')
+        self.assertEqual(code,0)
+        self.assertEqual(report['trusted_build_network'],'host')
+        self.assertIn('--network=host',self.last_build_requests[0])
+        self.assertEqual(report['worker_configuration']['network_mode'],'none')

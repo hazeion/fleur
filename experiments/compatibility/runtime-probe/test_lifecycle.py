@@ -2,32 +2,63 @@ import json, os
 from pathlib import Path
 import tempfile, unittest
 from lifecycle import run_lifecycle
-FAKE = '''#!/usr/bin/env python3
-import json, os, pathlib, sys, time
-root=pathlib.Path(os.environ['LIFECYCLE_FAKE_ROOT']); a=sys.argv[1:]
-if a[0]=='run':
- n=a[a.index('--name')+1]; owner=a[a.index('--label')+1].split('=',1)[1]
- if os.environ.get('LIFECYCLE_FOREIGN'):owner='foreign'
- (root/n).write_text(json.dumps({'State':{'Running':True,'ExitCode':0,'FinishedAt':''},'Config':{'Labels':{'fleur.compatibility.runtime-owner':owner}}}))
- print(os.environ['LIFECYCLE_REQUEST'],flush=True);sys.stdin.readline()
- if a[-1]=='busy':
-  time.sleep(float(os.environ.get('LIFECYCLE_DELAY_LOOP','0')))
-  (root/(n+'-loop')).write_text('entered')
-  print('[compat-lifecycle] cpu-loop',file=sys.stderr,flush=True)
-  while True:time.sleep(.01)
- else:
-  if not (root/(n.replace('-healthy-','-busy-')+'-loop')).exists():(root/'healthy-too-early').write_text(n)
-  print(os.environ['LIFECYCLE_EVIDENCE'],flush=True)
-  d=json.loads((root/n).read_text());d['State']['Running']=False;(root/n).write_text(json.dumps(d))
-elif a[0]=='inspect':print((root/a[1]).read_text())
-elif a[0]=='kill':
- (root/'kill-attempt').write_text(a[-1])
- p=root/a[-1];d=json.loads(p.read_text())
- if not os.environ.get('LIFECYCLE_NO_KILL'):d['State'].update(Running=False,ExitCode=137,FinishedAt='2026-10-13T00:00:01Z');p.write_text(json.dumps(d))
- print(a[-1])
-elif a[0]=='rm':
- (root/a[-1]).unlink();(root/(a[-1]+'-loop')).unlink(missing_ok=True);print(a[-1])
-else:sys.exit(2)
+# Shell avoids unrelated cold Python imports consuming the two-second fixture budget.
+FAKE = r'''#!/bin/sh
+set -eu
+root=$LIFECYCLE_FAKE_ROOT
+operation=$1
+shift
+name=
+mode=
+owner=owned
+case "$operation" in
+run)
+ while [ "$#" -gt 0 ]; do
+  case "$1" in
+   --name) name=$2; shift ;;
+   --label) owner=${2#*=}; shift ;;
+  esac
+  mode=$1
+  shift
+ done
+ case "$name" in owned-busy-[01]|owned-healthy-[01]) ;; *) exit 2 ;; esac
+ if [ "${LIFECYCLE_FOREIGN:-}" ]; then owner=foreign; fi
+ case "$owner" in owned|foreign) ;; *) exit 2 ;; esac
+ printf '{"State":{"Running":true,"ExitCode":0,"FinishedAt":""},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$owner" > "$root/$name"
+ printf '%s\n' "$LIFECYCLE_REQUEST"
+ IFS= read -r ack
+ if [ "$mode" = busy ]; then
+  sleep "${LIFECYCLE_DELAY_LOOP:-0}"
+  printf 'entered\n' > "$root/$name-loop"
+  printf '[compat-lifecycle] cpu-loop\n' >&2
+  exec sleep 30
+ else
+  number=${name##*-}
+  if [ ! -f "$root/owned-busy-$number-loop" ]; then printf '%s\n' "$name" > "$root/healthy-too-early"; fi
+  printf '%s\n' "$LIFECYCLE_EVIDENCE"
+  sed 's/"Running":true/"Running":false/' "$root/$name" > "$root/$name.tmp"
+  mv "$root/$name.tmp" "$root/$name"
+ fi
+ ;;
+inspect) cat "$root/$1" ;;
+kill)
+ shift
+ name=$1
+ printf '%s\n' "$name" > "$root/kill-attempt"
+ if [ ! "${LIFECYCLE_NO_KILL:-}" ]; then
+  sed 's/"Running":true/"Running":false/;s/"ExitCode":0/"ExitCode":137/;s/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+  mv "$root/$name.tmp" "$root/$name"
+ fi
+ printf '%s\n' "$name"
+ ;;
+rm)
+ shift
+ name=$1
+ rm -f "$root/$name" "$root/$name-loop"
+ printf '%s\n' "$name"
+ ;;
+*) exit 2 ;;
+esac
 '''
 class LifecycleTests(unittest.TestCase):
  def setUp(self):

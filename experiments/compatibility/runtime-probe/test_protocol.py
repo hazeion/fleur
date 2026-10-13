@@ -1,9 +1,32 @@
 """Exercise trusted dispatch and real pipe transport at their public boundaries."""
+import contextlib
 import json
+import selectors
 import subprocess
 import sys
 import unittest
-from protocol import REQUEST, fixture_dispatch, run_container
+from unittest.mock import patch
+from protocol import REQUEST, StartupAuditRejected, fixture_dispatch, run_container
+
+@contextlib.contextmanager
+def ready_transport(args, channel):
+    # Only evidence-preservation tests exclude fixture process setup. Real
+    # deadline tests continue to count launch using the ordinary factory.
+    process = subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(getattr(process,channel),selectors.EVENT_READ)
+            if not selector.select(5):
+                raise AssertionError('owned transport fixture did not become ready')
+        with patch('protocol.subprocess.Popen',return_value=process):
+            yield
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        for stream in (process.stdin,process.stdout,process.stderr):
+            if stream is not None: stream.close()
+
 
 class Protocol(unittest.TestCase):
     def test_only_registered_operation_and_typed_input_are_admitted(self):
@@ -46,8 +69,9 @@ class Protocol(unittest.TestCase):
 
     def test_timeout_preserves_bounded_post_ack_stage_output(self):
         source = "printf '%s\\n' \"$1\"; IFS= read -r reply; printf '[DEBUG-runtime] file-promise-created\\n' >&2; printf 'partial-evidence\\n'; exec /bin/sleep 30"
-        with self.assertRaises(subprocess.TimeoutExpired) as caught:
-            run_container(['/bin/sh','-c',source,'fixture',json.dumps(REQUEST)],timeout=0.2)
+        args = ['/bin/sh','-c',source,'fixture',json.dumps(REQUEST)]
+        with ready_transport(args,'stdout'), self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container(args,timeout=0.2)
         self.assertIn(b'file-promise-created',caught.exception.stderr or b'')
         self.assertIn(b'partial-evidence',caught.exception.output or b'')
 
@@ -63,8 +87,60 @@ class Protocol(unittest.TestCase):
     def test_pre_request_timeout_retains_stage_and_classifies_phase(self):
         source = "printf '[DEBUG-runtime] prepare-start\\n' >&2; exec /bin/sleep 30"
         diagnostics = {}
-        with self.assertRaises(subprocess.TimeoutExpired) as caught:
-            run_container(['/bin/sh','-c',source],timeout=0.2,diagnostics=diagnostics)
+        args = ['/bin/sh','-c',source]
+        with ready_transport(args,'stderr'), self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container(args,timeout=0.2,diagnostics=diagnostics)
         self.assertIn(b'prepare-start',caught.exception.stderr)
         self.assertEqual(caught.exception.protocol_phase,'waiting-broker-request')
         self.assertEqual(diagnostics['protocol_phase'],'waiting-broker-request')
+
+    def test_startup_inventory_is_audited_before_any_registered_request(self):
+        startup = {'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source = "import json,sys; print("+repr(json.dumps(startup))+",flush=True); ack=sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); reply=sys.stdin.readline(); print(json.dumps({'startup':ack.strip(),'reply':reply.strip()}))"
+        events = []
+        def audit(inventory):
+            self.assertEqual(inventory,startup['inventory'])
+            events.append('startup-audit')
+            return {'passed':True,'category':'verified','descriptor_count':2}
+        def dispatch(request):
+            self.assertEqual(events,['startup-audit'])
+            events.append('registered-dispatch')
+            return fixture_dispatch(request)
+        output = run_container([sys.executable,'-u','-c',source],dispatch=dispatch,startup_audit=audit)
+        self.assertEqual(json.loads(output),{'startup':'startup:approved','reply':'registered:Squat'})
+        self.assertEqual(events,['startup-audit','registered-dispatch'])
+
+    def test_class_mismatch_has_no_ack_or_registered_dispatch(self):
+        startup = {'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source = "import json,sys; print("+repr(json.dumps(startup))+",flush=True); ack=sys.stdin.readline(); print('unexpected-ack',flush=True) if ack else None"
+        diagnostics = {}
+        dispatched = []
+        with self.assertRaises(StartupAuditRejected) as rejected:
+            run_container([sys.executable,'-u','-c',source],diagnostics=diagnostics,
+                dispatch=lambda request:dispatched.append(request),
+                startup_audit=lambda inventory:{'passed':False,'category':'class-mismatch'})
+        self.assertEqual(rejected.exception.category,'class-mismatch')
+        self.assertEqual(dispatched,[])
+        self.assertNotIn('unexpected-ack',diagnostics['stdout'])
+        self.assertEqual(diagnostics['protocol_phase'],'startup-audit')
+
+    def test_startup_inventory_shape_is_strict_and_cannot_be_replayed(self):
+        for inventory in ([{'fd':True,'kind':'eventfd'}]*2,
+                          [{'fd':3,'kind':'eventfd'},{'fd':3,'kind':'eventpoll'}],
+                          [{'fd':2,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}],
+                          [{'fd':3,'kind':'regular-file'},{'fd':4,'kind':'eventpoll'}]):
+            startup = {'kind':'startup-audit','inventory':inventory}
+            source = "import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline()"
+            called = []
+            with self.assertRaises(StartupAuditRejected):
+                run_container([sys.executable,'-u','-c',source],startup_audit=lambda data:called.append(data))
+            self.assertEqual(called,[])
+        startup = {'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source = "import json,sys; data="+repr(json.dumps(startup))+"; print(data,flush=True); sys.stdin.readline(); print(data,flush=True); sys.stdin.readline()"
+        calls = []
+        def audit(inventory):
+            calls.append(inventory)
+            return {'passed':True,'category':'verified','descriptor_count':2}
+        with self.assertRaises(ValueError):
+            run_container([sys.executable,'-u','-c',source],startup_audit=audit)
+        self.assertEqual(len(calls),1)

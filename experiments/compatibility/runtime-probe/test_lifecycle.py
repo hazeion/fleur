@@ -25,6 +25,9 @@ run)
  if [ "${LIFECYCLE_FOREIGN:-}" ]; then owner=foreign; fi
  case "$owner" in owned|foreign) ;; *) exit 2 ;; esac
  printf '{"State":{"Running":true,"ExitCode":0,"FinishedAt":""},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$owner" > "$root/$name"
+ printf '%s\n' "$LIFECYCLE_STARTUP"
+ IFS= read -r startup
+ [ "$startup" = startup:approved ] || exit 3
  printf '%s\n' "$LIFECYCLE_REQUEST"
  IFS= read -r ack
  if [ "$mode" = busy ]; then
@@ -67,12 +70,13 @@ class LifecycleTests(unittest.TestCase):
   from protocol import REQUEST
   self.rows=[{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},{'pid':2,'no_new_privs':1,'seccomp':2,'seccomp_filters':1}]
   e={'kind':'runtime-evidence','architecture':'amd64','negative_controls':CONTROLS['amd64'],'install':0,'html':'<p>restricted render</p>','main':[-1]*24,'thread':-1,'application_open':True,'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},'descriptors_closed':True,'broker_reply':'registered:Squat','host_canary_absent':True,'event_probe':0,'event_negatives':[-1]*12}
-  self.env=dict(os.environ,LIFECYCLE_FAKE_ROOT=str(self.root),LIFECYCLE_REQUEST=json.dumps(REQUEST),LIFECYCLE_EVIDENCE=json.dumps(e))
+  startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+  self.env=dict(os.environ,LIFECYCLE_STARTUP=json.dumps(startup),LIFECYCLE_FAKE_ROOT=str(self.root),LIFECYCLE_REQUEST=json.dumps(REQUEST),LIFECYCLE_EVIDENCE=json.dumps(e))
  def tearDown(self):self.tmp.cleanup()
- def observe(self,name,owner):
+ def observe(self,name,owner,inventory):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
-  return {'host_threads':self.rows,'configuration_verified':True}
+  return {'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
  def run_probe(self):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=2,docker=str(self.cli))
  def test_deadline_terminates_daemon_worker_and_preserves_healthy_worker(self):
   result=self.run_probe();self.assertTrue(result['passed']);self.assertEqual(len(result['repeats']),2)

@@ -40,12 +40,13 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
         busy_diagnostics = {}
         stopped = {}
         abort = threading.Event()
-        def observe(name):
-            evidence = observe_worker(name, tag)
+        def observe(name,inventory):
+            evidence = observe_worker(name, tag, inventory)
             if (type(evidence) is not dict or evidence.get('configuration_verified') is not True
                     or not accept_threads(evidence.get('host_threads'))):
                 raise RuntimeError('lifecycle worker configuration or restrictions unverified')
             observed[name] = evidence
+            return evidence.get('descriptor_audit')
         def dispatch(request):
             response = fixture_dispatch(request)
             return response
@@ -58,7 +59,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 ready.set()
         def busy_run():
             return run_container(args(busy_name, True), dispatch=dispatch,
-                                 timeout=timeout, observer=lambda _: observe(busy_name),
+                                 timeout=timeout, startup_audit=lambda inventory: observe(busy_name,inventory),
                                  environment=environment, diagnostics=busy_diagnostics, on_stderr=progress)
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -94,7 +95,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     raise RuntimeError('deadline consumed before healthy worker start')
                 healthy_started_ms = round(1000*(time.monotonic()-started))
                 healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
-                                    observer=lambda _: observe(healthy_name), environment=environment))
+                                    startup_audit=lambda inventory: observe(healthy_name,inventory), environment=environment))
                 healthy['host_threads'] = observed[healthy_name]['host_threads']
                 healthy['cleanup_complete'] = True
                 if not accept(healthy, architecture) or healthy.get('host_canary_absent') is not True:

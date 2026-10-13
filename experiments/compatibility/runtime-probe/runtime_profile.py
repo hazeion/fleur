@@ -1,11 +1,11 @@
-"""Explicit native Linux profiles. ARM64 compiler digest awaits execution."""
+"""Explicit native Linux profiles with executed per-architecture compiler pins."""
 PROFILES = {
     'amd64': {'machines': ('x86_64',), 'compiler_target': 'x86_64-linux-gnu',
               'base': 'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e',
               'compiler_sha256': '1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26'},
     'arm64': {'machines': ('aarch64', 'arm64'), 'compiler_target': 'aarch64-linux-gnu',
               'base': 'oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023',
-              'compiler_sha256': None},
+              'compiler_sha256': 'a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d'},
 }
 
 

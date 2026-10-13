@@ -13,7 +13,7 @@ class NativeProfile(unittest.TestCase):
         self.assertEqual(architecture,'arm64')
         self.assertTrue(arm['base'].endswith('bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023'))
         self.assertEqual(arm['compiler_target'],'aarch64-linux-gnu')
-        self.assertIsNone(arm['compiler_sha256'])
+        self.assertEqual(arm['compiler_sha256'],'a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d')
 
     def test_emulation_unknown_architecture_and_darwin_are_rejected(self):
         for requested, system, machine in (('amd64','Linux','aarch64'),('arm64','Linux','x86_64'),

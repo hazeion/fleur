@@ -24,7 +24,7 @@ Browser installation downloads the package's exact browser revision. Tests refus
 
 ## Executed October 13, 2026
 
-Native macOS 15.7.7, build 24G720, x86_64. Bun 1.4.3 reports revision c6da4a4d3. Its archive digest verification belongs to the adjacent tooling experiment. No Node runtime was used for these commands.
+Observed macOS 15.7.7, build 24G720, with reported process architecture x86_64. Translation-state sysctl queries were unavailable, so native versus translated execution remains unverified. Bun 1.4.3 reports revision c6da4a4d3. Its archive digest verification belongs to the adjacent tooling experiment. No Node runtime was used for these commands.
 
 Exact candidates frozen in the two Bun lockfiles:
 

@@ -40,6 +40,22 @@ def main():
                     row['intended_diagnostics_only'] = (
                         len(diagnostics) == 3 and all(line.startswith('negative.ts(' if name == 'types-negative' else 'operations.negative.ts(') for line in diagnostics)
                         and 'TS2741' in output and 'TS2322' in output)
+                if name == 'lint-negative':
+                    try:
+                        reports = json.loads(result.stdout)
+                        report = reports[0] if isinstance(reports, list) and len(reports) == 1 else None
+                        messages = report.get('messages') if isinstance(report, dict) else None
+                        message = messages[0] if isinstance(messages, list) and len(messages) == 1 else None
+                        row['intended_diagnostics_only'] = (
+                            isinstance(message, dict)
+                            and isinstance(report.get('filePath'), str)
+                            and Path(report['filePath']).resolve() == (directory / 'invalid.ts').resolve()
+                            and message.get('ruleId') == '@typescript-eslint/no-explicit-any'
+                            and message.get('severity') == 2
+                            and message.get('fatal', False) is False
+                            and not result.stderr.strip())
+                    except json.JSONDecodeError:
+                        row['intended_diagnostics_only'] = False
                 checks.append(row)
                 return result.returncode == expected
             except subprocess.TimeoutExpired:
@@ -56,7 +72,7 @@ def main():
         if run('install-lint', ['install', '--frozen-lockfile'], root / 'lint'):
             run('lint-engine', ['-e', 'import ts from "typescript"; console.log(ts.version)'], root / 'lint')
             run('lint-positive', ['node_modules/eslint/bin/eslint.js', 'valid.ts'], root / 'lint')
-            run('lint-negative', ['node_modules/eslint/bin/eslint.js', 'invalid.ts'], root / 'lint', expected=1)
+            run('lint-negative', ['node_modules/eslint/bin/eslint.js', '--format', 'json', 'invalid.ts'], root / 'lint', expected=1)
     passed = all(row.get('matches_expected_exit') and row.get('intended_diagnostics_only', True) for row in checks)
     print(json.dumps({'observed_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                       'scope': 'Tooling subset only; no database, browser, sandbox or release support claim',

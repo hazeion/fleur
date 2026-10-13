@@ -33,6 +33,7 @@ export class Broker {
     let committed=false;
     let commitAttempted=false;
     let activeQuery:ReturnType<SQL['unsafe']>|undefined;
+    let pendingStatement:Promise<unknown>|undefined;
     const cancelled=() => { if (abort.signal.aborted) throw new Error('DEADLINE'); };
     let backend:{pid:number;started:string}|undefined;
     let control:SQL|undefined;
@@ -44,7 +45,7 @@ export class Broker {
       try {
         const statement=action==='cancel'
           ? 'SELECT pg_cancel_backend(pid) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user'
-          : 'SELECT pg_terminate_backend(pid) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user';
+          : 'SELECT pg_terminate_backend(pid,200) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user';
         const result=await Promise.race([
           control.unsafe(statement,[backend.pid,backend.started]),
           new Promise<never>((_resolve,reject)=>{controlTimer=setTimeout(()=>reject(new Error('Control deadline')),250);}),
@@ -55,8 +56,7 @@ export class Broker {
       finally {if (controlTimer) clearTimeout(controlTimer);}
     };
     const onAbort=() => {
-      activeQuery?.cancel();
-      // Bun's native cancel alone did not settle the real PostgreSQL workload.
+      // One authoritative cancellation path avoids unawaitable late native CancelRequests.
       // The trusted control connection targets only this verified borrowed backend.
       cancellation=backendControl('cancel');
     };
@@ -64,12 +64,13 @@ export class Broker {
       cancelled();
       if (!connection) throw new Error('DATABASE_FAILURE');
       activeQuery=connection.unsafe(query.sql,query.params);
+      pendingStatement=Promise.resolve(activeQuery);
       let rejectAbort:(()=>void)|undefined;
       const deadline=new Promise<never>((_resolve,reject)=>{
         rejectAbort=()=>reject(new Error('DEADLINE'));
         abort.signal.addEventListener('abort',rejectAbort,{once:true});
       });
-      try {return z.array(z.unknown()).parse(await Promise.race([activeQuery,deadline]));}
+      try {return z.array(z.unknown()).parse(await Promise.race([pendingStatement,deadline]));}
       finally {
         if (rejectAbort) abort.signal.removeEventListener('abort',rejectAbort);
         activeQuery=undefined;
@@ -130,6 +131,7 @@ export class Broker {
           await Promise.race([
             (async()=>{
               if (cancellation) await cancellation;
+              if (pendingStatement) await pendingStatement.catch(()=>{});
               if (!committed) await ownedConnection.unsafe('ROLLBACK');
               await ownedConnection.unsafe('SELECT 1');
             })(),

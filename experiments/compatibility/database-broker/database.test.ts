@@ -44,6 +44,7 @@ test('deadline cancels PostgreSQL work, rolls back and safely reuses a one-slot 
  expect(performance.now()-start).toBeLessThan(2000);
  expect(await new Broker(single,querySession).dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
  expect((await single.unsafe('SELECT count(*)::integer AS count FROM exercise_child'))[0].count).toBe(0);
+ expect(await new Broker(single,mutationSession).dispatch(save())).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
  } finally {await single.close();}
 });
 test('slow work is isolated from an admitted healthy query',async () => {

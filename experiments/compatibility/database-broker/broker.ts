@@ -25,6 +25,7 @@ export class Broker {
   async dispatch(request:unknown, deadlineMs=5000, loseResponse=false, workerSignal?:AbortSignal):Promise<Response> {
     let admitted:ReturnType<typeof admit>;
     try { admitted=admit(request,this.session); } catch { return {kind:'broker-response',ok:false,code:'REQUEST_DENIED'}; }
+    const diagnostic=(stage:string)=>{if(process.env.FLEUR_DIAG_CONTROL==='1') console.error('[DEBUG-control23]',stage);};
     const abort = new AbortController();
     const workerGone=() => abort.abort();
     workerSignal?.addEventListener('abort',workerGone,{once:true});
@@ -143,12 +144,14 @@ export class Broker {
         } catch {
           cleanupLease.expire();
           // ReservedSQL.close closes the shared pool. Terminate only this exact owned backend instead.
+          diagnostic('retirement:start');
           const terminated=await backendControl('terminate');
-          if (terminated==='applied'||terminated==='absent') connection.release();
+          diagnostic('retirement:'+terminated);
+          if (terminated==='applied'||terminated==='absent') {connection.release();diagnostic('retirement:released');}
           // Failed control leaves this reservation quarantined, never returned for reuse.
         } finally {
           if (cleanupTimer) clearTimeout(cleanupTimer);
-          for (const control of controls) {try {await control.close({timeout:0});} catch { /* Every pool owns one trusted control request. */ }}
+          for (const control of controls) {diagnostic('control:close:start');try {await control.close({timeout:0});} catch { /* Every pool owns one trusted control request. */ }diagnostic('control:close:end');}
         }
 
       }

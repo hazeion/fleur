@@ -1,6 +1,23 @@
 """Accept complete typed evidence and confirmed cleanup, never the v1 gate."""
-def accept(report):
+AMD64_CONTROLS = ['openat', 'open', 'unlinkat', 'socket', 'connect', 'execve',
+                  'unshare', 'ptrace', 'setuid', 'io_uring_setup', 'openat2', 'creat',
+                  'rename', 'socketpair', 'clone', 'clone3', 'setns', 'process_vm_readv',
+                  'capset', 'io_uring_enter', 'io_uring_register', 'file_mmap', 'dup', 'x32_openat']
+ARM64_CONTROLS = list(AMD64_CONTROLS)
+ARM64_CONTROLS[1] = 'openat_write'
+ARM64_CONTROLS[11] = 'openat_create'
+ARM64_CONTROLS[12] = 'renameat2'
+ARM64_CONTROLS[23] = 'unknown_syscall'
+CONTROLS = {'amd64': AMD64_CONTROLS, 'arm64': ARM64_CONTROLS}
+
+
+def accept(report, expected_architecture=None):
     if not isinstance(report, dict):
+        return False
+    architecture = report.get('architecture')
+    if type(architecture) is not str or architecture not in CONTROLS or (expected_architecture is not None and architecture != expected_architecture):
+        return False
+    if report.get('negative_controls') != CONTROLS[architecture]:
         return False
     install = report.get('install')
     main = report.get('main')

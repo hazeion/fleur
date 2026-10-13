@@ -134,3 +134,50 @@ class HostedCapture(unittest.TestCase):
         self.assertEqual(result['cli_returncode'],3)
         self.assertEqual(result['stdout_bytes'],0)
         self.assertEqual(result['stderr_bytes'],0)
+
+    def test_new_dump_creation_does_not_mean_delayed_stack_content_is_ready(self):
+        from pathlib import Path
+        import shlex,subprocess,tempfile
+        from daemon_trace import TRACE_COMMAND
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);pid=root/'pid';comm=root/'comm';trace=root/'trace';trace.mkdir()
+            pid.write_text('42');comm.write_text('dockerd\n');dump=trace/'goroutine-stacks-fixture.log'
+            replacement=f': > {shlex.quote(str(dump))}; (sleep .1; printf "goroutine 7 [running]:\\nruntime.goexit(0x1)\\n" > {shlex.quote(str(dump))}) &'
+            command=TRACE_COMMAND.replace('/var/run/docker.pid',str(pid)).replace('"/proc/$daemon/comm"',str(comm)).replace('/var/run/docker/goroutine-stacks-',str(trace/'goroutine-stacks-')).replace('kill -USR1 "$daemon"',replacement)
+            result=subprocess.run(['/bin/sh','-c',command],capture_output=True,timeout=1)
+            self.assertEqual(result.returncode,0)
+            self.assertIn(b'goroutine 7 [running]:',result.stdout)
+            self.assertIn(b'runtime.goexit(0x1)',result.stdout)
+            self.assertFalse(dump.exists())
+
+    def test_empty_or_unrecognized_stack_is_not_reported_as_capture(self):
+        import os,subprocess
+        from unittest.mock import patch
+        from daemon_trace import capture_daemon_trace
+        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux','GITHUB_REPOSITORY':'hazeion/fleur','GITHUB_WORKFLOW':'Compatibility experiments','GITHUB_JOB':'runtime-probe'}
+        factory=subprocess.Popen
+        for suffix in ('','unrecognized private format'):
+            with self.subTest(suffix=suffix),patch.dict(os.environ,env,clear=True),patch('daemon_trace.platform.system',return_value='Linux'),patch('daemon_trace.subprocess.Popen',side_effect=lambda args,**kwargs:factory(['/bin/sh','-c',"printf 'trace-ready\\n%s' \"$1\"",'fixture',suffix],**kwargs)):
+                result=capture_daemon_trace(2)
+            self.assertEqual(result['outcome'],'empty-stack')
+            self.assertEqual(result['stack_input_bytes'],len(suffix.encode()))
+            self.assertEqual(result['recognized_header_count'],0)
+            self.assertNotIn('private',json.dumps(result))
+
+    def test_complete_capture_envelope_stays_within_output_limit(self):
+        import os,subprocess,tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from daemon_trace import capture_daemon_trace,OUTPUT_LIMIT
+        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux','GITHUB_REPOSITORY':'hazeion/fleur','GITHUB_WORKFLOW':'Compatibility experiments','GITHUB_JOB':'runtime-probe'}
+        factory=subprocess.Popen
+        with tempfile.TemporaryDirectory() as directory:
+            payload=Path(directory)/'stack'
+            payload.write_text('trace-ready\n'+('goroutine 7 [running]:\ngithub.com/docker/aaaaaaa(0x1)\n'*1000))
+            with patch.dict(os.environ,env,clear=True),patch('daemon_trace.platform.system',return_value='Linux'),patch('daemon_trace.subprocess.Popen',side_effect=lambda args,**kwargs:factory(['/bin/cat',str(payload)],**kwargs)):
+                result=capture_daemon_trace(2)
+        self.assertEqual(result['outcome'],'captured')
+        self.assertEqual(result['recognized_header_count'],1000)
+        self.assertTrue(result['truncated'])
+        self.assertGreater(len(result['goroutines']),0)
+        self.assertLessEqual(len(json.dumps(result).encode()),OUTPUT_LIMIT)

@@ -32,7 +32,7 @@ while [ "$tries" -lt 50 ]; do
         [ -f "$trace" ] && [ ! -L "$trace" ] || continue
         seen=false
         if printf '%s\n' "$before" | grep -F -x -- "$trace" >/dev/null; then seen=true; fi
-        if [ "$seen" = false ]; then
+        if [ "$seen" = false ] && [ -s "$trace" ]; then
             printf 'trace-ready\n'
             head -c 1048576 "$trace"
             rm -f -- "$trace"
@@ -72,9 +72,11 @@ def parse_stacks(output):
         raise ValueError('stack input invalid')
     rows, current = [], None
     truncated = False
+    recognized_headers = 0
     for line in output.splitlines():
         match = re.fullmatch(r'goroutine [0-9]+ \[([^\]]{1,100})\]:',line)
         if match:
+            recognized_headers += 1
             state = match[1].split(', ',1)[0]
             current = None
             if state in STATES:
@@ -99,7 +101,8 @@ def parse_stacks(output):
         if used+size <= OUTPUT_LIMIT:
             selected.append(row);used += size
         else: truncated = True
-    return {'goroutines':selected,'truncated':truncated or len(output.encode('utf-8')) >= INPUT_LIMIT}
+    return {'goroutines':selected,'truncated':truncated or len(output.encode('utf-8')) >= INPUT_LIMIT,
+            'recognized_header_count':recognized_headers}
 
 
 def eligible_host():
@@ -141,7 +144,13 @@ def capture_daemon_trace(remaining):
         process.wait(timeout=left)
         if process.returncode == 0 and output.startswith(b'trace-ready\n'):
             result = parse_stacks(output[12:].decode('utf-8'))
-            return dict(result,outcome='captured',snapshot_may_be_partial=True,cli_returncode=process.returncode)
+            result.update(outcome='captured' if result['goroutines'] else 'empty-stack',
+                          snapshot_may_be_partial=True,cli_returncode=process.returncode,
+                          stack_input_bytes=len(output)-12)
+            while len(json.dumps(result).encode('utf-8')) > OUTPUT_LIMIT:
+                result['goroutines'].pop()
+                result['truncated'] = True
+            return result
         outcome = 'command-failed'
     except (TimeoutError,subprocess.TimeoutExpired): outcome = 'timed-out'
     except (OSError,UnicodeError,ValueError): pass

@@ -61,13 +61,19 @@ test('a lost response after commit is unknown and does not undo or replay the wr
 test('Read Committed has statement snapshots and a real read-only runtime boundary',async () => {
  const connection=await pool.reserve();
  try {
+ console.error('[DEBUG-db23] snapshot:begin');
  await connection.unsafe('BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY');
+ console.error('[DEBUG-db23] snapshot:read');
  expect((await connection.unsafe('SELECT name FROM exercise WHERE id=1'))[0].name).toBe('Squat');
+ console.error('[DEBUG-db23] snapshot:writer');
  await pool.unsafe("UPDATE exercise SET name='Changed' WHERE id=1");
+ console.error('[DEBUG-db23] snapshot:read');
  expect((await connection.unsafe('SELECT name FROM exercise WHERE id=1'))[0].name).toBe('Changed');
+ console.error('[DEBUG-db23] snapshot:readonly-negative');
  await expect(connection.unsafe("UPDATE exercise SET name='Denied' WHERE id=1")).rejects.toMatchObject({code:'25006'});
+ console.error('[DEBUG-db23] snapshot:rollback');
  await connection.unsafe('ROLLBACK');
- } finally {connection.release();}
+ } finally {console.error('[DEBUG-db23] snapshot:release');connection.release();}
 });
 
 test('query channel denies a valid known mutation request without changing data',async () => {

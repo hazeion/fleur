@@ -112,7 +112,8 @@ export class Broker {
           connection.release();
         } catch {
           // A silent transport cannot prove cancellation. Destroy its connection.
-          await connection.close({timeout:0});
+          try {await connection.close({timeout:0});}
+          catch(error) {console.error('[DEBUG-db23] forced-close-rejected',error instanceof Error ? error.name : typeof error);}
         } finally {if (cleanupTimer) clearTimeout(cleanupTimer);}
 
       }

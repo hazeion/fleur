@@ -1,0 +1,234 @@
+"""Host-only, registered containerd init-exit evidence. Never validates worker output."""
+from datetime import datetime
+import json
+import math
+import os
+import re
+import selectors
+import subprocess
+import time
+
+# The privileged supervisor owns the child process group. Control EOF and the
+# original absolute time allowance both cause root to terminate and reap it.
+SUPERVISOR = r'''
+import os,selectors,signal,stat,subprocess,sys,time
+ctr,address,namespace,absolute_deadline=sys.argv[1:]
+if os.geteuid()!=0: sys.exit(71)
+s=os.stat(ctr); sock=os.stat(address)
+if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022 or not stat.S_ISSOCK(sock.st_mode) or sock.st_uid!=0: sys.exit(72)
+for path in (ctr,address):
+    parent=os.path.dirname(os.path.realpath(path))
+    while parent!='/':
+        info=os.stat(parent)
+        if info.st_uid!=0 or info.st_mode&0o022: sys.exit(72)
+        parent=os.path.dirname(parent)
+deadline=float(absolute_deadline)
+if time.monotonic()>=deadline: sys.exit(75)
+errors=0
+p=subprocess.Popen([ctr,'--address',address,'--namespace',namespace,'events','topic==/tasks/start','topic==/tasks/exit'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+os.set_blocking(1,False)
+selector=selectors.DefaultSelector()
+selector.register(sys.stdin,selectors.EVENT_READ,'control')
+selector.register(p.stdout,selectors.EVENT_READ,'out')
+selector.register(p.stderr,selectors.EVENT_READ,'err')
+try:
+    while time.monotonic()<deadline:
+        if p.poll() is not None: break
+        stop=False
+        for key,_ in selector.select(max(0,deadline-time.monotonic())):
+            chunk=os.read(key.fileobj.fileno(),4096)
+            if key.data=='control': stop=True; break
+            if not chunk: selector.unregister(key.fileobj)
+            elif key.data=='out':
+                try:
+                    if os.write(1,chunk)!=len(chunk): stop=True; break
+                except BlockingIOError: stop=True; break
+            elif key.data=='err':
+                errors+=len(chunk)
+                if errors>65536: stop=True; break
+            # Raw ctr diagnostics must never reach artifact logs.
+        if stop: break
+finally:
+    selector.close()
+    try: os.killpg(p.pid,signal.SIGKILL)
+    except ProcessLookupError: pass
+    try: p.wait(timeout=max(0.001,deadline-time.monotonic()))
+    except subprocess.TimeoutExpired: sys.exit(74)
+    p.stdout.close();p.stderr.close()
+try: os.write(1,b'[observer-reaped]\n')
+except BlockingIOError: sys.exit(73)
+'''
+
+
+class ObserverUnverified(RuntimeError):
+    def __init__(self, category):
+        self.category = category
+        self.observations = {}
+        super().__init__('containerd exit evidence unverified ('+category+')')
+
+
+def _budget(value):
+    if type(value) not in (int,float) or not math.isfinite(value) or value <= 0:
+        raise ObserverUnverified('budget-invalid')
+    return value
+
+
+def _object(pairs):
+    result = {}
+    for key,value in pairs:
+        if key in result: raise ValueError('duplicate key')
+        result[key] = value
+    return result
+
+
+class ContainerdObserver:
+    """Prepare before Docker run; bind an already host-verified owned CID/PID."""
+    def __init__(self, ctr, address, namespace, timeout, launcher=None):
+        self.deadline = time.monotonic()+_budget(timeout)
+        if (type(ctr) is not str or not os.path.isabs(ctr)
+                or type(address) is not str or not os.path.isabs(address)
+                or namespace != 'moby'):
+            raise ObserverUnverified('arguments-invalid')
+        self.namespace = namespace
+        self.container = None
+        self.pid = None
+        self.completed = False
+        self.start_seconds = None
+        self.start_nanos = 0
+        self.events = 0
+        self.phase = 'prepared'
+        self.closed = False
+        self.buffer = bytearray()
+        self.total = 0
+        self.reaped = False
+        command = launcher if launcher is not None else [
+            '/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',SUPERVISOR,
+            ctr,address,namespace,str(self.deadline)]
+        try:
+            self.process = subprocess.Popen(command,stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        except OSError:
+            raise ObserverUnverified('observer-start') from None
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(self.process.stdout,selectors.EVENT_READ)
+
+    def _limit(self, remaining):
+        return min(self.deadline,time.monotonic()+_budget(remaining))
+
+    def _line(self, limit):
+        while True:
+            if time.monotonic() >= limit: raise ObserverUnverified('event-timeout')
+            if b'\n' in self.buffer:
+                line,_,tail=self.buffer.partition(b'\n')
+                if len(line)>4096 or self.total>65536: raise ObserverUnverified('stream-bound')
+                self.buffer=bytearray(tail)
+                if line == b'[observer-reaped]':
+                    self.reaped = True
+                    raise ObserverUnverified('stream-ended')
+                return line
+            if len(self.buffer)>4096 or self.total>65536:
+                raise ObserverUnverified('stream-bound')
+            ready=self.selector.select(max(0,limit-time.monotonic()))
+            if not ready: raise ObserverUnverified('event-timeout')
+            chunk=os.read(self.process.stdout.fileno(),4096)
+            if not chunk: raise ObserverUnverified('stream-ended')
+            self.total += len(chunk)
+            self.buffer.extend(chunk)
+
+    def _event(self, limit):
+        line=self._line(limit)
+        try:
+            text=line.decode('utf-8')
+            prefix,payload=text.split(' {',1)
+            # ctr prints Go's time.Time, namespace and topic, followed by JSON.
+            stamp,namespace,topic=prefix.rsplit(' ',2)
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,9})? [+-]\d{4} [A-Za-z0-9_+/-]+',stamp):
+                raise ValueError('timestamp')
+            # Parse calendar/timezone, not merely its textual shape.
+            clock,offset,_=stamp.rsplit(' ',2)
+            whole,_,fraction=clock.partition('.')
+            stamp_seconds=int(datetime.strptime(whole+' '+offset,'%Y-%m-%d %H:%M:%S %z').timestamp())
+            stamp_nanos=int((fraction+'0'*9)[:9]) if fraction else 0
+            event=json.loads('{'+payload,object_pairs_hook=_object)
+            if type(event) is not dict: raise ValueError('object')
+            self.events += 1
+            return namespace,topic,event,stamp_seconds,stamp_nanos
+        except (ValueError,UnicodeError):
+            raise ObserverUnverified('event-malformed') from None
+
+    def bind(self, container, host_pid, remaining):
+        if (self.container is not None or type(container) is not str
+                or not re.fullmatch('[0-9a-f]{64}',container)
+                or type(host_pid) is not int or not 0 < host_pid <= 2**32-1):
+            raise ObserverUnverified('identity-invalid')
+        limit=self._limit(remaining)
+        while True:
+            namespace,topic,event,seconds,nanos=self._event(limit)
+            if namespace != self.namespace or event.get('container_id') != container: continue
+            if topic != '/tasks/start': raise ObserverUnverified('start-unobserved')
+            if set(event) != {'container_id','pid'} or type(event['pid']) is not int or event['pid'] != host_pid:
+                raise ObserverUnverified('start-identity')
+            self.container,self.pid = container,host_pid
+            self.start_seconds,self.start_nanos = seconds,nanos
+            self.phase = 'bound'
+            return {'registered':True}
+
+    def completion(self, remaining):
+        if self.container is None or self.completed: raise ObserverUnverified('completion-order')
+        limit=self._limit(remaining)
+        while True:
+            namespace,topic,event,seconds,nanos=self._event(limit)
+            if namespace != self.namespace or event.get('container_id') != self.container: continue
+            if topic != '/tasks/exit': raise ObserverUnverified('event-order')
+            status=event.get('exit_status',0) # pinned protobuf omitempty encodes zero by omission
+            exited=event.get('exited_at')
+            if (not {'container_id','id','pid','exited_at'} <= set(event)
+                    or set(event)-{'container_id','id','pid','exit_status','exited_at'}
+                    or event['id'] != self.container or type(event['pid']) is not int or event['pid'] != self.pid
+                    or type(status) is not int or not 0 <= status <= 2**32-1
+                    or type(exited) is not dict or set(exited)-{'seconds','nanos'}
+                    or type(exited.get('seconds')) is not int or not 0 < exited['seconds'] <= 253402300799
+                    or type(exited.get('nanos',0)) is not int or not 0 <= exited.get('nanos',0) < 1000000000):
+                raise ObserverUnverified('exit-invalid')
+            if not ((self.start_seconds,self.start_nanos) <= (exited['seconds'],exited.get('nanos',0)) <= (seconds,nanos)):
+                raise ObserverUnverified('exit-time-invalid')
+            if status != 0: raise ObserverUnverified('nonzero-exit')
+            if time.monotonic() >= limit: raise ObserverUnverified('event-timeout')
+            self.completed=True
+            self.phase = 'completed'
+            return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
+
+    def snapshot(self):
+        return {'phase':self.phase,'event_count':self.events,'stdout_bytes':self.total,'reaped':self.reaped}
+
+    def close(self, remaining=None):
+        if self.closed: return True
+        limit=self.deadline if remaining is None else self._limit(remaining)
+        self.process.stdin.close() # root-owned supervisor must kill/reap its own child
+        try:
+            while not self.reaped:
+                # Cleanup discards rejected event frames rather than parsing them
+                # again. It still requires the supervisor's reap acknowledgment.
+                while b'\n' in self.buffer:
+                    line,_,tail=self.buffer.partition(b'\n')
+                    self.buffer=bytearray(tail)
+                    if line == b'[observer-reaped]': self.reaped=True; break
+                if self.reaped: break
+                if time.monotonic() >= limit or not self.selector.select(max(0,limit-time.monotonic())):
+                    raise ObserverUnverified('observer-cleanup')
+                chunk=os.read(self.process.stdout.fileno(),4096)
+                if not chunk: raise ObserverUnverified('observer-cleanup')
+                self.buffer.extend(chunk)
+                if len(self.buffer)>8192: self.buffer=self.buffer[-4096:]
+            returncode=self.process.wait(timeout=max(0,limit-time.monotonic()))
+            if returncode != 0 or time.monotonic() >= limit:
+                raise ObserverUnverified('observer-cleanup')
+            self.closed=True
+            self.phase = 'closed'
+            return True
+        except (subprocess.TimeoutExpired,ObserverUnverified):
+            raise ObserverUnverified('observer-cleanup') from None
+        finally:
+            if self.closed or self.process.poll() is not None:
+                self.selector.close()
+                self.process.stdout.close()

@@ -48,12 +48,18 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             observed[name] = evidence
         def dispatch(request):
             response = fixture_dispatch(request)
-            ready.set()
             return response
+        def progress(stderr):
+            if b'[compat-lifecycle] cpu-loop' in stderr:
+                if busy_name not in observed:
+                    raise RuntimeError('CPU loop observed before worker restriction audit')
+                if not ready.is_set():
+                    stopped['cpu_loop_entered_ms'] = round(1000*(time.monotonic()-started))
+                ready.set()
         def busy_run():
             return run_container(args(busy_name, True), dispatch=dispatch,
                                  timeout=timeout, observer=lambda _: observe(busy_name),
-                                 environment=environment, diagnostics=busy_diagnostics)
+                                 environment=environment, diagnostics=busy_diagnostics, on_stderr=progress)
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 created.append(busy_name)
@@ -79,18 +85,19 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 if not ready.wait(timeout):
                     # Propagate protocol/policy failure, never accept silence.
                     future.result(timeout=6)
-                    raise RuntimeError('busy worker did not reach restricted broker')
+                    raise RuntimeError('busy worker did not enter restricted CPU loop')
                 if inspect(busy_name).get('Running') is not True:
                     raise RuntimeError('busy worker ended before healthy execution')
                 created.append(healthy_name)
                 remaining = timeout - (time.monotonic()-started)
                 if remaining <= 0:
                     raise RuntimeError('deadline consumed before healthy worker start')
+                healthy_started_ms = round(1000*(time.monotonic()-started))
                 healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
                                     observer=lambda _: observe(healthy_name), environment=environment))
                 healthy['host_threads'] = observed[healthy_name]['host_threads']
                 healthy['cleanup_complete'] = True
-                if not accept(healthy, architecture):
+                if not accept(healthy, architecture) or healthy.get('host_canary_absent') is not True:
                     raise RuntimeError('healthy restricted worker failed evidence acceptance')
                 if inspect(busy_name).get('Running') is not True:
                     raise RuntimeError('busy worker ended before healthy worker completed')
@@ -109,7 +116,9 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                         or '[compat-lifecycle] cpu-loop' not in busy_diagnostics.get('stderr', '')):
                     raise RuntimeError('busy worker failed before application execution')
                 repeats.append({'healthy_completed_while_busy_running':True,
-                                'deadline_seconds':timeout, 'terminated_exit':stopped['terminated_exit'],
+                                'deadline_seconds':timeout,
+                                'cpu_loop_entered_ms':stopped['cpu_loop_entered_ms'],
+                                'healthy_started_ms':healthy_started_ms, 'terminated_exit':stopped['terminated_exit'],
                                 'kill_requested_ms':stopped['kill_requested_ms'],
                                 'stop_confirmed_ms':stopped['stop_confirmed_ms'],
                                 'protocol_completed_ms':protocol_completed_ms,

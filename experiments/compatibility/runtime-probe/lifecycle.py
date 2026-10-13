@@ -7,6 +7,7 @@ import threading
 import time
 from protocol import run_container, fixture_dispatch
 from report import accept, accept_threads
+from completion import inspect_owned_completion
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
 
@@ -95,11 +96,17 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 if remaining <= 0:
                     raise RuntimeError('deadline consumed before healthy worker start')
                 healthy_started_ms = round(1000*(time.monotonic()-started))
+                def completed_healthy(frame,remaining_budget):
+                    if ('host_threads' in frame or 'cleanup_complete' in frame
+                            or not accept(dict(frame,host_threads=observed[healthy_name]['host_threads'],cleanup_complete=True),architecture)
+                            or frame.get('host_canary_absent') is not True):
+                        raise RuntimeError('healthy completed evidence invalid')
+                    return inspect_owned_completion(healthy_name,tag,image_id,OWNER_LABEL,remaining_budget,docker=docker)
                 healthy_diagnostics = {}
                 try:
                     healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
                         startup_audit=lambda inventory: observe(healthy_name,inventory),
-                        environment=environment,diagnostics=healthy_diagnostics))
+                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy))
                 except subprocess.TimeoutExpired as failure:
                     # Capture this actual worker before finally removes it. Do
                     # not ask the outer driver to inspect the exited primary.

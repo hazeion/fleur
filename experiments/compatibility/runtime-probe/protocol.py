@@ -41,7 +41,7 @@ def startup_inventory(request):
     return rows
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment)
@@ -117,26 +117,75 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         process.stdin.close()
         process.stdin = None
         phase = 'waiting-worker-completion'
+        checked_at = 0.0
+        def complete_frame():
+            if b'\n' not in output:
+                return None
+            if output.count(b'\n') != 1 or not output.endswith(b'\n'):
+                raise RuntimeError('worker output is not one bounded evidence frame')
+            try:
+                frame = json.loads(output)
+            except (ValueError,UnicodeError):
+                raise RuntimeError('worker evidence frame invalid') from None
+            if type(frame) is not dict or frame.get('kind') != 'runtime-evidence':
+                raise RuntimeError('worker evidence frame kind invalid')
+            return frame
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, output)
             selector.register(process.stderr, selectors.EVENT_READ, errors)
-            while selector.get_map():
-                remaining = timeout - (time.monotonic() - started)
-                if remaining <= 0:
-                    raise deadline_error()
-                ready = selector.select(remaining)
-                if not ready:
-                    raise deadline_error()
+            def drain(ready):
                 for key, _ in ready:
-                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    chunk = os.read(key.fileobj.fileno(),4096)
                     if not chunk:
                         selector.unregister(key.fileobj)
                         continue
                     key.data.extend(chunk)
                     if len(output) > 16384 or len(errors) > 4096:
-                        raise RuntimeError("worker output exceeded bound")
-                    if chunk and key.data is errors and on_stderr is not None:
+                        raise RuntimeError('worker output exceeded bound')
+                    if key.data is errors and on_stderr is not None:
                         on_stderr(bytes(errors))
+            while selector.get_map() or completion_observer is not None:
+                remaining = timeout - (time.monotonic()-started)
+                if remaining <= 0:
+                    raise deadline_error()
+                frame = complete_frame() if completion_observer is not None else None
+                if frame is None and not selector.get_map():
+                    raise RuntimeError('worker closed transport without a complete evidence frame')
+                if frame is not None and time.monotonic()-checked_at >= 0.1:
+                    completed = completion_observer(frame,remaining)
+                    checked_at = time.monotonic()
+                    remaining = timeout-(checked_at-started)
+                    if remaining <= 0:
+                        raise deadline_error()
+                    if type(completed) is not dict or type(completed.get('completed')) is not bool:
+                        raise RuntimeError('owned worker completion observer result invalid')
+                    if completed['completed']:
+                        if type(completed.get('exit_code')) is not int or completed['exit_code'] != 0:
+                            raise RuntimeError('owned worker did not complete successfully')
+                        # Only an accepted frame AND actual owned daemon stop
+                        # permit retiring the separate attached host client.
+                        if process.poll() is None:
+                            process.kill()
+                        process.wait(timeout=min(5,remaining))
+                        while selector.get_map():
+                            available = selector.select(0)
+                            if not available:
+                                break
+                            drain(available)
+                        complete_frame()
+                        if time.monotonic()-started >= timeout:
+                            raise deadline_error()
+                        phase = 'verified-worker-complete'
+                        if diagnostics is not None:
+                            diagnostics['daemon_completion'] = completed
+                            diagnostics['local_client_exit_code'] = process.returncode
+                        return output.decode()
+                ready = selector.select(min(remaining,0.1) if frame is not None else remaining)
+                if not ready:
+                    if frame is not None:
+                        continue
+                    raise deadline_error()
+                drain(ready)
         process.wait(timeout=max(0.001, timeout-(time.monotonic()-started)))
         if process.returncode:
             raise RuntimeError(f"worker exited {process.returncode}: " + errors.decode(errors="replace")[-3000:])

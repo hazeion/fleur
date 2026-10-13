@@ -2,11 +2,12 @@ import json, os
 from pathlib import Path
 import tempfile, unittest
 import subprocess
+from unittest.mock import patch
 from lifecycle import run_lifecycle
 # Shell avoids unrelated cold Python imports consuming the two-second fixture budget.
 FAKE = r'''#!/bin/sh
 set -eu
-root=$LIFECYCLE_FAKE_ROOT
+root=${LIFECYCLE_FAKE_ROOT:-${0%/*}}
 operation=$1
 shift
 name=
@@ -25,7 +26,7 @@ run)
  case "$name" in owned-busy-[01]|owned-healthy-[01]) ;; *) exit 2 ;; esac
  if [ "${LIFECYCLE_FOREIGN:-}" ]; then owner=foreign; fi
  case "$owner" in owned|foreign) ;; *) exit 2 ;; esac
- printf '{"State":{"Running":true,"ExitCode":0,"FinishedAt":""},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$owner" > "$root/$name"
+ printf '{"Name":"/%s","Image":"sha256:fixture","State":{"Running":true,"ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$name" "$owner" > "$root/$name"
  printf '%s\n' "$LIFECYCLE_STARTUP"
  IFS= read -r startup
  [ "$startup" = startup:approved ] || exit 3
@@ -40,10 +41,10 @@ run)
   number=${name##*-}
   if [ ! -f "$root/owned-busy-$number-loop" ]; then printf '%s\n' "$name" > "$root/healthy-too-early"; fi
   printf '%s\n' "$LIFECYCLE_EVIDENCE"
-  sed 's/"Running":true/"Running":false/' "$root/$name" > "$root/$name.tmp"
+  sed 's/"Running":true/"Running":false/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
   mv "$root/$name.tmp" "$root/$name"
   if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
-   sed 's/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+   sed 's/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
    mv "$root/$name.tmp" "$root/$name"
    exec sleep 30
   fi
@@ -55,10 +56,10 @@ kill)
  name=$1
  printf '%s\n' "$name" > "$root/kill-attempt"
  if [ ! "${LIFECYCLE_NO_KILL:-}" ]; then
-  sed 's/"Running":true/"Running":false/;s/"ExitCode":0/"ExitCode":137/;s/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+  sed 's/"Running":true/"Running":false/;s/"ExitCode":0/"ExitCode":137/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
   mv "$root/$name.tmp" "$root/$name"
   if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
-   sed 's/"FinishedAt":""/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+   sed 's/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
    mv "$root/$name.tmp" "$root/$name"
    exec sleep 30
   fi
@@ -108,7 +109,7 @@ class LifecycleTests(unittest.TestCase):
   self.assertFalse((self.root/'healthy-too-early').exists())
  def test_healthy_timeout_retains_correct_stopped_daemon_state_before_cleanup(self):
   self.env['LIFECYCLE_KEEP_HEALTHY_OPEN']='1'
-  with self.assertRaises(subprocess.TimeoutExpired) as caught:self.run_probe()
+  with patch('lifecycle.inspect_owned_completion',return_value={'completed':False}), self.assertRaises(subprocess.TimeoutExpired) as caught:self.run_probe()
   self.assertEqual(getattr(caught.exception,'worker_role',None),'healthy')
   self.assertEqual(caught.exception.worker_state['Running'],False)
   self.assertEqual(caught.exception.worker_state['ExitCode'],0)

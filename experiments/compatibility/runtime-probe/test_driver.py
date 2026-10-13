@@ -66,6 +66,7 @@ class DriverEvidence(unittest.TestCase):
             if args[-1] == 'event-replacement':
                 kwargs['diagnostics']['stderr'] = '[compat-event] replacement-fd=3\n'
                 raise run.StartupAuditRejected(audited['category'])
+            kwargs['completion_observer'](native,30)
             return json.dumps(native)
         captured = io.StringIO()
         run.REPORT = {'scope':'fixture','v1_gate_passed':False,'expected_gcc':'13.3.0',
@@ -79,6 +80,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
              patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]}), \
+             patch.object(run,'inspect_owned_completion',return_value={'completed':True,'exit_code':0}), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
                  {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
                  {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \

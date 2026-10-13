@@ -57,6 +57,7 @@ def run_native(bun, root, environment, source_root):
         acceptance = load(runtime / 'report.py', 'fleur_native_database_acceptance')
         configuration = load(runtime / 'configuration.py', 'fleur_native_database_configuration')
         descriptors = load(runtime / 'descriptor_audit.py', 'fleur_native_database_descriptors')
+        completion = load(runtime / 'completion.py', 'fleur_native_database_completion')
         worker_environment = configuration.host_environment()
         threads = load(runtime / 'threads.py', 'fleur_native_database_thread_inspector')
         with tempfile.TemporaryDirectory(prefix='fleur-native-database-') as temporary:
@@ -97,6 +98,11 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 observed_threads = threads.inspect_threads(container)
                 row['descriptor_audit'] = descriptors.inspect_event_inventory(container,inventory)
                 return row['descriptor_audit']
+            def completed_worker(frame,remaining):
+                accepted = attach_host_threads(frame,observed_threads)
+                if not acceptance.accept(dict(accepted,cleanup_complete=True),expected_architecture='amd64') or frame.get('host_canary_absent') is not True:
+                    raise RuntimeError('Restricted completed worker evidence invalid')
+                return completion.inspect_owned_completion(container,owner,metadata['Id'],LABEL,remaining)
             with_broker = TrustedBroker([bun, 'ipc.ts'], root, environment, timeout=8)
             try:
                 attempted_run = True
@@ -106,7 +112,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     '--label', LABEL + '=' + owner, '--network=none', '--read-only', '--cap-drop=ALL',
                     '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                     '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, startup_audit=startup_audit, diagnostics=row['protocol_diagnostics'], environment=worker_environment)
+                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, startup_audit=startup_audit, diagnostics=row['protocol_diagnostics'], environment=worker_environment, completion_observer=completed_worker)
             finally:
                 with_broker.close()
             evidence = attach_host_threads(json.loads(output), observed_threads)

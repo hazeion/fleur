@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 from protocol import run_container, fixture_dispatch
@@ -42,6 +43,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
         busy_diagnostics = {}
         stopped = {}
         abort = threading.Event()
+        active_role = 'busy'
         def observe(name,inventory):
             evidence = observe_worker(name, tag, inventory)
             if (type(evidence) is not dict or evidence.get('configuration_verified') is not True
@@ -102,12 +104,13 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                             or frame.get('host_canary_absent') is not True):
                         raise RuntimeError('healthy completed evidence invalid')
                     return inspect_owned_completion(healthy_name,tag,image_id,OWNER_LABEL,remaining_budget,docker=docker)
+                active_role = 'healthy'
                 healthy_diagnostics = {}
                 try:
                     healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
                         startup_audit=lambda inventory: observe(healthy_name,inventory),
                         environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy))
-                except subprocess.TimeoutExpired as failure:
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
                     # Capture this actual worker before finally removes it. Do
                     # not ask the outer driver to inspect the exited primary.
                     failure.worker_role = 'healthy'
@@ -129,6 +132,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     raise RuntimeError('healthy restricted worker failed evidence acceptance')
                 if inspect(busy_name).get('Running') is not True:
                     raise RuntimeError('busy worker ended before healthy worker completed')
+                active_role = 'busy'
                 deadline.result(timeout=timeout + 12)
                 try:
                     future.result(timeout=6)
@@ -153,17 +157,46 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                                 'busy_host_threads':observed[busy_name]['host_threads'],
                                 'healthy_host_threads':observed[healthy_name]['host_threads'],
                                 'configuration_verified':True})
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
+            if not hasattr(failure,'worker_role'):
+                failure.worker_role = active_role
+                failure.worker_diagnostics = healthy_diagnostics if active_role == 'healthy' else busy_diagnostics
+                name = healthy_name if active_role == 'healthy' else busy_name
+                try:
+                    state = inspect(name)
+                    if (type(state.get('Running')) is bool and type(state.get('ExitCode')) is int
+                            and 0 <= state['ExitCode'] <= 255 and type(state.get('FinishedAt')) is str
+                            and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z',state['FinishedAt'])):
+                        failure.worker_state = {key:state[key] for key in ('Running','ExitCode','FinishedAt')}
+                    else:
+                        failure.worker_state = {'outcome':'output-invalid'}
+                except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
+                    failure.worker_state = {'outcome':'unavailable'}
+            raise
         finally:
             abort.set()
-            failures = []
+            original = sys.exception()
+            cleanup = []
             for name in reversed(created):
                 # Attempt every owned resource even if another cleanup fails.
                 # Unknown ownership is deliberately not treated as absence.
+                outcome = 'inspection-unverified'
                 try:
                     inspect(name)
+                    outcome = 'removal-unverified'
                     command(['rm', '-f', name])
+                    outcome = 'removed'
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                    failures.append(name)
-            if failures:
-                raise RuntimeError('lifecycle owned worker cleanup incomplete')
+                    pass
+                cleanup.append({'worker_role':'healthy' if name == healthy_name else 'busy',
+                                'outcome':outcome})
+            verified = all(item['outcome'] == 'removed' for item in cleanup)
+            if original is not None:
+                original.lifecycle_cleanup = cleanup
+                original.lifecycle_cleanup_verified = verified
+            elif not verified:
+                failure = RuntimeError('lifecycle owned worker cleanup incomplete')
+                failure.lifecycle_cleanup = cleanup
+                failure.lifecycle_cleanup_verified = False
+                raise failure
     return {'passed':True, 'repeats':repeats}

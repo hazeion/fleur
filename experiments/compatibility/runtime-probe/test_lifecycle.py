@@ -69,6 +69,7 @@ kill)
 rm)
  shift
  name=$1
+ if [ "${LIFECYCLE_CLEANUP_FAILURE:-}" ] && [ "$name" = owned-healthy-0 ]; then exit 4; fi
  rm -f "$root/$name" "$root/$name-loop"
  printf '%s\n' "$name"
  ;;
@@ -116,4 +117,13 @@ class LifecycleTests(unittest.TestCase):
   self.assertEqual(caught.exception.worker_state['FinishedAt'],'2026-10-13T00:00:01Z')
   self.assertIn('runtime-evidence',caught.exception.worker_diagnostics['stdout'])
   self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'kill-attempt'})
+ def test_cleanup_failure_preserves_original_healthy_error_and_observations(self):
+  self.env['LIFECYCLE_CLEANUP_FAILURE']='1'
+  with patch('lifecycle.inspect_owned_completion',side_effect=RuntimeError('completion observer fixture failure')):
+   with self.assertRaisesRegex(RuntimeError,'completion observer fixture failure') as caught:self.run_probe()
+  self.assertEqual(caught.exception.worker_role,'healthy')
+  self.assertIn('runtime-evidence',caught.exception.worker_diagnostics['stdout'])
+  self.assertFalse(caught.exception.lifecycle_cleanup_verified)
+  self.assertEqual(caught.exception.lifecycle_cleanup[0]['worker_role'],'healthy')
+  self.assertEqual(caught.exception.lifecycle_cleanup[0]['outcome'],'removal-unverified')
 if __name__=='__main__':unittest.main()

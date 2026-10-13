@@ -11,7 +11,7 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
@@ -79,7 +79,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
-             patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]}), \
+             patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error), \
              patch.object(run,'inspect_owned_completion',return_value={'completed':True,'exit_code':0}), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
                  {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
@@ -182,3 +182,20 @@ class DriverEvidence(unittest.TestCase):
         self.assertEqual(code,1)
         self.assertFalse(report['bounded_probe_passed'])
         self.assertFalse('must-be-redacted' in json.dumps(report))
+
+    def test_generic_healthy_completion_failure_retains_category_and_cleanup(self):
+        from completion import CompletionUnverified
+        error = CompletionUnverified('state-invalid',{'stdout_bytes':120,'stderr_bytes':0,'cli_returncode':0,'state_running':False})
+        error.worker_role = 'healthy'
+        error.worker_state = {'Running':False,'ExitCode':0,'FinishedAt':'2026-10-13T00:00:01Z'}
+        error.worker_diagnostics = {'protocol_phase':'waiting-worker-completion'}
+        error.lifecycle_cleanup_verified = False
+        error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'removal-unverified'}]
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,lifecycle_error=error)
+        self.assertEqual(code,1)
+        self.assertEqual(report['completion_failure']['category'],'state-invalid')
+        self.assertEqual(report['lifecycle_failure']['category'],'state-invalid')
+        self.assertEqual(report['lifecycle_failure']['observations']['stdout_bytes'],120)
+        self.assertFalse(report['lifecycle_failure']['cleanup_verified'])
+        self.assertEqual(report['lifecycle_failure']['state']['ExitCode'],0)

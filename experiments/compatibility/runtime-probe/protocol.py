@@ -102,7 +102,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                 phase = 'starting-owned-waiter'
                 waiter = completion_start(timeout-(time.monotonic()-started))
                 if waiter is None or not callable(getattr(waiter,'completion',None)) or not callable(getattr(waiter,'close',None)):
-                    waiter = None
+                    if not callable(getattr(waiter,'close',None)): waiter = None
                     raise RuntimeError('owned waiter startup invalid')
                 if time.monotonic()-started >= timeout:
                     raise deadline_error()
@@ -163,6 +163,12 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                     raise RuntimeError('worker closed transport without a complete evidence frame')
                 if frame is not None and time.monotonic()-checked_at >= 0.1:
                     completed = completion_observer(frame,remaining)
+                    if type(completed) is not dict or type(completed.get('completed')) is not bool:
+                        raise RuntimeError('owned worker completion observer result invalid')
+                    if completed['completed'] and (type(completed.get('exit_code')) is not int or completed['exit_code'] != 0):
+                        raise RuntimeError('owned worker did not complete successfully')
+                    if time.monotonic()-started >= timeout:
+                        raise deadline_error()
                     if waiter is not None and type(completed) is dict and completed.get('completed') is True:
                         completed = waiter.completion(timeout-(time.monotonic()-started))
                     checked_at = time.monotonic()

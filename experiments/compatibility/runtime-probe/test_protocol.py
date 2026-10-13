@@ -242,3 +242,25 @@ class Protocol(unittest.TestCase):
         source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
         with self.assertRaisesRegex(RuntimeError,'owned waiter startup invalid'):
             run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:None,completion_observer=lambda f,r:{'completed':True,'exit_code':0})
+
+    def test_invalid_waiter_keeps_callable_cleanup_handle(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline()"
+        events=[]
+        class InvalidWaiter:
+            completion=None
+            def close(self):events.append('closed')
+        with self.assertRaisesRegex(RuntimeError,'owned waiter startup invalid'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:InvalidWaiter())
+        self.assertEqual(events,['closed'])
+
+    def test_waiter_zero_cannot_overwrite_observer_nonzero_completion(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        events=[]
+        class Waiter:
+            def completion(self,r):events.append('wait-observed');return {'completed':True,'exit_code':0}
+            def close(self):events.append('closed')
+        with self.assertRaisesRegex(RuntimeError,'owned worker did not complete successfully'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':137})
+        self.assertEqual(events,['closed'])

@@ -44,13 +44,34 @@ int main(int argc, char **argv) {
         return after > before && time_after > time_before ? 0 : 3;
     }
     if (!strcmp(argv[1], "memory")) {
-        /* Touch pages, not virtual reservations. No host memory or swap. */
-        for (int i = 0; i < 80; i++) {
-            volatile unsigned char *block = malloc(16 * 1024 * 1024);
-            if (!block) return 4;
-            for (size_t n = 0; n < 16 * 1024 * 1024; n += 4096) block[n] = 1;
+        /* The parent survives to attribute SIGKILL to actual cgroup OOM.
+         * The pressure child is the only large consumer in this container. */
+        unsigned long long max = number("/sys/fs/cgroup/memory.max");
+        unsigned long long swap = number("/sys/fs/cgroup/memory.swap.max");
+        unsigned long long oom_before = counter("/sys/fs/cgroup/memory.events", "oom");
+        unsigned long long kill_before = counter("/sys/fs/cgroup/memory.events", "oom_kill");
+        if (max != 536870912 || swap != 0) return 8;
+        pid_t child = fork();
+        if (child < 0) return 9;
+        if (child == 0) {
+            /* Touch pages, not virtual reservations. No host memory or swap. */
+            for (int i = 0; i < 80; i++) {
+                volatile unsigned char *block = malloc(16 * 1024 * 1024);
+                if (!block) _exit(4);
+                for (size_t n = 0; n < 16 * 1024 * 1024; n += 4096) block[n] = 1;
+            }
+            _exit(5);
         }
-        return 5;
+        int status;
+        pid_t waited;
+        do { waited = waitpid(child, &status, 0); } while (waited == -1 && errno == EINTR);
+        if (waited != child) return 10;
+        unsigned long long oom_after = counter("/sys/fs/cgroup/memory.events", "oom");
+        unsigned long long kill_after = counter("/sys/fs/cgroup/memory.events", "oom_kill");
+        int child_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+        printf("{\"child_signal\":%d,\"oom_events_delta\":%llu,\"oom_kill_delta\":%llu,\"memory_max\":%llu,\"swap_max\":%llu}\n",
+               child_signal, oom_after-oom_before, kill_after-kill_before, max, swap);
+        return child_signal == SIGKILL && oom_after > oom_before && kill_after > kill_before ? 0 : 11;
     }
     if (!strcmp(argv[1], "pids")) {
         pid_t children[128]; int count = 0;

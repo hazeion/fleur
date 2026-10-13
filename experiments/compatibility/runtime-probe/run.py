@@ -89,7 +89,13 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                               '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
+            # Retain successful native evidence even if a later resource probe fails.
+            REPORT['evidence'] = json.loads(output)
+            evidence = REPORT['evidence']
+            if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True)):
+                raise RuntimeError('incomplete, malformed or failed bounded runtime evidence')
             resources = {}
+            REPORT['trusted_cgroup_abuse'] = resources
             for mode in ('cpu', 'memory', 'pids'):
                 resource_name = tag + '-' + mode
                 resource_containers.append(resource_name)
@@ -102,7 +108,16 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 if mode == 'memory':
                     state = json.loads(command(['docker', 'inspect', resource_name,
                                                 '--format', '{{json .State}}']))
-                    resources[mode] = {'exit': abuse.returncode, 'oom_killed': state.get('OOMKilled')}
+                    resources[mode] = {'container_exit': abuse.returncode,
+                                       'docker_oom_killed': state.get('OOMKilled')}
+                    if not abuse.stdout.strip() or len(abuse.stdout.encode('utf-8')) > 4096:
+                        raise RuntimeError('native memory monitor output missing or exceeded bound')
+                    monitor = json.loads(abuse.stdout)
+                    if not isinstance(monitor, dict) or set(monitor) != {
+                            'child_signal', 'oom_events_delta', 'oom_kill_delta',
+                            'memory_max', 'swap_max'}:
+                        raise RuntimeError('native memory monitor fields invalid')
+                    resources[mode].update(monitor)
                 else:
                     if abuse.returncode or len(abuse.stdout) > 4096:
                         raise RuntimeError('trusted cgroup ' + mode + ' experiment failed')
@@ -110,10 +125,6 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['trusted_cgroup_abuse'] = resources
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
-            REPORT['evidence'] = json.loads(output)
-            evidence = REPORT['evidence']
-            if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True)):
-                raise RuntimeError('incomplete, malformed or failed bounded runtime evidence')
         result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False

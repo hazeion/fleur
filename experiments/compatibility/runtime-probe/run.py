@@ -17,7 +17,8 @@ from diagnostics import snapshot_worker
 from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL
 from lifecycle import run_lifecycle
 from descriptor_audit import inspect_event_inventory
-from completion import inspect_owned_completion, CompletionUnverified
+from completion import CompletionUnverified
+from waiter import OwnedWaiter, WaitUnverified
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -68,7 +69,7 @@ def main(architecture=None):
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -133,12 +134,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                         or not accept(dict(frame,host_threads=REPORT.get('host_threads'),cleanup_complete=True),architecture)
                         or frame.get('host_canary_absent') is not True):
                     raise RuntimeError('completed worker evidence invalid')
-                return inspect_owned_completion(container,tag,REPORT['image_id'],OWNER_LABEL,remaining)
+                return {'completed':True,'exit_code':0}
+            def start_waiter(remaining):
+                return OwnedWaiter(REPORT['worker_configuration']['container_id'],timeout=remaining)
             REPORT['worker_protocol'] = {}
             output = run_container(['docker', 'run', '-i', '--name', container, '--label', OWNER_LABEL+'='+tag, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker)
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -213,7 +216,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         REPORT['failure'] = str(error)[:4000]
         if isinstance(error,StartupAuditRejected):
             REPORT['startup_failure'] = {'category':error.category}
-        if isinstance(error,CompletionUnverified):
+        if isinstance(error,(CompletionUnverified,WaitUnverified)):
             REPORT['completion_failure'] = {'category':error.category,'observations':error.observations}
         if hasattr(error,'worker_role') or hasattr(error,'lifecycle_cleanup'):
             REPORT['lifecycle_failure'] = {

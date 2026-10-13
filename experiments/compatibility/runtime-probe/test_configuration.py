@@ -7,7 +7,7 @@ from configuration import audit_configuration, host_environment, OWNER_LABEL, CA
 IMAGE = 'sha256:'+'a'*64
 
 def metadata():
-    return {'Name':'/worker','Image':IMAGE,
+    return {'Id':'a'*64,'Name':'/worker','Image':IMAGE,
             'Config':{'Image':IMAGE,'User':'65534:65534','Labels':{OWNER_LABEL:'owner'},
                       'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
                              'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0']},
@@ -67,4 +67,12 @@ class ActualWorkerConfiguration(unittest.TestCase):
             changed['Config']['Env'] = [entry for entry in changed['Config']['Env'] if not entry.startswith('GLIBC_TUNABLES=')]
             if value is not None: changed['Config']['Env'].append('GLIBC_TUNABLES='+value)
             with self.subTest(value=value), self.assertRaises(ValueError):
+                audit_configuration(changed,'owner','worker',IMAGE)
+
+    def test_only_full_immutable_running_container_identity_can_bind_waiter(self):
+        good = metadata();good['Id'] = 'a'*64
+        self.assertEqual(audit_configuration(good,'owner','worker',IMAGE)['container_id'],'a'*64)
+        for value in (None,'a'*12,'g'*64,'sha256:'+'a'*64):
+            changed = copy.deepcopy(good);changed['Id'] = value
+            with self.subTest(value=value),self.assertRaises(ValueError):
                 audit_configuration(changed,'owner','worker',IMAGE)

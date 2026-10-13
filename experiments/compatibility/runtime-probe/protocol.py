@@ -3,6 +3,7 @@ import json
 import os
 import selectors
 import subprocess
+import sys
 import time
 
 REQUEST = {"kind": "broker-request", "operation": "compat.query",
@@ -41,12 +42,13 @@ def startup_inventory(request):
     return rows
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment)
     started = time.monotonic()
     output, errors = bytearray(), bytearray()
+    waiter = None
     phase = 'waiting-broker-request'
     def deadline_error():
         error = subprocess.TimeoutExpired(args, timeout, output=bytes(output[:16384]), stderr=bytes(errors[:4096]))
@@ -96,6 +98,14 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                 raise StartupAuditRejected(audited.get('category') if type(audited) is dict else 'output-invalid')
             if time.monotonic() - started >= timeout:
                 raise deadline_error()
+            if completion_start is not None:
+                phase = 'starting-owned-waiter'
+                waiter = completion_start(timeout-(time.monotonic()-started))
+                if waiter is None or not callable(getattr(waiter,'completion',None)) or not callable(getattr(waiter,'close',None)):
+                    if not callable(getattr(waiter,'close',None)): waiter = None
+                    raise RuntimeError('owned waiter startup invalid')
+                if time.monotonic()-started >= timeout:
+                    raise deadline_error()
             phase = 'startup-ack'
             process.stdin.write(b'startup:approved\n')
             process.stdin.flush()
@@ -153,6 +163,14 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                     raise RuntimeError('worker closed transport without a complete evidence frame')
                 if frame is not None and time.monotonic()-checked_at >= 0.1:
                     completed = completion_observer(frame,remaining)
+                    if type(completed) is not dict or type(completed.get('completed')) is not bool:
+                        raise RuntimeError('owned worker completion observer result invalid')
+                    if completed['completed'] and (type(completed.get('exit_code')) is not int or completed['exit_code'] != 0):
+                        raise RuntimeError('owned worker did not complete successfully')
+                    if time.monotonic()-started >= timeout:
+                        raise deadline_error()
+                    if waiter is not None and type(completed) is dict and completed.get('completed') is True:
+                        completed = waiter.completion(timeout-(time.monotonic()-started))
                     checked_at = time.monotonic()
                     remaining = timeout-(checked_at-started)
                     if remaining <= 0:
@@ -178,6 +196,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                         phase = 'verified-worker-complete'
                         if diagnostics is not None:
                             diagnostics['daemon_completion'] = completed
+                            if waiter is not None: diagnostics['completion_source'] = 'startup-bound-docker-wait'
                             diagnostics['local_client_exit_code'] = process.returncode
                         return output.decode()
                 ready = selector.select(min(remaining,0.1) if frame is not None else remaining)
@@ -198,6 +217,16 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         error.protocol_phase = phase
         raise
     finally:
+        original = sys.exception()
+        waiter_cleanup_error = None
+        if waiter is not None:
+            try:
+                waiter.close()
+                if diagnostics is not None: diagnostics['waiter_cleanup_verified'] = True
+            except (OSError,RuntimeError,subprocess.TimeoutExpired) as cleanup_error:
+                if diagnostics is not None: diagnostics['waiter_cleanup_verified'] = False
+                waiter_cleanup_error = cleanup_error
+                if original is not None: original.waiter_cleanup_verified = False
         if diagnostics is not None:
             diagnostics.update({'protocol_phase':phase,
                                 'duration_ms':round(1000*(time.monotonic()-started)),
@@ -210,3 +239,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
+        if waiter_cleanup_error is not None and original is None:
+            raise waiter_cleanup_error
+        if waiter is not None and original is None and time.monotonic()-started >= timeout:
+            raise deadline_error()

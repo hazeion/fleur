@@ -30,6 +30,9 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
             all(character in '0123456789abcdef' for character in image_id[7:]), 'immutable-image')
     require(type(metadata) is dict, 'object')
     require(metadata.get('Name') == '/'+container and metadata.get('Image') == image_id, 'name-image-identity')
+    container_id = metadata.get('Id')
+    require(type(container_id) is str and len(container_id) == 64 and
+            all(character in '0123456789abcdef' for character in container_id), 'immutable-container')
     config, host, state, network = (metadata.get(key) for key in ('Config','HostConfig','State','NetworkSettings'))
     require(all(type(item) is dict for item in (config,host,state,network)), 'required-fields')
     require(type(config.get('Labels')) is dict and config['Labels'].get(owner_label) == owner, 'ownership')
@@ -62,7 +65,7 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
     require(set(admitted) == set(SAFE_ENVIRONMENT), 'environment-allowlist')
     # Only approved values, counts and names leave this boundary. Unknown Env,
     # mount, credential or network values are never included in an exception.
-    return {'owned':True,'immutable_image':image_id,'user':'65534:65534','readonly_root':True,'privileged':False,
+    return {'container_id':container_id,'owned':True,'immutable_image':image_id,'user':'65534:65534','readonly_root':True,'privileged':False,
             'cap_drop':['ALL'],'cap_add':[],'no_new_privileges':True,'outer_seccomp':'unconfined',
             'cpu_nanocpus':host['NanoCpus'],'memory_bytes':host['Memory'],
             'memory_swap_bytes':host['MemorySwap'],'pids_limit':host['PidsLimit'],

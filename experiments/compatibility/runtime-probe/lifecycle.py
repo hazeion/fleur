@@ -8,7 +8,7 @@ import threading
 import time
 from protocol import run_container, fixture_dispatch
 from report import accept, accept_threads
-from completion import inspect_owned_completion
+from waiter import OwnedWaiter
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
 
@@ -103,13 +103,16 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                             or not accept(dict(frame,host_threads=observed[healthy_name]['host_threads'],cleanup_complete=True),architecture)
                             or frame.get('host_canary_absent') is not True):
                         raise RuntimeError('healthy completed evidence invalid')
-                    return inspect_owned_completion(healthy_name,tag,image_id,OWNER_LABEL,remaining_budget,docker=docker)
+                    return {'completed':True,'exit_code':0}
+                def start_healthy_waiter(remaining_budget):
+                    return OwnedWaiter(observed[healthy_name]['configuration']['container_id'],
+                                       timeout=remaining_budget,docker=docker)
                 active_role = 'healthy'
                 healthy_diagnostics = {}
                 try:
                     healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
                         startup_audit=lambda inventory: observe(healthy_name,inventory),
-                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy))
+                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter))
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
                     # Capture this actual worker before finally removes it. Do
                     # not ask the outer driver to inspect the exited primary.
@@ -156,7 +159,9 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                                 'protocol_completed_ms':protocol_completed_ms,
                                 'busy_host_threads':observed[busy_name]['host_threads'],
                                 'healthy_host_threads':observed[healthy_name]['host_threads'],
-                                'configuration_verified':True})
+                                'configuration_verified':True,
+                                'healthy_completion':healthy_diagnostics.get('daemon_completion'),
+                                'healthy_waiter_cleanup_verified':healthy_diagnostics.get('waiter_cleanup_verified')})
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
             if not hasattr(failure,'worker_role'):
                 failure.worker_role = active_role

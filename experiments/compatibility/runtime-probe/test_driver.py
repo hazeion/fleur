@@ -36,7 +36,7 @@ class DriverEvidence(unittest.TestCase):
         owner = {}
         def subprocess_run(args, **kwargs):
             if args[:2] == ['docker','inspect'] and '{{json .}}' in args:
-                metadata = {'Name':'/'+owner.get('container',''), 'Image':'sha256:'+'a'*64,
+                metadata = {'Id':'a'*64,'Name':'/'+owner.get('container',''), 'Image':'sha256:'+'a'*64,
                             'Config':{'Image':'sha256:'+'a'*64,'User':'65534:65534','Labels':{'fleur.compatibility.runtime-owner':owner.get('value','')},
                             'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
                                    'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0']},
@@ -67,7 +67,10 @@ class DriverEvidence(unittest.TestCase):
                 kwargs['diagnostics']['stderr'] = '[compat-event] replacement-fd=3\n'
                 raise run.StartupAuditRejected(audited['category'])
             if primary_error is not None: raise primary_error
+            waiter = kwargs['completion_start'](30)
             kwargs['completion_observer'](native,30)
+            waiter.completion(30)
+            waiter.close()
             return json.dumps(native)
         captured = io.StringIO()
         run.REPORT = {'scope':'fixture','v1_gate_passed':False,'expected_gcc':'13.3.0',
@@ -81,7 +84,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
              patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error), \
-             patch.object(run,'inspect_owned_completion',return_value={'completed':True,'exit_code':0}), \
+             patch.object(run,'OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':True,'exit_code':0},close=lambda:None)), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
                  {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
                  {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \

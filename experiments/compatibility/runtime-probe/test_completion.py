@@ -1,6 +1,8 @@
 """Completion evidence comes from the owned daemon, not worker output or EOF."""
 import json
 import os
+import selectors
+import subprocess
 from pathlib import Path
 import tempfile
 import time
@@ -53,13 +55,24 @@ class CompletionTests(unittest.TestCase):
    self.assertEqual(getattr(error.exception,'category',None),'arguments-invalid')
  def test_valid_inspect_payload_cannot_escape_remaining_command_deadline(self):
   self.cli.write_text('#!/bin/sh\nprintf "%s\\n" "$COMPLETION_FIXTURE"\nexec sleep 30\n')
-  started=time.monotonic()
+  # This test measures capture/observation after a ready payload, not launch.
+  # Other timeout controls continue counting ordinary CLI process startup.
   with patch.dict(os.environ,{'COMPLETION_FIXTURE':json.dumps(self.metadata)}):
-   with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:
-    inspect_owned_completion('owned','scope','sha256:fixture',LABEL,.15,docker=str(self.cli))
-   self.assertEqual(getattr(error.exception,'category',None),'inspection-timeout')
-   self.assertGreater(getattr(error.exception,'observations',{}).get('stdout_bytes',0),0)
-  self.assertLess(time.monotonic()-started,.75)
+   process=subprocess.Popen([str(self.cli)],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+   try:
+    with selectors.DefaultSelector() as ready:
+     ready.register(process.stdout,selectors.EVENT_READ)
+     self.assertTrue(ready.select(5),'completion payload fixture did not become ready')
+    started=time.monotonic()
+    with patch('completion.subprocess.Popen',return_value=process):
+     with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:
+      inspect_owned_completion('owned','scope','sha256:fixture',LABEL,.15,docker=str(self.cli))
+    self.assertEqual(getattr(error.exception,'category',None),'inspection-timeout')
+    self.assertGreater(getattr(error.exception,'observations',{}).get('stdout_bytes',0),0)
+    self.assertLess(time.monotonic()-started,.75)
+   finally:
+    if process.poll() is None:process.kill();process.wait(timeout=1)
+    process.stdout.close();process.stderr.close()
  def test_failure_categories_and_safe_observations_survive_cli_boundary(self):
   for key,value,category in [('Name','/sensitive-name','ownership-name'),('Image','sensitive-image','ownership-image')]:
    original=self.metadata[key];self.metadata[key]=value

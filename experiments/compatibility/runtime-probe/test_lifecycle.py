@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile, unittest
 import subprocess
 from unittest.mock import patch
+from types import SimpleNamespace
 from lifecycle import run_lifecycle
 # Shell avoids unrelated cold Python imports consuming the two-second fixture budget.
 FAKE = r'''#!/bin/sh
@@ -50,6 +51,15 @@ run)
   fi
  fi
  ;;
+wait)
+ case "$1" in
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) name=owned-healthy-0 ;;
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) name=owned-healthy-1 ;;
+  *) exit 3 ;;
+ esac
+ while grep -q '"Running":true' "$root/$name"; do sleep .02; done
+ printf '0\n'
+ ;;
 inspect) cat "$root/$1" ;;
 kill)
  shift
@@ -89,7 +99,7 @@ class LifecycleTests(unittest.TestCase):
  def observe(self,name,owner,inventory):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
-  return {'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
+  return {'configuration':{'container_id':('a' if name.endswith('-0') else 'b')*64},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
  def run_probe(self):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=2,docker=str(self.cli))
  def test_deadline_terminates_daemon_worker_and_preserves_healthy_worker(self):
   result=self.run_probe();self.assertTrue(result['passed']);self.assertEqual(len(result['repeats']),2)
@@ -110,7 +120,7 @@ class LifecycleTests(unittest.TestCase):
   self.assertFalse((self.root/'healthy-too-early').exists())
  def test_healthy_timeout_retains_correct_stopped_daemon_state_before_cleanup(self):
   self.env['LIFECYCLE_KEEP_HEALTHY_OPEN']='1'
-  with patch('lifecycle.inspect_owned_completion',return_value={'completed':False}), self.assertRaises(subprocess.TimeoutExpired) as caught:self.run_probe()
+  with patch('lifecycle.OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':False},close=lambda:None)), self.assertRaises(subprocess.TimeoutExpired) as caught:self.run_probe()
   self.assertEqual(getattr(caught.exception,'worker_role',None),'healthy')
   self.assertEqual(caught.exception.worker_state['Running'],False)
   self.assertEqual(caught.exception.worker_state['ExitCode'],0)
@@ -119,7 +129,7 @@ class LifecycleTests(unittest.TestCase):
   self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'kill-attempt'})
  def test_cleanup_failure_preserves_original_healthy_error_and_observations(self):
   self.env['LIFECYCLE_CLEANUP_FAILURE']='1'
-  with patch('lifecycle.inspect_owned_completion',side_effect=RuntimeError('completion observer fixture failure')):
+  with patch('lifecycle.OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:(_ for _ in ()).throw(RuntimeError('completion observer fixture failure')),close=lambda:None)):
    with self.assertRaisesRegex(RuntimeError,'completion observer fixture failure') as caught:self.run_probe()
   self.assertEqual(caught.exception.worker_role,'healthy')
   self.assertIn('runtime-evidence',caught.exception.worker_diagnostics['stdout'])

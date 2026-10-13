@@ -206,3 +206,61 @@ class Protocol(unittest.TestCase):
                 return wait(**kwargs)
             with patch.object(process,'wait',side_effect=delayed_wait), self.assertRaises(subprocess.TimeoutExpired):
                 run_container(args,timeout=0.2,completion_observer=lambda actual,remaining:{'completed':True,'exit_code':0})
+
+    def test_waiter_starts_at_audited_pause_before_startup_ack_and_is_reaped(self):
+        startup = {'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source = "import json,sys; print("+repr(json.dumps(startup))+",flush=True); assert sys.stdin.readline()=='startup:approved\\n'; print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        events=[]
+        class Waiter:
+            def completion(self,remaining): events.append('wait-completed');return {'completed':True,'exit_code':0}
+            def close(self): events.append('waiter-closed')
+        def audit(rows): events.append('audit');return {'passed':True,'category':'verified','descriptor_count':len(rows)}
+        def start(remaining): self.assertEqual(events,['audit']);self.assertGreater(remaining,0);events.append('waiter-started');return Waiter()
+        def dispatch(request):self.assertEqual(events,['audit','waiter-started']);return fixture_dispatch(request)
+        output=run_container([sys.executable,'-u','-c',source],startup_audit=audit,completion_start=start,completion_observer=lambda f,r:{'completed':True,'exit_code':0},dispatch=dispatch)
+        self.assertEqual(json.loads(output)['kind'],'runtime-evidence')
+        self.assertEqual(events,['audit','waiter-started','wait-completed','waiter-closed'])
+
+    def test_waiter_cleanup_failure_does_not_skip_transport_diagnostics_or_pipe_cleanup(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        class Waiter:
+            def completion(self,r):return {'completed':True,'exit_code':0}
+            def close(self):raise RuntimeError('waiter cleanup fixture failure')
+        diagnostics={};processes=[];factory=subprocess.Popen
+        def launch(*args,**kwargs):p=factory(*args,**kwargs);processes.append(p);return p
+        with patch('protocol.subprocess.Popen',side_effect=launch),self.assertRaisesRegex(RuntimeError,'waiter cleanup fixture failure'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':0},diagnostics=diagnostics)
+        self.assertIn('protocol_phase',diagnostics)
+        self.assertFalse(diagnostics['waiter_cleanup_verified'])
+        self.assertIsNotNone(processes[0].poll())
+        self.assertTrue(processes[0].stdout.closed)
+        self.assertTrue(processes[0].stderr.closed)
+
+    def test_missing_waiter_cannot_ack_startup_or_accept_evidence(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        with self.assertRaisesRegex(RuntimeError,'owned waiter startup invalid'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:None,completion_observer=lambda f,r:{'completed':True,'exit_code':0})
+
+    def test_invalid_waiter_keeps_callable_cleanup_handle(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline()"
+        events=[]
+        class InvalidWaiter:
+            completion=None
+            def close(self):events.append('closed')
+        with self.assertRaisesRegex(RuntimeError,'owned waiter startup invalid'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:InvalidWaiter())
+        self.assertEqual(events,['closed'])
+
+    def test_waiter_zero_cannot_overwrite_observer_nonzero_completion(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
+        events=[]
+        class Waiter:
+            def completion(self,r):events.append('wait-observed');return {'completed':True,'exit_code':0}
+            def close(self):events.append('closed')
+        with self.assertRaisesRegex(RuntimeError,'owned worker did not complete successfully'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':137})
+        self.assertEqual(events,['closed'])

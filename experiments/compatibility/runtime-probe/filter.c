@@ -32,6 +32,36 @@
 #error "unsupported native syscall ABI"
 #endif
 int architecture(void) { return PROBE_ARCHITECTURE; }
+/* Trusted one-shot fixture completion: the bootstrap encodes and retains its
+ * final JSON buffer after all observations. Write it directly and terminate
+ * this worker's thread group, without entering asynchronous runtime teardown.
+ * The original host deadline remains the bound for blocking stdout transport. */
+_Noreturn void finish_fixture(const void *bytes, uint32_t length) {
+    if (!bytes || length == 0 || length > 16384 || ((const char *)bytes)[length - 1] != '\n') {
+        syscall(SYS_exit_group, 21);
+        __builtin_unreachable();
+    }
+    const char *cursor = bytes;
+    size_t remaining = length;
+    unsigned attempts = 0;
+    while (remaining) {
+        if (++attempts > 16384 + 64) {
+            syscall(SYS_exit_group, 22);
+            __builtin_unreachable();
+        }
+        ssize_t written = syscall(SYS_write, 1, cursor, remaining);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0 || (size_t)written > remaining) {
+            syscall(SYS_exit_group, 22);
+            __builtin_unreachable();
+        }
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    syscall(SYS_exit_group, 0);
+    __builtin_unreachable();
+}
+
 /* Temporary bounded diagnosis markers. No dynamic data or paths are emitted. */
 void trace(int stage) {
     static const char *const markers[] = {

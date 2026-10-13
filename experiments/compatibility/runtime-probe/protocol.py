@@ -71,3 +71,6 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30):
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=5)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()

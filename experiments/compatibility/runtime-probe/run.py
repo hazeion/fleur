@@ -110,8 +110,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                                                 '--format', '{{json .State}}']))
                     resources[mode] = {'container_exit': abuse.returncode,
                                        'docker_oom_killed': state.get('OOMKilled')}
-                    if len(abuse.stdout) <= 4096 and abuse.stdout.strip():
-                        resources[mode].update(json.loads(abuse.stdout))
+                    if not abuse.stdout.strip() or len(abuse.stdout.encode('utf-8')) > 4096:
+                        raise RuntimeError('native memory monitor output missing or exceeded bound')
+                    monitor = json.loads(abuse.stdout)
+                    if not isinstance(monitor, dict) or set(monitor) != {
+                            'child_signal', 'oom_events_delta', 'oom_kill_delta',
+                            'memory_max', 'swap_max'}:
+                        raise RuntimeError('native memory monitor fields invalid')
+                    resources[mode].update(monitor)
                 else:
                     if abuse.returncode or len(abuse.stdout) > 4096:
                         raise RuntimeError('trusted cgroup ' + mode + ' experiment failed')

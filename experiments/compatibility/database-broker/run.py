@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -13,6 +14,7 @@ import time
 import sys
 from ownership import OwnedContainer, LABEL
 from native import run_native
+from execution import run_check
 
 IMAGE = 'postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336'
 
@@ -20,10 +22,13 @@ IMAGE = 'postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bun', required=True)
+    cases=re.findall(r"test\('([^']+)'", (Path(__file__).parent / 'database.test.ts').read_text())
+    parser.add_argument('--database-case', choices=cases, help='Explicit diagnostic subset; never full-gate evidence')
     args = parser.parse_args()
     bun = str(Path(args.bun).resolve())
     report = {'scope': 'Disposable database/broker compatibility experiment only',
-              'postgres_image': IMAGE, 'checks': [], 'passed': False}
+              'postgres_image': IMAGE, 'checks': [], 'passed': False,
+              'diagnostic_subset': args.database_case is not None}
     owner = secrets.token_hex(16)
     name = 'fleur-compat-db-' + owner
     database = 'fleur_probe_' + secrets.token_hex(8)
@@ -84,23 +89,23 @@ def main():
             shutil.copytree(Path(__file__).parent, root, dirs_exist_ok=True,
                             ignore=shutil.ignore_patterns('node_modules', '__pycache__'))
 
-            def check(name, arguments, required=True, executable=bun):
-                result = command([executable, *arguments], cwd=root, env=environment)
-                output = (result.stdout + result.stderr).replace(password, '<redacted>').replace(database, '<owned-database>').replace(str(root), '<experiment>')
-                report['checks'].append({'name': name, 'exit_code': result.returncode,
-                    'passed': result.returncode == 0, 'required': required,
-                    'output_sha256': hashlib.sha256(output.encode()).hexdigest(),
-                    'output_excerpt': output[:5000], 'output_truncated': len(output) > 5000})
-                return result.returncode == 0
+            def check(name, arguments, required=True, executable=bun, timeout=180):
+                row=run_check(name, [executable, *arguments], root, environment, timeout,
+                              [(password,'<redacted>'), (database,'<owned-database>'), (str(root),'<experiment>')])
+                row['required']=required
+                report['checks'].append(row)
+                return row['passed']
 
             if not check('frozen-install', ['install', '--frozen-lockfile']):
                 raise RuntimeError('Frozen installation failed')
-            check('host-rpc-and-ownership-boundaries', ['-m', 'unittest', 'test_rpc.py', 'test_ownership.py'], executable=sys.executable)
+            check('host-rpc-and-ownership-boundaries', ['-m', 'unittest', 'test_rpc.py', 'test_ownership.py', 'test_execution.py'], executable=sys.executable)
             if not check('owned-server-identity-and-schema', ['init.ts']):
                 raise RuntimeError('Verified target initialization failed')
             check('admission-and-declaration-integrity', ['test', 'admission.test.ts', 'patch.test.ts'])
-            check('database-first', ['test', 'database.test.ts'])
-            check('database-repeat', ['test', 'database.test.ts'])
+            for repetition in range(2):
+                for case in ([args.database_case] if args.database_case else cases):
+                    check(f'database-run-{repetition+1}: {case}',
+                          ['test','database.test.ts','--test-name-pattern','^'+re.escape(case)+'$'],timeout=12)
             if check('native-fixture-identity-and-reset', ['reset.ts']):
                 report['checks'].append(run_native(bun, root, environment, Path(__file__).resolve().parent.parent))
             check('strict-types', ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json'])

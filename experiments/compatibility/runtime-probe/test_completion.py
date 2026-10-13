@@ -31,6 +31,7 @@ class CompletionTests(unittest.TestCase):
    self.metadata[field]=original
   self.metadata['Config']['Labels'][LABEL]='foreign-sensitive-value'
   with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:self.inspect()
+  self.assertEqual(getattr(error.exception,'category',None),'ownership-label')
   self.assertNotIn('foreign-sensitive-value',str(error.exception))
   self.metadata['Config']['Labels'][LABEL]='scope';self.metadata['State']['ExitCode']=137
   with self.assertRaisesRegex(RuntimeError,'completion unverified'):self.inspect()
@@ -38,20 +39,49 @@ class CompletionTests(unittest.TestCase):
   original=dict(self.metadata['State'])
   for key,value in [('Running',0),('ExitCode',False),('FinishedAt','not-a-date'),('FinishedAt','0001-01-01T00:00:00Z')]:
    self.metadata['State']=dict(original,**{key:value})
-   with self.assertRaisesRegex(RuntimeError,'completion unverified'):self.inspect()
-  with self.assertRaisesRegex(RuntimeError,'completion unverified'):self.inspect({'padding':'x'*65536})
+   with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:self.inspect()
+   self.assertEqual(getattr(error.exception,'category',None),'state-invalid')
+  with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:self.inspect({'padding':'x'*65536})
+  self.assertEqual(getattr(error.exception,'category',None),'output-invalid')
  def test_native_database_owner_label_is_accepted_but_unknown_label_is_refused(self):
   label='fleur.compatibility.native-database-owner'
   self.metadata['Config']['Labels']={label:'scope'}
   with patch.dict(os.environ,{'COMPLETION_FIXTURE':json.dumps(self.metadata)}):
    self.assertEqual(inspect_owned_completion('owned','scope','sha256:fixture',label,1,docker=str(self.cli)),{'completed':True,'exit_code':0})
-   with self.assertRaisesRegex(RuntimeError,'completion unverified'):
+   with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:
     inspect_owned_completion('owned','scope','sha256:fixture','unregistered-label',1,docker=str(self.cli))
+   self.assertEqual(getattr(error.exception,'category',None),'arguments-invalid')
  def test_valid_inspect_payload_cannot_escape_remaining_command_deadline(self):
   self.cli.write_text('#!/bin/sh\nprintf "%s\\n" "$COMPLETION_FIXTURE"\nexec sleep 30\n')
   started=time.monotonic()
   with patch.dict(os.environ,{'COMPLETION_FIXTURE':json.dumps(self.metadata)}):
-   with self.assertRaisesRegex(RuntimeError,'completion unverified'):
+   with self.assertRaisesRegex(RuntimeError,'completion unverified') as error:
     inspect_owned_completion('owned','scope','sha256:fixture',LABEL,.15,docker=str(self.cli))
+   self.assertEqual(getattr(error.exception,'category',None),'inspection-timeout')
+   self.assertGreater(getattr(error.exception,'observations',{}).get('stdout_bytes',0),0)
   self.assertLess(time.monotonic()-started,.75)
+ def test_failure_categories_and_safe_observations_survive_cli_boundary(self):
+  for key,value,category in [('Name','/sensitive-name','ownership-name'),('Image','sensitive-image','ownership-image')]:
+   original=self.metadata[key];self.metadata[key]=value
+   with self.assertRaises(RuntimeError) as error:self.inspect()
+   self.assertEqual(getattr(error.exception,'category',None),category)
+   self.assertNotIn(value,str(error.exception))
+   self.metadata[key]=original
+  self.metadata['State']['ExitCode']=137
+  with self.assertRaises(RuntimeError) as error:self.inspect()
+  self.assertEqual(getattr(error.exception,'category',None),'nonzero-exit')
+  observations=getattr(error.exception,'observations',{})
+  self.assertEqual(observations.get('state_exit_code'),137)
+  self.assertIs(observations.get('state_running'),False)
+  self.assertEqual(observations.get('cli_returncode'),0)
+  self.assertGreater(observations.get('stdout_bytes',0),0)
+  self.assertEqual(observations.get('stderr_bytes'),0)
+ def test_inspection_cli_failure_is_classified_without_raw_stderr(self):
+  self.cli.write_text('#!/bin/sh\nprintf "sensitive-error-path" >&2\nexit 7\n')
+  with self.assertRaises(RuntimeError) as error:self.inspect()
+  self.assertEqual(getattr(error.exception,'category',None),'cli-nonzero')
+  self.assertNotIn('sensitive-error-path',str(error.exception))
+  observations=getattr(error.exception,'observations',{})
+  self.assertEqual(observations.get('cli_returncode'),7)
+  self.assertEqual(observations.get('stderr_bytes'),20)
 if __name__=='__main__':unittest.main()

@@ -17,7 +17,7 @@ from diagnostics import snapshot_worker
 from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL
 from lifecycle import run_lifecycle
 from descriptor_audit import inspect_event_inventory
-from completion import inspect_owned_completion
+from completion import inspect_owned_completion, CompletionUnverified
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -210,6 +210,21 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
+        if isinstance(error,StartupAuditRejected):
+            REPORT['startup_failure'] = {'category':error.category}
+        if isinstance(error,CompletionUnverified):
+            REPORT['completion_failure'] = {'category':error.category,'observations':error.observations}
+        if hasattr(error,'worker_role') or hasattr(error,'lifecycle_cleanup'):
+            REPORT['lifecycle_failure'] = {
+                'error_type':type(error).__name__,
+                'category':getattr(error,'category','lifecycle-error'),
+                'observations':getattr(error,'observations',{}),
+                'worker_role':getattr(error,'worker_role','unknown'),
+                'state':getattr(error,'worker_state',{'outcome':'unavailable'}),
+                'protocol':getattr(error,'worker_diagnostics',{}),
+                'cleanup':getattr(error,'lifecycle_cleanup',[]),
+                'cleanup_verified':getattr(error,'lifecycle_cleanup_verified',False),
+            }
         if isinstance(error, subprocess.TimeoutExpired) and run_started and hasattr(error,'protocol_phase'):
             REPORT['worker_timeout'] = {
                 'protocol_phase':getattr(error,'protocol_phase','unknown'),

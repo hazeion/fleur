@@ -135,6 +135,18 @@ int event_negative(int choice) {
 static pthread_t witness;
 static int unrelated_fd;
 static int closed_unrelated;
+/* This inventory is frozen before TSYNC. Descriptor creation, duplication and
+ * transfer remain denied afterward, so a closed number cannot be repurposed. */
+#define EVENT_FD_LIMIT 64
+static int event_read_fds[EVENT_FD_LIMIT], event_write_fds[EVENT_FD_LIMIT];
+static int event_poll_fds[EVENT_FD_LIMIT];
+static size_t event_read_count, event_write_count, event_poll_count;
+static int event_inventory_frozen;
+static int admit_event_fd(int *fds, size_t *count, int fd) {
+    if (*count == EVENT_FD_LIMIT) return -1;
+    fds[(*count)++] = fd;
+    return 0;
+}
 static _Atomic int phase;
 static _Atomic int thread_result;
 static void *observe(void *unused) {
@@ -159,6 +171,7 @@ int prepare(void) {
 /* Trusted descriptor admission: only stdio and kernel event bookkeeping.
  * Opening, mapping, duplicating or transferring descriptors is later denied. */
 int close_unrelated(void) {
+    if (event_inventory_frozen || event_read_count || event_write_count || event_poll_count) return -1;
     DIR *directory = opendir("/proc/self/fd");
     if (!directory) return -1;
     int directory_fd = dirfd(directory);
@@ -173,14 +186,25 @@ int close_unrelated(void) {
         ssize_t size = readlink(path, target, sizeof(target) - 1);
         if (size < 0) { closedir(directory); return -1; }
         target[size] = 0;
-        if (!strcmp(target, "anon_inode:[eventpoll]") ||
-            !strcmp(target, "anon_inode:[eventfd]") ||
-            !strcmp(target, "anon_inode:[timerfd]")) continue;
-        if (close((int)descriptor)) { closedir(directory); return -1; }
+        int admission = 0;
+        if (!strcmp(target, "anon_inode:[eventpoll]")) {
+            admission = admit_event_fd(event_poll_fds, &event_poll_count, (int)descriptor);
+        } else if (!strcmp(target, "anon_inode:[eventfd]")) {
+            admission = admit_event_fd(event_read_fds, &event_read_count, (int)descriptor);
+            if (!admission) admission = admit_event_fd(event_write_fds, &event_write_count, (int)descriptor);
+        } else if (!strcmp(target, "anon_inode:[timerfd]")) {
+            admission = admit_event_fd(event_read_fds, &event_read_count, (int)descriptor);
+        } else {
+            if (close((int)descriptor)) { closedir(directory); return -1; }
+            continue;
+        }
+        if (admission) { closedir(directory); return -1; }
+        continue;
     }
     if (closedir(directory)) return -1;
     errno = 0;
     closed_unrelated = fcntl(unrelated_fd, F_GETFD) == -1 && errno == EBADF;
+    event_inventory_frozen = closed_unrelated;
     return closed_unrelated ? 0 : -1;
 }
 int descriptors_closed(void) { return closed_unrelated; }
@@ -207,9 +231,51 @@ int broker_exchange(void) {
     return !strcmp(reply, "registered:Squat\n") ? 0 : -1;
 }
 #define ALLOW(n) BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_##n, 0, 1), BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW)
+/* Bounded cBPF construction: each descriptor handler has at most 147
+ * instructions, below the 8-bit branch span; complete program stays <4096. */
+#define FILTER_LIMIT 4096
+_Static_assert(2 * EVENT_FD_LIMIT + 20 <= 255, "descriptor branch span exceeds cBPF bound");
+_Static_assert(5 * (2 * EVENT_FD_LIMIT + 20) + 128 <= FILTER_LIMIT, "filter storage bound");
+#define ARG_LOW(n) (offsetof(struct seccomp_data, args[n]))
+#define ARG_HIGH(n) (offsetof(struct seccomp_data, args[n]) + 4)
+static void emit(struct sock_filter *code, size_t *used, struct sock_filter instruction) {
+    code[(*used)++] = instruction;
+}
+#define EMIT_STMT(op, value) emit(code, used, (struct sock_filter)BPF_STMT(op, value))
+#define EMIT_JUMP(op, value, yes, no) emit(code, used, (struct sock_filter)BPF_JUMP(op, value, yes, no))
+static void require_word(struct sock_filter *code, size_t *used, unsigned offset, uint32_t value) {
+    EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, offset);
+    EMIT_JUMP(BPF_JMP|BPF_JEQ|BPF_K, value, 1, 0);
+    EMIT_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM);
+}
+static void allow_fd(struct sock_filter *code, size_t *used, int fd) {
+    EMIT_JUMP(BPF_JMP|BPF_JEQ|BPF_K, (uint32_t)fd, 0, 1);
+    EMIT_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW);
+}
+/* stdio_count admits the existing transport without event-size restrictions.
+ * Event handlers require all 64 bits of the descriptor and byte count. */
+static void descriptor_handler(struct sock_filter *code, size_t *used, unsigned nr,
+                               const int *fds, size_t count, const int *stdio_fds,
+                               size_t stdio_count, int eight_bytes) {
+    EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, nr));
+    size_t dispatch = *used;
+    EMIT_JUMP(BPF_JMP|BPF_JEQ|BPF_K, nr, 0, 0);
+    require_word(code, used, ARG_HIGH(0), 0);
+    EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, ARG_LOW(0));
+    for (size_t i = 0; i < stdio_count; i++) allow_fd(code, used, stdio_fds[i]);
+    if (eight_bytes) {
+        require_word(code, used, ARG_HIGH(2), 0);
+        require_word(code, used, ARG_LOW(2), 8);
+        EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, ARG_LOW(0));
+    }
+    for (size_t i = 0; i < count; i++) allow_fd(code, used, fds[i]);
+    EMIT_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM);
+    code[dispatch].jf = (unsigned char)(*used - dispatch - 1);
+}
 int install(void) {
     /* Deny-by-default also rejects openat2, io_uring, clone3 and x32 numbers. */
-    struct sock_filter code[] = {
+    if (!event_inventory_frozen) return -1;
+    const struct sock_filter common[] = {
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, arch)),
         BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, PROBE_AUDIT_ARCH, 1, 0),
         BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
@@ -227,21 +293,19 @@ int install(void) {
         ALLOW(getpid), ALLOW(gettid), ALLOW(getrandom), ALLOW(rt_sigaction),
         ALLOW(rt_sigprocmask), ALLOW(rt_sigreturn), ALLOW(sigaltstack),
         ALLOW(exit), ALLOW(exit_group), ALLOW(close), ALLOW(restart_syscall),
-        /* Output is restricted to inherited stdout/stderr. Input to stdin. */
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_read, 0, 4),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, args[0])),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 0, 0, 1),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_write, 1, 0),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_writev, 0, 4),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, args[0])),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 1, 1, 0),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 2, 0, 1),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM),
     };
-    struct sock_fprog program = {sizeof(code)/sizeof(code[0]), code};
+    struct sock_filter code[FILTER_LIMIT];
+    size_t used = sizeof(common)/sizeof(common[0]);
+    memcpy(code, common, sizeof(common));
+    const int input[] = {0}, output[] = {1, 2};
+    descriptor_handler(code, &used, SYS_read, event_read_fds, event_read_count, input, 1, 1);
+    descriptor_handler(code, &used, SYS_write, event_write_fds, event_write_count, output, 2, 1);
+    descriptor_handler(code, &used, SYS_writev, NULL, 0, output, 2, 0);
+    descriptor_handler(code, &used, SYS_epoll_pwait, event_poll_fds, event_poll_count, NULL, 0, 0);
+    descriptor_handler(code, &used, SYS_epoll_pwait2, event_poll_fds, event_poll_count, NULL, 0, 0);
+    code[used++] = (struct sock_filter)BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM);
+    if (used > FILTER_LIMIT) return -1;
+    struct sock_fprog program = {(unsigned short)used, code};
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) return -1;
     /* Nonzero includes a positive unsynchronizable TID. Never accept it. */
     long result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER,

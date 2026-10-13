@@ -1,5 +1,11 @@
 #define _GNU_SOURCE
+#include <stdio.h>
 #include <errno.h>
+#include <dirent.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <stddef.h>
 #include <stdatomic.h>
 #include <pthread.h>
@@ -14,6 +20,8 @@
 
 /* One pre-existing native thread is a witness for TSYNC propagation. */
 static pthread_t witness;
+static int unrelated_fd;
+static int closed_unrelated;
 static _Atomic int phase;
 static _Atomic int thread_result;
 static void *observe(void *unused) {
@@ -28,10 +36,56 @@ static void *observe(void *unused) {
 int prepare(void) {
     int readable = open("/etc/passwd", O_RDONLY);
     if (readable < 0) return -1;
-    close(readable);
+    unrelated_fd = readable;
     if (pthread_create(&witness, NULL, observe, NULL)) return -1;
     while (atomic_load(&phase) != 1) syscall(SYS_sched_yield);
     return 0;
+}
+/* Trusted descriptor admission: only stdio and kernel event bookkeeping.
+ * Opening, mapping, duplicating or transferring descriptors is later denied. */
+int close_unrelated(void) {
+    DIR *directory = opendir("/proc/self/fd");
+    if (!directory) return -1;
+    int directory_fd = dirfd(directory);
+    struct dirent *entry;
+    while ((entry = readdir(directory))) {
+        char *end;
+        long descriptor = strtol(entry->d_name, &end, 10);
+        if (*end || descriptor <= 2 || descriptor == directory_fd) continue;
+        char path[64], target[256];
+        int length = snprintf(path, sizeof(path), "/proc/self/fd/%ld", descriptor);
+        if (length < 0 || (size_t)length >= sizeof(path)) { closedir(directory); return -1; }
+        ssize_t size = readlink(path, target, sizeof(target) - 1);
+        if (size < 0) { closedir(directory); return -1; }
+        target[size] = 0;
+        if (!strcmp(target, "anon_inode:[eventpoll]") ||
+            !strcmp(target, "anon_inode:[eventfd]") ||
+            !strcmp(target, "anon_inode:[timerfd]")) continue;
+        if (close((int)descriptor)) { closedir(directory); return -1; }
+    }
+    if (closedir(directory)) return -1;
+    errno = 0;
+    closed_unrelated = fcntl(unrelated_fd, F_GETFD) == -1 && errno == EBADF;
+    return closed_unrelated ? 0 : -1;
+}
+int descriptors_closed(void) { return closed_unrelated; }
+/* Synchronous bounded stdio transport. Trusted host validates the request. */
+int broker_exchange(void) {
+    const char request[] = "{\"kind\":\"broker-request\",\"operation\":\"compat.query\",\"token\":\"probe-query\",\"action\":\"readExercise\",\"input\":{\"id\":1}}\n";
+    size_t sent = 0;
+    while (sent < sizeof(request)-1) {
+        ssize_t count = write(1, request+sent, sizeof(request)-1-sent);
+        if (count <= 0) return -1;
+        sent += (size_t)count;
+    }
+    char reply[4096]; size_t used = 0;
+    while (used < sizeof(reply)-1) {
+        ssize_t count = read(0, reply+used, 1);
+        if (count != 1) return -1;
+        if (reply[used++] == '\n') break;
+    }
+    reply[used] = 0;
+    return !strcmp(reply, "registered:Squat\n") ? 0 : -1;
 }
 #define ALLOW(n) BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_##n, 0, 1), BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW)
 int install(void) {
@@ -44,7 +98,14 @@ int install(void) {
         BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, AUDIT_ARCH_X86_64, 1, 0),
         BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, nr)),
-        ALLOW(brk), ALLOW(mmap), ALLOW(munmap), ALLOW(mprotect), ALLOW(madvise),
+        ALLOW(brk),
+        /* Anonymous memory only: retained event descriptors cannot map files. */
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_mmap, 0, 4),
+        BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, args[3])),
+        BPF_JUMP(BPF_JMP|BPF_JSET|BPF_K, MAP_ANONYMOUS, 0, 1),
+        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM),
+        ALLOW(munmap), ALLOW(mprotect), ALLOW(madvise),
         ALLOW(mremap), ALLOW(futex), ALLOW(sched_yield), ALLOW(sched_getaffinity),
         ALLOW(clock_gettime), ALLOW(clock_nanosleep), ALLOW(nanosleep),
         ALLOW(getpid), ALLOW(gettid), ALLOW(getrandom), ALLOW(rt_sigaction),
@@ -91,6 +152,20 @@ int negative(int choice) {
         case 7: result = syscall(SYS_ptrace, 0, 0, NULL, NULL); break;
         case 8: result = syscall(SYS_setuid, 0); break;
         case 9: result = syscall(SYS_io_uring_setup, 1, NULL); break;
+        case 10: result = syscall(SYS_openat2, AT_FDCWD, "/etc/passwd", NULL, 0); break;
+        case 11: result = syscall(SYS_creat, "/tmp/target", 0600); break;
+        case 12: result = syscall(SYS_rename, "/tmp/a", "/tmp/b"); break;
+        case 13: result = syscall(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, NULL); break;
+        case 14: result = syscall(SYS_clone, 0, NULL, NULL, NULL, 0); break;
+        case 15: result = syscall(SYS_clone3, NULL, 0); break;
+        case 16: result = syscall(SYS_setns, -1, 0); break;
+        case 17: result = syscall(SYS_process_vm_readv, getpid(), NULL, 0, NULL, 0, 0); break;
+        case 18: result = syscall(SYS_capset, NULL, NULL); break;
+        case 19: result = syscall(SYS_io_uring_enter, -1, 0, 0, 0, NULL, 0); break;
+        case 20: result = syscall(SYS_io_uring_register, -1, 0, NULL, 0); break;
+        case 21: result = syscall(SYS_mmap, NULL, 4096, PROT_READ, MAP_PRIVATE, unrelated_fd, 0); break;
+        case 22: result = syscall(SYS_dup, 0); break;
+        case 23: result = syscall(SYS_openat | 0x40000000, AT_FDCWD, "/etc/passwd", O_RDONLY, 0); break;
         default: return 0;
     }
     return result == -1 && errno == EPERM ? -1 : 0;

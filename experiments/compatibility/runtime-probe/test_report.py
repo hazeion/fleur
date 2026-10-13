@@ -10,7 +10,7 @@ class ReportAcceptance(unittest.TestCase):
 
     def test_only_complete_negative_and_render_evidence_passes(self):
         complete = {'install': 0, 'html': '<p>restricted render</p>',
-                    'main': [-1] * 10, 'thread': -1, 'application_open': True, 'cleanup_complete': True}
+                    'main': [-1] * 24, 'thread': -1, 'application_open': True, 'cleanup_complete': True, 'descriptors_closed': True, 'broker_reply': 'registered:Squat', 'cgroups': {'cpu':'100000 100000','memory':'536870912','pids':'64'}}
         self.assertTrue(accept(complete))
         for field in complete:
             missing = dict(complete)
@@ -21,8 +21,8 @@ class ReportAcceptance(unittest.TestCase):
 
     def test_cleanup_and_malformed_reports_cannot_pass(self):
         complete = {'install': 0, 'html': '<p>restricted render</p>',
-                    'main': [-1] * 10, 'thread': -1, 'application_open': True,
-                    'cleanup_complete': True}
+                    'main': [-1] * 24, 'thread': -1, 'application_open': True,
+                    'cleanup_complete': True, 'descriptors_closed': True, 'broker_reply': 'registered:Squat', 'cgroups': {'cpu':'100000 100000','memory':'536870912','pids':'64'}}
         for invalid in (dict(complete, cleanup_complete=False),
                         dict(complete, install=False), dict(complete, install=0.0),
                         dict(complete, main=[-1.0] * 10),

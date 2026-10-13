@@ -36,9 +36,9 @@ export class Broker {
     const cancelled=() => { if (abort.signal.aborted) throw new Error('DEADLINE'); };
     let backend:{pid:number;started:string}|undefined;
     let control:SQL|undefined;
-    let cancellation:Promise<boolean>|undefined;
-    const backendControl=async (action:'cancel'|'terminate') => {
-      if (!backend) return false;
+    let cancellation:Promise<'applied'|'absent'|'failed'>|undefined;
+    const backendControl=async (action:'cancel'|'terminate'):Promise<'applied'|'absent'|'failed'> => {
+      if (!backend) return 'failed';
       control??=new SQL({...this.pool.options,max:1,connectionTimeout:1});
       let controlTimer:ReturnType<typeof setTimeout>|undefined;
       try {
@@ -50,8 +50,8 @@ export class Broker {
           new Promise<never>((_resolve,reject)=>{controlTimer=setTimeout(()=>reject(new Error('Control deadline')),250);}),
         ]);
         const rows=z.array(z.strictObject({applied:z.boolean()})).parse(result);
-        return rows.length===1 && rows[0]?.applied===true;
-      } catch {return false;}
+        return rows.length===0 ? 'absent' : rows.length===1 && rows[0]?.applied===true ? 'applied' : 'failed';
+      } catch {return 'failed';}
       finally {if (controlTimer) clearTimeout(controlTimer);}
     };
     const onAbort=() => {
@@ -141,7 +141,7 @@ export class Broker {
         } catch {
           // ReservedSQL.close closes the shared pool. Terminate only this exact owned backend instead.
           const terminated=await backendControl('terminate');
-          if (terminated) connection.release();
+          if (terminated==='applied'||terminated==='absent') connection.release();
           // Failed control leaves this reservation quarantined, never returned for reuse.
         } finally {
           if (cleanupTimer) clearTimeout(cleanupTimer);

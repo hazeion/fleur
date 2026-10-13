@@ -149,3 +149,39 @@ class OwnedCounterfactual(unittest.TestCase):
                 for process in processes:
                     if process.poll() is None:
                         process.wait(timeout=3)
+
+    def test_forced_retirement_targets_only_two_owned_namespaces_and_verifies_absence(self):
+        import shlex
+        import subprocess
+        import sys
+        from isolated_daemon import RETIRE_BODY
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-retirement-') as temporary:
+            root=Path(temporary); token='fleur-vfs-'+'c'*32
+            (root/'owner').write_text(token); (root/'docker.pid').write_text('2147483647')
+            (root/'data').mkdir(); (root/'exec').mkdir()
+            (root/'unrelated').write_text('preserve')
+            cli=root/'fixture-ctr'
+            program = ('import sys; from pathlib import Path; a=sys.argv; root=Path('+repr(str(root))+'); '
+                       'ns=a[a.index("--namespace")+1]; '
+                       'assert ns in ['+repr(token)+','+repr(token+'-plugins')+']; '
+                       'with_log=root/"calls"; '
+                       'with_log.open("a").write(ns+" "+" ".join(a[a.index("tasks"):])+"\\n"); '
+                       'done=root/(ns+".done"); '
+                       'cmd=a[a.index("tasks")+1]; '
+                       'print("a"*64) if cmd=="list" and not done.exists() else None; '
+                       'done.write_text("retired") if cmd=="delete" else None')
+            cli.write_text('#!'+sys.executable+'\n'+program+'\n');cli.chmod(0o700)
+            body=RETIRE_BODY
+            for span in ('2s','.5s','.25s','1s'):
+                body=body.replace('/usr/bin/timeout '+span+' /usr/bin/ctr',shlex.quote(str(cli)))
+            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+                                  text=True,capture_output=True,timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,'retired\n')
+            calls=(root/'calls').read_text()
+            for namespace in (token,token+'-plugins'):
+                self.assertIn(namespace+' tasks kill --all --signal SIGKILL '+'a'*64,calls)
+                self.assertIn(namespace+' tasks delete --force '+'a'*64,calls)
+            self.assertNotIn('moby ',calls)
+            self.assertFalse((root/'data').exists());self.assertFalse((root/'exec').exists())
+            self.assertEqual((root/'unrelated').read_text(),'preserve')

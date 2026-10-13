@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
+import tarfile
 import shutil
 import stat
 import subprocess
@@ -24,6 +26,39 @@ namespace_empty() {
           --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || return 1
         [ ! -s "$base/tasks.tmp" ] || return 1
     done
+    # Task absence alone cannot prove a detached/new-session shim retired.
+    # Inspect only shim-class processes and suppress every argument/path.
+    for comm_file in /proc/[0-9]*/comm; do
+        [ -f "$comm_file" ] || continue
+        IFS= read -r name < "$comm_file" || continue
+        case "$name" in containerd-shim*) ;; *) continue ;; esac
+        cmdline=${comm_file%/comm}/cmdline
+        if tr '\000' '\n' < "$cmdline" > "$base/shim.tmp" 2>/dev/null; then
+            if grep -F -x -- "$token" "$base/shim.tmp" >/dev/null || \
+               grep -F -x -- "$token-plugins" "$base/shim.tmp" >/dev/null; then return 1; fi
+        elif [ -e "$cmdline" ]; then return 1; fi
+    done
+}
+retire_namespaces() {
+    for namespace in "$token" "$token-plugins"; do
+        /usr/bin/timeout .5s /usr/bin/ctr --address /run/containerd/containerd.sock \
+          --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || continue
+        set --
+        while IFS= read -r id; do
+            case "$id" in ''|*[!0-9a-f]*) return 1 ;; esac
+            [ "${#id}" -eq 64 ] && [ "$#" -lt 64 ] || return 1
+            set -- "$@" "$id"
+        done < "$base/tasks.tmp"
+        for id in "$@"; do
+            /usr/bin/timeout .25s /usr/bin/ctr --address /run/containerd/containerd.sock \
+              --namespace "$namespace" tasks kill --all --signal SIGKILL "$id" >/dev/null 2>&1 || true
+        done
+        if [ "$#" -gt 0 ]; then
+            /usr/bin/timeout 1s /usr/bin/ctr --address /run/containerd/containerd.sock \
+              --namespace "$namespace" tasks delete --force "$@" >/dev/null 2>&1 || true
+        fi
+    done
+    namespace_empty
 }
 cleanup() {
     [ "$clean" = false ] || return
@@ -45,7 +80,8 @@ cleanup() {
             if kill -0 "$child" 2>/dev/null; then
                 kill -KILL "$child"
                 wait "$child" 2>/dev/null || true
-                # A forced daemon stop does not prove detached shim retirement.
+                # Attempt exact namespace retirement; never infer proof from group death.
+                retire_namespaces || true
                 return 1
             fi
         fi
@@ -53,7 +89,7 @@ cleanup() {
     fi
     namespace_empty || return 1
     rm -rf -- "$base/data" "$base/exec"
-    rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp"
+    rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp" "$base/shim.tmp"
     printf 'stopped\n'
 }
 trap 'cleanup' EXIT
@@ -67,6 +103,29 @@ trap 'exit 124' TERM INT
 child=$!
 IFS= read -r command || true
 [ "${command:-}" = stop ] || exit 124
+'''
+
+
+# Exact same namespace routines for the outer forced-group fallback. Raw task
+# identifiers stay in the owned directory and never cross diagnostics output.
+RETIRE_BODY = r'''set -eu
+base=$1; token=$2
+case "$token" in fleur-vfs-????????????????????????????????) ;; *) exit 2 ;; esac
+suffix=${token#fleur-vfs-}
+case "$suffix" in *[!0-9a-f]*) exit 2 ;; esac
+[ -d "$base" ] && [ ! -L "$base" ] && [ "$(cat "$base/owner")" = "$token" ] || exit 2
+''' + ROOT_BODY[ROOT_BODY.index('namespace_empty()'):ROOT_BODY.index('cleanup()')] + r'''
+retire_namespaces
+IFS= read -r daemon < "$base/docker.pid" || [ -n "$daemon" ]
+case "$daemon" in ''|*[!0-9]*|0|1) exit 2 ;; esac
+if [ -r "/proc/$daemon/stat" ]; then
+    record=$(cat "/proc/$daemon/stat")
+    rest=${record##*) }; set -- $rest
+    [ "$1" = Z ] || exit 3
+fi
+rm -rf -- "$base/data" "$base/exec"
+rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp" "$base/shim.tmp"
+printf 'retired\n'
 '''
 
 
@@ -86,6 +145,7 @@ class Endpoint:
     def __init__(self, root, token, deadline):
         self.root, self.token, self.deadline = root, token, deadline
         self.cleanup_verified = False
+        self.forced_probe_verified = False
         self.facts = {}
         self.environment = dict(os.environ)
         for key in ('DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_API_VERSION'):
@@ -149,6 +209,12 @@ def _retire_supervisor(endpoint, budget):
                             timeout=max(.1,min(1,budget)), check=False)
     if result.returncode:
         raise IsolatedDaemonError('owned supervisor escalation failed')
+    # Shared containerd can own detached shims outside the killed process group.
+    retirement = subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s','2s',
+                    '/bin/sh','-c',RETIRE_BODY,'fleur-owned-retire',str(endpoint.root),endpoint.token],
+                   stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                   timeout=max(.1,min(2.5,budget)),check=False)
+    return retirement.returncode == 0 and retirement.stdout == b'retired\n'
 
 
 def _default_identity(timeout=5):
@@ -231,7 +297,8 @@ def isolated_vfs_daemon(lifetime=540):
                     process.wait(timeout=max(.1,min(2,cleanup_deadline-time.monotonic()-2)))
                     # Forced group retirement never proves detached task cleanup.
                     raise IsolatedDaemonError('owned daemon forced retirement')
-                endpoint.cleanup_verified = (empty and process.returncode == 0 and output == b'stopped\n'
+                retired = endpoint.forced_probe_verified or (empty and process.returncode == 0 and output == b'stopped\n')
+                endpoint.cleanup_verified = (retired and process.poll() is not None
                                               and not (root/'data').exists() and not (root/'exec').exists()
                                               and not (root/'docker.pid').exists() and not (root/'docker.sock').exists())
         except (OSError, subprocess.SubprocessError, ValueError, IsolatedDaemonError):
@@ -257,7 +324,49 @@ def isolated_vfs_daemon(lifetime=540):
 
 
 def privileged_self_test():
-    """Actual CI prerequisite/lifecycle proof; returns no raw host paths/IDs."""
+    """Native forced-live-task retirement; a trusted manager fixture only."""
     with isolated_vfs_daemon(lifetime=45) as endpoint:
-        facts = endpoint.facts
-    return dict(facts, cleanup_verified=endpoint.cleanup_verified)
+        source = endpoint.root/'busy.c'
+        binary = endpoint.root/'busy'
+        archive = endpoint.root/'fixture.tar'
+        source.write_text('void _start(void) { for (;;) __asm__ volatile("" ::: "memory"); }\n')
+        built = subprocess.run(['/usr/bin/gcc-13','-nostdlib','-static','-no-pie','-fno-stack-protector',
+                                '-O2',str(source),'-o',str(binary)],
+                               capture_output=True,timeout=min(5,endpoint.remaining_seconds()),check=False)
+        if built.returncode:
+            raise IsolatedDaemonError('trusted manager fixture compilation failed')
+        with tarfile.open(archive,'w') as stream:
+            metadata = stream.gettarinfo(str(binary),arcname='busy')
+            metadata.uid,metadata.gid,metadata.uname,metadata.gname,metadata.mode = 0,0,'','',0o555
+            with binary.open('rb') as contents:
+                stream.addfile(metadata,contents)
+        imported = endpoint.command(['import',str(archive),endpoint.token+'-fixture'])
+        if imported.returncode or re.fullmatch(rb'sha256:[0-9a-f]{64}\n',imported.stdout) is None:
+            raise IsolatedDaemonError('trusted manager fixture import failed')
+        image = imported.stdout.decode().strip()
+        launched = endpoint.command(['run','--detach','--name',endpoint.token+'-fixture',
+                                    '--label','fleur.compatibility.vfs-owner='+endpoint.token,
+                                    '--network=none','--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
+                                    '--cpus=1','--memory=512m','--memory-swap=512m','--pids-limit=64',
+                                    '--pull=never',image,'/busy'])
+        if launched.returncode or re.fullmatch(rb'[0-9a-f]{64}\n',launched.stdout) is None:
+            raise IsolatedDaemonError('trusted manager fixture launch failed')
+        container = launched.stdout.decode().strip()
+        inspected = endpoint.command(['inspect',container,'--format','{{json .}}'])
+        if inspected.returncode or len(inspected.stdout)>65536:
+            raise IsolatedDaemonError('trusted manager fixture inspection failed')
+        record = json.loads(inspected.stdout)
+        config,host,state = record.get('Config',{}),record.get('HostConfig',{}),record.get('State',{})
+        if (record.get('Id') != container or record.get('Image') != image
+                or config.get('Labels',{}).get('fleur.compatibility.vfs-owner') != endpoint.token
+                or state.get('Running') is not True or record.get('Mounts') != []
+                or host.get('NetworkMode') != 'none' or host.get('ReadonlyRootfs') is not True
+                or host.get('Memory') != 536870912 or host.get('MemorySwap') != 536870912
+                or host.get('NanoCpus') != 1000000000 or host.get('PidsLimit') != 64):
+            raise IsolatedDaemonError('trusted manager fixture ownership/profile invalid')
+        endpoint.facts['forced_live_task_verified'] = True
+        endpoint.forced_probe_verified = _retire_supervisor(endpoint,min(10,endpoint.remaining_seconds()-3))
+        if not endpoint.forced_probe_verified:
+            raise IsolatedDaemonError('forced namespace retirement unverified')
+    return dict(endpoint.facts,namespace_tasks_retired=True,namespace_shims_retired=True,
+                cleanup_verified=endpoint.cleanup_verified)

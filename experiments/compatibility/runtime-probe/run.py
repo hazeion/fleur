@@ -14,6 +14,8 @@ from runtime_profile import select_profile, native_elf_identity
 from protocol import run_container
 from resources import accept_resources
 from diagnostics import snapshot_worker
+from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL
+from lifecycle import run_lifecycle
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -37,6 +39,7 @@ def main(architecture=None):
     build_finished = False
     run_started = False
     resource_containers = []
+    worker_environment = host_environment()
     try:
         architecture, selected = select_profile(architecture, platform.system(), platform.machine())
         base = selected['base']
@@ -63,13 +66,13 @@ def main(architecture=None):
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
         with tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-') as directory:
             context = Path(directory)
-            for name in ('bootstrap.ts', 'application.js'):
+            for name in ('bootstrap.ts', 'application.js', 'busy-application.js'):
                 shutil.copyfile(HERE / name, context / name)
             (context / 'profile.json').write_text(json.dumps({'architecture':architecture,
                                                              'negative_controls':CONTROLS[architecture]}))
@@ -93,7 +96,7 @@ RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {base}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
-COPY filter.so application.js abuse profile.json ./
+COPY filter.so application.js busy-application.js abuse profile.json ./
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
@@ -106,6 +109,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
             def observe_worker(_request):
+                REPORT['worker_configuration'] = inspect_worker_configuration(container,tag,REPORT['image_id'])
                 snapshot = snapshot_worker(container)
                 REPORT['host_pause_diagnostics'] = snapshot
                 rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
@@ -114,10 +118,10 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     raise RuntimeError('existing thread lacks the sole native restriction filter')
                 REPORT['host_threads'] = rows
             REPORT['worker_protocol'] = {}
-            output = run_container(['docker', 'run', '-i', '--name', container, '--network=none',
+            output = run_container(['docker', 'run', '-i', '--name', container, '--label', OWNER_LABEL+'='+tag, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker, diagnostics=REPORT['worker_protocol'])
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -125,6 +129,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             evidence = REPORT['evidence']
             if isinstance(evidence, dict):
                 evidence['host_threads'] = REPORT.get('host_threads')
+                if evidence.get('host_canary_absent') is not True:
+                    raise RuntimeError('restricted worker host canary exclusion failed')
             if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True), architecture):
                 raise RuntimeError('incomplete, malformed or failed bounded runtime evidence')
             resources = {}
@@ -158,6 +164,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['trusted_cgroup_abuse'] = resources
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
+            def observe_lifecycle_worker(name,owner):
+                configuration = inspect_worker_configuration(name,owner,REPORT['image_id'])
+                snapshot = snapshot_worker(name)
+                rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
+                        for row in snapshot['tasks']]
+                return {'host_threads':rows,'configuration_verified':True,'configuration':configuration}
+            REPORT['restricted_worker_lifecycle'] = run_lifecycle(
+                REPORT['image_id'],tag,architecture,worker_environment,observe_lifecycle_worker,timeout=30)
         result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
@@ -203,7 +217,13 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         evidence = REPORT.get('evidence')
         REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
             and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']), architecture)
-            and accept_resources(REPORT.get('trusted_cgroup_abuse')))
+            and accept_resources(REPORT.get('trusted_cgroup_abuse'))
+            and type(REPORT.get('worker_configuration')) is dict
+            and evidence.get('host_canary_absent') is True
+            and type(REPORT.get('restricted_worker_lifecycle')) is dict
+            and REPORT['restricted_worker_lifecycle'].get('passed') is True
+            and type(REPORT['restricted_worker_lifecycle'].get('repeats')) is list
+            and len(REPORT['restricted_worker_lifecycle']['repeats']) == 2)
         if not REPORT['cleanup_complete']:
             REPORT['cleanup_failure'] = 'owned resource cleanup incomplete or daemon build state unresolved'
             result_code = 1

@@ -6,6 +6,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/eventfd.h>
+#include <sys/epoll.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdatomic.h>
 #include <pthread.h>
@@ -70,6 +73,63 @@ void trace(int stage) {
     };
     if (stage < 0 || (size_t)stage >= sizeof(markers)/sizeof(markers[0])) return;
     syscall(SYS_write, 2, markers[stage], strlen(markers[stage]));
+}
+/* Trusted pre-TSYNC fixture: event bookkeeping is needed for asynchronous
+ * completion, without admitting filesystem/network descriptors or creation. */
+static int fixture_event_fd = -1;
+static int fixture_poll_fd = -1;
+static int fixture_event_errno;
+int event_errno(void) { return fixture_event_errno; }
+static int event_failure(int operation) { fixture_event_errno = errno; return operation; }
+int event_prepare(void) {
+    if (fixture_event_fd != -1 || fixture_poll_fd != -1) return -1;
+    fixture_event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (fixture_event_fd < 0) return -1;
+    fixture_poll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (fixture_poll_fd < 0) return -1;
+    struct epoll_event event = {.events = EPOLLIN, .data.u64 = 0xF1E0};
+    return epoll_ctl(fixture_poll_fd, EPOLL_CTL_ADD, fixture_event_fd, &event);
+}
+/* Return the failed operation number; zero requires genuine kernel readiness
+ * and consumption. All operations run after TSYNC; no simulated completion. */
+int event_probe(void) {
+    uint64_t value = 1;
+    if (syscall(SYS_write, fixture_event_fd, &value, sizeof(value)) != 8) return event_failure(1);
+    struct epoll_event event = {0};
+    if (syscall(SYS_epoll_pwait, fixture_poll_fd, &event, 1, 0, NULL, 8) != 1 ||
+        event.data.u64 != 0xF1E0 || !(event.events & EPOLLIN)) return event_failure(2);
+    struct timespec timeout = {0};
+    event = (struct epoll_event){0};
+    if (syscall(SYS_epoll_pwait2, fixture_poll_fd, &event, 1, &timeout, NULL, 8) != 1 ||
+        event.data.u64 != 0xF1E0 || !(event.events & EPOLLIN)) return event_failure(3);
+    value = 0;
+    if (syscall(SYS_read, fixture_event_fd, &value, sizeof(value)) != 8 || value != 1) return event_failure(4);
+    if (syscall(SYS_epoll_pwait, fixture_poll_fd, &event, 1, 0, NULL, 8) != 0) return event_failure(5);
+    return 0;
+}
+/* New focused negative cases leave the existing 24 control contract unchanged. */
+int event_negative(int choice) {
+    uint64_t value[2] = {1, 0};
+    struct epoll_event event = {.events = EPOLLIN};
+    struct timespec timeout = {0};
+    errno = 0;
+    long result;
+    switch (choice) {
+        case 0: result = syscall(SYS_write, fixture_event_fd, value, sizeof(value)); break;
+        case 1: result = syscall(SYS_read, fixture_event_fd, value, sizeof(value)); break;
+        case 2: result = syscall(SYS_write, 999, value, 8); break;
+        case 3: result = syscall(SYS_read, 999, value, 8); break;
+        case 4: result = syscall(SYS_write, ((uint64_t)1 << 32) | (unsigned)fixture_event_fd, value, 8); break;
+        case 5: result = syscall(SYS_read, fixture_event_fd, value, ((uint64_t)1 << 32) | 8); break;
+        case 6: result = syscall(SYS_epoll_pwait, ((uint64_t)1 << 32) | (unsigned)fixture_poll_fd, &event, 1, 0, NULL, 8); break;
+        case 7: result = syscall(SYS_epoll_pwait2, 999, &event, 1, &timeout, NULL, 8); break;
+        case 8: result = syscall(SYS_eventfd2, 0, EFD_NONBLOCK); break;
+        case 9: result = syscall(SYS_epoll_create1, EPOLL_CLOEXEC); break;
+        case 10: result = syscall(SYS_epoll_ctl, fixture_poll_fd, EPOLL_CTL_DEL, fixture_event_fd, NULL); break;
+        case 11: result = syscall(SYS_dup, fixture_event_fd); break;
+        default: return 0;
+    }
+    return result == -1 && errno == EPERM ? -1 : 0;
 }
 /* One pre-existing native thread is a witness for TSYNC propagation. */
 static pthread_t witness;

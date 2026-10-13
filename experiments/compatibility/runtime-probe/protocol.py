@@ -17,10 +17,10 @@ def fixture_dispatch(request):
             "value": {"id": 1, "name": "Squat"}}
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE)
+                               stderr=subprocess.PIPE, env=environment)
     started = time.monotonic()
     output, errors = bytearray(), bytearray()
     phase = 'waiting-broker-request'
@@ -33,6 +33,8 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         errors.extend(chunk)
         if len(errors) > 4096:
             raise RuntimeError('worker stderr exceeded bound')
+        if chunk and on_stderr is not None:
+            on_stderr(bytes(errors))
         return chunk
     try:
         with selectors.DefaultSelector() as selector:
@@ -92,6 +94,8 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                     key.data.extend(chunk)
                     if len(output) > 16384 or len(errors) > 4096:
                         raise RuntimeError("worker output exceeded bound")
+                    if chunk and key.data is errors and on_stderr is not None:
+                        on_stderr(bytes(errors))
         process.wait(timeout=max(0.001, timeout-(time.monotonic()-started)))
         if process.returncode:
             raise RuntimeError(f"worker exited {process.returncode}: " + errors.decode(errors="replace")[-3000:])

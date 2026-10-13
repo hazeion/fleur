@@ -34,6 +34,11 @@ def accept(report, expected_architecture=None):
         return False
     if not accept_threads(report.get('host_threads')):
         return False
+    events = report.get('event_negatives')
+    if type(report.get('event_probe')) is not int or report['event_probe'] != 0:
+        return False
+    if type(events) is not list or len(events) != 12 or any(type(item) is not int or item != -1 for item in events):
+        return False
     install = report.get('install')
     main = report.get('main')
     thread = report.get('thread')

@@ -6,6 +6,8 @@ console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
 const native = dlopen('/probe/filter.so', {
   trace: {args: [FFIType.i32], returns: FFIType.void},
+  event_prepare: {returns: FFIType.i32}, event_probe: {returns: FFIType.i32},
+  event_errno: {returns: FFIType.i32}, event_negative: {args:[FFIType.i32],returns:FFIType.i32},
   architecture: {returns: FFIType.i32},
   prepare: {returns: FFIType.i32}, install: {returns: FFIType.i32},
   close_unrelated: {returns: FFIType.i32}, descriptors_closed: {returns: FFIType.i32},
@@ -27,7 +29,9 @@ const cgroups = {
 };
 if (cgroups.cpu !== '100000 100000' || cgroups.memory !== '536870912' || cgroups.pids !== '64') process.exit(15);
 native.trace(2);
-const source = await Bun.file('/probe/application.js').text();
+const mode = process.argv[2] ?? 'healthy';
+if (mode !== 'healthy' && mode !== 'busy') process.exit(17);
+const source = await Bun.file(mode === 'busy' ? '/probe/busy-application.js' : '/probe/application.js').text();
 native.trace(3);
 // Warm Preact/JSC. The fixture itself has not been evaluated or compiled.
 native.trace(4);
@@ -36,6 +40,7 @@ native.trace(5);
 native.trace(6);
 if (native.prepare() !== 0) process.exit(12);
 native.trace(7);
+if (native.event_prepare() !== 0) process.exit(18);
 native.trace(8);
 if (native.close_unrelated() !== 0) process.exit(14);
 native.trace(9);
@@ -44,6 +49,11 @@ native.trace(10);
 const installed = native.install();
 if (installed !== 0) process.exit(13);
 native.trace(11);
+const event_probe = native.event_probe();
+console.error('[compat-event] result=' + event_probe + ' errno=' + native.event_errno());
+if (event_probe !== 0) process.exit(17);
+const event_negatives = Array.from({length:12},(_,i)=>native.event_negative(i));
+if (event_negatives.some(result=>result !== -1)) process.exit(19);
 // Compilation and top-level fixture evaluation occur only after TSYNC success.
 native.trace(12);
 const application = new Function('h', 'render', 'negative', 'broker', 'trace', source);
@@ -57,6 +67,6 @@ native.trace(17);
 const thread = native.check_thread();
 native.trace(18);
 native.trace(19);
-console.log(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}));
+console.log(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}));
 native.trace(20);
 process.exit(0);

@@ -34,7 +34,32 @@ export class Broker {
     let commitAttempted=false;
     let activeQuery:ReturnType<SQL['unsafe']>|undefined;
     const cancelled=() => { if (abort.signal.aborted) throw new Error('DEADLINE'); };
-    const onAbort=() => activeQuery?.cancel();
+    let backend:{pid:number;started:string}|undefined;
+    let control:SQL|undefined;
+    let cancellation:Promise<boolean>|undefined;
+    const backendControl=async (action:'cancel'|'terminate') => {
+      if (!backend) return false;
+      control??=new SQL({...this.pool.options,max:1,connectionTimeout:1});
+      let controlTimer:ReturnType<typeof setTimeout>|undefined;
+      try {
+        const statement=action==='cancel'
+          ? 'SELECT pg_cancel_backend(pid) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user'
+          : 'SELECT pg_terminate_backend(pid) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user';
+        const result=await Promise.race([
+          control.unsafe(statement,[backend.pid,backend.started]),
+          new Promise<never>((_resolve,reject)=>{controlTimer=setTimeout(()=>reject(new Error('Control deadline')),250);}),
+        ]);
+        const rows=z.array(z.strictObject({applied:z.boolean()})).parse(result);
+        return rows.length===1 && rows[0]?.applied===true;
+      } catch {return false;}
+      finally {if (controlTimer) clearTimeout(controlTimer);}
+    };
+    const onAbort=() => {
+      activeQuery?.cancel();
+      // Bun's native cancel alone did not settle the real PostgreSQL workload.
+      // The trusted control connection targets only this verified borrowed backend.
+      cancellation=backendControl('cancel');
+    };
     const execute=async (query:{sql:string;params:unknown[]}) => {
       cancelled();
       if (!connection) throw new Error('DATABASE_FAILURE');
@@ -54,6 +79,8 @@ export class Broker {
     try {
       connection=await this.pool.reserve({signal:abort.signal});
       cancelled();
+      const identity=await execute({sql:'SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()',params:[]});
+      backend=z.strictObject({pid:z.number().int().positive(),started:z.string().min(1)}).parse(identity[0]);
       await execute({sql:admitted.operation==='compat.query' ? 'BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY' : 'BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE',params:[]});
       // PostgreSQL is the second enforcement boundary even if a read helper leaks.
       await execute({sql:"SET LOCAL statement_timeout = '5s'",params:[]});
@@ -102,6 +129,7 @@ export class Broker {
         try {
           await Promise.race([
             (async()=>{
+              if (cancellation) await cancellation;
               if (!committed) await ownedConnection.unsafe('ROLLBACK');
               await ownedConnection.unsafe('SELECT 1');
             })(),
@@ -111,10 +139,14 @@ export class Broker {
           ]);
           connection.release();
         } catch {
-          // A silent transport cannot prove cancellation. Destroy its connection.
-          try {await connection.close({timeout:0});}
-          catch(error) {console.error('[DEBUG-db23] forced-close-rejected',error instanceof Error ? error.name : typeof error);}
-        } finally {if (cleanupTimer) clearTimeout(cleanupTimer);}
+          // ReservedSQL.close closes the shared pool. Terminate only this exact owned backend instead.
+          const terminated=await backendControl('terminate');
+          if (terminated) connection.release();
+          // Failed control leaves this reservation quarantined, never returned for reuse.
+        } finally {
+          if (cleanupTimer) clearTimeout(cleanupTimer);
+          if (control) {try {await control.close({timeout:0});} catch { /* This pool owns only trusted control work. */ }}
+        }
 
       }
     }

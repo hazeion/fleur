@@ -17,10 +17,10 @@ def fixture_dispatch(request):
             "value": {"id": 1, "name": "Squat"}}
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE)
+                               stderr=subprocess.PIPE, env=environment)
     started = time.monotonic()
     output, errors = bytearray(), bytearray()
     phase = 'waiting-broker-request'

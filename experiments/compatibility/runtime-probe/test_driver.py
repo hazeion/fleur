@@ -11,11 +11,11 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
-        native = {"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
+        native = {"event_probe":0,"event_negatives":[-1]*12,"host_canary_absent":True,"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
                   "application_open":True,"descriptors_closed":True,"broker_reply":"registered:Squat",
                   "cgroups":{"cpu":"100000 100000","memory":"536870912","pids":"64"}}
         def command(args, **kwargs):
@@ -30,10 +30,25 @@ class DriverEvidence(unittest.TestCase):
                 Path(args[-1]).write_bytes(header)
                 return ''
             if args[:2] == ['docker','image']:
-                return architecture if args[-1] == '{{.Architecture}}' else 'sha256:fixture'
+                return architecture if args[-1] == '{{.Architecture}}' else 'sha256:'+'a'*64
             if args[:2] == ['docker','inspect']: return json.dumps({'OOMKilled':docker_oom_killed})
             return '{}'
+        owner = {}
         def subprocess_run(args, **kwargs):
+            if args[:2] == ['docker','inspect'] and '{{json .}}' in args:
+                metadata = {'Name':'/'+owner.get('container',''), 'Image':'sha256:'+'a'*64,
+                            'Config':{'Image':'sha256:'+'a'*64,'User':'65534:65534','Labels':{'fleur.compatibility.runtime-owner':owner.get('value','')},
+                            'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
+                                   'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin']},
+                            'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
+                            'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
+                            'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
+                            'Binds':None,'Mounts':None,'VolumesFrom':None,'Devices':[],'DeviceRequests':None,
+                            'PidMode':'','IpcMode':'private','RestartPolicy':{'Name':'no'}},
+                            'Mounts':[],'State':{'Running':True},
+                            'NetworkSettings':{'Networks':{'none':{'IPAddress':'','Gateway':'','GlobalIPv6Address':'','IPv6Gateway':''}}}}
+                if unsafe_environment: metadata['Config']['Env'].append('DATABASE_URL=must-be-redacted')
+                return SimpleNamespace(returncode=0,stdout=json.dumps(metadata),stderr='')
             if args[:2] == ['docker','run']:
                 mode = args[-1]
                 output = json.dumps(cpu if mode == 'cpu' else pids) if mode != 'memory' else memory_output
@@ -43,6 +58,9 @@ class DriverEvidence(unittest.TestCase):
         threads = [{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},
                    {'pid':7,'no_new_privs':1,'seccomp':2,'seccomp_filters':1}]
         def run_container(args, **kwargs):
+            owner['container'] = args[args.index('--name')+1]
+            if '--label' in args:
+                owner['value'] = args[args.index('--label')+1].split('=',1)[1]
             kwargs['observer']({})
             return json.dumps(native)
         captured = io.StringIO()
@@ -56,6 +74,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
+             patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
             code = run.main()
@@ -146,3 +165,11 @@ class DriverEvidence(unittest.TestCase):
                 host_machine='aarch64',compiler_sha='a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d')
         self.assertEqual(code,1)
         self.assertFalse(report['bounded_probe_passed'])
+
+    def test_actual_unsafe_worker_environment_is_rejected_without_value_disclosure(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,unsafe_environment=True)
+        self.assertEqual(code,1)
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertFalse('must-be-redacted' in json.dumps(report))

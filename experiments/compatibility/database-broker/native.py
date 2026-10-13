@@ -55,6 +55,8 @@ def run_native(bun, root, environment, source_root):
         runtime = source_root / 'runtime-probe'
         protocol = load(runtime / 'protocol.py', 'fleur_native_database_protocol')
         acceptance = load(runtime / 'report.py', 'fleur_native_database_acceptance')
+        configuration = load(runtime / 'configuration.py', 'fleur_native_database_configuration')
+        worker_environment = configuration.host_environment()
         threads = load(runtime / 'threads.py', 'fleur_native_database_thread_inspector')
         with tempfile.TemporaryDirectory(prefix='fleur-native-database-') as temporary:
             context = Path(temporary)
@@ -89,28 +91,34 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             observed_threads = None
             def observe_threads(_request):
                 nonlocal observed_threads
-                identity = json.loads(command(['docker','inspect',container],timeout=5))[0]
-                if identity['Name'] != '/'+container or identity['Image'] != metadata['Id'] or identity['Config']['Labels'].get(LABEL) != owner:
-                    raise RuntimeError('Native container identity differs before inspection')
+                row['worker_configuration'] = configuration.inspect_worker_configuration(
+                    container,owner,metadata['Id'],owner_label=LABEL)
                 observed_threads = threads.inspect_threads(container)
             with_broker = TrustedBroker([bun, 'ipc.ts'], root, environment, timeout=8)
             try:
                 attempted_run = True
                 # No host env, DB credential, host mount, network or socket enters this worker.
+                row['protocol_diagnostics'] = {}
                 output = protocol.run_container(['docker', 'run', '-i', '--name', container,
                     '--label', LABEL + '=' + owner, '--network=none', '--read-only', '--cap-drop=ALL',
                     '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                     '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, observer=observe_threads)
+                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, observer=observe_threads, diagnostics=row['protocol_diagnostics'], environment=worker_environment)
             finally:
                 with_broker.close()
             evidence = attach_host_threads(json.loads(output), observed_threads)
             if not acceptance.accept(dict(evidence, cleanup_complete=True),expected_architecture='amd64'):
                 raise RuntimeError('Restricted worker evidence incomplete')
+            if evidence.get('host_canary_absent') is not True:
+                raise RuntimeError('Restricted worker host canary exclusion failed')
             row['native_evidence'] = evidence
             row['passed'] = True
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError, KeyError) as error:
         row['failure'] = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+        if isinstance(error,subprocess.TimeoutExpired) and hasattr(error,'protocol_phase'):
+            row['worker_timeout'] = {'protocol_phase':error.protocol_phase,
+                'stdout':(error.output or b'')[:16384].decode('utf-8',errors='replace'),
+                'stderr':(error.stderr or b'')[:4096].decode('utf-8',errors='replace')}
     finally:
         for resource, attempted in [('container', attempted_run), ('image', attempted_build)]:
             if not attempted:

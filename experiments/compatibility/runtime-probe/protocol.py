@@ -17,49 +17,73 @@ def fixture_dispatch(request):
             "value": {"id": 1, "name": "Squat"}}
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
     started = time.monotonic()
+    output, errors = bytearray(), bytearray()
+    phase = 'waiting-broker-request'
+    def deadline_error():
+        error = subprocess.TimeoutExpired(args, timeout, output=bytes(output[:16384]), stderr=bytes(errors[:4096]))
+        error.protocol_phase = phase
+        return error
+    def read_error_chunk():
+        chunk = os.read(process.stderr.fileno(),4096)
+        errors.extend(chunk)
+        if len(errors) > 4096:
+            raise RuntimeError('worker stderr exceeded bound')
+        return chunk
     try:
         with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stdout, selectors.EVENT_READ, 'request')
+            selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
             line = bytearray()
             while not line.endswith(b"\n"):
                 remaining = timeout - (time.monotonic() - started)
-                if remaining <= 0 or not selector.select(remaining):
-                    raise subprocess.TimeoutExpired(args, timeout)
-                byte = os.read(process.stdout.fileno(), 1)
-                if not byte:
-                    raise RuntimeError("worker ended before broker request")
-                line.extend(byte)
-                if len(line) > 4096:
-                    raise RuntimeError("broker request exceeded bound")
+                if remaining <= 0:
+                    raise deadline_error()
+                ready = selector.select(remaining)
+                if not ready:
+                    raise deadline_error()
+                for key, _ in ready:
+                    if key.data == 'stderr':
+                        if not read_error_chunk():
+                            selector.unregister(process.stderr)
+                        continue
+                    byte = os.read(process.stdout.fileno(), 1)
+                    if not byte:
+                        raise RuntimeError("worker ended before broker request")
+                    line.extend(byte)
+                    if len(line) > 4096:
+                        raise RuntimeError("broker request exceeded bound")
         request = json.loads(line)
+        phase = 'host-observer'
         if observer is not None:
             observer(request)
+        phase = 'broker-dispatch'
         response = dispatch(request)
         if time.monotonic() - started >= timeout:
-            raise subprocess.TimeoutExpired(args, timeout)
+            raise deadline_error()
         if json.dumps(response, sort_keys=True) != json.dumps({"kind": "broker-response", "ok": True,
                         "value": {"id": 1, "name": "Squat"}}, sort_keys=True):
             raise RuntimeError("registered broker reply failed")
+        phase = 'broker-ack'
         process.stdin.write(b"registered:Squat\n")
         process.stdin.flush()
         process.stdin.close()
         process.stdin = None
-        output, errors = bytearray(), bytearray()
+        phase = 'waiting-worker-completion'
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ, output)
             selector.register(process.stderr, selectors.EVENT_READ, errors)
             while selector.get_map():
                 remaining = timeout - (time.monotonic() - started)
                 if remaining <= 0:
-                    raise subprocess.TimeoutExpired(args, timeout)
+                    raise deadline_error()
                 ready = selector.select(remaining)
                 if not ready:
-                    raise subprocess.TimeoutExpired(args, timeout)
+                    raise deadline_error()
                 for key, _ in ready:
                     chunk = os.read(key.fileobj.fileno(), 4096)
                     if not chunk:
@@ -72,7 +96,20 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None):
         if process.returncode:
             raise RuntimeError(f"worker exited {process.returncode}: " + errors.decode(errors="replace")[-3000:])
         return output.decode()
+    except subprocess.TimeoutExpired as error:
+        # Preserve only already-drained bounded bytes. Callback timeouts keep
+        # their own exception category but acquire the worker's observed phase.
+        error.output = bytes(output[:16384])
+        error.stderr = bytes(errors[:4096])
+        error.protocol_phase = phase
+        raise
     finally:
+        if diagnostics is not None:
+            diagnostics.update({'protocol_phase':phase,
+                                'duration_ms':round(1000*(time.monotonic()-started)),
+                                'timeout_seconds':timeout,
+                                'stdout':bytes(output[:16384]).decode('utf-8',errors='replace'),
+                                'stderr':bytes(errors[:4096]).decode('utf-8',errors='replace')})
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=5)

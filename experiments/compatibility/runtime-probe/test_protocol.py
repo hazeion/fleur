@@ -43,3 +43,28 @@ class Protocol(unittest.TestCase):
         output = run_container([sys.executable,'-u','-c',source],dispatch=dispatch,observer=observe)
         self.assertEqual(json.loads(output),{'reply':'registered:Squat'})
         self.assertEqual(events,['observed','dispatched'])
+
+    def test_timeout_preserves_bounded_post_ack_stage_output(self):
+        source = "import json,sys,time; print(" + repr(json.dumps(REQUEST)) + ",flush=True); sys.stdin.readline(); print('[DEBUG-runtime] file-promise-created',file=sys.stderr,flush=True); print('partial-evidence',flush=True); time.sleep(30)"
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container([sys.executable,'-u','-c',source],timeout=0.2)
+        self.assertIn(b'file-promise-created',caught.exception.stderr or b'')
+        self.assertIn(b'partial-evidence',caught.exception.output or b'')
+
+    def test_pre_request_stderr_is_drained_and_retained_without_changing_ack(self):
+        source = "import json,sys; print('[DEBUG-runtime] loader-ready',file=sys.stderr,flush=True); print(" + repr(json.dumps(REQUEST)) + ",flush=True); print(json.dumps({'reply':sys.stdin.readline().strip()}))"
+        diagnostics = {}
+        output = run_container([sys.executable,'-u','-c',source],diagnostics=diagnostics)
+        self.assertEqual(json.loads(output),{'reply':'registered:Squat'})
+        self.assertIn('loader-ready',diagnostics['stderr'])
+        self.assertEqual(diagnostics['timeout_seconds'],30)
+        self.assertLessEqual(len(diagnostics['stderr'].encode()),4096)
+
+    def test_pre_request_timeout_retains_stage_and_classifies_phase(self):
+        source = "import sys,time; print('[DEBUG-runtime] prepare-start',file=sys.stderr,flush=True); time.sleep(30)"
+        diagnostics = {}
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container([sys.executable,'-u','-c',source],timeout=0.2,diagnostics=diagnostics)
+        self.assertIn(b'prepare-start',caught.exception.stderr)
+        self.assertEqual(caught.exception.protocol_phase,'waiting-broker-request')
+        self.assertEqual(diagnostics['protocol_phase'],'waiting-broker-request')

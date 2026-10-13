@@ -29,6 +29,48 @@
 #error "unsupported native syscall ABI"
 #endif
 int architecture(void) { return PROBE_ARCHITECTURE; }
+/* Temporary bounded diagnosis markers. No dynamic data or paths are emitted. */
+void trace(int stage) {
+    static const char *const markers[] = {
+        "[DEBUG-runtime] loader-ready\n",
+        "[DEBUG-runtime] profile-loaded\n",
+        "[DEBUG-runtime] cgroups-read\n",
+        "[DEBUG-runtime] source-read\n",
+        "[DEBUG-runtime] warmup-start\n",
+        "[DEBUG-runtime] warmup-done\n",
+        "[DEBUG-runtime] prepare-start\n",
+        "[DEBUG-runtime] prepare-ready\n",
+        "[DEBUG-runtime] closure-start\n",
+        "[DEBUG-runtime] closure-done\n",
+        "[DEBUG-runtime] tsync-start\n",
+        "[DEBUG-runtime] tsync-done\n",
+        "[DEBUG-runtime] eval-compile-start\n",
+        "[DEBUG-runtime] eval-compile-done\n",
+        "[DEBUG-runtime] eval-call-start\n",
+        "[DEBUG-runtime] eval-call-returned\n",
+        "[DEBUG-runtime] eval-await-done\n",
+        "[DEBUG-runtime] witness-start\n",
+        "[DEBUG-runtime] witness-done\n",
+        "[DEBUG-runtime] evidence-write\n",
+        "[DEBUG-runtime] exit-start\n",
+        "[DEBUG-runtime] ipc-send-start\n",
+        "[DEBUG-runtime] ipc-sent\n",
+        "[DEBUG-runtime] ipc-read-start\n",
+        "[DEBUG-runtime] ipc-read-done\n",
+        "[DEBUG-runtime] witness-activated\n",
+        "[DEBUG-runtime] witness-native-done\n",
+        "[DEBUG-runtime] controls-start\n",
+        "[DEBUG-runtime] controls-done\n",
+        "[DEBUG-runtime] render-start\n",
+        "[DEBUG-runtime] render-done\n",
+        "[DEBUG-runtime] file-read-start\n",
+        "[DEBUG-runtime] file-promise-created\n",
+        "[DEBUG-runtime] file-denied\n",
+        "[DEBUG-runtime] file-unexpectedly-allowed\n",
+    };
+    if (stage < 0 || (size_t)stage >= sizeof(markers)/sizeof(markers[0])) return;
+    syscall(SYS_write, 2, markers[stage], strlen(markers[stage]));
+}
 /* One pre-existing native thread is a witness for TSYNC propagation. */
 static pthread_t witness;
 static int unrelated_fd;
@@ -39,9 +81,11 @@ static void *observe(void *unused) {
     (void)unused;
     atomic_store(&phase, 1);
     while (atomic_load(&phase) != 2) syscall(SYS_sched_yield);
+    trace(25);
     long result = syscall(SYS_openat, AT_FDCWD, "/etc/passwd", O_RDONLY, 0);
     atomic_store(&thread_result, result == -1 && errno == EPERM ? -1 : 0);
     atomic_store(&phase, 3);
+    trace(26);
     return NULL;
 }
 int prepare(void) {
@@ -83,12 +127,15 @@ int descriptors_closed(void) { return closed_unrelated; }
 /* Synchronous bounded stdio transport. Trusted host validates the request. */
 int broker_exchange(void) {
     const char request[] = "{\"kind\":\"broker-request\",\"operation\":\"compat.query\",\"token\":\"probe-query\",\"action\":\"readExercise\",\"input\":{\"id\":1}}\n";
+    trace(21);
     size_t sent = 0;
     while (sent < sizeof(request)-1) {
         ssize_t count = write(1, request+sent, sizeof(request)-1-sent);
         if (count <= 0) return -1;
         sent += (size_t)count;
     }
+    trace(22);
+    trace(23);
     char reply[4096]; size_t used = 0;
     while (used < sizeof(reply)-1) {
         ssize_t count = read(0, reply+used, 1);
@@ -96,6 +143,7 @@ int broker_exchange(void) {
         if (reply[used++] == '\n') break;
     }
     reply[used] = 0;
+    trace(24);
     return !strcmp(reply, "registered:Squat\n") ? 0 : -1;
 }
 #define ALLOW(n) BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_##n, 0, 1), BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW)

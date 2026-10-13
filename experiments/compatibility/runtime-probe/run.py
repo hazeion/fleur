@@ -9,11 +9,11 @@ import shutil
 import subprocess
 import tempfile
 import time
-from report import accept, CONTROLS
+from report import accept, accept_threads, CONTROLS
 from runtime_profile import select_profile, native_elf_identity
 from protocol import run_container
 from resources import accept_resources
-from threads import inspect_threads
+from diagnostics import snapshot_worker
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -63,7 +63,7 @@ def main(architecture=None):
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -106,11 +106,18 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
             def observe_worker(_request):
-                REPORT['host_threads'] = inspect_threads(container)
+                snapshot = snapshot_worker(container)
+                REPORT['host_pause_diagnostics'] = snapshot
+                rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
+                        for row in snapshot['tasks']]
+                if not accept_threads(rows):
+                    raise RuntimeError('existing thread lacks the sole native restriction filter')
+                REPORT['host_threads'] = rows
+            REPORT['worker_protocol'] = {}
             output = run_container(['docker', 'run', '-i', '--name', container, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker)
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker, diagnostics=REPORT['worker_protocol'])
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -155,6 +162,16 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
+        if isinstance(error, subprocess.TimeoutExpired) and run_started and hasattr(error,'protocol_phase'):
+            REPORT['worker_timeout'] = {
+                'protocol_phase':getattr(error,'protocol_phase','unknown'),
+                'stdout':(error.output or b'')[:16384].decode('utf-8',errors='replace'),
+                'stderr':(error.stderr or b'')[:4096].decode('utf-8',errors='replace'),
+            }
+            try:
+                REPORT['host_timeout_diagnostics'] = snapshot_worker(container)
+            except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired) as diagnostic_error:
+                REPORT['host_timeout_diagnostics'] = {'outcome':'timed-out' if isinstance(diagnostic_error,subprocess.TimeoutExpired) else 'unavailable'}
         result_code = 1
     finally:
         cleanup = []

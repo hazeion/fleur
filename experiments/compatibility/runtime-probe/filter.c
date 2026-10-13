@@ -18,6 +18,17 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 
+/* Only native 64-bit little-endian syscall ABIs are admitted. */
+#if defined(__x86_64__) && !defined(__ILP32__)
+#define PROBE_AUDIT_ARCH AUDIT_ARCH_X86_64
+#define PROBE_ARCHITECTURE 1
+#elif defined(__aarch64__) && !defined(__ILP32__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define PROBE_AUDIT_ARCH AUDIT_ARCH_AARCH64
+#define PROBE_ARCHITECTURE 2
+#else
+#error "unsupported native syscall ABI"
+#endif
+int architecture(void) { return PROBE_ARCHITECTURE; }
 /* One pre-existing native thread is a witness for TSYNC propagation. */
 static pthread_t witness;
 static int unrelated_fd;
@@ -89,13 +100,10 @@ int broker_exchange(void) {
 }
 #define ALLOW(n) BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_##n, 0, 1), BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW)
 int install(void) {
-#if !defined(__x86_64__)
-    return -1;
-#else
     /* Deny-by-default also rejects openat2, io_uring, clone3 and x32 numbers. */
     struct sock_filter code[] = {
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, arch)),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, PROBE_AUDIT_ARCH, 1, 0),
         BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, nr)),
         ALLOW(brk),
@@ -131,7 +139,6 @@ int install(void) {
     long result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER,
                           SECCOMP_FILTER_FLAG_TSYNC, &program);
     return result == 0 ? 0 : -1;
-#endif
 }
 int check_thread(void) {
     atomic_store(&phase, 2);
@@ -143,7 +150,11 @@ int negative(int choice) {
     long result;
     switch (choice) {
         case 0: result = syscall(SYS_openat, AT_FDCWD, "/etc/passwd", O_RDONLY, 0); break;
+#if defined(__x86_64__)
         case 1: result = syscall(SYS_open, "/etc/passwd", O_RDONLY, 0); break;
+#else
+        case 1: result = syscall(SYS_openat, AT_FDCWD, "/etc/passwd", O_WRONLY, 0); break;
+#endif
         case 2: result = syscall(SYS_unlinkat, AT_FDCWD, "/tmp/target", 0); break;
         case 3: result = syscall(SYS_socket, AF_INET, SOCK_STREAM, 0); break;
         case 4: result = syscall(SYS_connect, -1, NULL, 0); break;
@@ -153,8 +164,13 @@ int negative(int choice) {
         case 8: result = syscall(SYS_setuid, 0); break;
         case 9: result = syscall(SYS_io_uring_setup, 1, NULL); break;
         case 10: result = syscall(SYS_openat2, AT_FDCWD, "/etc/passwd", NULL, 0); break;
+#if defined(__x86_64__)
         case 11: result = syscall(SYS_creat, "/tmp/target", 0600); break;
         case 12: result = syscall(SYS_rename, "/tmp/a", "/tmp/b"); break;
+#else
+        case 11: result = syscall(SYS_openat, AT_FDCWD, "/tmp/target", O_CREAT|O_WRONLY, 0600); break;
+        case 12: result = syscall(SYS_renameat2, AT_FDCWD, "/tmp/a", AT_FDCWD, "/tmp/b", 0); break;
+#endif
         case 13: result = syscall(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, NULL); break;
         case 14: result = syscall(SYS_clone, 0, NULL, NULL, NULL, 0); break;
         case 15: result = syscall(SYS_clone3, NULL, 0); break;
@@ -165,6 +181,8 @@ int negative(int choice) {
         case 20: result = syscall(SYS_io_uring_register, -1, 0, NULL, 0); break;
         case 21: result = syscall(SYS_mmap, NULL, 4096, PROT_READ, MAP_PRIVATE, unrelated_fd, 0); break;
         case 22: result = syscall(SYS_dup, 0); break;
+        /* x86_64 tests x32 openat; arm64 tests an unknown syscall number.
+         * AArch64 has no x32 ABI. Both must receive filter EPERM, not ENOSYS. */
         case 23: result = syscall(SYS_openat | 0x40000000, AT_FDCWD, "/etc/passwd", O_RDONLY, 0); break;
         default: return 0;
     }

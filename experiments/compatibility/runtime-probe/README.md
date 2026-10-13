@@ -2,11 +2,12 @@
 
 This is an issue #23 compatibility probe, not Fleur runtime code. A pass establishes only this small Bun/Preact fixture under this filter. It cannot close the runtime isolation gate.
 
-Run on a disposable Ubuntu 24.04 Linux amd64 Docker runner:
+Run on a disposable Ubuntu 24.04 native Linux amd64 or arm64 Docker runner:
 
 ```sh
 python3 -m unittest discover -s experiments/compatibility/runtime-probe -p 'test_*.py'
-python3 experiments/compatibility/runtime-probe/run.py > runtime-probe-report.json
+python3 experiments/compatibility/runtime-probe/run.py --architecture amd64 > runtime-probe-report.json
+# On a native arm64 Linux runner, use --architecture arm64 instead.
 ```
 
 The driver requires the existing runner's GCC 13.3.0 and refuses other versions. It installs nothing on the host. Evidence records the executed compiler version and binary SHA-256, helper SHA-256, host OS/kernel/Docker versions, immutable base manifest and built image ID. This is an experiment compiler candidate, not a verified release compiler or immutable runner image. Compilation uses `-shared -fPIC -O2 -std=c11 -Wall -Wextra -Werror -pthread`. The build uses the rendering experiment's existing frozen Bun lockfile with Preact 11.0.1 and preact-render-to-string 6.8.0. It asserts Bun 1.4.3 in trusted preparation.
@@ -56,3 +57,36 @@ The revised memory experiment forks one pressure child from a small trusted moni
 The public evidence test failed red when supplied complete direct kernel/child attribution, then passed after implementing that requirement. Ten local Python tests now pass with ResourceWarnings treated as errors, including rejection of the original ambiguous 137 shape. Syntax checks and diff whitespace checks passed. The revised native monitor has not yet been compiled/executed on Linux. The attribution failure's exact upstream Docker cause remains unknown; no evidence distinguishes missing event delivery from another SIGKILL in the original run. Native evidence and partial resource results now enter the report immediately so later failures preserve earlier observations.
 
 Independent review found a report-integrity regression in the revised monitor parser: native JSON could supply `container_exit` or `docker_oom_killed` and overwrite driver-measured status. A replay through the real report-producing driver demonstrated red, falsely returning exit zero for a measured exit 137. The parser now requires exactly the five native signal/cgroup fields, rejects nonobjects, conflicting or extra fields, malformed JSON and output over 4096 UTF-8 bytes. Driver-measured status remains separate from admitted native fields. Fourteen local tests pass, including individual status-key collisions, valid evidence paired with actual parent exits zero/137, retained native evidence after malformed memory results, and completed cleanup. These driver tests substitute subprocess results to exercise report interpretation; they do not claim native Linux execution.
+
+## Native AArch64 port awaiting execution
+
+The driver selects only a matching native Linux amd64 or arm64 profile. An explicit `--architecture` requires that architecture on the actual host; it cannot turn an amd64 host plus QEMU into ARM64 evidence. Omitting the option detects one of those supported native profiles. Native Darwin remains rejected. The amd64 and arm64 Bun manifests use the independently hashed architecture pins recorded in the isolation experiment. GCC must report version 13.3.0 and the matching `x86_64-linux-gnu` or `aarch64-linux-gnu` target. Both compiled binaries must have ELF64/little-endian headers with machine 62 or 183, and Docker must report the matching built image architecture. The trusted profile manifest must match the native helper's compiled architecture before restrictions or application evaluation.
+
+The helper selects `AUDIT_ARCH_AARCH64` for native little-endian LP64 AArch64, retains `AUDIT_ARCH_X86_64` for amd64, and refuses unsupported/ILP32/big-endian compilation. Wrong kernel audit ABI still kills the process. The same anonymous-only mmap flags check and fd-limited read/write policy apply to each native 64-bit ABI. The seccomp call still requires exact-zero TSYNC; no new thread/process or shared-library loading syscall is admitted. AArch64 syscall selection follows the [Linux syscall definitions](https://github.com/torvalds/linux/blob/v6.17/include/uapi/asm-generic/unistd.h) and [audit ABI definitions](https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/audit.h). These source references guide the candidate port; only native execution can verify its runtime compatibility.
+
+Both profiles report 24 ordered native controls. Four controls differ because AArch64 does not expose the same legacy amd64 syscalls or x32 ABI:
+
+| Index | amd64 control | arm64 control |
+| --- | --- | --- |
+| 1 | `open` | `openat_write` |
+| 11 | `creat` | `openat_create` |
+| 12 | `rename` | `renameat2` |
+| 23 | `x32_openat` | `unknown_syscall` |
+
+The ARM64 unknown-number control requires filter EPERM, rather than accepting kernel ENOSYS as a denial proof. Other controls still cover filesystem mutation, new sockets/connects, process/namespace/debug/privilege changes, io_uring alternatives, file-backed mmap and descriptor duplication. The trusted bootstrap reports native architecture and exact control names; the acceptance boundary rejects mismatched architecture, wrong labels, wrong results and missing evidence. Registered stdio broker exchange, Preact rendering, preexisting-thread witness and actual CPU/memory/PID cgroup pressure remain mandatory on both profiles.
+
+AMD64's existing executed GCC binary SHA-256 remains required. ARM64 currently has no executed compiler digest: `expected_gcc_binary_sha256` is null, `compiler_status` is `candidate-recorded` and `compiler_pin_verified` is false. The driver records its actual GCC executable digest, source digests, compiled helper/abuse digests, ELF identities and immutable image identity. A candidate pass cannot claim a frozen compiler or close the v1 gate. After native CI execution and inspection, freeze the observed ARM64 compiler digest before calling it verified.
+
+Local tests demonstrated red for accepting ARM64 evidence with x32-only labels, rejecting a native ARM64 setup, and accepting the wrong compiled ELF machine despite a matching compiler label. After the port, 22 Python tests pass with ResourceWarnings treated as errors. Syntax checks and whitespace checks passed. Invoking `--architecture arm64` on this macOS host failed closed before creating resources. The ARM64 helper has not yet been compiled or executed natively; independent critical review and native CI are still required. This port does not establish Docker readiness or installation on Intel/Apple Silicon macOS, broader distro support, module closure or long-lived runtime behavior.
+
+For consumers such as the real PostgreSQL broker probe, `report.py` and `runtime_profile.py` have no local-module dependencies and can be loaded explicitly by path. `report.CONTROLS[architecture]` supplies the admitted ordered manifest labels. Prepare `/probe/profile.json` with architecture/control names, copy it into the immutable image, and call `report.accept(evidence, expected_architecture)` to prevent foreign-architecture evidence from satisfying that worker.
+
+## Trusted observation of every existing worker thread
+
+The full native probe now observes the owned worker while its first registered broker request waits for fd0 acknowledgment after successful TSYNC. An optional `protocol.run_container(..., observer=...)` hook runs at that pause before dispatch/ack. The trusted host invokes one fixed `docker exec` operation as UID/GID 65534, with a five-second bound. Shell builtins read only `/proc/1/task/*/status` and emit `Pid`, `NoNewPrivs`, `Seccomp` and `Seccomp_filters`. It reads no process environment, command line or memory, and supplies no host mounts or secret environment. The application itself retains no proc filesystem authority.
+
+The collector requires unique positive TIDs, including PID 1, and at least two observed threads. Every thread must show `NoNewPrivs == 1`, `Seccomp == 2` and exactly one filter. Docker's outer seccomp policy remains unconfined, so a preexisting substitute filter cannot satisfy the expected count. Unknown/missing fields, duplicate TIDs, incomplete scans, a different filter count, inspection failure or timeout prevent acknowledgment and fail the experiment. Thread/process creation remains denied, and an exiting-thread scan race fails conservatively rather than declaring the incomplete scan sufficient.
+
+The driver attaches this separately collected `host_threads` evidence to the native worker report. Public report acceptance now requires it; a missing external observation cannot pass solely from exact-zero TSYNC and one witness. The registered PostgreSQL consumer must install the same host observer and attach its result before acceptance. This establishes the applied filter state of all observed existing worker threads when executed; future runtime behavior and long-lived workloads still require their own evidence.
+
+A regression first demonstrated that an unfiltered thread could be included in a falsely accepted report. After requiring all-thread evidence, 26 local Python tests pass with ResourceWarnings treated as errors. Tests exercise the actual fixed shell on tab-delimited disposable status fixtures, verify it excludes other fields, reject missing/duplicated/unfiltered thread records, and exercise an actual pipe proving observation precedes dispatch/ack. These fixtures establish collector/protocol behavior, not executed kernel restriction state. Native Docker observation and the ARM64 port still await critical review and CI.

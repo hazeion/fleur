@@ -1,6 +1,6 @@
 # Fleur v1 specification
 
-Review candidate. This specification defines Fleur's first implementation and its acceptance gates. It does not authorize implementation, claim that a runtime exists, or report unexecuted compatibility checks as passes. The final human review is owned by [Assemble and review the build-ready Fleur v1 specification](https://github.com/hazeion/fleur/issues/12).
+Approved after live human review under [Assemble and review the build-ready Fleur v1 specification](https://github.com/hazeion/fleur/issues/12). This specification defines Fleur's first implementation and its acceptance gates. Approval does not authorize implementation, claim that a runtime exists, or report unexecuted compatibility checks as passes. The mandatory initial compatibility gate must pass before dependent implementation proceeds.
 
 ## Product and scope
 

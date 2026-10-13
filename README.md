@@ -8,6 +8,6 @@ The planned entry point is `bunx fleur`, with Bun installed beforehand. Fleur wi
 
 The agreed first version uses Bun, Preact, Tailwind, Vite, and PostgreSQL on macOS and Linux. Server functions and components are the default, with interactive client islands. Docker manages development PostgreSQL and isolates application execution in development and production. Authentication and hosted deployment are deferred.
 
-See [the agreed scope](docs/planning/V1-SCOPE.md) and [the Wayfinder map](https://github.com/hazeion/fleur/issues/1) for decisions still needed before implementation.
+See [the agreed scope](docs/planning/V1-SCOPE.md) and [the completed Wayfinder map](https://github.com/hazeion/fleur/issues/1) for the planning decisions.
 
-The [v1 specification review candidate](docs/planning/V1-SPEC.md) assembles the agreed contracts, acceptance gates, and implementation sequence. Final human review is pending; implementation remains a separate authorization.
+The [approved v1 specification](docs/planning/V1-SPEC.md) assembles the agreed contracts, acceptance gates, and implementation sequence. Implementation requires separate authorization and begins with mandatory compatibility validation.

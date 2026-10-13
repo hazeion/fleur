@@ -1,0 +1,134 @@
+name: Compatibility experiments
+
+on:
+  pull_request:
+  push:
+    branches: [implement/fleur-v1]
+
+permissions:
+  contents: read
+
+# All code and browser dependency provisioning run on disposable hosted runners.
+# No deployment credentials, repository secrets, privileged PR triggers or caches.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  isolation-diagnostic:
+    name: Isolation diagnostic only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Diagnostic requirements
+        run: python3 -m unittest discover -s experiments/compatibility/isolation -p 'test_*.py'
+      - name: Record deliberately blocked preflight
+        run: |
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          set +e
+          python3 experiments/compatibility/isolation/preflight.py > "$RUNNER_TEMP/fleur-evidence/isolation.json"
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/fleur-evidence/isolation.json"
+          test "$result" -eq 2
+      - name: Retain diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: isolation-diagnostic
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  tooling:
+    name: Full tooling experiment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Obtain and verify exact Bun
+        run: |
+          test "$(uname -m)" = x86_64
+          mkdir -p "$RUNNER_TEMP/fleur-bun" "$RUNNER_TEMP/fleur-evidence"
+          curl --fail --location --silent --show-error https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip --output "$RUNNER_TEMP/fleur-bun/bun.zip"
+          echo "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/fleur-bun/bun.zip" -d "$RUNNER_TEMP/fleur-bun"
+          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
+          echo "FLEUR_EXPERIMENT_BUN=$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" >> "$GITHUB_ENV"
+          { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
+      - name: Full frozen tooling checks, failures remain failures
+        run: python3 experiments/compatibility/tooling/run.py --bun "$FLEUR_EXPERIMENT_BUN" > "$RUNNER_TEMP/fleur-evidence/tooling.json"
+      - name: Display scoped diagnostics
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/fleur-evidence/tooling.json"; then
+            cat "$RUNNER_TEMP/fleur-evidence/tooling.json"
+          fi
+      - name: Retain tooling diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tooling-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  rendering:
+    name: Rendering, types, full experiment lint and Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Obtain and verify exact Bun
+        run: |
+          test "$(uname -m)" = x86_64
+          mkdir -p "$RUNNER_TEMP/fleur-bun" "$RUNNER_TEMP/fleur-evidence"
+          curl --fail --location --silent --show-error https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip --output "$RUNNER_TEMP/fleur-bun/bun.zip"
+          echo "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/fleur-bun/bun.zip" -d "$RUNNER_TEMP/fleur-bun"
+          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
+          echo "$RUNNER_TEMP/fleur-bun/bun-linux-x64" >> "$GITHUB_PATH"
+          { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
+      - name: Install both frozen experiment graphs
+        working-directory: experiments/compatibility/rendering
+        run: |
+          bun install --frozen-lockfile
+          (cd lint && bun install --frozen-lockfile)
+      - name: Provision package-pinned Chromium and Linux OS dependencies
+        working-directory: experiments/compatibility/rendering
+        # Explicit apt provisioning is confined to this disposable CI runner.
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Production browser build
+        working-directory: experiments/compatibility/rendering
+        run: bun run build
+      - name: Strict compiler
+        working-directory: experiments/compatibility/rendering
+        run: bun run types
+      - name: Full experiment lint, both engines
+        working-directory: experiments/compatibility/rendering
+        run: bun run lint
+      - name: Unit requirements
+        working-directory: experiments/compatibility/rendering
+        run: bun run test
+      - name: Chromium requirements, first run
+        working-directory: experiments/compatibility/rendering
+        run: |
+          set -o pipefail
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-first.txt"
+      - name: Chromium requirements, second run
+        working-directory: experiments/compatibility/rendering
+        run: |
+          set -o pipefail
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-second.txt"
+      - name: Retain rendering diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rendering-diagnostics
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7

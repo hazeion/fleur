@@ -76,6 +76,7 @@ def main():
         native = {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(platform.machine())
         if platform.system() != 'Linux' or native != arch:
             raise ValueError('matching native Linux architecture required; no emulation')
+        report['host']['os_release'] = Path('/etc/os-release').read_text()
         stage = 'Docker prerequisite'
         if not shutil.which('docker'):
             raise ValueError('Docker unavailable')
@@ -89,6 +90,11 @@ def main():
         with tempfile.TemporaryDirectory(prefix='fleur-distro-') as directory:
             context = Path(directory)
             source = Path(__file__).resolve().parent.parent
+            report['fixture_inputs'] = {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                       for path in source.rglob('*')
+                                       if path.is_file() and ('node_modules' not in path.parts)
+                                       and (path.name == 'bun.lock' or path.suffix == '.patch'
+                                            or path.name == 'bootstrap.py')}
             for fixture in ('platforms', 'tooling', 'rendering', 'distro-fixtures'):
                 shutil.copytree(source / fixture, context / fixture,
                                 ignore=shutil.ignore_patterns('node_modules', '__pycache__', 'dist', 'test-results', 'playwright-report'))

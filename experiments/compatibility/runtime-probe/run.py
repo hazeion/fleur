@@ -9,11 +9,14 @@ import subprocess
 import tempfile
 import time
 from report import accept
+from protocol import run_container
+from resources import accept_resources
 
 BASE = 'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
-          'base_image': BASE, 'expected_bun': '1.4.3', 'expected_gcc': '13.3.0'}
+          'base_image': BASE, 'expected_bun': '1.4.3', 'expected_gcc': '13.3.0',
+          'expected_gcc_binary_sha256': '1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26'}
 
 
 def command(args, timeout=30, cwd=None):
@@ -32,6 +35,7 @@ def main():
     build_started = False
     build_finished = False
     run_started = False
+    resource_containers = []
     try:
         if platform.system() != 'Linux' or platform.machine() != 'x86_64':
             raise RuntimeError('requires disposable Linux x86_64 Docker runner')
@@ -41,6 +45,8 @@ def main():
         version = command([compiler, '-dumpfullversion'])
         REPORT['gcc'] = {'version': command([compiler, '--version']),
                          'binary_sha256': hashlib.sha256(Path(compiler).read_bytes()).hexdigest()}
+        if REPORT['gcc']['binary_sha256'] != REPORT['expected_gcc_binary_sha256']:
+            raise RuntimeError('compiler binary differs from executed GCC pin')
         if version != REPORT['expected_gcc']:
             raise RuntimeError(f'compiler candidate mismatch: {version}')
         REPORT['host'] = {'kernel': platform.release(),
@@ -55,6 +61,9 @@ def main():
                 shutil.copyfile(dependencies / name, context / name)
             command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra',
                      '-Werror', '-pthread', str(HERE / 'filter.c'), '-o', str(context / 'filter.so')])
+            command([compiler, '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
+                     str(HERE / 'abuse.c'), '-o', str(context / 'abuse')])
+            REPORT['abuse_sha256'] = hashlib.sha256((context / 'abuse').read_bytes()).hexdigest()
             REPORT['helper_sha256'] = hashlib.sha256((context / 'filter.so').read_bytes()).hexdigest()
             (context / 'Dockerfile').write_text(f'''FROM {BASE} AS prepare
 WORKDIR /probe
@@ -65,7 +74,7 @@ RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {BASE}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
-COPY filter.so application.js ./
+COPY filter.so application.js abuse ./
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
@@ -74,12 +83,33 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             build_finished = True
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
-            output = command(['docker', 'run', '--name', container, '--network=none',
+            output = run_container(['docker', 'run', '-i', '--name', container, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
                               '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
+            resources = {}
+            for mode in ('cpu', 'memory', 'pids'):
+                resource_name = tag + '-' + mode
+                resource_containers.append(resource_name)
+                abuse = subprocess.run(['docker', 'run', '--name', resource_name,
+                    '--network=none', '--read-only', '--cap-drop=ALL',
+                    '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
+                    '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
+                    '--ulimit=core=0', '--pull=never', '--entrypoint=/probe/abuse',
+                    REPORT['image_id'], mode], capture_output=True, text=True, timeout=15)
+                if mode == 'memory':
+                    state = json.loads(command(['docker', 'inspect', resource_name,
+                                                '--format', '{{json .State}}']))
+                    resources[mode] = {'exit': abuse.returncode, 'oom_killed': state.get('OOMKilled')}
+                else:
+                    if abuse.returncode or len(abuse.stdout) > 4096:
+                        raise RuntimeError('trusted cgroup ' + mode + ' experiment failed')
+                    resources[mode] = json.loads(abuse.stdout)
+            REPORT['trusted_cgroup_abuse'] = resources
+            if not accept_resources(resources):
+                raise RuntimeError('missing controlled cgroup enforcement evidence')
             REPORT['evidence'] = json.loads(output)
             evidence = REPORT['evidence']
             if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True)):
@@ -91,17 +121,20 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         result_code = 1
     finally:
         cleanup = []
-        for resource, started, args in (
+        cleanup_resources = [
             ('container', run_started, ['docker', 'rm', '-f', container]),
             ('image', build_started, ['docker', 'image', 'rm', '-f', tag]),
-        ):
+        ]
+        cleanup_resources.extend(('resource-container', True, ['docker', 'rm', '-f', name])
+                                 for name in resource_containers)
+        for resource, started, args in cleanup_resources:
             if not started:
                 cleanup.append({'resource': resource, 'outcome': 'never-created'})
                 continue
             try:
                 removed = subprocess.run(args, capture_output=True, text=True,
                                          timeout=15, check=False)
-                absent = (('No such container:' if resource == 'container' else
+                absent = (('No such container:' if resource in ('container', 'resource-container') else
                            'No such image:') in removed.stderr)
                 outcome = 'removed' if removed.returncode == 0 else 'absent' if absent else 'failed'
                 cleanup.append({'resource': resource, 'outcome': outcome})
@@ -115,7 +148,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                                       and not REPORT['daemon_build_may_be_pending'])
         evidence = REPORT.get('evidence')
         REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
-            and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete'])))
+            and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']))
+            and accept_resources(REPORT.get('trusted_cgroup_abuse')))
         if not REPORT['cleanup_complete']:
             REPORT['cleanup_failure'] = 'owned resource cleanup incomplete or daemon build state unresolved'
             result_code = 1

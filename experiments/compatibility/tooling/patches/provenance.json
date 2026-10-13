@@ -1,0 +1,103 @@
+{
+  "package": "drizzle-orm",
+  "version": "0.45.4",
+  "runtime_modified": false,
+  "files": [
+    {
+      "file": "gel-core/query-builders/query.d.ts",
+      "published_declaration_sha256": "acaf0a60eb243938f7742df08bf5d52482fbea033fd27141ee3a6d878bbb0d3d",
+      "published_source_map_sha256": "054c7553eb476cb0f785cda4b82c4da6575adb0741b5fd6485b8e6d431259b4d",
+      "source_sha256": "84ceae78e4163bf367aee70fbdbb352f986f37f6147b3da314dc999a4f8bb7e0",
+      "patched_declaration_sha256": "ae5aff6ad74c90f2b04f7c9c0857d6a0ebf4fc1c67f1bee5ea7fd7986e3d33b8",
+      "published_runtime_sha256": "bb605a024e993a4529b2612a42c03713c2d4daf9ee811792eb959a917be895f4"
+    },
+    {
+      "file": "gel-core/roles.d.ts",
+      "published_declaration_sha256": "a12c86c4a691608d19a75320946c80bbce38bb62c091dda32572aee7158edd38",
+      "published_source_map_sha256": "a8c058db24c3bec82d72e450a975837e4692e813d4978e3399d8eb1368c1f7e3",
+      "source_sha256": "972c1c6868db5cdc0d4d0b6eb5126533ce8724693540da8df52d70113d9f9b66",
+      "patched_declaration_sha256": "21bf04904e3fde5437bf4abce56b2f4db28993c4b47b940be8f6542140946b9f",
+      "published_runtime_sha256": "84ae2966175ec0eb8a5796afa3a462d92c1842b91df9ac7fb6c74121e8e96c7b"
+    },
+    {
+      "file": "mysql-core/query-builders/delete.d.ts",
+      "published_declaration_sha256": "a64e28f2333ea0324632cf81fd73dc0f7090525547a76308cb1dfe5dab96596a",
+      "published_source_map_sha256": "3d7c81ce142d80cacc56673513f34f51c8ac2266fde5942d83d603e149e046af",
+      "source_sha256": "8a16d4332fef0b750b648bc0bd02a84558182ae910976b2dccd7fcc6f55f8458",
+      "patched_declaration_sha256": "17a8420e29599e09e1ec520b7a28d51ba47016edb5fb9128b37c3c48c7bb792b",
+      "published_runtime_sha256": "0a90815528e5eb258e8b52f4fab9f058badba50079efe26f1660d81356d703ba"
+    },
+    {
+      "file": "mysql-core/query-builders/select.d.ts",
+      "published_declaration_sha256": "91830d20b424859e5582a141efe9a799dc520b5cce17d61b579fb053c9a6cd85",
+      "published_source_map_sha256": "9b208c93754145f4ba8b14a9458cb0716d78e91a3a7ad015146e2cf6fa3fe0c2",
+      "source_sha256": "5d1392bb8da864131f249b32c8bcf9d49f69bd532b3f6b21ef158bacedbcef2e",
+      "patched_declaration_sha256": "cdf0c848acbc2bb47c800c5ce49879f56e79bd0543eb3deec32a86848a1215f5",
+      "published_runtime_sha256": "37a0ffea98eef9d7f7bc5971ed47f504815e54898309630f6e0b33ca4f470bbe"
+    },
+    {
+      "file": "pg-core/query-builders/query.d.ts",
+      "published_declaration_sha256": "b58dda762d6bd8608d50e1a9cc4b4a1663a9d4aa50a9476d592a6ecdc6194af4",
+      "published_source_map_sha256": "65951b9dbc98c7ec877174ed198b2098c7fd251bb64dff2896d1f9b831deef13",
+      "source_sha256": "cd426e42bcb1459b144901e7c766f3f800b20a53b999c15b2a126dd6dcdde8d5",
+      "patched_declaration_sha256": "4fe632444efbc61675aec76bf9cc39bbb7b41e1ac2fec3a6d8bed1c2b2230c05",
+      "published_runtime_sha256": "015202fd0c4c4a1616d68214a31c8b419ba07545a89378f72971ce922478fe64"
+    },
+    {
+      "file": "pg-core/roles.d.ts",
+      "published_declaration_sha256": "e3588e9db86c6eaa572c313a23bf10f7f2f8370e62972996ac79b99da065acaa",
+      "published_source_map_sha256": "5f32228bb20f0cdd0ea80ed1841f50e180b00a9ef740b2c27374b5ec584c79e4",
+      "source_sha256": "585b5e368a4eb2fe8e87962b248531941b3c10bbad2e67f94ad8014a5f7c41ca",
+      "patched_declaration_sha256": "b9bbee27fa69e6aeb3cd25c4c066b2ab1574c139a1e4ebc79177fabe0bfdcc39",
+      "published_runtime_sha256": "57da19732e052a7831cf42cc6e37a19939548aa61140d7cfb415cef5ffef50a5"
+    },
+    {
+      "file": "singlestore-core/columns/common.d.ts",
+      "published_declaration_sha256": "a2e6a99c0fb4257e9301d592da0834a2cb321b9b1e0a81498424036109295f8b",
+      "published_source_map_sha256": "5134b3a380cc2bd5301b11322fe3b59035429634c074990f098b411ace950a60",
+      "source_sha256": "0ba0e8a1bac2511c7d048811f51e1084e24c9f9292d0550f0c0fd1552dec313f",
+      "patched_declaration_sha256": "c57a83cd419c28f010a15ec4b81f3e4c6f31a7f7b3d46c7924034cec6312ee0f",
+      "published_runtime_sha256": "3618c494a871e26880e3cfa850b06221875df391c119f45023f211d49beedc9b"
+    },
+    {
+      "file": "singlestore-core/columns/enum.d.ts",
+      "published_declaration_sha256": "b26e3175cf5cee8367964e73647d215d1bf38be594ac5362a096c611c0e2eea8",
+      "published_source_map_sha256": "4caffddd3a806a24b2183747fbf78fdc784813c5c1988f91a1e9bc224208c790",
+      "source_sha256": "db92b02ba78e8447a3eca11568d8f609dac2af1425cb2bb50c44167d409155fc",
+      "patched_declaration_sha256": "127f315a285d56bf75e7bd515b17d5c5402ecb64ec749f47186a41e37d7bf1c9",
+      "published_runtime_sha256": "9dc756bf4e2563a2fbce6b206f2472c17c9bcf00d274ba2f58c20c646da7fd52"
+    },
+    {
+      "file": "singlestore-core/query-builders/delete.d.ts",
+      "published_declaration_sha256": "e0b5f197fb47b39a4689ad356b8488e335bbf399b283492c0ffae0cfda88837b",
+      "published_source_map_sha256": "31c120a33d2d91657a8be8dfac7dafb3172c5c1de41e56724460ddd5072afcc1",
+      "source_sha256": "92d124c051256b0b62c80107a9e52840c3ec3834f49a610d2562460a6c6555b6",
+      "patched_declaration_sha256": "8bda001ed2e6058f31a1e59334ce4031192d8b8eae94ba0f386dae6d465e052d",
+      "published_runtime_sha256": "03d5aea56a4a97b22299ecc750819fc622296ed6b6f2d2e33241b1eb8be0eaf4"
+    },
+    {
+      "file": "singlestore-core/query-builders/select.d.ts",
+      "published_declaration_sha256": "914d11655546eba92ac24d73e6efdb350738bcf4a9a161a2b96e904bad4de809",
+      "published_source_map_sha256": "bf18a25cb6c3159d7063fc1dc96f6e640a70fa4ac89e6177519ea33ad79a949f",
+      "source_sha256": "8bba47e0288aaf0cde2d606579a8ac9b2d39975079b13d438858f4ab7bd0d5fa",
+      "patched_declaration_sha256": "4bf63e7bb257f656072e4b7845dd6ede3cfe4001cfbb461a4992c86f2e2e0c08",
+      "published_runtime_sha256": "52743acc94ab8b8941651d00c527c1e889a3d52164b91925897245761ae7e659"
+    },
+    {
+      "file": "sqlite-core/query-builders/query.d.ts",
+      "published_declaration_sha256": "6d3496cac1c65b8a645ecbb3e45ec678dd4d39ce360eecbcb6806a33e3d9a7ae",
+      "published_source_map_sha256": "ca616d65537eef0414974d94445169708e6c4c664554a62fbfc3428cfeb08f76",
+      "source_sha256": "ee0bfbd0c4fa3eb6130df5bbe001f13164eeeb7672c951daffcad9e8e04ced1d",
+      "patched_declaration_sha256": "26ac4fb7163ee9376947fa0638e686e3499be47f5851f4d4c49d64f7bbcad740",
+      "published_runtime_sha256": "cbbfe37ca0bfd29b88dd7718962bad49f36e3bdf8ace68806e77b3ca7b63841f"
+    },
+    {
+      "file": "sqlite-core/query-builders/select.d.ts",
+      "published_declaration_sha256": "ae89fb16575dc616df3ff907c6338d94cfa731881ecef82155b21ab4134b3826",
+      "published_source_map_sha256": "001a6d3c5a9800d688d1cac52340e183c2701dc01d6b86821f8abf0d31614674",
+      "source_sha256": "ed5d13465a3b7282eb519551eeb0ba561e5fec61a818cdf47eeb17f8b8b32939",
+      "patched_declaration_sha256": "112ade2229360417e08fbacd181fa36ff689ca8ed10b37585156b8388c57c137",
+      "published_runtime_sha256": "cc74843460e355dddcfb019b483e8976cbf8f86de15a222ec4265bfbd15d84a3"
+    }
+  ]
+}

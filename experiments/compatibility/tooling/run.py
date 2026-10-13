@@ -63,7 +63,7 @@ def main():
                 return False
 
         if run('install-main', ['install', '--frozen-lockfile']):
-            run('runtime', ['test', 'fixture.test.ts'])
+            run('runtime', ['test', 'fixture.test.ts', 'patch.test.ts'])
             run('types-positive', ['node_modules/typescript/bin/tsc', '--noEmit', '-p', 'tsconfig.json'])
             run('types-negative', ['node_modules/typescript/bin/tsc', '--noEmit', '-p', 'tsconfig.negative.json'], expected=1)
             run('operations-positive', ['node_modules/typescript/bin/tsc', '--noEmit', '-p', 'tsconfig.operations.json'])

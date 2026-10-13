@@ -178,9 +178,12 @@ test('delayed control cancellation acknowledgement retires the old backend befor
  try {
  const writer=new Broker(isolated,mutationSession);
  const query=new Broker(isolated,querySession);
+ const oldBackend=await isolated.unsafe('SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()');
  expect(await writer.dispatch(save({delayMs:3000}),100)).toEqual({kind:'broker-response',ok:false,code:'DEADLINE'});
  expect(proxy.intercepted()).toBe(1);
  expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
+ const newBackend=await isolated.unsafe('SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()');
+ expect(newBackend[0]).not.toEqual(oldBackend[0]);
  expect(await writer.dispatch(save())).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
  expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
  } finally {await isolated.close({timeout:0});await proxy.close();}

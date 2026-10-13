@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "target": "ES2022",
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "types": [
+      "bun"
+    ],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "ESNext.Disposable"
+    ]
+  },
+  "files": [
+    "fixture.ts",
+    "fixture.test.ts"
+  ]
+}

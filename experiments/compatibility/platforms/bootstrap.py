@@ -1,5 +1,7 @@
 """Obtain one verified experiment runtime and record its native host identity."""
 import argparse
+import ctypes
+import errno
 import hashlib
 import io
 import json
@@ -25,6 +27,25 @@ def read_command(args):
     return result.stdout.strip()
 
 
+def process_translation():
+    """Query this process; only Apple's ENOENT case establishes native execution."""
+    query = ctypes.CDLL(None, use_errno=True).sysctlbyname
+    query.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+                      ctypes.c_void_p, ctypes.c_size_t]
+    query.restype = ctypes.c_int
+    translated = ctypes.c_int()
+    size = ctypes.c_size_t(ctypes.sizeof(translated))
+    ctypes.set_errno(0)
+    result = query(b"sysctl.proc_translated", ctypes.byref(translated), ctypes.byref(size), None, 0)
+    if result != 0:
+        if ctypes.get_errno() == errno.ENOENT:
+            return 0
+        raise ValueError("process translation state unavailable")
+    if size.value != ctypes.sizeof(translated) or translated.value not in (0, 1):
+        raise ValueError("process translation state malformed")
+    return translated.value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--system", required=True, choices=("Darwin", "Linux"))
@@ -43,11 +64,11 @@ def main():
             raise ValueError("host differs from requested native target")
         if system == "Darwin":
             cpu = read_command(["/usr/sbin/sysctl", "-n", "hw.cputype"])
-            translated = read_command(["/usr/sbin/sysctl", "-n", "sysctl.proc_translated"])
+            translated = process_translation()
             report["host"].update({"macos": platform.mac_ver()[0], "cpu_type": cpu,
                                   "process_translated": translated})
             expected_cpu = 7 if architecture == "x86_64" else 12
-            if cpu is None or int(cpu) & 0xFFFFFF != expected_cpu or translated == "1":
+            if cpu is None or int(cpu) & 0xFFFFFF != expected_cpu or translated != 0:
                 raise ValueError("native CPU identity unverified or process translated")
         else:
             release = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines()

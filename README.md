@@ -6,4 +6,4 @@ Fleur is currently in planning. There is no installable CLI or application runti
 
 The agreed first version uses Bun, Preact, Tailwind, Vite, and PostgreSQL through Docker on macOS and Linux. Authentication and hosted deployment are deferred.
 
-See [the agreed scope](docs/planning/V1-SCOPE.md) and the repository's Wayfinder map issue for decisions still needed before implementation.
+See [the agreed scope](docs/planning/V1-SCOPE.md) and [the Wayfinder map](https://github.com/hazeion/fleur/issues/1) for decisions still needed before implementation.

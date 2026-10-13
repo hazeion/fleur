@@ -18,7 +18,7 @@ Its documentation uses fixed server/client entry points and pure shared TypeScri
 
 Its CLI reference describes structured runtime inspection, bounded database views, a build independent of deployment, and explicit handling of uncertain mutation results. Client queries subscribe to updates. Arbitrary application npm packages and CSS files are restricted in the documented version.
 
-## Proposed Fleur improvements, not yet approved
+## Initial proposals and subsequent decisions
 
 - One authoritative generated AGENTS.md, with a CLAUDE.md reference and documentation matched to the installed Fleur version.
 - A doctor command that reports prerequisite failures and precise recovery steps.
@@ -29,7 +29,7 @@ Its CLI reference describes structured runtime inspection, bounded database view
 - First-class verification commands for types, runtime contracts, database integration, browser behavior, and the production artifact.
 - Validate request inputs and outputs from shared contracts; enforce client/server import boundaries.
 - Document transaction guarantees and avoid automatic retries of writes whose outcome is unknown.
-- Permit ordinary CSS alongside Tailwind if approved; decide the package policy explicitly.
+- Rejected during discovery: ordinary application CSS and arbitrary package additions. Fleur supplies an approved package surface and Tailwind-only styling; agents may suggest additions but cannot install them independently.
 - Keep the short agent guide task-oriented and move detailed API material into focused, locally available references.
 
 These are recommendations for Fleur's scope and contracts, not claims that Lakebed lacks every corresponding feature.
@@ -59,4 +59,4 @@ Sources: https://bun.sh/docs/installation ; https://docs.docker.com/desktop/setu
 
 ## Open decisions
 
-Proof scope; permitted application dependencies and CSS; client refresh behavior; prerequisite installation policy; production artifact and start contract; npx bootstrap versus Bun execution; concrete testing and review gates. Detailed API syntax, migration semantics, and lifecycle ownership belong in decision tickets after scope confirmation.
+The proof scope, constrained package and styling surface, automatic live updates, assisted first-run installation, production build/start, and independent review requirements are confirmed in docs/planning/V1-SCOPE.md. Remaining details are tracked in the Wayfinder map: https://github.com/hazeion/fleur/issues/1 .

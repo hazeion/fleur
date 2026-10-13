@@ -1,0 +1,21 @@
+{
+  "name": "fleur-compatibility-database-broker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "zod": "4.6.7",
+    "@trpc/server": "11.19.0",
+    "@trpc/client": "11.19.0",
+    "drizzle-orm": "0.45.4",
+    "gel": "2.2.1",
+    "mysql2": "3.24.6"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "oxlint": "1.87.0",
+    "@types/bun": "1.4.3"
+  },
+  "patchedDependencies": {
+    "drizzle-orm@0.45.4": "patches/drizzle-orm@0.45.4.patch"
+  }
+}

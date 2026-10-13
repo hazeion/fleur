@@ -9,6 +9,7 @@ import time
 from protocol import run_container, fixture_dispatch
 from report import accept, accept_threads
 from waiter import OwnedWaiter
+from daemon_trace import capture_daemon_trace
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
 
@@ -112,7 +113,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 try:
                     healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
                         startup_audit=lambda inventory: observe(healthy_name,inventory),
-                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter))
+                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter,completion_stall=capture_daemon_trace))
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
                     # Capture this actual worker before finally removes it. Do
                     # not ask the outer driver to inspect the exited primary.

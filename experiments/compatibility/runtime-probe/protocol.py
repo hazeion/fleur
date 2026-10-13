@@ -42,7 +42,7 @@ def startup_inventory(request):
     return rows
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None, completion_stall=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment)
@@ -128,6 +128,8 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         process.stdin = None
         phase = 'waiting-worker-completion'
         checked_at = 0.0
+        pending_since = None
+        stall_captured = False
         def complete_frame():
             if b'\n' not in output:
                 return None
@@ -171,6 +173,12 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                         raise deadline_error()
                     if waiter is not None and type(completed) is dict and completed.get('completed') is True:
                         completed = waiter.completion(timeout-(time.monotonic()-started))
+                    if waiter is not None and completed.get('completed') is False:
+                        if pending_since is None: pending_since = time.monotonic()
+                        if completion_stall is not None and not stall_captured and time.monotonic()-pending_since >= 2:
+                            stall_captured = True
+                            trace = completion_stall(timeout-(time.monotonic()-started))
+                            if diagnostics is not None: diagnostics['daemon_stall_trace'] = trace
                     checked_at = time.monotonic()
                     remaining = timeout-(checked_at-started)
                     if remaining <= 0:
@@ -220,6 +228,9 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         original = sys.exception()
         waiter_cleanup_error = None
         if waiter is not None:
+            if diagnostics is not None and callable(getattr(waiter,'snapshot',None)):
+                try: diagnostics['waiter_observations'] = waiter.snapshot()
+                except (OSError,RuntimeError): diagnostics['waiter_observations'] = {'outcome':'unavailable'}
             try:
                 waiter.close()
                 if diagnostics is not None: diagnostics['waiter_cleanup_verified'] = True

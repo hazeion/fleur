@@ -2,8 +2,10 @@ import {dlopen, FFIType} from 'bun:ffi';
 import {h} from 'preact';
 import render from 'preact-render-to-string';
 
+console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
 const native = dlopen('/probe/filter.so', {
+  trace: {args: [FFIType.i32], returns: FFIType.void},
   architecture: {returns: FFIType.i32},
   prepare: {returns: FFIType.i32}, install: {returns: FFIType.i32},
   close_unrelated: {returns: FFIType.i32}, descriptors_closed: {returns: FFIType.i32},
@@ -11,10 +13,12 @@ const native = dlopen('/probe/filter.so', {
   check_thread: {returns: FFIType.i32},
   negative: {args: [FFIType.i32], returns: FFIType.i32},
 }).symbols;
+native.trace(0);
 const nativeArchitecture = native.architecture();
 const architecture = nativeArchitecture === 1 ? 'amd64' : nativeArchitecture === 2 ? 'arm64' : 'unknown';
 const profile = JSON.parse(await Bun.file('/probe/profile.json').text());
 if (profile.architecture !== architecture || !Array.isArray(profile.negative_controls) || profile.negative_controls.length !== 24) process.exit(16);
+native.trace(1);
 const negative_controls = profile.negative_controls;
 const cgroups = {
   cpu: (await Bun.file('/sys/fs/cgroup/cpu.max').text()).trim(),
@@ -22,16 +26,37 @@ const cgroups = {
   pids: (await Bun.file('/sys/fs/cgroup/pids.max').text()).trim(),
 };
 if (cgroups.cpu !== '100000 100000' || cgroups.memory !== '536870912' || cgroups.pids !== '64') process.exit(15);
+native.trace(2);
 const source = await Bun.file('/probe/application.js').text();
+native.trace(3);
 // Warm Preact/JSC. The fixture itself has not been evaluated or compiled.
+native.trace(4);
 if (render(h('p', null, 'trusted warmup')) !== '<p>trusted warmup</p>') process.exit(11);
+native.trace(5);
+native.trace(6);
 if (native.prepare() !== 0) process.exit(12);
+native.trace(7);
+native.trace(8);
 if (native.close_unrelated() !== 0) process.exit(14);
+native.trace(9);
 const descriptorsClosed = native.descriptors_closed() === 1;
+native.trace(10);
 const installed = native.install();
 if (installed !== 0) process.exit(13);
+native.trace(11);
 // Compilation and top-level fixture evaluation occur only after TSYNC success.
-const application = new Function('h', 'render', 'negative', 'broker', source);
-const result = await application(h, render, native.negative, native.broker_exchange);
-console.log(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, install: installed, descriptors_closed: descriptorsClosed, ...result, thread: native.check_thread()}));
+native.trace(12);
+const application = new Function('h', 'render', 'negative', 'broker', 'trace', source);
+native.trace(13);
+native.trace(14);
+const pending = application(h, render, native.negative, native.broker_exchange, native.trace);
+native.trace(15);
+const result = await pending;
+native.trace(16);
+native.trace(17);
+const thread = native.check_thread();
+native.trace(18);
+native.trace(19);
+console.log(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}));
+native.trace(20);
 process.exit(0);

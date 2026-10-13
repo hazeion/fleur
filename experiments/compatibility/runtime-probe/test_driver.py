@@ -55,7 +55,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(Path,'read_text',return_value='Linux'), \
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
-             patch.object(run,'inspect_threads',return_value=threads), \
+             patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
             code = run.main()

@@ -60,6 +60,8 @@ jobs:
           test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
           echo "FLEUR_EXPERIMENT_BUN=$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" >> "$GITHUB_ENV"
           { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
+      - name: Runner diagnostic requirements
+        run: python3 -m unittest discover -s experiments/compatibility/tooling -p 'test_*.py'
       - name: Full frozen tooling checks, failures remain failures
         run: python3 experiments/compatibility/tooling/run.py --bun "$FLEUR_EXPERIMENT_BUN" > "$RUNNER_TEMP/fleur-evidence/tooling.json"
       - name: Display scoped diagnostics

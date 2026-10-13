@@ -176,3 +176,18 @@ test('stalled idle verification discards authority while preserving established 
  expect(await queryBroker.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
  } finally {await faulty.close({timeout:0});await proxy.close();}
 });
+
+test('delayed control cancellation acknowledgement retires the old backend before subsequent work',async()=>{
+ const {commitFaultProxy}=await import('./proxy');
+ const proxy=await commitFaultProxy(url,'cancel-control');
+ const isolated=new SQL(proxy.url,{max:1});
+ try {
+ const writer=new Broker(isolated,mutationSession);
+ const query=new Broker(isolated,querySession);
+ expect(await writer.dispatch(save({delayMs:3000}),100)).toEqual({kind:'broker-response',ok:false,code:'DEADLINE'});
+ expect(proxy.intercepted()).toBe(1);
+ expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
+ expect(await writer.dispatch(save())).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
+ } finally {await isolated.close({timeout:0});await proxy.close();}
+});

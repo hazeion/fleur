@@ -1,7 +1,7 @@
 import { createServer, connect, type Socket } from 'node:net';
 
 // Controlled trusted test transport. The worker cannot choose a proxy target.
-export async function commitFaultProxy(ownedUrl:string, mode:'drop'|'hold'|'rollback'|'verification') {
+export async function commitFaultProxy(ownedUrl:string, mode:'drop'|'hold'|'rollback'|'verification'|'cancel-control') {
  const target=new URL(ownedUrl);
  if (process.env.FLEUR_DISPOSABLE_DATABASE_VERIFIED!=='1' || target.hostname!=='127.0.0.1' || !target.pathname.startsWith('/fleur_probe_')) throw new Error('Owned loopback test target required');
  const connections=new Set<Socket>();
@@ -13,6 +13,7 @@ export async function commitFaultProxy(ownedUrl:string, mode:'drop'|'hold'|'roll
   connections.add(frontend);connections.add(upstream);
   let pending=Buffer.alloc(0);
   let withheld=false;
+  let controlCancellation=false;
   for (const socket of [frontend,upstream]) {
    socket.setTimeout(6000,()=>socket.destroy());
    socket.on('error',()=>{frontend.destroy();upstream.destroy();});
@@ -41,7 +42,11 @@ export async function commitFaultProxy(ownedUrl:string, mode:'drop'|'hold'|'roll
      const payload=frame.subarray(5);
      const sqlStart=frame[0]===80 ? payload.indexOf(0)+1 : 0;
      const sqlEnd=payload.indexOf(0,sqlStart);
-     if (sqlEnd>=sqlStart) verificationRequested=payload.subarray(sqlStart,sqlEnd).toString('utf8').trim().toUpperCase()==='SELECT 1';
+     if (sqlEnd>=sqlStart) {
+      const statement=payload.subarray(sqlStart,sqlEnd).toString('utf8').trim().toUpperCase();
+      verificationRequested=statement==='SELECT 1';
+      controlCancellation=statement.startsWith('SELECT PG_CANCEL_BACKEND(');
+     }
     }
    }
   });
@@ -57,7 +62,7 @@ export async function commitFaultProxy(ownedUrl:string, mode:'drop'|'hold'|'roll
     const frame=pending.subarray(0,length+1);
     pending=pending.subarray(length+1);
     const tag=frame.subarray(5).toString('utf8');
-    const fault=(mode==='drop'||mode==='hold') ? tag==='COMMIT\0' : mode==='rollback' ? tag==='ROLLBACK\0' : verificationRequested && tag==='SELECT 1\0';
+    const fault=(mode==='drop'||mode==='hold') ? tag==='COMMIT\0' : mode==='rollback' ? tag==='ROLLBACK\0' : mode==='cancel-control' ? controlCancellation && tag==='SELECT 1\0' : verificationRequested && tag==='SELECT 1\0';
     if (frame[0]===67 && fault) {
      intercepted++;
      // CommandComplete proves PostgreSQL committed, but no frontend receives this acknowledgement.

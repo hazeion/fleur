@@ -36,11 +36,12 @@ export class Broker {
     let pendingStatement:Promise<unknown>|undefined;
     const cancelled=() => { if (abort.signal.aborted) throw new Error('DEADLINE'); };
     let backend:{pid:number;started:string}|undefined;
-    let control:SQL|undefined;
+    const controls=new Set<SQL>();
     let cancellation:Promise<'applied'|'absent'|'failed'>|undefined;
     const backendControl=async (action:'cancel'|'terminate'):Promise<'applied'|'absent'|'failed'> => {
       if (!backend) return 'failed';
-      control??=new SQL({...this.pool.options,max:1,connectionTimeout:1});
+      const control=new SQL({...this.pool.options,max:1,connectionTimeout:1});
+      controls.add(control);
       let controlTimer:ReturnType<typeof setTimeout>|undefined;
       try {
         const statement=action==='cancel'
@@ -130,7 +131,7 @@ export class Broker {
         try {
           await Promise.race([
             (async()=>{
-              if (cancellation) await cancellation;
+              if (cancellation && await cancellation==='failed') throw new Error('Uncertain control cancellation');
               if (pendingStatement) await pendingStatement.catch(()=>{});
               if (!committed) await ownedConnection.unsafe('ROLLBACK');
               await ownedConnection.unsafe('SELECT 1');
@@ -147,7 +148,7 @@ export class Broker {
           // Failed control leaves this reservation quarantined, never returned for reuse.
         } finally {
           if (cleanupTimer) clearTimeout(cleanupTimer);
-          if (control) {try {await control.close({timeout:0});} catch { /* This pool owns only trusted control work. */ }}
+          for (const control of controls) {try {await control.close({timeout:0});} catch { /* Every pool owns one trusted control request. */ }}
         }
 
       }

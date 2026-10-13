@@ -106,3 +106,31 @@ class HostedCapture(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):os.kill(pid,0)
             child=int(childfile.read_text());status=Path(f'/proc/{child}/stat')
             if status.exists():self.assertEqual(status.read_text().rsplit(')',1)[1].split()[0],'Z')
+
+    def test_numeric_docker_pidfile_without_newline_reaches_validated_signal(self):
+        from pathlib import Path
+        import shlex,subprocess,tempfile
+        from daemon_trace import TRACE_COMMAND
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);pid=root/'pid';comm=root/'comm';marker=root/'signal';trace=root/'trace';trace.mkdir()
+            pid.write_text('42');comm.write_text('dockerd\n')
+            dump=trace/'goroutine-stacks-fixture.log'
+            replacement=f'printf "%s" "$daemon" > {shlex.quote(str(marker))}; printf "goroutine 7 [running]:\\nruntime.goexit(0x1)\\n" > {shlex.quote(str(dump))}'
+            command=TRACE_COMMAND.replace('/var/run/docker.pid',str(pid)).replace('"/proc/$daemon/comm"',str(comm)).replace('/var/run/docker/goroutine-stacks-',str(trace/'goroutine-stacks-')).replace('kill -USR1 "$daemon"',replacement)
+            result=subprocess.run(['/bin/sh','-c',command],capture_output=True,timeout=1)
+            self.assertEqual(result.returncode,0)
+            self.assertEqual(marker.read_text(),'42')
+            self.assertTrue(result.stdout.startswith(b'trace-ready\n'))
+            self.assertFalse(dump.exists())
+
+    def test_failed_capture_preserves_safe_command_returncode(self):
+        import os,subprocess
+        from unittest.mock import patch
+        from daemon_trace import capture_daemon_trace
+        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux','GITHUB_REPOSITORY':'hazeion/fleur','GITHUB_WORKFLOW':'Compatibility experiments','GITHUB_JOB':'runtime-probe'}
+        factory=subprocess.Popen
+        with patch.dict(os.environ,env,clear=True),patch('daemon_trace.platform.system',return_value='Linux'),patch('daemon_trace.subprocess.Popen',side_effect=lambda args,**kwargs:factory(['/bin/sh','-c','exit 3'],**kwargs)):
+            result=capture_daemon_trace(2)
+        self.assertEqual(result['cli_returncode'],3)
+        self.assertEqual(result['stdout_bytes'],0)
+        self.assertEqual(result['stderr_bytes'],0)

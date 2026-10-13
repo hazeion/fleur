@@ -19,7 +19,7 @@ NAME = r'[A-Za-z0-9_./\-]+(?:\(\*[A-Za-z0-9_]+\)\.)?[A-Za-z0-9_.\-]*'
 STATES = {'running','runnable','IO wait','semacquire','sync.Mutex.Lock','sync.RWMutex.RLock',
           'chan receive','chan send','select','sleep','syscall','sync.Cond.Wait'}
 TRACE_COMMAND = r'''set -eu
-IFS= read -r daemon < /var/run/docker.pid
+IFS= read -r daemon < /var/run/docker.pid || [ -n "$daemon" ]
 case "$daemon" in ''|*[!0-9]*|0|1) exit 2 ;; esac
 [ "${#daemon}" -le 10 ] && [ "$daemon" -gt 1 ] && [ "$daemon" -le 2147483647 ] || exit 2
 IFS= read -r comm < "/proc/$daemon/comm"
@@ -31,7 +31,7 @@ while [ "$tries" -lt 50 ]; do
     for trace in /var/run/docker/goroutine-stacks-*.log; do
         [ -f "$trace" ] && [ ! -L "$trace" ] || continue
         seen=false
-        for old in $before; do [ "$trace" != "$old" ] || seen=true; done
+        if printf '%s\n' "$before" | grep -F -x -- "$trace" >/dev/null; then seen=true; fi
         if [ "$seen" = false ]; then
             printf 'trace-ready\n'
             head -c 1048576 "$trace"
@@ -58,7 +58,7 @@ cleanup() {
         # Only new regular, non-symlink files produced by this diagnostic.
         [ -f "$trace" ] && [ ! -L "$trace" ] || continue
         seen=false
-        for old in $before; do [ "$trace" != "$old" ] || seen=true; done
+        if printf '%s\n' "$before" | grep -F -x -- "$trace" >/dev/null; then seen=true; fi
         if [ "$seen" = false ]; then rm -f -- "$trace" || clean=1; fi
     done
     return "$clean"
@@ -141,7 +141,7 @@ def capture_daemon_trace(remaining):
         process.wait(timeout=left)
         if process.returncode == 0 and output.startswith(b'trace-ready\n'):
             result = parse_stacks(output[12:].decode('utf-8'))
-            return dict(result,outcome='captured',snapshot_may_be_partial=True)
+            return dict(result,outcome='captured',snapshot_may_be_partial=True,cli_returncode=process.returncode)
         outcome = 'command-failed'
     except (TimeoutError,subprocess.TimeoutExpired): outcome = 'timed-out'
     except (OSError,UnicodeError,ValueError): pass
@@ -159,4 +159,5 @@ def capture_daemon_trace(remaining):
             except (OSError,subprocess.TimeoutExpired): outcome = 'cleanup-unverified'
             for stream in (process.stdout,process.stderr):
                 if stream is not None: stream.close()
-    return {'outcome':outcome,'stdout_bytes':len(output),'stderr_bytes':len(errors)}
+    return {'outcome':outcome,'stdout_bytes':len(output),'stderr_bytes':len(errors),
+            'cli_returncode':process.returncode if process is not None else None}

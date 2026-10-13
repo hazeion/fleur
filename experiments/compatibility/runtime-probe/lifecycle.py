@@ -1,6 +1,7 @@
 """Deadline proof across Docker CLI and owned daemon worker boundaries."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import re
 import subprocess
 import threading
 import time
@@ -94,8 +95,27 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 if remaining <= 0:
                     raise RuntimeError('deadline consumed before healthy worker start')
                 healthy_started_ms = round(1000*(time.monotonic()-started))
-                healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
-                                    startup_audit=lambda inventory: observe(healthy_name,inventory), environment=environment))
+                healthy_diagnostics = {}
+                try:
+                    healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
+                        startup_audit=lambda inventory: observe(healthy_name,inventory),
+                        environment=environment,diagnostics=healthy_diagnostics))
+                except subprocess.TimeoutExpired as failure:
+                    # Capture this actual worker before finally removes it. Do
+                    # not ask the outer driver to inspect the exited primary.
+                    failure.worker_role = 'healthy'
+                    failure.worker_diagnostics = healthy_diagnostics
+                    try:
+                        state = inspect(healthy_name)
+                        if (type(state.get('Running')) is bool and type(state.get('ExitCode')) is int
+                                and 0 <= state['ExitCode'] <= 255 and type(state.get('FinishedAt')) is str
+                                and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z',state['FinishedAt'])):
+                            failure.worker_state = {key:state[key] for key in ('Running','ExitCode','FinishedAt')}
+                        else:
+                            failure.worker_state = {'outcome':'output-invalid'}
+                    except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
+                        failure.worker_state = {'outcome':'unavailable'}
+                    raise
                 healthy['host_threads'] = observed[healthy_name]['host_threads']
                 healthy['cleanup_complete'] = True
                 if not accept(healthy, architecture) or healthy.get('host_canary_absent') is not True:

@@ -98,7 +98,7 @@ def main():
 
             if not check('frozen-install', ['install', '--frozen-lockfile']):
                 raise RuntimeError('Frozen installation failed')
-            check('host-rpc-and-ownership-boundaries', ['-m', 'unittest', 'test_rpc.py', 'test_ownership.py', 'test_execution.py'], executable=sys.executable)
+            check('host-rpc-and-ownership-boundaries', ['-m', 'unittest', 'test_rpc.py', 'test_ownership.py', 'test_execution.py', 'test_native.py'], executable=sys.executable)
             if not check('owned-server-identity-and-schema', ['init.ts']):
                 raise RuntimeError('Verified target initialization failed')
             check('admission-and-declaration-integrity', ['test', 'admission.test.ts', 'patch.test.ts'])

@@ -28,6 +28,10 @@ def command(args, timeout=30, cwd=None):
 def main():
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
+    result_code = 1
+    build_started = False
+    build_finished = False
+    run_started = False
     try:
         if platform.system() != 'Linux' or platform.machine() != 'x86_64':
             raise RuntimeError('requires disposable Linux x86_64 Docker runner')
@@ -65,8 +69,11 @@ COPY filter.so application.js ./
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
+            build_started = True
             command(['docker', 'build', '--platform', 'linux/amd64', '-t', tag, str(context)], timeout=240)
+            build_finished = True
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
+            run_started = True
             output = command(['docker', 'run', '--name', container, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
@@ -74,21 +81,48 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             REPORT['evidence'] = json.loads(output)
-            REPORT['bounded_probe_passed'] = accept(REPORT['evidence'])
-            if not REPORT['bounded_probe_passed']:
-                raise RuntimeError('incomplete or failed bounded runtime evidence')
-        return 0
+            evidence = REPORT['evidence']
+            if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True)):
+                raise RuntimeError('incomplete, malformed or failed bounded runtime evidence')
+        result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
-        return 1
+        result_code = 1
     finally:
-        for args in (['docker', 'rm', '-f', container], ['docker', 'image', 'rm', '-f', tag]):
+        cleanup = []
+        for resource, started, args in (
+            ('container', run_started, ['docker', 'rm', '-f', container]),
+            ('image', build_started, ['docker', 'image', 'rm', '-f', tag]),
+        ):
+            if not started:
+                cleanup.append({'resource': resource, 'outcome': 'never-created'})
+                continue
             try:
-                subprocess.run(args, capture_output=True, timeout=15, check=False)
+                removed = subprocess.run(args, capture_output=True, text=True,
+                                         timeout=15, check=False)
+                absent = (('No such container:' if resource == 'container' else
+                           'No such image:') in removed.stderr)
+                outcome = 'removed' if removed.returncode == 0 else 'absent' if absent else 'failed'
+                cleanup.append({'resource': resource, 'outcome': outcome})
             except (OSError, subprocess.TimeoutExpired):
-                pass
+                cleanup.append({'resource': resource, 'outcome': 'failed'})
+        REPORT['cleanup'] = cleanup
+        # A timed-out Docker build command can leave daemon work running after
+        # its CLI has died. Removing a current tag does not cancel that work.
+        REPORT['daemon_build_may_be_pending'] = build_started and not build_finished
+        REPORT['cleanup_complete'] = (all(item['outcome'] != 'failed' for item in cleanup)
+                                      and not REPORT['daemon_build_may_be_pending'])
+        evidence = REPORT.get('evidence')
+        REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
+            and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete'])))
+        if not REPORT['cleanup_complete']:
+            REPORT['cleanup_failure'] = 'owned resource cleanup incomplete or daemon build state unresolved'
+            result_code = 1
+        if not REPORT['bounded_probe_passed']:
+            result_code = 1
         print(json.dumps(REPORT, indent=2))
+    return result_code
 
 
 if __name__ == '__main__':

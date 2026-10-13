@@ -35,7 +35,7 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None):
+def main(architecture=None, trusted_build_network=None):
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -45,6 +45,8 @@ def main(architecture=None):
     resource_containers = []
     worker_environment = host_environment()
     try:
+        if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
+        REPORT['trusted_build_network'] = trusted_build_network or 'default'
         architecture, selected = select_profile(architecture, platform.system(), platform.machine())
         base = selected['base']
         expected_compiler = selected['compiler_sha256']
@@ -106,7 +108,7 @@ USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
             build_started = True
-            command(['docker', 'build', '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
+            command(['docker', 'build', *(['--network=host'] if trusted_build_network == 'host' else []), '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
             build_finished = True
             REPORT['image_architecture'] = command(['docker','image','inspect',tag,'--format','{{.Architecture}}'])
             if REPORT['image_architecture'] != architecture:
@@ -298,4 +300,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--architecture', choices=('amd64','arm64'),
                         help='require this native Linux architecture; default detects supported native host')
-    raise SystemExit(main(parser.parse_args().architecture))
+    parser.add_argument('--trusted-build-network',choices=('host',),help='explicit trusted dependency build networking; worker networking remains none')
+    arguments = parser.parse_args()
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network))

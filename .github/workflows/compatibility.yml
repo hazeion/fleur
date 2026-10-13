@@ -284,3 +284,46 @@ jobs:
           name: runtime-probe-${{ matrix.architecture }}
           path: ${{ runner.temp }}/fleur-evidence/
           retention-days: 7
+
+  runtime-vfs-counterfactual:
+    name: VFS storage counterfactual (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, architecture: amd64, machine: x86_64}
+          - {runner: ubuntu-24.04-arm, architecture: arm64, machine: aarch64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Existing native prerequisites, nothing installed
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = '${{ matrix.machine }}'
+          test "$(gcc -dumpfullversion -dumpversion)" = 13.3.0
+          test "$(docker version --format '{{.Server.Version}}')" = 28.0.4
+          mkdir -p "$RUNNER_TEMP/fleur-vfs-evidence"
+          { uname -srm; python3 --version; gcc --version; docker version; } > "$RUNNER_TEMP/fleur-vfs-evidence/runtime-platform.txt"
+      - name: Actual owned privileged daemon lifecycle proof
+        working-directory: experiments/compatibility/runtime-probe
+        run: python3 -c 'import json; from isolated_daemon import privileged_self_test; print(json.dumps(privileged_self_test()))' > "$RUNNER_TEMP/fleur-vfs-evidence/daemon-lifecycle-proof.json"
+      - name: Counterfactual and unchanged driver contracts
+        run: python3 -m unittest discover -s experiments/compatibility/runtime-probe -p 'test_*.py'
+      - name: Same full probe on isolated VFS, existing overlay jobs remain required
+        run: python3 experiments/compatibility/runtime-probe/vfs.py --architecture '${{ matrix.architecture }}' --output-directory "$RUNNER_TEMP/fleur-vfs-evidence"
+      - name: Display scoped counterfactual result
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/fleur-vfs-evidence/vfs-counterfactual.json"; then
+            cat "$RUNNER_TEMP/fleur-vfs-evidence/vfs-counterfactual.json"
+          fi
+      - name: Retain separate VFS counterfactual evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-vfs-counterfactual-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/fleur-vfs-evidence/
+          retention-days: 7

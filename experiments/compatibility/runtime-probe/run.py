@@ -11,11 +11,12 @@ import tempfile
 import time
 from report import accept, accept_threads, CONTROLS
 from runtime_profile import select_profile, native_elf_identity
-from protocol import run_container
+from protocol import run_container, StartupAuditRejected
 from resources import accept_resources
 from diagnostics import snapshot_worker
 from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL
 from lifecycle import run_lifecycle
+from descriptor_audit import inspect_event_inventory
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -66,7 +67,7 @@ def main(architecture=None):
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -108,20 +109,28 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 raise RuntimeError('built Docker image architecture differs from native runner')
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
-            def observe_worker(_request):
-                REPORT['worker_configuration'] = inspect_worker_configuration(container,tag,REPORT['image_id'])
-                snapshot = snapshot_worker(container)
-                REPORT['host_pause_diagnostics'] = snapshot
+            def audited_worker(name,owner,inventory):
+                configuration = inspect_worker_configuration(name,owner,REPORT['image_id'])
+                snapshot = snapshot_worker(name)
                 rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
                         for row in snapshot['tasks']]
                 if not accept_threads(rows):
                     raise RuntimeError('existing thread lacks the sole native restriction filter')
-                REPORT['host_threads'] = rows
+                descriptors = inspect_event_inventory(name,inventory)
+                return {'host_threads':rows,'configuration_verified':True,'configuration':configuration,
+                        'snapshot':snapshot,'descriptor_audit':descriptors}
+            def startup_worker(inventory):
+                audited = audited_worker(container,tag,inventory)
+                REPORT['worker_configuration'] = audited['configuration']
+                REPORT['host_pause_diagnostics'] = audited['snapshot']
+                REPORT['host_threads'] = audited['host_threads']
+                REPORT['worker_descriptors'] = audited['descriptor_audit']
+                return audited['descriptor_audit']
             REPORT['worker_protocol'] = {}
             output = run_container(['docker', 'run', '-i', '--name', container, '--label', OWNER_LABEL+'='+tag, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment)
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -164,14 +173,32 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['trusted_cgroup_abuse'] = resources
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
-            def observe_lifecycle_worker(name,owner):
-                configuration = inspect_worker_configuration(name,owner,REPORT['image_id'])
-                snapshot = snapshot_worker(name)
-                rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
-                        for row in snapshot['tasks']]
-                return {'host_threads':rows,'configuration_verified':True,'configuration':configuration}
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
-                REPORT['image_id'],tag,architecture,worker_environment,observe_lifecycle_worker,timeout=30)
+                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30)
+            negative_name = tag+'-event-replacement'
+            resource_containers.append(negative_name)
+            negative_diagnostics = {}
+            def replacement_audit(inventory):
+                audited = audited_worker(negative_name,tag,inventory)
+                REPORT['event_replacement_audit'] = audited['descriptor_audit']
+                return audited['descriptor_audit']
+            try:
+                run_container(['docker','run','-i','--name',negative_name,'--label',OWNER_LABEL+'='+tag,
+                    '--network=none','--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
+                    '--security-opt=seccomp=unconfined','--cpus=1','--memory=512m','--memory-swap=512m',
+                    '--pids-limit=64','--ulimit=core=0','--pull=never',REPORT['image_id'],'event-replacement'],
+                    startup_audit=replacement_audit,environment=worker_environment,diagnostics=negative_diagnostics,timeout=30)
+            except StartupAuditRejected as rejected:
+                stderr = negative_diagnostics.get('stderr','')
+                if (rejected.category != 'class-mismatch' or '[compat-event] replacement-fd=' not in stderr
+                        or '[compat-event] startup-approved' in stderr or '[compat-event] result=' in stderr
+                        or '[DEBUG-runtime] eval-compile-start' in stderr):
+                    raise RuntimeError('controlled descriptor replacement failed the expected pre-application rejection')
+                REPORT['event_replacement_negative'] = {'passed':True,'category':'class-mismatch',
+                    'application_evaluated':False,'event_probe_executed':False,'startup_acknowledged':False}
+            else:
+                raise RuntimeError('controlled descriptor replacement was admitted')
+            REPORT['event_replacement_diagnostics'] = negative_diagnostics
         result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
@@ -223,7 +250,10 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             and type(REPORT.get('restricted_worker_lifecycle')) is dict
             and REPORT['restricted_worker_lifecycle'].get('passed') is True
             and type(REPORT['restricted_worker_lifecycle'].get('repeats')) is list
-            and len(REPORT['restricted_worker_lifecycle']['repeats']) == 2)
+            and len(REPORT['restricted_worker_lifecycle']['repeats']) == 2
+            and type(REPORT.get('worker_descriptors')) is dict and REPORT['worker_descriptors'].get('passed') is True
+            and type(REPORT.get('event_replacement_negative')) is dict
+            and REPORT['event_replacement_negative'].get('passed') is True)
         if not REPORT['cleanup_complete']:
             REPORT['cleanup_failure'] = 'owned resource cleanup incomplete or daemon build state unresolved'
             result_code = 1

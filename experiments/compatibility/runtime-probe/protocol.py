@@ -17,7 +17,31 @@ def fixture_dispatch(request):
             "value": {"id": 1, "name": "Squat"}}
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None):
+class StartupAuditRejected(RuntimeError):
+    def __init__(self, category):
+        admitted = {'class-mismatch','unexpected-fd','missing-fd','invalid-inventory',
+                    'inspection-failed','output-invalid'}
+        self.category = category if type(category) is str and category in admitted else 'output-invalid'
+        super().__init__('startup descriptor audit rejected: '+self.category)
+
+
+def startup_inventory(request):
+    if type(request) is not dict or set(request) != {'kind','inventory'} or request['kind'] != 'startup-audit':
+        raise StartupAuditRejected('invalid-inventory')
+    rows = request['inventory']
+    if type(rows) is not list or not 2 <= len(rows) <= 192:
+        raise StartupAuditRejected('invalid-inventory')
+    seen = set()
+    for row in rows:
+        if (type(row) is not dict or set(row) != {'fd','kind'} or type(row['fd']) is not int
+                or not 2 < row['fd'] <= 2147483647 or type(row['kind']) is not str
+                or row['kind'] not in ('eventfd','eventpoll','timerfd') or row['fd'] in seen):
+            raise StartupAuditRejected('invalid-inventory')
+        seen.add(row['fd'])
+    return rows
+
+
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment)
@@ -37,29 +61,46 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
             on_stderr(bytes(errors))
         return chunk
     try:
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ, 'request')
-            selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
-            line = bytearray()
-            while not line.endswith(b"\n"):
-                remaining = timeout - (time.monotonic() - started)
-                if remaining <= 0:
-                    raise deadline_error()
-                ready = selector.select(remaining)
-                if not ready:
-                    raise deadline_error()
-                for key, _ in ready:
-                    if key.data == 'stderr':
-                        if not read_error_chunk():
-                            selector.unregister(process.stderr)
-                        continue
-                    byte = os.read(process.stdout.fileno(), 1)
-                    if not byte:
-                        raise RuntimeError("worker ended before broker request")
-                    line.extend(byte)
-                    if len(line) > 4096:
-                        raise RuntimeError("broker request exceeded bound")
-        request = json.loads(line)
+        def read_request(limit):
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, 'request')
+                selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
+                line = bytearray()
+                while not line.endswith(b"\n"):
+                    remaining = timeout - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise deadline_error()
+                    ready = selector.select(remaining)
+                    if not ready:
+                        raise deadline_error()
+                    for key, _ in ready:
+                        if key.data == 'stderr':
+                            if not read_error_chunk():
+                                selector.unregister(process.stderr)
+                            continue
+                        byte = os.read(process.stdout.fileno(), 1)
+                        if not byte:
+                            raise RuntimeError("worker ended before broker request")
+                        line.extend(byte)
+                        if len(line) > limit:
+                            raise RuntimeError("broker request exceeded bound")
+            return json.loads(line)
+        if startup_audit is not None:
+            phase = 'waiting-startup-audit'
+            inventory = startup_inventory(read_request(16384))
+            phase = 'startup-audit'
+            audited = startup_audit(inventory)
+            if (type(audited) is not dict or audited.get('passed') is not True
+                    or audited.get('category') != 'verified' or type(audited.get('descriptor_count')) is not int
+                    or audited['descriptor_count'] != len(inventory)):
+                raise StartupAuditRejected(audited.get('category') if type(audited) is dict else 'output-invalid')
+            if time.monotonic() - started >= timeout:
+                raise deadline_error()
+            phase = 'startup-ack'
+            process.stdin.write(b'startup:approved\n')
+            process.stdin.flush()
+        phase = 'waiting-broker-request'
+        request = read_request(4096)
         phase = 'host-observer'
         if observer is not None:
             observer(request)

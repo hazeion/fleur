@@ -56,6 +56,7 @@ def run_native(bun, root, environment, source_root):
         protocol = load(runtime / 'protocol.py', 'fleur_native_database_protocol')
         acceptance = load(runtime / 'report.py', 'fleur_native_database_acceptance')
         configuration = load(runtime / 'configuration.py', 'fleur_native_database_configuration')
+        descriptors = load(runtime / 'descriptor_audit.py', 'fleur_native_database_descriptors')
         worker_environment = configuration.host_environment()
         threads = load(runtime / 'threads.py', 'fleur_native_database_thread_inspector')
         with tempfile.TemporaryDirectory(prefix='fleur-native-database-') as temporary:
@@ -89,11 +90,13 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 raise RuntimeError('Native image identity mismatch')
             row['image_id'] = metadata['Id']
             observed_threads = None
-            def observe_threads(_request):
+            def startup_audit(inventory):
                 nonlocal observed_threads
                 row['worker_configuration'] = configuration.inspect_worker_configuration(
                     container,owner,metadata['Id'],owner_label=LABEL)
                 observed_threads = threads.inspect_threads(container)
+                row['descriptor_audit'] = descriptors.inspect_event_inventory(container,inventory)
+                return row['descriptor_audit']
             with_broker = TrustedBroker([bun, 'ipc.ts'], root, environment, timeout=8)
             try:
                 attempted_run = True
@@ -103,7 +106,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     '--label', LABEL + '=' + owner, '--network=none', '--read-only', '--cap-drop=ALL',
                     '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                     '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, observer=observe_threads, diagnostics=row['protocol_diagnostics'], environment=worker_environment)
+                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, startup_audit=startup_audit, diagnostics=row['protocol_diagnostics'], environment=worker_environment)
             finally:
                 with_broker.close()
             evidence = attach_host_threads(json.loads(output), observed_threads)

@@ -6,6 +6,10 @@ console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
 const native = dlopen('/probe/filter.so', {
   trace: {args: [FFIType.i32], returns: FFIType.void},
+  event_audit_ack: {returns:FFIType.i32}, event_replace: {returns:FFIType.i32},
+  event_inventory_count:{returns:FFIType.i32},
+  event_inventory_fd:{args:[FFIType.i32],returns:FFIType.i32},
+  event_inventory_kind:{args:[FFIType.i32],returns:FFIType.i32},
   event_prepare: {returns: FFIType.i32}, event_probe: {returns: FFIType.i32},
   event_errno: {returns: FFIType.i32}, event_negative: {args:[FFIType.i32],returns:FFIType.i32},
   architecture: {returns: FFIType.i32},
@@ -30,7 +34,7 @@ const cgroups = {
 if (cgroups.cpu !== '100000 100000' || cgroups.memory !== '536870912' || cgroups.pids !== '64') process.exit(15);
 native.trace(2);
 const mode = process.argv[2] ?? 'healthy';
-if (mode !== 'healthy' && mode !== 'busy') process.exit(17);
+if (mode !== 'healthy' && mode !== 'busy' && mode !== 'event-replacement') process.exit(17);
 const source = await Bun.file(mode === 'busy' ? '/probe/busy-application.js' : '/probe/application.js').text();
 native.trace(3);
 // Warm Preact/JSC. The fixture itself has not been evaluated or compiled.
@@ -44,11 +48,23 @@ if (native.event_prepare() !== 0) process.exit(18);
 native.trace(8);
 if (native.close_unrelated() !== 0) process.exit(14);
 native.trace(9);
+if (mode === 'event-replacement') {
+  const replacement = native.event_replace();
+  console.error('[compat-event] replacement-fd=' + replacement);
+  if (replacement <= 2) process.exit(20);
+}
 const descriptorsClosed = native.descriptors_closed() === 1;
 native.trace(10);
 const installed = native.install();
 if (installed !== 0) process.exit(13);
 native.trace(11);
+const count = native.event_inventory_count();
+if (count < 2 || count > 192) process.exit(21);
+const kinds = ['eventfd','eventpoll','timerfd'];
+const inventory = Array.from({length:count},(_,i)=>({fd:native.event_inventory_fd(i),kind:kinds[native.event_inventory_kind(i)-1]}));
+console.log(JSON.stringify({kind:'startup-audit',inventory}));
+if (native.event_audit_ack() !== 0) process.exit(22);
+console.error('[compat-event] startup-approved');
 const event_probe = native.event_probe();
 console.error('[compat-event] result=' + event_probe + ' errno=' + native.event_errno());
 if (event_probe !== 0) process.exit(17);

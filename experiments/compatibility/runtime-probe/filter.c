@@ -135,6 +135,57 @@ int event_negative(int choice) {
 static pthread_t witness;
 static int unrelated_fd;
 static int closed_unrelated;
+/* Inventory supplies bounded filter arguments. Pre-TSYNC threads can still
+ * replace a number: the trusted host MUST audit these classes after TSYNC and
+ * before application compilation/evaluation. Creation/duplication/transfer are
+ * then denied, so later closure cannot restore a different capability. */
+#define EVENT_FD_LIMIT 64
+static int event_read_fds[EVENT_FD_LIMIT], event_write_fds[EVENT_FD_LIMIT];
+static int event_poll_fds[EVENT_FD_LIMIT];
+static size_t event_read_count, event_write_count, event_poll_count;
+static int event_inventory_frozen;
+static int event_policy_installed;
+#define EVENT_INVENTORY_LIMIT (3 * EVENT_FD_LIMIT)
+static int inventory_fds[EVENT_INVENTORY_LIMIT], inventory_kinds[EVENT_INVENTORY_LIMIT];
+static size_t inventory_count;
+/* Class1 eventfd, class2 eventpoll, class3 timerfd. Getter failure is explicit;
+ * no data is exported from a partially admitted inventory. */
+int event_inventory_count(void) { return event_inventory_frozen ? (int)inventory_count : -1; }
+int event_inventory_fd(int index) {
+    return event_inventory_frozen && index >= 0 && (size_t)index < inventory_count ? inventory_fds[index] : -1;
+}
+int event_inventory_kind(int index) {
+    return event_inventory_frozen && index >= 0 && (size_t)index < inventory_count ? inventory_kinds[index] : -1;
+}
+/* Fixed synchronous admission ACK; no Bun event-loop work or application
+ * compilation occurs before the host has audited the post-TSYNC descriptors. */
+int event_audit_ack(void) {
+    char reply[32];
+    size_t used = 0;
+    while (used < sizeof(reply) - 1) {
+        ssize_t count = syscall(SYS_read, 0, reply + used, 1);
+        if (count != 1) return -1;
+        if (reply[used++] == '\n') break;
+    }
+    reply[used] = 0;
+    return !strcmp(reply, "startup:approved\n") ? 0 : -1;
+}
+/* Controlled regression hook. The caller invokes it only between classification
+ * and TSYNC in a dedicated negative run; its real file replaces an admitted
+ * event descriptor. The post-TSYNC host audit must refuse application entry. */
+int event_replace(void) {
+    if (!event_inventory_frozen || event_policy_installed || fixture_event_fd < 0) return -1;
+    int source = open("/etc/passwd", O_RDONLY | O_CLOEXEC);
+    if (source < 0) return -1;
+    int result = dup2(source, fixture_event_fd);
+    int closed = close(source);
+    return result == fixture_event_fd && closed == 0 ? fixture_event_fd : -1;
+}
+static int admit_event_fd(int *fds, size_t *count, int fd) {
+    if (*count == EVENT_FD_LIMIT) return -1;
+    fds[(*count)++] = fd;
+    return 0;
+}
 static _Atomic int phase;
 static _Atomic int thread_result;
 static void *observe(void *unused) {
@@ -159,6 +210,7 @@ int prepare(void) {
 /* Trusted descriptor admission: only stdio and kernel event bookkeeping.
  * Opening, mapping, duplicating or transferring descriptors is later denied. */
 int close_unrelated(void) {
+    if (event_inventory_frozen || event_read_count || event_write_count || event_poll_count) return -1;
     DIR *directory = opendir("/proc/self/fd");
     if (!directory) return -1;
     int directory_fd = dirfd(directory);
@@ -173,14 +225,31 @@ int close_unrelated(void) {
         ssize_t size = readlink(path, target, sizeof(target) - 1);
         if (size < 0) { closedir(directory); return -1; }
         target[size] = 0;
-        if (!strcmp(target, "anon_inode:[eventpoll]") ||
-            !strcmp(target, "anon_inode:[eventfd]") ||
-            !strcmp(target, "anon_inode:[timerfd]")) continue;
-        if (close((int)descriptor)) { closedir(directory); return -1; }
+        int admission = 0;
+        int kind;
+        if (!strcmp(target, "anon_inode:[eventpoll]")) {
+            kind = 2;
+            admission = admit_event_fd(event_poll_fds, &event_poll_count, (int)descriptor);
+        } else if (!strcmp(target, "anon_inode:[eventfd]")) {
+            kind = 1;
+            admission = admit_event_fd(event_read_fds, &event_read_count, (int)descriptor);
+            if (!admission) admission = admit_event_fd(event_write_fds, &event_write_count, (int)descriptor);
+        } else if (!strcmp(target, "anon_inode:[timerfd]")) {
+            kind = 3;
+            admission = admit_event_fd(event_read_fds, &event_read_count, (int)descriptor);
+        } else {
+            if (close((int)descriptor)) { closedir(directory); return -1; }
+            continue;
+        }
+        if (admission || inventory_count == EVENT_INVENTORY_LIMIT) { closedir(directory); return -1; }
+        inventory_fds[inventory_count] = (int)descriptor;
+        inventory_kinds[inventory_count++] = kind;
+        continue;
     }
     if (closedir(directory)) return -1;
     errno = 0;
     closed_unrelated = fcntl(unrelated_fd, F_GETFD) == -1 && errno == EBADF;
+    event_inventory_frozen = closed_unrelated;
     return closed_unrelated ? 0 : -1;
 }
 int descriptors_closed(void) { return closed_unrelated; }
@@ -207,9 +276,51 @@ int broker_exchange(void) {
     return !strcmp(reply, "registered:Squat\n") ? 0 : -1;
 }
 #define ALLOW(n) BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_##n, 0, 1), BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW)
+/* Bounded cBPF construction: each descriptor handler has at most 147
+ * instructions, below the 8-bit branch span; complete program stays <4096. */
+#define FILTER_LIMIT 4096
+_Static_assert(2 * EVENT_FD_LIMIT + 20 <= 255, "descriptor branch span exceeds cBPF bound");
+_Static_assert(5 * (2 * EVENT_FD_LIMIT + 20) + 128 <= FILTER_LIMIT, "filter storage bound");
+#define ARG_LOW(n) (offsetof(struct seccomp_data, args[n]))
+#define ARG_HIGH(n) (offsetof(struct seccomp_data, args[n]) + 4)
+static void emit(struct sock_filter *code, size_t *used, struct sock_filter instruction) {
+    code[(*used)++] = instruction;
+}
+#define EMIT_STMT(op, value) emit(code, used, (struct sock_filter)BPF_STMT(op, value))
+#define EMIT_JUMP(op, value, yes, no) emit(code, used, (struct sock_filter)BPF_JUMP(op, value, yes, no))
+static void require_word(struct sock_filter *code, size_t *used, unsigned offset, uint32_t value) {
+    EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, offset);
+    EMIT_JUMP(BPF_JMP|BPF_JEQ|BPF_K, value, 1, 0);
+    EMIT_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM);
+}
+static void allow_fd(struct sock_filter *code, size_t *used, int fd) {
+    EMIT_JUMP(BPF_JMP|BPF_JEQ|BPF_K, (uint32_t)fd, 0, 1);
+    EMIT_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW);
+}
+/* stdio_count admits the existing transport without event-size restrictions.
+ * Event handlers require all 64 bits of the descriptor and byte count. */
+static void descriptor_handler(struct sock_filter *code, size_t *used, unsigned nr,
+                               const int *fds, size_t count, const int *stdio_fds,
+                               size_t stdio_count, int eight_bytes) {
+    EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, nr));
+    size_t dispatch = *used;
+    EMIT_JUMP(BPF_JMP|BPF_JEQ|BPF_K, nr, 0, 0);
+    require_word(code, used, ARG_HIGH(0), 0);
+    EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, ARG_LOW(0));
+    for (size_t i = 0; i < stdio_count; i++) allow_fd(code, used, stdio_fds[i]);
+    if (eight_bytes) {
+        require_word(code, used, ARG_HIGH(2), 0);
+        require_word(code, used, ARG_LOW(2), 8);
+        EMIT_STMT(BPF_LD|BPF_W|BPF_ABS, ARG_LOW(0));
+    }
+    for (size_t i = 0; i < count; i++) allow_fd(code, used, fds[i]);
+    EMIT_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM);
+    code[dispatch].jf = (unsigned char)(*used - dispatch - 1);
+}
 int install(void) {
     /* Deny-by-default also rejects openat2, io_uring, clone3 and x32 numbers. */
-    struct sock_filter code[] = {
+    if (!event_inventory_frozen) return -1;
+    const struct sock_filter common[] = {
         BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, arch)),
         BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, PROBE_AUDIT_ARCH, 1, 0),
         BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL_PROCESS),
@@ -227,25 +338,24 @@ int install(void) {
         ALLOW(getpid), ALLOW(gettid), ALLOW(getrandom), ALLOW(rt_sigaction),
         ALLOW(rt_sigprocmask), ALLOW(rt_sigreturn), ALLOW(sigaltstack),
         ALLOW(exit), ALLOW(exit_group), ALLOW(close), ALLOW(restart_syscall),
-        /* Output is restricted to inherited stdout/stderr. Input to stdin. */
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_read, 0, 4),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, args[0])),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 0, 0, 1),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_write, 1, 0),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, SYS_writev, 0, 4),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offsetof(struct seccomp_data, args[0])),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 1, 1, 0),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 2, 0, 1),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-        BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM),
     };
-    struct sock_fprog program = {sizeof(code)/sizeof(code[0]), code};
+    struct sock_filter code[FILTER_LIMIT];
+    size_t used = sizeof(common)/sizeof(common[0]);
+    memcpy(code, common, sizeof(common));
+    const int input[] = {0}, output[] = {1, 2};
+    descriptor_handler(code, &used, SYS_read, event_read_fds, event_read_count, input, 1, 1);
+    descriptor_handler(code, &used, SYS_write, event_write_fds, event_write_count, output, 2, 1);
+    descriptor_handler(code, &used, SYS_writev, NULL, 0, output, 2, 0);
+    descriptor_handler(code, &used, SYS_epoll_pwait, event_poll_fds, event_poll_count, NULL, 0, 0);
+    descriptor_handler(code, &used, SYS_epoll_pwait2, event_poll_fds, event_poll_count, NULL, 0, 0);
+    code[used++] = (struct sock_filter)BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO|EPERM);
+    if (used > FILTER_LIMIT) return -1;
+    struct sock_fprog program = {(unsigned short)used, code};
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) return -1;
     /* Nonzero includes a positive unsynchronizable TID. Never accept it. */
     long result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER,
                           SECCOMP_FILTER_FLAG_TSYNC, &program);
+    event_policy_installed = result == 0;
     return result == 0 ? 0 : -1;
 }
 int check_thread(void) {

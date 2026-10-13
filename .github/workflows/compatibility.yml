@@ -2,8 +2,6 @@ name: Compatibility experiments
 
 on:
   pull_request:
-  push:
-    branches: [implement/fleur-v1]
 
 permissions:
   contents: read
@@ -39,6 +37,67 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: isolation-diagnostic
+          path: ${{ runner.temp }}/fleur-evidence/
+          retention-days: 7
+
+  native-platforms:
+    name: Native fixtures (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15-intel, system: Darwin, architecture: x86_64, ubuntu: ''}
+          - {runner: macos-15, system: Darwin, architecture: arm64, ubuntu: ''}
+          - {runner: ubuntu-24.04, system: Linux, architecture: x86_64, ubuntu: '24.04'}
+          - {runner: ubuntu-24.04-arm, system: Linux, architecture: arm64, ubuntu: '24.04'}
+          - {runner: ubuntu-26.04, system: Linux, architecture: x86_64, ubuntu: '26.04'}
+          - {runner: ubuntu-26.04-arm, system: Linux, architecture: arm64, ubuntu: '26.04'}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-verified Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/fleur-evidence"
+          options=(--system '${{ matrix.system }}' --architecture '${{ matrix.architecture }}' --out "$RUNNER_TEMP/fleur-native-bun")
+          if test -n '${{ matrix.ubuntu }}'; then options+=(--ubuntu '${{ matrix.ubuntu }}'); fi
+          python3 experiments/compatibility/platforms/bootstrap.py "${options[@]}" > "$RUNNER_TEMP/fleur-evidence/native-platform.json"
+          echo "$RUNNER_TEMP/fleur-native-bun" >> "$GITHUB_PATH"
+      - name: Install frozen rendering graphs
+        working-directory: experiments/compatibility/rendering
+        run: |
+          bun install --frozen-lockfile
+          (cd lint && bun install --frozen-lockfile)
+      - name: Provision package-pinned browser
+        working-directory: experiments/compatibility/rendering
+        run: |
+          if test '${{ matrix.system }}' = Linux; then
+            bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+          else
+            bun ./node_modules/@playwright/test/cli.js install chromium
+          fi
+      - name: Build, strict types, independent lint and unit checks
+        working-directory: experiments/compatibility/rendering
+        run: |
+          bun run build
+          bun run types
+          bun run lint
+          bun run test
+      - name: Browser checks twice
+        working-directory: experiments/compatibility/rendering
+        run: |
+          set -o pipefail
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-first.txt"
+          bun run browser 2>&1 | tee "$RUNNER_TEMP/fleur-evidence/browser-second.txt"
+      - name: Full frozen tooling compatibility
+        run: python3 experiments/compatibility/tooling/run.py --bun "$RUNNER_TEMP/fleur-native-bun/bun" > "$RUNNER_TEMP/fleur-evidence/tooling.json"
+      - name: Retain native platform evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-platform-${{ matrix.runner }}
           path: ${{ runner.temp }}/fleur-evidence/
           retention-days: 7
 

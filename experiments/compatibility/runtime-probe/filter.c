@@ -135,13 +135,39 @@ int event_negative(int choice) {
 static pthread_t witness;
 static int unrelated_fd;
 static int closed_unrelated;
-/* This inventory is frozen before TSYNC. Descriptor creation, duplication and
- * transfer remain denied afterward, so a closed number cannot be repurposed. */
+/* Inventory supplies bounded filter arguments. Pre-TSYNC threads can still
+ * replace a number: the trusted host MUST audit these classes after TSYNC and
+ * before application compilation/evaluation. Creation/duplication/transfer are
+ * then denied, so later closure cannot restore a different capability. */
 #define EVENT_FD_LIMIT 64
 static int event_read_fds[EVENT_FD_LIMIT], event_write_fds[EVENT_FD_LIMIT];
 static int event_poll_fds[EVENT_FD_LIMIT];
 static size_t event_read_count, event_write_count, event_poll_count;
 static int event_inventory_frozen;
+static int event_policy_installed;
+#define EVENT_INVENTORY_LIMIT (3 * EVENT_FD_LIMIT)
+static int inventory_fds[EVENT_INVENTORY_LIMIT], inventory_kinds[EVENT_INVENTORY_LIMIT];
+static size_t inventory_count;
+/* Class1 eventfd, class2 eventpoll, class3 timerfd. Getter failure is explicit;
+ * no data is exported from a partially admitted inventory. */
+int event_inventory_count(void) { return event_inventory_frozen ? (int)inventory_count : -1; }
+int event_inventory_fd(int index) {
+    return event_inventory_frozen && index >= 0 && (size_t)index < inventory_count ? inventory_fds[index] : -1;
+}
+int event_inventory_kind(int index) {
+    return event_inventory_frozen && index >= 0 && (size_t)index < inventory_count ? inventory_kinds[index] : -1;
+}
+/* Controlled regression hook. The caller invokes it only between classification
+ * and TSYNC in a dedicated negative run; its real file replaces an admitted
+ * event descriptor. The post-TSYNC host audit must refuse application entry. */
+int event_replace(void) {
+    if (!event_inventory_frozen || event_policy_installed || fixture_event_fd < 0) return -1;
+    int source = open("/etc/passwd", O_RDONLY | O_CLOEXEC);
+    if (source < 0) return -1;
+    int result = dup2(source, fixture_event_fd);
+    int closed = close(source);
+    return result == fixture_event_fd && closed == 0 ? fixture_event_fd : -1;
+}
 static int admit_event_fd(int *fds, size_t *count, int fd) {
     if (*count == EVENT_FD_LIMIT) return -1;
     fds[(*count)++] = fd;
@@ -187,18 +213,24 @@ int close_unrelated(void) {
         if (size < 0) { closedir(directory); return -1; }
         target[size] = 0;
         int admission = 0;
+        int kind;
         if (!strcmp(target, "anon_inode:[eventpoll]")) {
+            kind = 2;
             admission = admit_event_fd(event_poll_fds, &event_poll_count, (int)descriptor);
         } else if (!strcmp(target, "anon_inode:[eventfd]")) {
+            kind = 1;
             admission = admit_event_fd(event_read_fds, &event_read_count, (int)descriptor);
             if (!admission) admission = admit_event_fd(event_write_fds, &event_write_count, (int)descriptor);
         } else if (!strcmp(target, "anon_inode:[timerfd]")) {
+            kind = 3;
             admission = admit_event_fd(event_read_fds, &event_read_count, (int)descriptor);
         } else {
             if (close((int)descriptor)) { closedir(directory); return -1; }
             continue;
         }
-        if (admission) { closedir(directory); return -1; }
+        if (admission || inventory_count == EVENT_INVENTORY_LIMIT) { closedir(directory); return -1; }
+        inventory_fds[inventory_count] = (int)descriptor;
+        inventory_kinds[inventory_count++] = kind;
         continue;
     }
     if (closedir(directory)) return -1;
@@ -310,6 +342,7 @@ int install(void) {
     /* Nonzero includes a positive unsynchronizable TID. Never accept it. */
     long result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER,
                           SECCOMP_FILTER_FLAG_TSYNC, &program);
+    event_policy_installed = result == 0;
     return result == 0 ? 0 : -1;
 }
 int check_thread(void) {

@@ -78,6 +78,9 @@ void trace(int stage) {
  * completion, without admitting filesystem/network descriptors or creation. */
 static int fixture_event_fd = -1;
 static int fixture_poll_fd = -1;
+static int fixture_event_errno;
+int event_errno(void) { return fixture_event_errno; }
+static int event_failure(int operation) { fixture_event_errno = errno; return operation; }
 int event_prepare(void) {
     if (fixture_event_fd != -1 || fixture_poll_fd != -1) return -1;
     fixture_event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -91,17 +94,17 @@ int event_prepare(void) {
  * and consumption. All operations run after TSYNC; no simulated completion. */
 int event_probe(void) {
     uint64_t value = 1;
-    if (syscall(SYS_write, fixture_event_fd, &value, sizeof(value)) != 8) return 1;
+    if (syscall(SYS_write, fixture_event_fd, &value, sizeof(value)) != 8) return event_failure(1);
     struct epoll_event event = {0};
     if (syscall(SYS_epoll_pwait, fixture_poll_fd, &event, 1, 0, NULL, 8) != 1 ||
-        event.data.u64 != 0xF1E0 || !(event.events & EPOLLIN)) return 2;
+        event.data.u64 != 0xF1E0 || !(event.events & EPOLLIN)) return event_failure(2);
     struct timespec timeout = {0};
     event = (struct epoll_event){0};
     if (syscall(SYS_epoll_pwait2, fixture_poll_fd, &event, 1, &timeout, NULL, 8) != 1 ||
-        event.data.u64 != 0xF1E0 || !(event.events & EPOLLIN)) return 3;
+        event.data.u64 != 0xF1E0 || !(event.events & EPOLLIN)) return event_failure(3);
     value = 0;
-    if (syscall(SYS_read, fixture_event_fd, &value, sizeof(value)) != 8 || value != 1) return 4;
-    if (syscall(SYS_epoll_pwait, fixture_poll_fd, &event, 1, 0, NULL, 8) != 0) return 5;
+    if (syscall(SYS_read, fixture_event_fd, &value, sizeof(value)) != 8 || value != 1) return event_failure(4);
+    if (syscall(SYS_epoll_pwait, fixture_poll_fd, &event, 1, 0, NULL, 8) != 0) return event_failure(5);
     return 0;
 }
 /* New focused negative cases leave the existing 24 control contract unchanged. */

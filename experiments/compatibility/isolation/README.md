@@ -1,10 +1,10 @@
 # Isolation compatibility experiment
 
-Subset of [Prove compatibility and runtime isolation](https://github.com/hazeion/fleur/issues/23), governed by the [runtime boundary](../../../docs/planning/V1-SPEC.md#runtime-isolation-and-production-feasibility-gate). Evidence collected on 2026-10-13. The isolation gate remains blocked. No application worker, syscall filter, broker or production artifact has been implemented or evaluated.
+Subset of [Prove compatibility and runtime isolation](https://github.com/hazeion/fleur/issues/23), governed by the [runtime boundary](../../../docs/planning/V1-SPEC.md#runtime-isolation-and-production-feasibility-gate). The original read-only diagnostic was collected on October 13, 2026. It deliberately reports blocked and does not evaluate applications. Subsequent [native runtime](../runtime-probe/README.md) and [real database/broker](../database-broker/README.md) experiments execute restrictions and registered operations; their results supersede the initial absence of a runner. The aggregate gate remains open for effective container-configuration inspection and actual CPU-busy worker deadline/healthy-worker evidence. No completed production artifact exists.
 
 ## Executed evidence
 
-The available host reports Darwin/x86_64. `docker` is absent from PATH. A native Linux seccomp test cannot run on this host, and no Linux Docker runner was supplied. This establishes a missing runner, not a failure of the chosen isolation mechanism.
+The available host reports Darwin/x86_64. `docker` is absent from PATH. A native Linux seccomp test cannot run on this host, and no Linux Docker runner was supplied for that initial local diagnostic. Hosted native Linux runners were subsequently used successfully. This establishes a missing runner, not a failure of the chosen isolation mechanism.
 
 Run the read-only diagnostic from the repository root:
 
@@ -29,19 +29,19 @@ An anonymous Docker Hub registry request for `oven/bun:1.4.3` returned an OCI in
 | Linux amd64 | `sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e` |
 | Linux arm64 | `sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023` |
 
-Metadata came from the [official Bun repository on Docker Hub](https://hub.docker.com/r/oven/bun), through its registry API. No layers were downloaded or executed, and the actual contained Bun version was not checked. These are available candidates for a future disposable experiment. They are not selected release images, restricted Fleur images, OCI archive digests or tested compatibility pins. The restricted artifact and its archive digest do not exist yet.
+Metadata came from the [official Bun repository on Docker Hub](https://hub.docker.com/r/oven/bun), through its registry API. The inventory itself downloaded no layers and checked no contained runtime. The later native runtime and database experiments executed these exact architecture manifests with Bun 1.4.3 and frozen compiler pins; see the [durable evidence](../evidence.md). They are executed base-image compatibility pins for the bounded probes, not selected Fleur release images or production OCI archive digests. A complete production artifact remains later work.
 
-## Next executable probe
+## Historical probe requirements
 
-Use a disposable Linux Docker runner for each required architecture, with recorded host kernel, Docker/container runtime versions and immutable image digests. Docker on macOS can provide Linux containers, but native Darwin does not provide Linux seccomp. A runner also needs an exact Bun binary, exact rendering dependencies and a native compiler/helper build pin. No verified native restriction helper or Bun-before-evaluation integration is currently available.
+Use a disposable Linux Docker runner for each required architecture, with recorded host kernel, Docker/container runtime versions and immutable image digests. Docker on macOS can provide Linux containers, but native Darwin does not provide Linux seccomp. A runner also needs an exact Bun binary, exact rendering dependencies and a native compiler/helper build pin. These prerequisites were missing at the initial inventory stage; the separate native probe now supplies and executes them.
 
 A bounded first probe should determine whether a trusted Bun bootstrap can load its native restriction helper and runtime necessities, retain only admitted broker/log and required runtime descriptors, install no-new-privileges and a synchronized final filter, then evaluate the admitted bundle. The [Bun FFI documentation](https://bun.sh/docs/runtime/ffi) describes a possible trusted native-call bridge, but marks FFI experimental. It is a candidate to test, not a supported security integration. [Compiled Bun executables](https://bun.sh/docs/bundler/executables) bundle code/assets; this does not prove that startup or later module/runtime work avoids filesystem access.
 
-Do not statically import application modules into an unrestricted entrypoint. Verify evaluation ordering with an adversarial top-level module fixture and an externally observed side effect. Dynamic bundled imports may still require runtime work; determine that on the real pinned executable. If a native Bun source hook is required, pin the exact source revision and rebuilt binary digest before testing it. No documented embedding hook was verified in this experiment.
+Do not statically import application modules into an unrestricted entrypoint. Verify evaluation ordering with an adversarial top-level module fixture and an externally observed side effect. Dynamic bundled imports may still require runtime work; determine that on the real pinned executable. If a future native Bun source hook is required, its exact source revision and rebuilt binary digest must be pinned before testing. This inventory did not verify an embedding hook; the later probe instead executes a trusted FFI restriction bridge before compiling/evaluating its inert application source.
 
 [Linux seccomp](https://man7.org/linux/man-pages/man2/seccomp.2.html) requires explicit handling of synchronization failure, including a positive thread-ID return under TSYNC. Every nonzero installation result must terminate before application evaluation. Filters are inherited by subsequently created threads, but thread creation policy and Bun/JIT compatibility still need execution tests. A helper that only filters its calling thread cannot satisfy the contract.
 
-The follow-up probe must prove all of these before the gate can pass:
+The following requirements guided the implemented native and database probes. Their executed scope is recorded separately; they are not passes from this inventory diagnostic:
 
 - Existing Bun threads and any later threads cannot bypass the final restriction; failed synchronization never reaches an application module.
 - Filesystem opening/mutation and syscall alternatives fail, including open/openat/openat2, inherited-file misuse, dynamic native loading and io_uring paths. Verify architecture-specific syscall ABI handling.

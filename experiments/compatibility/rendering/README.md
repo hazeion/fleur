@@ -24,7 +24,7 @@ Browser installation downloads the package's exact browser revision. Tests refus
 
 ## Executed October 13, 2026
 
-Observed macOS 15.7.7, build 24G720, with reported process architecture x86_64. Translation-state sysctl queries were unavailable, so native versus translated execution remains unverified. Bun 1.4.3 reports revision c6da4a4d3. Its archive digest verification belongs to the adjacent tooling experiment. No Node runtime was used for these commands.
+The initial local experiment observed macOS 15.7.7, build 24G720, reporting x86_64; translation-state queries were unavailable in that early run. The final PR matrix later verified native Intel and Apple Silicon macOS 15.7.9, plus Ubuntu 24.04/26.04 on both architectures. All rendering checks and both browser runs passed on those hosts and the three distribution userspaces in [run 38455482128](https://github.com/hazeion/fleur/actions/runs/38455482128). See the [durable evidence matrix](../evidence.md). Bun 1.4.3 reports revision c6da4a4d3. Its archive digest verification belongs to the adjacent tooling experiment. No Node runtime was used for these commands.
 
 Exact candidates frozen in the two Bun lockfiles:
 
@@ -66,4 +66,4 @@ client.js.map  6b59bcf795667116833430b377dc897ccde1215a229a11810b2757036a06e128
 
 This is a specific single-region fixture. Its explicit island root and separately replaced server span demonstrate a viable Preact reconciliation mechanism. It does not prove generic keyed/nested region compilation, island admission manifests, arbitrary lazy graph exclusion, route changes, server query authority, revision/epoch ordering, subscriptions or two-view database updates. The artifact scanner checks this fixture's canaries; it is not a security admission implementation.
 
-The trusted Bun server uses ordinary filesystem/network authority. There is no restricted worker, broker, database, production Docker artifact or isolation guarantee in this fixture. The browser deliberately fetches a fixture-owned response directly; that is not an application transport API. Other OS/architecture targets and all remaining issue acceptance criteria remain unverified. Passing this subset does not permit dependent product implementation while the mandatory gate remains open.
+The trusted Bun server uses ordinary filesystem/network authority. There is no restricted worker, broker, database, production Docker artifact or isolation guarantee in this fixture. The browser deliberately fetches a fixture-owned response directly; that is not an application transport API. The supported experiment matrix is recorded in [evidence.md](../evidence.md); Debian/Arch are container-userspace checks rather than native host installation proofs. Effective restricted-container configuration and an actual CPU-busy worker deadline/healthy-worker proof remain open at the aggregate gate. Passing this rendering subset alone does not enable dependent implementation.

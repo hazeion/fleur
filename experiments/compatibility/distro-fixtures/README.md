@@ -36,7 +36,7 @@ The public CLI prerequisite regression must reject a wrong native architecture b
 python3 experiments/compatibility/distro-fixtures/test_cli.py
 ```
 
-The first run failed because the driver did not yet exist. After implementation, the regression passed on the local macOS machine. Syntax checks also passed. Docker and actual distribution fixture execution are unavailable locally; only CI execution can establish those results. No platform pass is claimed from the local control checks.
+The first run failed because the driver did not yet exist. After implementation, the regression passed on the local macOS machine. Syntax checks also passed. Docker was unavailable on the local host, so those initial controls established reporting only. All three actual hosted fixtures later passed in [run 38455482128](https://github.com/hazeion/fleur/actions/runs/38455482128). The exact Debian 13.7 and Arch base/package snapshot identities, browser version/digest and built image IDs are retained in the [durable evidence record](../evidence.md). Both tooling and browser runs passed twice for each userspace. The tested direct Arch browser path uses package-pinned Chromium 156.0.8078.4, revision 1248, with snapshot libraries and Bun-launched workers; it needs no separate Node runtime or fallback wrapper. These remain userspace results on Ubuntu, not native distribution kernel/Docker installation evidence.
 
 ## Cleanup launch regression
 

@@ -68,10 +68,14 @@ def main():
             run('types-negative', ['node_modules/typescript/bin/tsc', '--noEmit', '-p', 'tsconfig.negative.json'], expected=1)
             run('operations-positive', ['node_modules/typescript/bin/tsc', '--noEmit', '-p', 'tsconfig.operations.json'])
             run('operations-negative', ['node_modules/typescript/bin/tsc', '--noEmit', '-p', 'tsconfig.operations-negative.json'], expected=1)
-            run('oxlint', ['node_modules/oxlint/bin/oxlint', 'fixture.ts', 'fixture.test.ts'])
+            run('oxlint', ['node_modules/oxlint/bin/oxlint', 'fixture.ts', 'fixture.test.ts',
+                           'patch.test.ts', 'operations.ts', 'declarations.ts'])
         if run('install-lint', ['install', '--frozen-lockfile'], root / 'lint'):
             run('lint-engine', ['-e', 'import ts from "typescript"; console.log(ts.version)'], root / 'lint')
             run('lint-positive', ['node_modules/eslint/bin/eslint.js', 'valid.ts'], root / 'lint')
+            run('lint-sources', ['lint/node_modules/eslint/bin/eslint.js', '--config',
+                                'lint/eslint.config.js', 'fixture.ts', 'fixture.test.ts',
+                                'patch.test.ts', 'operations.ts', 'declarations.ts'])
             run('lint-negative', ['node_modules/eslint/bin/eslint.js', '--format', 'json', 'invalid.ts'], root / 'lint', expected=1)
     passed = all(row.get('matches_expected_exit') and row.get('intended_diagnostics_only', True) for row in checks)
     print(json.dumps({'observed_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),

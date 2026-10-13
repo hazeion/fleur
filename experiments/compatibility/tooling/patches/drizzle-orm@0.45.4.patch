@@ -1,0 +1,306 @@
+diff --git a/pg-core/roles.d.ts b/pg-core/roles.d.ts
+--- a/pg-core/roles.d.ts
++++ b/pg-core/roles.d.ts
+@@ -9,5 +9,8 @@
+     static readonly [entityKind]: string;
+     constructor(name: string, config?: PgRoleConfig);
+     existing(): this;
++    readonly createDb: PgRoleConfig['createDb'];
++    readonly createRole: PgRoleConfig['createRole'];
++    readonly inherit: PgRoleConfig['inherit'];
+ }
+ export declare function pgRole(name: string, config?: PgRoleConfig): PgRole;
+diff --git a/pg-core/roles.d.cts b/pg-core/roles.d.cts
+--- a/pg-core/roles.d.cts
++++ b/pg-core/roles.d.cts
+@@ -9,5 +9,8 @@
+     static readonly [entityKind]: string;
+     constructor(name: string, config?: PgRoleConfig);
+     existing(): this;
++    readonly createDb: PgRoleConfig['createDb'];
++    readonly createRole: PgRoleConfig['createRole'];
++    readonly inherit: PgRoleConfig['inherit'];
+ }
+ export declare function pgRole(name: string, config?: PgRoleConfig): PgRole;
+diff --git a/gel-core/roles.d.ts b/gel-core/roles.d.ts
+--- a/gel-core/roles.d.ts
++++ b/gel-core/roles.d.ts
+@@ -9,5 +9,8 @@
+     static readonly [entityKind]: string;
+     constructor(name: string, config?: GelRoleConfig);
+     existing(): this;
++    readonly createDb: GelRoleConfig['createDb'];
++    readonly createRole: GelRoleConfig['createRole'];
++    readonly inherit: GelRoleConfig['inherit'];
+ }
+ export declare function gelRole(name: string, config?: GelRoleConfig): GelRole;
+diff --git a/gel-core/roles.d.cts b/gel-core/roles.d.cts
+--- a/gel-core/roles.d.cts
++++ b/gel-core/roles.d.cts
+@@ -9,5 +9,8 @@
+     static readonly [entityKind]: string;
+     constructor(name: string, config?: GelRoleConfig);
+     existing(): this;
++    readonly createDb: GelRoleConfig['createDb'];
++    readonly createRole: GelRoleConfig['createRole'];
++    readonly inherit: GelRoleConfig['inherit'];
+ }
+ export declare function gelRole(name: string, config?: GelRoleConfig): GelRole;
+diff --git a/mysql-core/query-builders/delete.d.ts b/mysql-core/query-builders/delete.d.ts
+--- a/mysql-core/query-builders/delete.d.ts
++++ b/mysql-core/query-builders/delete.d.ts
+@@ -79,5 +79,6 @@
+     private createIterator;
+     iterator: ReturnType<this["prepare"]>["iterator"];
+     $dynamic(): MySqlDeleteDynamic<this>;
++    getSQL(): SQL;
+ }
+ export {};
+diff --git a/mysql-core/query-builders/delete.d.cts b/mysql-core/query-builders/delete.d.cts
+--- a/mysql-core/query-builders/delete.d.cts
++++ b/mysql-core/query-builders/delete.d.cts
+@@ -79,5 +79,6 @@
+     private createIterator;
+     iterator: ReturnType<this["prepare"]>["iterator"];
+     $dynamic(): MySqlDeleteDynamic<this>;
++    getSQL(): SQL;
+ }
+ export {};
+diff --git a/mysql-core/query-builders/select.d.ts b/mysql-core/query-builders/select.d.ts
+--- a/mysql-core/query-builders/select.d.ts
++++ b/mysql-core/query-builders/select.d.ts
+@@ -605,6 +605,8 @@
+         tag?: string;
+         autoInvalidate?: boolean;
+     } | false): this;
++    readonly session: MySqlSession | undefined;
++    getSQL(): SQL;
+ }
+ export interface MySqlSelectBase<TTableName extends string | undefined, TSelection extends ColumnsSelection, TSelectMode extends SelectMode, TPreparedQueryHKT extends PreparedQueryHKTBase, TNullabilityMap extends Record<string, JoinNullability> = TTableName extends string ? Record<TTableName, 'not-null'> : {}, TDynamic extends boolean = false, TExcludedMethods extends string = never, TResult extends any[] = SelectResult<TSelection, TSelectMode, TNullabilityMap>[], TSelectedFields extends ColumnsSelection = BuildSubquerySelection<TSelection, TNullabilityMap>> extends MySqlSelectQueryBuilderBase<MySqlSelectHKT, TTableName, TSelection, TSelectMode, TPreparedQueryHKT, TNullabilityMap, TDynamic, TExcludedMethods, TResult, TSelectedFields>, QueryPromise<TResult> {
+ }
+diff --git a/mysql-core/query-builders/select.d.cts b/mysql-core/query-builders/select.d.cts
+--- a/mysql-core/query-builders/select.d.cts
++++ b/mysql-core/query-builders/select.d.cts
+@@ -605,6 +605,8 @@
+         tag?: string;
+         autoInvalidate?: boolean;
+     } | false): this;
++    readonly session: MySqlSession | undefined;
++    getSQL(): SQL;
+ }
+ export interface MySqlSelectBase<TTableName extends string | undefined, TSelection extends ColumnsSelection, TSelectMode extends SelectMode, TPreparedQueryHKT extends PreparedQueryHKTBase, TNullabilityMap extends Record<string, JoinNullability> = TTableName extends string ? Record<TTableName, 'not-null'> : {}, TDynamic extends boolean = false, TExcludedMethods extends string = never, TResult extends any[] = SelectResult<TSelection, TSelectMode, TNullabilityMap>[], TSelectedFields extends ColumnsSelection = BuildSubquerySelection<TSelection, TNullabilityMap>> extends MySqlSelectQueryBuilderBase<MySqlSelectHKT, TTableName, TSelection, TSelectMode, TPreparedQueryHKT, TNullabilityMap, TDynamic, TExcludedMethods, TResult, TSelectedFields>, QueryPromise<TResult> {
+ }
+diff --git a/singlestore-core/columns/common.d.ts b/singlestore-core/columns/common.d.ts
+--- a/singlestore-core/columns/common.d.ts
++++ b/singlestore-core/columns/common.d.ts
+@@ -1,3 +1,5 @@
++import type { SQL } from "../../sql/sql.js";
++import type { HasGenerated } from "../../column-builder.js";
+ import type { ColumnBuilderBase, ColumnBuilderBaseConfig, ColumnBuilderExtraConfig, ColumnBuilderRuntimeConfig, ColumnDataType, HasDefault, IsAutoincrement } from "../../column-builder.js";
+ import { ColumnBuilder } from "../../column-builder.js";
+ import type { ColumnBaseConfig } from "../../column.js";
+@@ -19,6 +21,7 @@
+ }, TExtraConfig> implements SingleStoreColumnBuilderBase<T, TTypeConfig> {
+     static readonly [entityKind]: string;
+     unique(name?: string): this;
++    generatedAlwaysAs(as: SQL | T['data'] | (() => SQL), config?: SingleStoreGeneratedColumnConfig): HasGenerated<this, { type: "always" }>;
+ }
+ export declare abstract class SingleStoreColumn<T extends ColumnBaseConfig<ColumnDataType, string> = ColumnBaseConfig<ColumnDataType, string>, TRuntimeConfig extends object = {}, TTypeConfig extends object = {}> extends Column<T, TRuntimeConfig, TTypeConfig & {
+     dialect: 'singlestore';
+diff --git a/singlestore-core/columns/common.d.cts b/singlestore-core/columns/common.d.cts
+--- a/singlestore-core/columns/common.d.cts
++++ b/singlestore-core/columns/common.d.cts
+@@ -1,3 +1,5 @@
++import type { SQL } from "../../sql/sql.cjs";
++import type { HasGenerated } from "../../column-builder.cjs";
+ import type { ColumnBuilderBase, ColumnBuilderBaseConfig, ColumnBuilderExtraConfig, ColumnBuilderRuntimeConfig, ColumnDataType, HasDefault, IsAutoincrement } from "../../column-builder.cjs";
+ import { ColumnBuilder } from "../../column-builder.cjs";
+ import type { ColumnBaseConfig } from "../../column.cjs";
+@@ -19,6 +21,7 @@
+ }, TExtraConfig> implements SingleStoreColumnBuilderBase<T, TTypeConfig> {
+     static readonly [entityKind]: string;
+     unique(name?: string): this;
++    generatedAlwaysAs(as: SQL | T['data'] | (() => SQL), config?: SingleStoreGeneratedColumnConfig): HasGenerated<this, { type: "always" }>;
+ }
+ export declare abstract class SingleStoreColumn<T extends ColumnBaseConfig<ColumnDataType, string> = ColumnBaseConfig<ColumnDataType, string>, TRuntimeConfig extends object = {}, TTypeConfig extends object = {}> extends Column<T, TRuntimeConfig, TTypeConfig & {
+     dialect: 'singlestore';
+diff --git a/singlestore-core/columns/enum.d.ts b/singlestore-core/columns/enum.d.ts
+--- a/singlestore-core/columns/enum.d.ts
++++ b/singlestore-core/columns/enum.d.ts
+@@ -16,7 +16,7 @@
+ export declare class SingleStoreEnumColumnBuilder<T extends ColumnBuilderBaseConfig<'string', 'SingleStoreEnumColumn'>> extends SingleStoreColumnBuilder<T, {
+     enumValues: T['enumValues'];
+ }> {
+-    generatedAlwaysAs(as: SQL<unknown> | (() => SQL) | T['data'], config?: Partial<GeneratedColumnConfig<unknown>>): HasGenerated<this, {}>;
++    generatedAlwaysAs(as: SQL<unknown> | (() => SQL) | T['data'], config?: Partial<GeneratedColumnConfig<unknown>>): never;
+     static readonly [entityKind]: string;
+     constructor(name: T['name'], values: T['enumValues']);
+ }
+diff --git a/singlestore-core/columns/enum.d.cts b/singlestore-core/columns/enum.d.cts
+--- a/singlestore-core/columns/enum.d.cts
++++ b/singlestore-core/columns/enum.d.cts
+@@ -16,7 +16,7 @@
+ export declare class SingleStoreEnumColumnBuilder<T extends ColumnBuilderBaseConfig<'string', 'SingleStoreEnumColumn'>> extends SingleStoreColumnBuilder<T, {
+     enumValues: T['enumValues'];
+ }> {
+-    generatedAlwaysAs(as: SQL<unknown> | (() => SQL) | T['data'], config?: Partial<GeneratedColumnConfig<unknown>>): HasGenerated<this, {}>;
++    generatedAlwaysAs(as: SQL<unknown> | (() => SQL) | T['data'], config?: Partial<GeneratedColumnConfig<unknown>>): never;
+     static readonly [entityKind]: string;
+     constructor(name: T['name'], values: T['enumValues']);
+ }
+diff --git a/singlestore-core/query-builders/delete.d.ts b/singlestore-core/query-builders/delete.d.ts
+--- a/singlestore-core/query-builders/delete.d.ts
++++ b/singlestore-core/query-builders/delete.d.ts
+@@ -79,5 +79,6 @@
+     private createIterator;
+     iterator: ReturnType<this["prepare"]>["iterator"];
+     $dynamic(): SingleStoreDeleteDynamic<this>;
++    getSQL(): SQL;
+ }
+ export {};
+diff --git a/singlestore-core/query-builders/delete.d.cts b/singlestore-core/query-builders/delete.d.cts
+--- a/singlestore-core/query-builders/delete.d.cts
++++ b/singlestore-core/query-builders/delete.d.cts
+@@ -79,5 +79,6 @@
+     private createIterator;
+     iterator: ReturnType<this["prepare"]>["iterator"];
+     $dynamic(): SingleStoreDeleteDynamic<this>;
++    getSQL(): SQL;
+ }
+ export {};
+diff --git a/singlestore-core/query-builders/select.d.ts b/singlestore-core/query-builders/select.d.ts
+--- a/singlestore-core/query-builders/select.d.ts
++++ b/singlestore-core/query-builders/select.d.ts
+@@ -514,6 +514,8 @@
+     toSQL(): Query;
+     as<TAlias extends string>(alias: TAlias): SubqueryWithSelection<this['_']['selectedFields'], TAlias>;
+     $dynamic(): SingleStoreSelectDynamic<this>;
++    readonly session: SingleStoreSession | undefined;
++    getSQL(): SQL;
+ }
+ export interface SingleStoreSelectBase<TTableName extends string | undefined, TSelection extends ColumnsSelection, TSelectMode extends SelectMode, TPreparedQueryHKT extends PreparedQueryHKTBase, TNullabilityMap extends Record<string, JoinNullability> = TTableName extends string ? Record<TTableName, 'not-null'> : {}, TDynamic extends boolean = false, TExcludedMethods extends string = never, TResult extends any[] = SelectResult<TSelection, TSelectMode, TNullabilityMap>[], TSelectedFields extends ColumnsSelection = BuildSubquerySelection<TSelection, TNullabilityMap>> extends SingleStoreSelectQueryBuilderBase<SingleStoreSelectHKT, TTableName, TSelection, TSelectMode, TPreparedQueryHKT, TNullabilityMap, TDynamic, TExcludedMethods, TResult, TSelectedFields>, QueryPromise<TResult> {
+ }
+diff --git a/singlestore-core/query-builders/select.d.cts b/singlestore-core/query-builders/select.d.cts
+--- a/singlestore-core/query-builders/select.d.cts
++++ b/singlestore-core/query-builders/select.d.cts
+@@ -514,6 +514,8 @@
+     toSQL(): Query;
+     as<TAlias extends string>(alias: TAlias): SubqueryWithSelection<this['_']['selectedFields'], TAlias>;
+     $dynamic(): SingleStoreSelectDynamic<this>;
++    readonly session: SingleStoreSession | undefined;
++    getSQL(): SQL;
+ }
+ export interface SingleStoreSelectBase<TTableName extends string | undefined, TSelection extends ColumnsSelection, TSelectMode extends SelectMode, TPreparedQueryHKT extends PreparedQueryHKTBase, TNullabilityMap extends Record<string, JoinNullability> = TTableName extends string ? Record<TTableName, 'not-null'> : {}, TDynamic extends boolean = false, TExcludedMethods extends string = never, TResult extends any[] = SelectResult<TSelection, TSelectMode, TNullabilityMap>[], TSelectedFields extends ColumnsSelection = BuildSubquerySelection<TSelection, TNullabilityMap>> extends SingleStoreSelectQueryBuilderBase<SingleStoreSelectHKT, TTableName, TSelection, TSelectMode, TPreparedQueryHKT, TNullabilityMap, TDynamic, TExcludedMethods, TResult, TSelectedFields>, QueryPromise<TResult> {
+ }
+diff --git a/gel-core/query-builders/query.d.ts b/gel-core/query-builders/query.d.ts
+--- a/gel-core/query-builders/query.d.ts
++++ b/gel-core/query-builders/query.d.ts
+@@ -1,3 +1,4 @@
++import type { SQL } from "../../sql/sql.js";
+ import { entityKind } from "../../entity.js";
+ import { QueryPromise } from "../../query-promise.js";
+ import { type BuildQueryResult, type DBQueryConfig, type TableRelationalConfig, type TablesRelationalConfig } from "../../relations.js";
+@@ -43,4 +44,5 @@
+     private _toSQL;
+     toSQL(): Query;
+     execute(): Promise<TResult>;
++    getSQL(): SQL;
+ }
+diff --git a/gel-core/query-builders/query.d.cts b/gel-core/query-builders/query.d.cts
+--- a/gel-core/query-builders/query.d.cts
++++ b/gel-core/query-builders/query.d.cts
+@@ -1,3 +1,4 @@
++import type { SQL } from "../../sql/sql.cjs";
+ import { entityKind } from "../../entity.cjs";
+ import { QueryPromise } from "../../query-promise.cjs";
+ import { type BuildQueryResult, type DBQueryConfig, type TableRelationalConfig, type TablesRelationalConfig } from "../../relations.cjs";
+@@ -43,4 +44,5 @@
+     private _toSQL;
+     toSQL(): Query;
+     execute(): Promise<TResult>;
++    getSQL(): SQL;
+ }
+diff --git a/pg-core/query-builders/query.d.ts b/pg-core/query-builders/query.d.ts
+--- a/pg-core/query-builders/query.d.ts
++++ b/pg-core/query-builders/query.d.ts
+@@ -1,3 +1,4 @@
++import type { SQL } from "../../sql/sql.js";
+ import { entityKind } from "../../entity.js";
+ import { QueryPromise } from "../../query-promise.js";
+ import { type BuildQueryResult, type DBQueryConfig, type TableRelationalConfig, type TablesRelationalConfig } from "../../relations.js";
+@@ -44,4 +45,5 @@
+     toSQL(): Query;
+     private authToken?;
+     execute(): Promise<TResult>;
++    getSQL(): SQL;
+ }
+diff --git a/pg-core/query-builders/query.d.cts b/pg-core/query-builders/query.d.cts
+--- a/pg-core/query-builders/query.d.cts
++++ b/pg-core/query-builders/query.d.cts
+@@ -1,3 +1,4 @@
++import type { SQL } from "../../sql/sql.cjs";
+ import { entityKind } from "../../entity.cjs";
+ import { QueryPromise } from "../../query-promise.cjs";
+ import { type BuildQueryResult, type DBQueryConfig, type TableRelationalConfig, type TablesRelationalConfig } from "../../relations.cjs";
+@@ -44,4 +45,5 @@
+     toSQL(): Query;
+     private authToken?;
+     execute(): Promise<TResult>;
++    getSQL(): SQL;
+ }
+diff --git a/sqlite-core/query-builders/query.d.ts b/sqlite-core/query-builders/query.d.ts
+--- a/sqlite-core/query-builders/query.d.ts
++++ b/sqlite-core/query-builders/query.d.ts
+@@ -1,3 +1,4 @@
++import type { SQL } from "../../sql/sql.js";
+ import { entityKind } from "../../entity.js";
+ import { QueryPromise } from "../../query-promise.js";
+ import { type BuildQueryResult, type DBQueryConfig, type TableRelationalConfig, type TablesRelationalConfig } from "../../relations.js";
+@@ -48,6 +49,7 @@
+     private _toSQL;
+     toSQL(): Query;
+     execute(): Promise<TResult>;
++    getSQL(): SQL;
+ }
+ export declare class SQLiteSyncRelationalQuery<TResult> extends SQLiteRelationalQuery<'sync', TResult> {
+     static readonly [entityKind]: string;
+diff --git a/sqlite-core/query-builders/query.d.cts b/sqlite-core/query-builders/query.d.cts
+--- a/sqlite-core/query-builders/query.d.cts
++++ b/sqlite-core/query-builders/query.d.cts
+@@ -1,3 +1,4 @@
++import type { SQL } from "../../sql/sql.cjs";
+ import { entityKind } from "../../entity.cjs";
+ import { QueryPromise } from "../../query-promise.cjs";
+ import { type BuildQueryResult, type DBQueryConfig, type TableRelationalConfig, type TablesRelationalConfig } from "../../relations.cjs";
+@@ -48,6 +49,7 @@
+     private _toSQL;
+     toSQL(): Query;
+     execute(): Promise<TResult>;
++    getSQL(): SQL;
+ }
+ export declare class SQLiteSyncRelationalQuery<TResult> extends SQLiteRelationalQuery<'sync', TResult> {
+     static readonly [entityKind]: string;
+diff --git a/sqlite-core/query-builders/select.d.ts b/sqlite-core/query-builders/select.d.ts
+--- a/sqlite-core/query-builders/select.d.ts
++++ b/sqlite-core/query-builders/select.d.ts
+@@ -446,6 +446,8 @@
+     toSQL(): Query;
+     as<TAlias extends string>(alias: TAlias): SubqueryWithSelection<this['_']['selectedFields'], TAlias>;
+     $dynamic(): SQLiteSelectDynamic<this>;
++    config: SQLiteSelectConfig;
++    getSQL(): SQL;
+ }
+ export interface SQLiteSelectBase<TTableName extends string | undefined, TResultType extends 'sync' | 'async', TRunResult, TSelection extends ColumnsSelection, TSelectMode extends SelectMode = 'single', TNullabilityMap extends Record<string, JoinNullability> = TTableName extends string ? Record<TTableName, 'not-null'> : {}, TDynamic extends boolean = false, TExcludedMethods extends string = never, TResult extends any[] = SelectResult<TSelection, TSelectMode, TNullabilityMap>[], TSelectedFields extends ColumnsSelection = BuildSubquerySelection<TSelection, TNullabilityMap>> extends SQLiteSelectQueryBuilderBase<SQLiteSelectHKT, TTableName, TResultType, TRunResult, TSelection, TSelectMode, TNullabilityMap, TDynamic, TExcludedMethods, TResult, TSelectedFields>, QueryPromise<TResult> {
+ }
+diff --git a/sqlite-core/query-builders/select.d.cts b/sqlite-core/query-builders/select.d.cts
+--- a/sqlite-core/query-builders/select.d.cts
++++ b/sqlite-core/query-builders/select.d.cts
+@@ -446,6 +446,8 @@
+     toSQL(): Query;
+     as<TAlias extends string>(alias: TAlias): SubqueryWithSelection<this['_']['selectedFields'], TAlias>;
+     $dynamic(): SQLiteSelectDynamic<this>;
++    config: SQLiteSelectConfig;
++    getSQL(): SQL;
+ }
+ export interface SQLiteSelectBase<TTableName extends string | undefined, TResultType extends 'sync' | 'async', TRunResult, TSelection extends ColumnsSelection, TSelectMode extends SelectMode = 'single', TNullabilityMap extends Record<string, JoinNullability> = TTableName extends string ? Record<TTableName, 'not-null'> : {}, TDynamic extends boolean = false, TExcludedMethods extends string = never, TResult extends any[] = SelectResult<TSelection, TSelectMode, TNullabilityMap>[], TSelectedFields extends ColumnsSelection = BuildSubquerySelection<TSelection, TNullabilityMap>> extends SQLiteSelectQueryBuilderBase<SQLiteSelectHKT, TTableName, TResultType, TRunResult, TSelection, TSelectMode, TNullabilityMap, TDynamic, TExcludedMethods, TResult, TSelectedFields>, QueryPromise<TResult> {
+ }

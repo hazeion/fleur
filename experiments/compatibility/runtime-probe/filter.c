@@ -157,6 +157,19 @@ int event_inventory_fd(int index) {
 int event_inventory_kind(int index) {
     return event_inventory_frozen && index >= 0 && (size_t)index < inventory_count ? inventory_kinds[index] : -1;
 }
+/* Fixed synchronous admission ACK; no Bun event-loop work or application
+ * compilation occurs before the host has audited the post-TSYNC descriptors. */
+int event_audit_ack(void) {
+    char reply[32];
+    size_t used = 0;
+    while (used < sizeof(reply) - 1) {
+        ssize_t count = syscall(SYS_read, 0, reply + used, 1);
+        if (count != 1) return -1;
+        if (reply[used++] == '\n') break;
+    }
+    reply[used] = 0;
+    return !strcmp(reply, "startup:approved\n") ? 0 : -1;
+}
 /* Controlled regression hook. The caller invokes it only between classification
  * and TSYNC in a dedicated negative run; its real file replaces an admitted
  * event descriptor. The post-TSYNC host audit must refuse application entry. */

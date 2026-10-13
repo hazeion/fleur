@@ -172,8 +172,6 @@ test('stalled idle verification discards authority while preserving established 
 });
 
 test('delayed control cancellation acknowledgement retires the old backend before subsequent work',async()=>{
- process.env.FLEUR_DIAG_CONTROL='1';
- const diagnostic=(stage:string)=>console.error('[DEBUG-control23]',stage);
  const {commitFaultProxy}=await import('./proxy');
  const proxy=await commitFaultProxy(url,'cancel-control');
  const isolated=new SQL(proxy.url,{max:1});
@@ -181,23 +179,14 @@ test('delayed control cancellation acknowledgement retires the old backend befor
  const writer=new Broker(isolated,mutationSession);
  const query=new Broker(isolated,querySession);
  const oldBackend=await isolated.unsafe('SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()');
- diagnostic('case:dispatch:start');
  const outcome=await writer.dispatch(save({delayMs:3000}),100);
- diagnostic('case:dispatch:end');
  expect(outcome).toEqual({kind:'broker-response',ok:false,code:'DEADLINE'});
  expect(proxy.intercepted()).toBe(1);
- diagnostic('case:healthy-query:start');
  const healthy=await query.dispatch(read);
- diagnostic('case:healthy-query:end');
  expect(healthy).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Squat',version:1}});
- diagnostic('case:new-identity:start');
  const newBackend=await isolated.unsafe('SELECT pg_backend_pid() AS pid,backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()');
- diagnostic('case:new-identity:end');
  expect(newBackend[0]).not.toEqual(oldBackend[0]);
- diagnostic('case:new-mutation:start');
  expect(await writer.dispatch(save())).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
- diagnostic('case:new-mutation:end');
  expect(await query.dispatch(read)).toEqual({kind:'broker-response',ok:true,value:{id:1,name:'Renamed',version:2}});
- diagnostic('case:all-assertions-passed');
- } finally {diagnostic('case:pool-close:start');await isolated.close({timeout:0});diagnostic('case:pool-close:end');await proxy.close();delete process.env.FLEUR_DIAG_CONTROL;}
+ } finally {await isolated.close({timeout:0});await proxy.close();}
 });

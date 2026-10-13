@@ -1,5 +1,7 @@
 import { SQL } from 'bun';
+import { fileURLToPath } from 'node:url';
 import { CleanupLease } from './cleanup';
+import { startOwnedControl } from './control-process';
 import { z } from 'zod';
 import { drizzle } from 'drizzle-orm/bun-sql';
 import { eq, and, sql as expression } from 'drizzle-orm';
@@ -25,7 +27,6 @@ export class Broker {
   async dispatch(request:unknown, deadlineMs=5000, loseResponse=false, workerSignal?:AbortSignal):Promise<Response> {
     let admitted:ReturnType<typeof admit>;
     try { admitted=admit(request,this.session); } catch { return {kind:'broker-response',ok:false,code:'REQUEST_DENIED'}; }
-    const diagnostic=(stage:string)=>{if(process.env.FLEUR_DIAG_CONTROL==='1') console.error('[DEBUG-control23]',stage);};
     const abort = new AbortController();
     const workerGone=() => abort.abort();
     workerSignal?.addEventListener('abort',workerGone,{once:true});
@@ -38,25 +39,17 @@ export class Broker {
     let pendingStatement:Promise<unknown>|undefined;
     const cancelled=() => { if (abort.signal.aborted) throw new Error('DEADLINE'); };
     let backend:{pid:number;started:string}|undefined;
-    const controls=new Set<SQL>();
     let cancellation:Promise<'applied'|'absent'|'failed'>|undefined;
     const backendControl=async (action:'cancel'|'terminate'):Promise<'applied'|'absent'|'failed'> => {
-      if (!backend) return 'failed';
-      const control=new SQL({...this.pool.options,max:1,connectionTimeout:1});
-      controls.add(control);
-      let controlTimer:ReturnType<typeof setTimeout>|undefined;
+      if(!backend)return 'failed';
       try {
-        const statement=action==='cancel'
-          ? 'SELECT pg_cancel_backend(pid) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user'
-          : 'SELECT pg_terminate_backend(pid,200) AS applied FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=current_database() AND usename=current_user';
-        const result=await Promise.race([
-          control.unsafe(statement,[backend.pid,backend.started]),
-          new Promise<never>((_resolve,reject)=>{controlTimer=setTimeout(()=>reject(new Error('Control deadline')),250);}),
-        ]);
-        const rows=z.array(z.strictObject({applied:z.boolean()})).parse(result);
-        return rows.length===0 ? 'absent' : rows.length===1 && rows[0]?.applied===true ? 'applied' : 'failed';
+        const owned=startOwnedControl([process.execPath,fileURLToPath(new URL('./control-worker.ts',import.meta.url))],
+          {action,pid:backend.pid,started:backend.started},
+          {FLEUR_PRIVATE_CONTROL_OPTIONS:JSON.stringify(this.pool.options),
+           FLEUR_DISPOSABLE_DATABASE_NAME:process.env.FLEUR_DISPOSABLE_DATABASE_NAME,
+           FLEUR_DISPOSABLE_DATABASE_VERIFIED:process.env.FLEUR_DISPOSABLE_DATABASE_VERIFIED},250);
+        return await owned.result;
       } catch {return 'failed';}
-      finally {if (controlTimer) clearTimeout(controlTimer);}
     };
     const onAbort=() => {
       // One authoritative cancellation path avoids unawaitable late native CancelRequests.
@@ -144,14 +137,11 @@ export class Broker {
         } catch {
           cleanupLease.expire();
           // ReservedSQL.close closes the shared pool. Terminate only this exact owned backend instead.
-          diagnostic('retirement:start');
           const terminated=await backendControl('terminate');
-          diagnostic('retirement:'+terminated);
-          if (terminated==='applied'||terminated==='absent') {connection.release();diagnostic('retirement:released');}
+          if (terminated==='applied'||terminated==='absent') connection.release();
           // Failed control leaves this reservation quarantined, never returned for reuse.
         } finally {
           if (cleanupTimer) clearTimeout(cleanupTimer);
-          for (const control of controls) {diagnostic('control:close:start');try {await control.close({timeout:0});} catch { /* Every pool owns one trusted control request. */ }diagnostic('control:close:end');}
         }
 
       }

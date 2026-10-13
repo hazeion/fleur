@@ -101,7 +101,7 @@ def main():
             check('host-rpc-and-ownership-boundaries', ['-m', 'unittest', 'test_rpc.py', 'test_ownership.py', 'test_execution.py', 'test_native.py'], executable=sys.executable)
             if not check('owned-server-identity-and-schema', ['init.ts']):
                 raise RuntimeError('Verified target initialization failed')
-            check('admission-and-declaration-integrity', ['test', 'admission.test.ts', 'patch.test.ts'])
+            check('admission-and-declaration-integrity', ['test', 'admission.test.ts', 'patch.test.ts', 'cleanup.test.ts'])
             for repetition in range(2):
                 for case in ([args.database_case] if args.database_case else cases):
                     check(f'database-run-{repetition+1}: {case}',
@@ -109,9 +109,9 @@ def main():
             if check('native-fixture-identity-and-reset', ['reset.ts']):
                 report['checks'].append(run_native(bun, root, environment, Path(__file__).resolve().parent.parent))
             check('strict-types', ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json'])
-            check('oxlint', ['node_modules/oxlint/bin/oxlint', 'broker.ts', 'admission.test.ts', 'database.test.ts', 'init.ts', 'ipc.ts', 'worker.ts', 'patch.test.ts', 'proxy.ts', 'reset.ts'])
+            check('oxlint', ['node_modules/oxlint/bin/oxlint', 'broker.ts', 'admission.test.ts', 'database.test.ts', 'init.ts', 'ipc.ts', 'worker.ts', 'patch.test.ts', 'proxy.ts', 'reset.ts', 'cleanup.ts', 'cleanup.test.ts'])
             if check('independent-eslint-install', ['install', '--frozen-lockfile', '--cwd', str(root / 'lint')]):
-                check('independent-eslint', ['lint/node_modules/eslint/bin/eslint.js', 'broker.ts', 'admission.test.ts', 'database.test.ts', 'init.ts', 'ipc.ts', 'worker.ts', 'patch.test.ts', 'proxy.ts', 'reset.ts'])
+                check('independent-eslint', ['lint/node_modules/eslint/bin/eslint.js', 'broker.ts', 'admission.test.ts', 'database.test.ts', 'init.ts', 'ipc.ts', 'worker.ts', 'patch.test.ts', 'proxy.ts', 'reset.ts', 'cleanup.ts', 'cleanup.test.ts'])
             check('build', ['build', './ipc.ts', '--target=bun', '--outfile', str(root / 'broker.js')])
         report['passed'] = all(row['passed'] for row in report['checks'] if row['required'])
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError, KeyError) as error:

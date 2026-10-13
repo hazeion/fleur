@@ -1,4 +1,5 @@
 import { SQL } from 'bun';
+import { CleanupLease } from './cleanup';
 import { z } from 'zod';
 import { drizzle } from 'drizzle-orm/bun-sql';
 import { eq, and, sql as expression } from 'drizzle-orm';
@@ -128,20 +129,19 @@ export class Broker {
         const ownedConnection=connection;
         // Never reuse authority unless rollback and subsequent idle work both complete.
         let cleanupTimer:ReturnType<typeof setTimeout>|undefined;
+        const cleanupLease=new CleanupLease();
         try {
           await Promise.race([
-            (async()=>{
-              if (cancellation && await cancellation==='failed') throw new Error('Uncertain control cancellation');
-              if (pendingStatement) await pendingStatement.catch(()=>{});
-              if (!committed) await ownedConnection.unsafe('ROLLBACK');
-              await ownedConnection.unsafe('SELECT 1');
-            })(),
+            cleanupLease.verify(ownedConnection,cancellation,pendingStatement,!committed),
             new Promise<never>((_resolve,reject)=>{
-              cleanupTimer=setTimeout(()=>reject(new Error('Cleanup deadline')),250);
+              cleanupTimer=setTimeout(()=>{cleanupLease.expire();reject(new Error('Cleanup deadline'));},250);
             }),
           ]);
+          cleanupLease.assertActive();
+          cleanupLease.expire();
           connection.release();
         } catch {
+          cleanupLease.expire();
           // ReservedSQL.close closes the shared pool. Terminate only this exact owned backend instead.
           const terminated=await backendControl('terminate');
           if (terminated==='applied'||terminated==='absent') connection.release();

@@ -299,7 +299,8 @@ def _retire_supervisor(endpoint, budget):
                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                    timeout=max(.001,deadline-time.monotonic()),check=False)
     endpoint.retirement_facts = retirement_observations(endpoint.root,retirement.returncode,retirement.stdout)
-    return retirement.returncode == 0 and retirement.stdout == b'retired\n'
+    return (time.monotonic() < deadline and retirement.returncode == 0
+            and retirement.stdout == b'retired\n')
 
 
 def _default_identity(timeout=5):

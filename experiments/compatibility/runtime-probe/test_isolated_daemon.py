@@ -234,3 +234,31 @@ class OwnedCounterfactual(unittest.TestCase):
             self.assertLess(time.monotonic()-started,10)
             for namespace in (token,token+'-plugins'):
                 self.assertTrue((root/(namespace+'.done')).exists())
+
+    def test_late_observation_cannot_escape_overall_retirement_deadline(self):
+        import sys
+        import time
+        from isolated_daemon import _retire_supervisor
+        real_text=Path.read_text; real_bytes=Path.read_bytes
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-late-') as temporary:
+            root=Path(temporary);token='fleur-vfs-'+'e'*32
+            (root/'supervisor.pid').write_text('12345')
+            executable=root/'sudo'
+            executable.write_text('#!/bin/sh\ncase "$2" in /bin/kill) exit 0 ;; /usr/bin/timeout) printf "retired\\n" ;; *) exit 9 ;; esac\n')
+            executable.chmod(0o700)
+            def text(path,*args,**kwargs):
+                if str(path)=='/proc/12345/comm': return 'timeout\n'
+                if str(path)=='/proc/12345/stat': return '12345 (timeout) S 1 12345 0'
+                return real_text(path,*args,**kwargs)
+            def binary(path,*args,**kwargs):
+                if str(path)=='/proc/12345/cmdline':
+                    return b'/usr/bin/timeout\0'+str(root).encode()+b'\0'+token.encode()+b'\0'
+                return real_bytes(path,*args,**kwargs)
+            def delayed_observations(*args):
+                time.sleep(1.05)
+                return {'cli_returncode':0}
+            endpoint=Endpoint(root,token,time.monotonic()+5)
+            with patch.dict(os.environ,{'PATH':temporary+os.pathsep+os.environ['PATH']}), \
+                 patch.object(Path,'read_text',text),patch.object(Path,'read_bytes',binary), \
+                 patch('isolated_daemon.retirement_observations',side_effect=delayed_observations):
+                self.assertFalse(_retire_supervisor(endpoint,1),'late successful output escaped overall deadline')

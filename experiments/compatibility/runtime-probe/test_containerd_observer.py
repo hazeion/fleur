@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from containerd_observer import ContainerdObserver, ObserverUnverified
 
 CID = 'a'*64
@@ -24,6 +25,17 @@ class ObserverTests(unittest.TestCase):
             launcher=[sys.executable,'-u',str(script),str(self.cli_pid_file)])
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
+
+    def test_selector_allocation_failure_never_launches_an_owned_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker=pathlib.Path(directory)/'started'
+            command=[sys.executable,'-c',
+                "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('started');sys.stdin.read()",str(marker)]
+            with patch('selectors.DefaultSelector',side_effect=OSError('selector resource unavailable')):
+                with self.assertRaisesRegex(ObserverUnverified,'observer-start'):
+                    ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',0.1,launcher=command)
+            time.sleep(0.2)
+            self.assertFalse(marker.exists(),'observer launched before its OS resources were owned')
 
     def test_expired_operation_still_reaps_observer_without_late_success(self):
         observer=self.observer('',timeout=0.03)

@@ -107,11 +107,15 @@ class ContainerdObserver:
             '/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',SUPERVISOR,
             ctr,address,namespace,str(self.deadline)]
         try:
+            self.selector = selectors.DefaultSelector()
+        except OSError:
+            raise ObserverUnverified('observer-start') from None
+        try:
             self.process = subprocess.Popen(command,stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
         except OSError:
+            self.selector.close()
             raise ObserverUnverified('observer-start') from None
-        self.selector = selectors.DefaultSelector()
         try:
             self.selector.register(self.process.stdout,selectors.EVENT_READ)
         except (OSError,ValueError):

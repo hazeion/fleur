@@ -18,12 +18,12 @@ EXIT_STAMP = STAMP.replace('20:00:00','20:00:02')
 EXIT = EXIT_STAMP+'/tasks/exit '+json.dumps({'container_id':CID,'id':CID,'pid':421,'exited_at':{'seconds':1791921601}})+'\n'
 
 class ObserverTests(unittest.TestCase):
-    def observer(self, frames, delay=0, timeout=2):
+    def observer(self, frames, delay=0, timeout=2, startup_delay=0):
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         script=pathlib.Path(directory.name)/'events.py'
         self.cli_pid_file=pathlib.Path(directory.name)/'observer.pid'
-        script.write_text("import sys,time,os,pathlib\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep("+repr(delay)+")\nsys.stdout.write("+repr(frames)+")\nsys.stdout.flush()\nsys.stdin.read()\nprint('[observer-reaped]',flush=True)\n")
+        script.write_text("import sys,time,os,pathlib\ntime.sleep("+repr(startup_delay)+")\npid_path=pathlib.Path(sys.argv[1]);pending_pid=pid_path.with_suffix('.pending');pending_pid.write_text(str(os.getpid()));pending_pid.replace(pid_path)\ntime.sleep("+repr(delay)+")\nsys.stdout.write("+repr(frames)+")\nsys.stdout.flush()\nsys.stdin.read()\nprint('[observer-reaped]',flush=True)\n")
         observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
             launcher=[sys.executable,'-u',str(script),str(self.cli_pid_file)])
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
@@ -205,8 +205,11 @@ selectors.DefaultSelector=FailingSelector
             self.assertFalse(marker.exists(),'observer launched before its OS resources were owned')
 
     def test_expired_operation_still_reaps_observer_without_late_success(self):
-        observer=self.observer('',timeout=0.03)
-        time.sleep(0.2)
+        observer=self.observer('',timeout=0.03,startup_delay=0.3)
+        startup_limit=time.monotonic()+2
+        while not self.cli_pid_file.exists() and time.monotonic()<startup_limit:
+            time.sleep(0.005)
+        self.assertTrue(self.cli_pid_file.exists(),'owned test child did not become ready')
         pid=int(self.cli_pid_file.read_text())
         with self.assertRaisesRegex(ObserverUnverified,'observer-cleanup-deadline'): observer.close(-0.01)
         with self.assertRaises(ProcessLookupError): os.kill(pid,0)

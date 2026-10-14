@@ -9,13 +9,14 @@ import time
 from protocol import run_container, fixture_dispatch
 from report import accept, accept_threads
 from waiter import OwnedWaiter
+from containerd_observer import ContainerdObserver
 from daemon_trace import capture_daemon_trace
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
 
 
 def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
-                  timeout=30, docker='docker'):
+                  timeout=30, docker='docker', containerd_control=None):
     repeats = []
     def command(args):
         result = subprocess.run([docker, *args], env=environment,
@@ -108,12 +109,21 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 def start_healthy_waiter(remaining_budget):
                     return OwnedWaiter(observed[healthy_name]['configuration']['container_id'],
                                        timeout=remaining_budget,docker=docker)
+                def prepare_healthy_observer(remaining_budget):
+                    return ContainerdObserver(containerd_control['ctr'],containerd_control['address'],
+                                              containerd_control['namespace'],remaining_budget)
+                def bind_healthy_observer(observer,remaining_budget):
+                    configuration = observed[healthy_name]['configuration']
+                    return observer.bind(configuration['container_id'],configuration['host_init_pid'],remaining_budget)
                 active_role = 'healthy'
                 healthy_diagnostics = {}
                 try:
                     healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
                         startup_audit=lambda inventory: observe(healthy_name,inventory),
-                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter,completion_stall=capture_daemon_trace))
+                        environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter if containerd_control is None else None,
+                        completion_prepare=prepare_healthy_observer if containerd_control is not None else None,
+                        completion_bind=bind_healthy_observer if containerd_control is not None else None,
+                        completion_stall=capture_daemon_trace))
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
                     # Capture this actual worker before finally removes it. Do
                     # not ask the outer driver to inspect the exited primary.

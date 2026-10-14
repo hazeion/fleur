@@ -21,10 +21,14 @@ printf '%s' "$PPID" > "$base/supervisor.pid"
 child=
 clean=false
 namespace_empty() {
+    scope=0
     for namespace in "$token" "$token-plugins"; do
+        scope=$((scope+1)); rc=0
         /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
-          --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || return 1
-        [ ! -s "$base/tasks.tmp" ] || return 1
+          --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || rc=$?
+        number=$(wc -l < "$base/tasks.tmp")
+        diag 5 "$scope" "$rc" "$number"
+        [ "$rc" = 0 ] && [ ! -s "$base/tasks.tmp" ] || return 1
     done
     # Task absence alone cannot prove a detached/new-session shim retired.
     # Inspect only shim-class processes and suppress every argument/path.
@@ -35,27 +39,39 @@ namespace_empty() {
         cmdline=${comm_file%/comm}/cmdline
         if tr '\000' '\n' < "$cmdline" > "$base/shim.tmp" 2>/dev/null; then
             if grep -F -x -- "$token" "$base/shim.tmp" >/dev/null || \
-               grep -F -x -- "$token-plugins" "$base/shim.tmp" >/dev/null; then return 1; fi
-        elif [ -e "$cmdline" ]; then return 1; fi
+               grep -F -x -- "$token-plugins" "$base/shim.tmp" >/dev/null; then diag 7 0 0 1; return 1; fi
+        elif [ -e "$cmdline" ]; then diag 8 0 1 1; return 1; fi
     done
+    diag 9 0 0 0
 }
+diag() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$base/retirement.facts"; }
 retire_namespaces() {
+    scope=0
     for namespace in "$token" "$token-plugins"; do
+        scope=$((scope+1)); rc=0
         /usr/bin/timeout .5s /usr/bin/ctr --address /run/containerd/containerd.sock \
-          --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || continue
+          --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || rc=$?
+        number=$(wc -l < "$base/tasks.tmp")
+        diag 1 "$scope" "$rc" "$number"
+        [ "$rc" = 0 ] || continue
         set --
         while IFS= read -r id; do
             case "$id" in ''|*[!0-9a-f]*) return 1 ;; esac
             [ "${#id}" -eq 64 ] && [ "$#" -lt 64 ] || return 1
             set -- "$@" "$id"
         done < "$base/tasks.tmp"
+        diag 2 "$scope" 0 "$#"
         for id in "$@"; do
+            rc=0
             /usr/bin/timeout .25s /usr/bin/ctr --address /run/containerd/containerd.sock \
-              --namespace "$namespace" tasks kill --all --signal SIGKILL "$id" >/dev/null 2>&1 || true
+              --namespace "$namespace" tasks kill --all --signal SIGKILL "$id" >/dev/null 2>&1 || rc=$?
+            diag 3 "$scope" "$rc" 1
         done
         if [ "$#" -gt 0 ]; then
+            rc=0
             /usr/bin/timeout 1s /usr/bin/ctr --address /run/containerd/containerd.sock \
-              --namespace "$namespace" tasks delete --force "$@" >/dev/null 2>&1 || true
+              --namespace "$namespace" tasks delete --force "$@" >/dev/null 2>&1 || rc=$?
+            diag 4 "$scope" "$rc" "$#"
         fi
     done
     namespace_empty
@@ -116,15 +132,18 @@ case "$suffix" in *[!0-9a-f]*) exit 2 ;; esac
 [ -d "$base" ] && [ ! -L "$base" ] && [ "$(cat "$base/owner")" = "$token" ] || exit 2
 ''' + ROOT_BODY[ROOT_BODY.index('namespace_empty()'):ROOT_BODY.index('cleanup()')] + r'''
 retire_namespaces
+diag 10 0 0 0
 IFS= read -r daemon < "$base/docker.pid" || [ -n "$daemon" ]
 case "$daemon" in ''|*[!0-9]*|0|1) exit 2 ;; esac
 if [ -r "/proc/$daemon/stat" ]; then
     record=$(cat "/proc/$daemon/stat")
     rest=${record##*) }; set -- $rest
-    [ "$1" = Z ] || exit 3
+    if [ "$1" != Z ]; then diag 11 0 0 1; exit 3; fi
 fi
+diag 11 0 0 0
 rm -rf -- "$base/data" "$base/exec"
 rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp" "$base/shim.tmp"
+diag 12 0 0 0
 printf 'retired\n'
 '''
 
@@ -138,7 +157,10 @@ def eligible_host():
 
 
 class IsolatedDaemonError(RuntimeError):
-    pass
+    def __init__(self, message, observations=None):
+        self.observations = dict(observations or {})
+        suffix = ' '+json.dumps(self.observations,sort_keys=True) if self.observations else ''
+        super().__init__(message+suffix)
 
 
 class Endpoint:
@@ -195,6 +217,33 @@ class Endpoint:
                       'pid_verified': True, 'config_verified': True}
 
 
+def retirement_observations(root, returncode, stdout):
+    facts = {'cli_returncode':returncode, 'stdout_bytes':len(stdout), 'journal_invalid':False}
+    try:
+        with (root/'retirement.facts').open('rb') as stream:
+            raw=stream.read(8193)
+        if len(raw)>8192:
+            raise ValueError('journal bound')
+        facts['journal_bytes']=len(raw)
+        rows=[]
+        for line in raw.decode('ascii').splitlines():
+            fields=line.split()
+            if len(fields)!=4 or any(re.fullmatch(r'-?[0-9]{1,3}',field) is None for field in fields):
+                raise ValueError('journal fields')
+            stage,namespace,status,count=map(int,fields)
+            if not 1<=stage<=12 or not 0<=namespace<=2 or not -255<=status<=255 or not 0<=count<=64 or len(rows)>=192:
+                raise ValueError('journal values')
+            rows.append((stage,namespace,status,count))
+        facts['journal_rows']=len(rows)
+        if rows:
+            facts.update(zip(('last_stage','last_namespace','last_command_returncode','last_count'),rows[-1]))
+    except FileNotFoundError:
+        facts['journal_missing']=True
+    except (OSError,ValueError,UnicodeError):
+        facts['journal_invalid']=True
+    return facts
+
+
 def _retire_supervisor(endpoint, budget):
     """Escalate only the verified fresh root timeout process group."""
     pid = int((endpoint.root/'supervisor.pid').read_text())
@@ -214,6 +263,7 @@ def _retire_supervisor(endpoint, budget):
                     '/bin/sh','-c',RETIRE_BODY,'fleur-owned-retire',str(endpoint.root),endpoint.token],
                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                    timeout=max(.1,min(2.5,budget)),check=False)
+    endpoint.retirement_facts = retirement_observations(endpoint.root,retirement.returncode,retirement.stdout)
     return retirement.returncode == 0 and retirement.stdout == b'retired\n'
 
 
@@ -367,6 +417,6 @@ def privileged_self_test():
         endpoint.facts['forced_live_task_verified'] = True
         endpoint.forced_probe_verified = _retire_supervisor(endpoint,min(10,endpoint.remaining_seconds()-3))
         if not endpoint.forced_probe_verified:
-            raise IsolatedDaemonError('forced namespace retirement unverified')
+            raise IsolatedDaemonError('forced namespace retirement unverified',getattr(endpoint,'retirement_facts',{}))
     return dict(endpoint.facts,namespace_tasks_retired=True,namespace_shims_retired=True,
                 cleanup_verified=endpoint.cleanup_verified)

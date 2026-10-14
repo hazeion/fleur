@@ -11,7 +11,7 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
@@ -47,7 +47,7 @@ class DriverEvidence(unittest.TestCase):
                             'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
                             'Binds':None,'Mounts':None,'VolumesFrom':None,'Devices':[],'DeviceRequests':None,
                             'PidMode':'','IpcMode':'private','RestartPolicy':{'Name':'no'}},
-                            'Mounts':[],'State':{'Running':True},
+                            'Mounts':[],'State':{'Running':True,'Pid':47},
                             'NetworkSettings':{'Networks':{'none':{'IPAddress':'','Gateway':'','GlobalIPv6Address':'','IPv6Gateway':''}}}}
                 if unsafe_environment: metadata['Config']['Env'].append('DATABASE_URL=must-be-redacted')
                 return SimpleNamespace(returncode=0,stdout=json.dumps(metadata),stderr='')
@@ -85,14 +85,16 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
-             patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error), \
+             patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error) as lifecycle_call, \
+             patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby'}), \
              patch.object(run,'OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':True,'exit_code':0},close=lambda:None)), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
                  {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
                  {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
-            code = run.main(trusted_build_network=trusted_build_network)
+            code = run.main(trusted_build_network=trusted_build_network,healthy_containerd_exit=healthy_containerd_exit)
+        self.last_lifecycle_call=lifecycle_call.call_args
         return code, json.loads(captured.getvalue())
 
     def test_native_monitor_cannot_overwrite_measured_process_status(self):
@@ -224,3 +226,15 @@ class DriverEvidence(unittest.TestCase):
         self.assertEqual(report['trusted_build_network'],'host')
         self.assertIn('--network=host',self.last_build_requests[0])
         self.assertEqual(report['worker_configuration']['network_mode'],'none')
+
+    def test_containerd_evidence_is_explicit_and_only_for_concurrent_healthy_path(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report=self.execute(json.dumps(monitor),container_exit=0,healthy_containerd_exit=True)
+        self.assertEqual(code,0)
+        self.assertEqual(report['healthy_exit_evidence'],'containerd-init-exit')
+        self.assertEqual(self.last_lifecycle_call.kwargs['containerd_control']['namespace'],'moby')
+        self.assertEqual(self.last_lifecycle_call.kwargs['timeout'],30)
+        code, report=self.execute(json.dumps(monitor),container_exit=0)
+        self.assertEqual(code,0)
+        self.assertIsNone(self.last_lifecycle_call.kwargs['containerd_control'])
+        self.assertNotIn('host_containerd_control',report)

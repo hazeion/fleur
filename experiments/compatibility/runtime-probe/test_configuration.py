@@ -16,7 +16,7 @@ def metadata():
                           'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
                           'Binds':None,'Mounts':None,'VolumesFrom':None,'Devices':[],'DeviceRequests':None,
                           'PidMode':'','IpcMode':'private','RestartPolicy':{'Name':'no'}},
-            'Mounts':[],'State':{'Running':True},
+            'Mounts':[],'State':{'Running':True,'Pid':47},
             'NetworkSettings':{'Networks':{'none':{'IPAddress':'','Gateway':'','GlobalIPv6Address':'','IPv6Gateway':''}}}}
 
 class ActualWorkerConfiguration(unittest.TestCase):
@@ -76,3 +76,23 @@ class ActualWorkerConfiguration(unittest.TestCase):
             changed = copy.deepcopy(good);changed['Id'] = value
             with self.subTest(value=value),self.assertRaises(ValueError):
                 audit_configuration(changed,'owner','worker',IMAGE)
+
+    def test_init_host_pid_is_measured_positive_integer_not_worker_supplied(self):
+        good=metadata();good['State']['Pid']=47
+        self.assertEqual(audit_configuration(good,'owner','worker',IMAGE)['host_init_pid'],47)
+        for value in (None,0,-1,True,'47',2**32):
+            changed=copy.deepcopy(good);changed['State']['Pid']=value
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                audit_configuration(changed,'owner','worker',IMAGE)
+
+    def test_containerd_control_requires_measured_docker_association_and_pinned_schema(self):
+        from configuration import audit_containerd_control
+        commit='ee2735368117d2eb259779949d5e75cdafec9761'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
+        version='ctr github.com/containerd/containerd/v2 v2.3.6 '+commit+'\n'
+        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,version)
+        self.assertEqual(result['address'],'/run/containerd/containerd.sock')
+        self.assertEqual(result['namespace'],'moby')
+        for args,config,changed,cli in [(['dockerd'],{},server,version),(['dockerd','--containerd=tcp://other'],{},server,version),(['dockerd','--containerd=/run/ctr.sock'],{'containerd-namespace':'other'},server,version),(['dockerd','--containerd=/run/ctr.sock'],{},dict(server,Version='29.0.0'),version),(['dockerd','--containerd=/run/ctr.sock'],{},server,version.replace('2.3.6','2.3.5'))]:
+            with self.subTest(args=args,config=config),self.assertRaises(ValueError):
+                audit_containerd_control(args,config,changed,cli)

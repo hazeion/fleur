@@ -54,6 +54,7 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
     require(host.get('PidMode') in ('','private') and host.get('IpcMode') in ('private','none'), 'private-namespaces')
     require(type(host.get('RestartPolicy')) is dict and host['RestartPolicy'].get('Name') == 'no', 'restart-policy')
     require(state.get('Running') is True, 'running-worker')
+    require(type(state.get('Pid')) is int and 0 < state['Pid'] <= 2**31-1, 'init-host-pid')
     entries = config.get('Env')
     require(type(entries) is list and len(entries) == len(SAFE_ENVIRONMENT), 'environment-allowlist')
     admitted = {}
@@ -65,7 +66,7 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
     require(set(admitted) == set(SAFE_ENVIRONMENT), 'environment-allowlist')
     # Only approved values, counts and names leave this boundary. Unknown Env,
     # mount, credential or network values are never included in an exception.
-    return {'container_id':container_id,'owned':True,'immutable_image':image_id,'user':'65534:65534','readonly_root':True,'privileged':False,
+    return {'container_id':container_id,'host_init_pid':state['Pid'],'owned':True,'immutable_image':image_id,'user':'65534:65534','readonly_root':True,'privileged':False,
             'cap_drop':['ALL'],'cap_add':[],'no_new_privileges':True,'outer_seccomp':'unconfined',
             'cpu_nanocpus':host['NanoCpus'],'memory_bytes':host['Memory'],
             'memory_swap_bytes':host['MemorySwap'],'pids_limit':host['PidsLimit'],
@@ -83,3 +84,91 @@ def inspect_worker_configuration(container, owner, image_id, owner_label=OWNER_L
     except ValueError:
         raise ValueError('owned worker configuration JSON invalid') from None
     return audit_configuration(metadata,owner,container,image_id,owner_label)
+
+
+CONTAINERD_COMMIT = 'ee2735368117d2eb259779949d5e75cdafec9761'
+
+
+def _option(arguments, name):
+    values = []
+    for index,value in enumerate(arguments):
+        if value == name:
+            if index+1 >= len(arguments): raise ValueError('host daemon option invalid')
+            values.append(arguments[index+1])
+        elif value.startswith(name+'='): values.append(value[len(name)+1:])
+    if len(values)>1: raise ValueError('host daemon option duplicated')
+    return values[0] if values else None
+
+
+def audit_containerd_control(arguments, config, server, ctr_version):
+    def require(condition):
+        if not condition: raise ValueError('host containerd prerequisite unverified')
+    require(type(arguments) is list and all(type(value) is str for value in arguments)
+            and type(config) is dict and type(server) is dict)
+    address = _option(arguments,'--containerd') or config.get('containerd')
+    namespace = _option(arguments,'--containerd-namespace') or config.get('containerd-namespace','moby')
+    require(type(address) is str and address.startswith('/') and namespace == 'moby')
+    require(server.get('Version') == '28.0.4' and server.get('GitCommit') == '6430e49' and type(server.get('Components')) is list)
+    components = [row for row in server['Components'] if type(row) is dict and row.get('Name') == 'containerd']
+    require(len(components)==1 and components[0].get('Version') == 'v2.3.6'
+            and type(components[0].get('Details')) is dict
+            and components[0]['Details'].get('GitCommit') == CONTAINERD_COMMIT)
+    require(type(ctr_version) is str and ctr_version.strip() ==
+            'ctr github.com/containerd/containerd/v2 v2.3.6 '+CONTAINERD_COMMIT)
+    return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':'28.0.4','docker_commit':'6430e49',
+            'containerd_version':'2.3.6','containerd_commit':CONTAINERD_COMMIT,
+            'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}
+
+
+def inspect_containerd_control():
+    """Linux CI host infrastructure only; no socket/privilege reaches a worker."""
+    import hashlib
+    from pathlib import Path
+    import stat
+    from daemon_trace import eligible_host
+    if not eligible_host(): raise RuntimeError('containerd proof host ineligible')
+    def trusted(path, kind, socket=False):
+        real=Path(path).resolve(strict=True);info=real.stat()
+        if info.st_uid != 0 or info.st_mode & (0o002 if socket else 0o022) or not kind(info.st_mode):
+            raise RuntimeError('containerd proof path ownership unverified')
+        for parent in real.parents:
+            value=parent.stat()
+            if value.st_uid != 0 or value.st_mode & 0o022:
+                raise RuntimeError('containerd proof ancestor ownership unverified')
+        return real
+    def command(args,environment=None):
+        result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=5,
+                              env=environment,check=False)
+        if result.returncode or len(result.stdout)>65536 or len(result.stderr)>4096:
+            raise RuntimeError('containerd proof inspection failed')
+        return result.stdout.decode('utf-8')
+    pidfile=trusted('/var/run/docker.pid',stat.S_ISREG)
+    raw=pidfile.read_bytes()
+    if len(raw)>16 or not raw.strip().isdigit(): raise RuntimeError('Docker host identity unverified')
+    pid=int(raw.strip())
+    if not 1<pid<=2**31-1 or Path(f'/proc/{pid}/comm').read_text() != 'dockerd\n':
+        raise RuntimeError('Docker host identity unverified')
+    if Path(f'/proc/{pid}').stat().st_uid != 0: raise RuntimeError('Docker host ownership unverified')
+    data=Path(f'/proc/{pid}/cmdline').read_bytes()
+    if len(data)>65536: raise RuntimeError('Docker host configuration exceeded bound')
+    arguments=[part.decode('utf-8') for part in data.split(b'\0') if part]
+    config_path=_option(arguments,'--config-file') or '/etc/docker/daemon.json'
+    config={}
+    if Path(config_path).exists():
+        path=trusted(config_path,stat.S_ISREG)
+        if path.stat().st_size>65536: raise RuntimeError('Docker host configuration exceeded bound')
+        config=json.loads(path.read_text())
+    environment=dict(os.environ)
+    for key in ('DOCKER_CONTEXT','DOCKER_HOST','DOCKER_TLS','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','DOCKER_API_VERSION'):
+        environment.pop(key,None)
+    default_id=command(['docker','--host','unix:///var/run/docker.sock','info','--format','{{.ID}}'],environment)
+    active_id=command(['docker','info','--format','{{.ID}}'])
+    if not default_id.strip() or default_id!=active_id: raise RuntimeError('Docker host association unverified')
+    server=json.loads(command(['docker','--host','unix:///var/run/docker.sock','version','--format','{{json .Server}}'],environment))
+    ctr=trusted('/usr/bin/ctr',stat.S_ISREG)
+    control=audit_containerd_control(arguments,config,server,command([str(ctr),'--version'],{'PATH':'/usr/bin:/bin'}))
+    trusted(control['address'],stat.S_ISSOCK,socket=True)
+    control.update({'ctr_binary_sha256':hashlib.sha256(ctr.read_bytes()).hexdigest(),
+                    'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
+                    'host_access':'privileged-read-only-events','worker_authority_changed':False})
+    return control

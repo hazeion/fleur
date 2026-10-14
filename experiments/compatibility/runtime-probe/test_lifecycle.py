@@ -42,8 +42,10 @@ run)
   number=${name##*-}
   if [ ! -f "$root/owned-busy-$number-loop" ]; then printf '%s\n' "$name" > "$root/healthy-too-early"; fi
   printf '%s\n' "$LIFECYCLE_EVIDENCE"
-  sed 's/"Running":true/"Running":false/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
-  mv "$root/$name.tmp" "$root/$name"
+  if [ ! "${LIFECYCLE_STALE_HEALTHY_STATE:-}" ]; then
+   sed 's/"Running":true/"Running":false/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
+   mv "$root/$name.tmp" "$root/$name"
+  fi
   if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
    sed 's/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
    mv "$root/$name.tmp" "$root/$name"
@@ -99,8 +101,8 @@ class LifecycleTests(unittest.TestCase):
  def observe(self,name,owner,inventory):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
-  return {'configuration':{'container_id':('a' if name.endswith('-0') else 'b')*64},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self,timeout=2):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli))
+  return {'configuration':{'container_id':('a' if name.endswith('-0') else 'b')*64,'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
+ def run_probe(self,timeout=2,containerd_control=None):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control)
  def test_deadline_terminates_daemon_worker_and_preserves_healthy_worker(self):
   result=self.run_probe();self.assertTrue(result['passed']);self.assertEqual(len(result['repeats']),2)
   for row in result['repeats']:self.assertTrue(row['healthy_completed_while_busy_running']);self.assertEqual(row['terminated_exit'],137);self.assertEqual(row['deadline_seconds'],2)
@@ -138,4 +140,43 @@ class LifecycleTests(unittest.TestCase):
   self.assertFalse(caught.exception.lifecycle_cleanup_verified)
   self.assertEqual(caught.exception.lifecycle_cleanup[0]['worker_role'],'healthy')
   self.assertEqual(caught.exception.lifecycle_cleanup[0]['outcome'],'removal-unverified')
+
+ def test_init_exit_zero_can_pair_with_full_frame_before_docker_cleanup(self):
+  self.env['LIFECYCLE_STALE_HEALTHY_STATE']='1'
+  events=[];instances=[];parent=self
+  class Observer:
+   def __init__(self,ctr,address,namespace,timeout):
+    self.index=len(instances);instances.append(self)
+    parent.assertFalse((parent.root/f'owned-healthy-{self.index}').exists())
+    events.append('prepared')
+   def bind(self,cid,pid,remaining):
+    parent.assertEqual(cid,('a' if self.index==0 else 'b')*64);parent.assertEqual(pid,47)
+    events.append('bound');return {'registered':True}
+   def completion(self,remaining):
+    parent.assertTrue(json.loads((parent.root/f'owned-healthy-{self.index}').read_text())['State']['Running'])
+    events.append('exit');return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
+   def snapshot(self):return {'phase':'completed','event_count':2,'stdout_bytes':100,'reaped':False}
+   def close(self,remaining):parent.assertGreater(remaining,0);events.append('closed');return True
+  control={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby'}
+  with patch('lifecycle.ContainerdObserver',Observer):result=self.run_probe(containerd_control=control)
+  self.assertTrue(result['passed'])
+  self.assertEqual(events,['prepared','bound','exit','closed']*2)
+  for repeat in result['repeats']:
+   self.assertTrue(repeat['healthy_completed_while_busy_running'])
+   self.assertEqual(repeat['healthy_completion']['source'],'containerd-init-exit')
+   self.assertEqual(repeat['deadline_seconds'],2)
+
+ def test_kernel_exit_evidence_cannot_excuse_failed_owned_removal(self):
+  self.env['LIFECYCLE_CLEANUP_FAILURE']='1'
+  class Observer:
+   def __init__(self,*args):pass
+   def bind(self,*args):return {'registered':True}
+   def completion(self,*args):return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
+   def close(self,*args):return True
+  control={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby'}
+  with patch('lifecycle.ContainerdObserver',Observer),self.assertRaisesRegex(RuntimeError,'lifecycle owned worker cleanup incomplete') as caught:
+   self.run_probe(containerd_control=control)
+  self.assertFalse(caught.exception.lifecycle_cleanup_verified)
+  self.assertEqual(caught.exception.lifecycle_cleanup[0]['outcome'],'removal-unverified')
+
 if __name__=='__main__':unittest.main()

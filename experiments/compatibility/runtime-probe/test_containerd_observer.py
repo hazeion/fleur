@@ -1,12 +1,15 @@
 import json
 import os
 import pathlib
+import signal
+import socket
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from containerd_observer import ContainerdObserver, ObserverUnverified
+from containerd_observer import ContainerdObserver, ObserverUnverified, SUPERVISOR
 
 CID = 'a'*64
 STAMP = '2026-10-13 20:00:00 +0000 UTC moby '
@@ -25,6 +28,46 @@ class ObserverTests(unittest.TestCase):
             launcher=[sys.executable,'-u',str(script),str(self.cli_pid_file)])
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
+
+    def test_embedded_supervisor_reaps_real_child_after_os_setup_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file=pathlib.Path(directory)/'ctr.pid'
+            ctr=pathlib.Path(directory)/'ctr'
+            ctr.write_text('#!'+sys.executable+'\nimport os,pathlib,time\npathlib.Path('+repr(str(pid_file))+').write_text(str(os.getpid()))\ntime.sleep(30)\n')
+            ctr.chmod(0o755)
+            address=str(pathlib.Path(directory)/'containerd.sock')
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
+                server.bind(address)
+                # Same-user test adapter bypasses ONLY root path policy. The
+                # actual embedded supervisor still owns a real detached child.
+                adapter = """import os,selectors,time
+original_stat=os.stat
+def same_user_stat(path,*args,**kwargs):
+    values=list(original_stat(path,*args,**kwargs));values[0]&=~0o022;values[4]=0
+    return os.stat_result(values)
+os.stat=same_user_stat
+os.geteuid=lambda:0
+class FailingSelector(selectors.DefaultSelector):
+    def register(self,fileobj,events,data=None):
+        if fileobj.fileno()!=0:
+            deadline=time.monotonic()+2
+            while not os.path.exists(PID_FILE) and time.monotonic()<deadline: time.sleep(0.01)
+            raise OSError('injected OS registration resource failure')
+        return super().register(fileobj,events,data)
+selectors.DefaultSelector=FailingSelector
+""".replace('PID_FILE',repr(str(pid_file)))
+                process=subprocess.Popen([sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                    str(ctr),address,'moby',str(time.monotonic()+3)],
+                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                process.communicate(timeout=4)
+                self.assertNotEqual(process.returncode,0)
+                pid=int(pid_file.read_text())
+                def retire_leaked_test_group():
+                    try: os.killpg(pid,signal.SIGKILL)
+                    except ProcessLookupError: pass
+                self.addCleanup(retire_leaked_test_group)
+                with self.assertRaises(ProcessLookupError): os.kill(pid,0)
+                with self.assertRaises(ProcessLookupError): os.killpg(pid,0)
 
     def test_valid_audit_exec_exit_cannot_block_matching_init_exit(self):
         for status in [0,137]:

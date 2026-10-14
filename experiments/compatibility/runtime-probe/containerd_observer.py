@@ -25,13 +25,15 @@ for path in (ctr,address):
 deadline=float(absolute_deadline)
 if time.monotonic()>=deadline: sys.exit(75)
 errors=0
-p=subprocess.Popen([ctr,'--address',address,'--namespace',namespace,'events','topic==/tasks/start','topic==/tasks/exit'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
-os.set_blocking(1,False)
-selector=selectors.DefaultSelector()
-selector.register(sys.stdin,selectors.EVENT_READ,'control')
-selector.register(p.stdout,selectors.EVENT_READ,'out')
-selector.register(p.stderr,selectors.EVENT_READ,'err')
+p=None
+selector=None
 try:
+    os.set_blocking(1,False)
+    selector=selectors.DefaultSelector()
+    selector.register(sys.stdin,selectors.EVENT_READ,'control')
+    p=subprocess.Popen([ctr,'--address',address,'--namespace',namespace,'events','topic==/tasks/start','topic==/tasks/exit'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    selector.register(p.stdout,selectors.EVENT_READ,'out')
+    selector.register(p.stderr,selectors.EVENT_READ,'err')
     while time.monotonic()<deadline:
         if p.poll() is not None: break
         stop=False
@@ -49,12 +51,16 @@ try:
             # Raw ctr diagnostics must never reach artifact logs.
         if stop: break
 finally:
-    selector.close()
-    try: os.killpg(p.pid,signal.SIGKILL)
-    except ProcessLookupError: pass
-    try: p.wait(timeout=0.75) # failure-only reap grace, never operation success
-    except subprocess.TimeoutExpired: sys.exit(74)
-    p.stdout.close();p.stderr.close()
+    try:
+        if p is not None:
+            try: os.killpg(p.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: p.wait(timeout=0.75) # failure-only reap grace, never operation success
+            except subprocess.TimeoutExpired: sys.exit(74)
+    finally:
+        if p is not None:
+            p.stdout.close();p.stderr.close()
+        if selector is not None: selector.close()
 try: os.write(1,b'[observer-reaped]\n')
 except BlockingIOError: sys.exit(73)
 '''

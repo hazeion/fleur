@@ -33,7 +33,9 @@ class ObserverTests(unittest.TestCase):
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         ctr=pathlib.Path(directory.name)/'ctr'
-        ctr.write_text('#!'+sys.executable+'\n'+source)
+        # One shebang argument is portable; combined flags isolate Python
+        # and suppress site hooks without a second shell interpreter startup.
+        ctr.write_text('#!'+sys.executable+' -ISu\n'+source)
         ctr.chmod(0o755)
         address=str(pathlib.Path(directory.name)/'containerd.sock')
         server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
@@ -107,6 +109,9 @@ if args[0]=='events':
 rows=json.loads(rows_path.read_text()) if rows_path.exists() else {}
 verb=args[1]
 if verb=='list':
+    if MODE=='cancel-during-cleanup' and '--quiet' not in args:
+        (root/'cleanup-ready').touch()
+        while not (root/'continue-cleanup').exists(): time.sleep(.005)
     if MODE=='orphan-command' and not (root/'orphan.pid').exists():
         child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
         (root/'orphan.pid').write_text(str(child.pid))
@@ -142,7 +147,9 @@ rows_path.write_text(json.dumps(rows))
         snapshot=observer.snapshot()
         self.assertTrue(snapshot['registration']['cleanup_verified'])
         self.assertGreaterEqual(snapshot['registration']['command_count'],6)
-        self.assertLess(snapshot['registration']['duration_ms'],2000)
+        # This seam proves the four-second readiness allowance. Native ctr
+        # startup performance is measured separately from fake Python CLIs.
+        self.assertLess(snapshot['registration']['duration_ms'],4000)
         observer.close(1)
 
     def test_missing_or_wrong_echo_never_grants_readiness_and_retires_owned_namespace(self):
@@ -185,6 +192,25 @@ rows_path.write_text(json.dumps(rows))
                 try: os.kill(int((state/'orphan.pid').read_text()),signal.SIGKILL)
                 except ProcessLookupError: pass
         observer.close(.5)
+
+    def test_control_eof_during_namespace_cleanup_cannot_grant_readiness(self):
+        import threading
+        observer,state=self.canary_observer('cancel-during-cleanup')
+        def disconnect_owner():
+            limit=time.monotonic()+3
+            while not (state/'cleanup-ready').exists() and time.monotonic()<limit: time.sleep(.005)
+            observer.process.stdin.close()
+            (state/'continue-cleanup').touch()
+        thread=threading.Thread(target=disconnect_owner)
+        thread.start()
+        try:
+            with self.assertRaisesRegex(ObserverUnverified,'readiness-unverified'):
+                observer.ready(4)
+            self.assertEqual(json.loads((state/'namespaces.json').read_text()),{})
+            self.assertTrue(observer.snapshot()['registration']['cleanup_verified'])
+            self.assertFalse(observer.snapshot()['registration']['ready'])
+        finally: thread.join(4)
+        observer.close(1)
 
     def test_supervisor_status_never_supplies_task_start_or_exit_proof(self):
         status={'phase':3,'pre_retirement_returncode':None,'child_returncode':-9,

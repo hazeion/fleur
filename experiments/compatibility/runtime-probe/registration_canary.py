@@ -146,6 +146,7 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
         else:
             cleaned=True
     cleaned=cleaned and children_reaped
+    if cancelled: category='canary-cancelled'
     passed=category=='verified' and echo and cleaned and time.monotonic()<deadline
     if not cleaned: category='canary-cleanup'
     return {'ready':passed,'cleanup_verified':cleaned,'category':category,

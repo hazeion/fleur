@@ -96,6 +96,7 @@ class ContainerdObserver:
         self.start_seconds = None
         self.start_nanos = 0
         self.events = 0
+        self.discarded_exec_exits = 0
         self.phase = 'prepared'
         self.closed = False
         self.cleanup_verified = False
@@ -199,7 +200,8 @@ class ContainerdObserver:
             exited=event.get('exited_at')
             if (not {'container_id','id','pid','exited_at'} <= set(event)
                     or set(event)-{'container_id','id','pid','exit_status','exited_at'}
-                    or event['id'] != self.container or type(event['pid']) is not int or event['pid'] != self.pid
+                    or type(event['id']) is not str or not re.fullmatch('[0-9a-f]{64}',event['id'])
+                    or type(event['pid']) is not int or not 0 < event['pid'] <= 2**32-1
                     or type(status) is not int or not 0 <= status <= 2**32-1
                     or type(exited) is not dict or set(exited)-{'seconds','nanos'}
                     or type(exited.get('seconds')) is not int or not 0 < exited['seconds'] <= 253402300799
@@ -207,6 +209,13 @@ class ContainerdObserver:
                 raise ObserverUnverified('exit-invalid')
             if not ((self.start_seconds,self.start_nanos) <= (exited['seconds'],exited.get('nanos',0)) <= (seconds,nanos)):
                 raise ObserverUnverified('exit-time-invalid')
+            if event['id'] != self.container:
+                # Host bootstrap audits use Docker exec in the same container.
+                # Their well-formed exits cannot supply init completion proof.
+                if event['pid'] == self.pid: raise ObserverUnverified('exit-invalid')
+                self.discarded_exec_exits += 1
+                continue
+            if event['pid'] != self.pid: raise ObserverUnverified('exit-invalid')
             if status != 0: raise ObserverUnverified('nonzero-exit')
             if time.monotonic() >= limit: raise ObserverUnverified('event-timeout')
             self.completed=True
@@ -215,7 +224,8 @@ class ContainerdObserver:
 
     def snapshot(self):
         return {'phase':self.phase,'event_count':self.events,'stdout_bytes':self.total,
-                'reaped':self.reaped,'cleanup_verified':self.cleanup_verified}
+                'reaped':self.reaped,'cleanup_verified':self.cleanup_verified,
+                'discarded_exec_exits':self.discarded_exec_exits}
 
     def close(self, remaining=None):
         """Reap on failure too; a separate 1s cleanup grace never grants success."""

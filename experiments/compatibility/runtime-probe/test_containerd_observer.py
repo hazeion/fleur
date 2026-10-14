@@ -26,6 +26,34 @@ class ObserverTests(unittest.TestCase):
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
 
+    def test_valid_audit_exec_exit_cannot_block_matching_init_exit(self):
+        for status in [0,137]:
+            with self.subTest(exec_status=status):
+                event=json.loads(EXIT.split('/tasks/exit ',1)[1])
+                event.update({'id':'c'*64,'pid':422,'exit_status':status})
+                observer=self.observer(START+EXIT_STAMP+'/tasks/exit '+json.dumps(event)+'\n'+EXIT)
+                observer.bind(CID,421,1)
+                self.assertEqual(observer.completion(1)['exit_code'],0)
+                observer.close(1)
+
+    def test_malformed_exec_exits_are_rejected_rather_than_discarded(self):
+        for changes in [{'exit_status':True}, {'pid':421}, {'pid':0},
+                        {'exited_at':{'seconds':1}}]:
+            with self.subTest(changes=changes):
+                event=json.loads(EXIT.split('/tasks/exit ',1)[1])
+                event.update({'id':'c'*64,'pid':422});event.update(changes)
+                observer=self.observer(START+EXIT_STAMP+'/tasks/exit '+json.dumps(event)+'\n'+EXIT)
+                observer.bind(CID,421,1)
+                with self.assertRaises(ObserverUnverified): observer.completion(1)
+                observer.close(1)
+
+    def test_audit_exec_exit_alone_never_proves_init_exit(self):
+        event=json.loads(EXIT.split('/tasks/exit ',1)[1])
+        event.update({'id':'c'*64,'pid':422,'exit_status':0})
+        observer=self.observer(START+EXIT_STAMP+'/tasks/exit '+json.dumps(event)+'\n')
+        observer.bind(CID,421,1)
+        with self.assertRaisesRegex(ObserverUnverified,'event-timeout'): observer.completion(0.05)
+
     def test_selector_allocation_failure_never_launches_an_owned_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             marker=pathlib.Path(directory)/'started'

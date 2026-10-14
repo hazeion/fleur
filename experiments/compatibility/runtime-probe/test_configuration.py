@@ -89,25 +89,66 @@ class ActualWorkerConfiguration(unittest.TestCase):
         from configuration import audit_containerd_control
         commit='ee2735368117d2eb259779949d5e75cdafec9761'
         server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        version='ctr github.com/containerd/containerd/v2 v2.3.6\n'
         detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
-        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,version,detail)
+        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,detail)
         self.assertEqual(result['address'],'/run/containerd/containerd.sock')
         self.assertEqual(result['namespace'],'moby')
-        for args,config,changed,cli in [(['dockerd'],{},server,version),(['dockerd','--containerd=tcp://other'],{},server,version),(['dockerd','--containerd=/run/ctr.sock'],{'containerd-namespace':'other'},server,version),(['dockerd','--containerd=/run/ctr.sock'],{},dict(server,Version='29.0.0'),version),(['dockerd','--containerd=/run/ctr.sock'],{},server,version.replace('2.3.6','2.3.5'))]:
+        for args,config,changed,cli in [(['dockerd'],{},server,detail),(['dockerd','--containerd=tcp://other'],{},server,detail),(['dockerd','--containerd=/run/ctr.sock'],{'containerd-namespace':'other'},server,detail),(['dockerd','--containerd=/run/ctr.sock'],{},dict(server,Version='29.0.0'),detail),(['dockerd','--containerd=/run/ctr.sock'],{},server,detail.replace('2.3.6','2.3.5'))]:
             with self.subTest(args=args,config=config),self.assertRaises(ValueError):
-                audit_containerd_control(args,config,changed,cli,detail)
+                audit_containerd_control(args,config,changed,cli)
 
-    def test_documented_ctr_banner_omits_revision_but_local_and_server_revisions_remain_required(self):
+    def test_authoritative_client_server_query_requires_local_and_server_revisions(self):
         from configuration import audit_containerd_control
         commit='ee2735368117d2eb259779949d5e75cdafec9761'
         server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        banner='ctr github.com/containerd/containerd/v2 v2.3.6\n'
         detail=f'Client:\n  Version:  v2.3.6\n  Revision: {commit}\n  Go version: go1.25.1\n\nServer:\n  Version:  v2.3.6\n  Revision: {commit}\n  UUID: public-id\n'
-        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,banner,detail)
+        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,detail)
         self.assertTrue(result['ctr_revision_verified'])
         for bad in (detail.replace(commit,'0'*40,1),detail.replace(commit,'0'*40),detail.replace('v2.3.6','v2.3.5',1),'Client:\n Version: v2.3.6\n'):
             with self.subTest(bad=bad),self.assertRaises(ValueError) as error:
-                audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,banner,bad)
+                audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,bad)
             self.assertIn(error.exception.category,('ctr-version-detail','ctr-client-version','ctr-client-revision','ctr-server-revision'))
             self.assertNotIn('public-id',str(error.exception.observations))
+
+    def test_single_authoritative_version_query_retains_both_exact_revisions(self):
+        from configuration import audit_containerd_control
+        commit='ee2735368117d2eb259779949d5e75cdafec9761'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
+        detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,detail)
+        self.assertTrue(result['ctr_revision_verified'])
+        self.assertEqual(result['version_evidence'],'single-client-server-query')
+        for wrong in (detail.replace(commit,'0'*40,1),detail.replace('v2.3.6','v2.3.5'),detail.split('Server:')[0]):
+            with self.assertRaises(ValueError):
+                audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,wrong)
+
+    def test_host_inspection_invokes_one_pinned_version_query_without_banner_startup(self):
+        from pathlib import Path
+        import stat
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from configuration import inspect_containerd_control
+        commit='ee2735368117d2eb259779949d5e75cdafec9761'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
+        detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        calls=[]
+        def metadata(path,*args,**kwargs):
+            kind=stat.S_IFSOCK if str(path).endswith('.sock') else stat.S_IFREG if str(path) in ('/usr/bin/ctr','/var/run/docker.pid') else stat.S_IFDIR
+            return SimpleNamespace(st_uid=0,st_mode=kind|0o755,st_size=0)
+        def contents(path):
+            if str(path)=='/var/run/docker.pid':return b'47'
+            if str(path)=='/proc/47/cmdline':return b'/usr/bin/dockerd\0--containerd=/run/containerd/containerd.sock\0'
+            return b'owned-executable'
+        def command(args,**kwargs):
+            calls.append(args)
+            if '--version' in args:raise AssertionError('redundant cold banner must not run')
+            if args[0]=='/usr/bin/sudo':
+                self.assertEqual(kwargs['timeout'],5);self.assertIn('4s',args)
+                output=detail
+            elif 'version' in args:output=json.dumps(server)
+            else:output='owned-server\n'
+            return SimpleNamespace(returncode=0,stdout=output.encode(),stderr=b'')
+        with patch('daemon_trace.eligible_host',return_value=True),patch.object(Path,'resolve',lambda self,**kwargs:self),patch.object(Path,'stat',metadata),patch.object(Path,'read_bytes',contents),patch.object(Path,'read_text',return_value='dockerd\n'),patch.object(Path,'exists',return_value=False),patch('configuration.subprocess.run',side_effect=command):
+            result=inspect_containerd_control()
+        self.assertTrue(result['ctr_revision_verified'])
+        self.assertEqual(sum(args[0]=='/usr/bin/sudo' for args in calls),1)

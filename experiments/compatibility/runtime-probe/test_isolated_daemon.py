@@ -203,3 +203,34 @@ class OwnedCounterfactual(unittest.TestCase):
                 result=retirement_observations(root,1,b'')
                 self.assertTrue(result['journal_invalid'])
                 self.assertNotIn('private',str(result))
+
+    def test_delayed_cli_startup_can_retire_owned_tasks_inside_original_budget(self):
+        import shlex
+        import subprocess
+        import sys
+        import time
+        from isolated_daemon import RETIRE_BODY
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-delayed-') as temporary:
+            root=Path(temporary);token='fleur-vfs-'+'d'*32
+            (root/'owner').write_text(token);(root/'docker.pid').write_text('2147483647')
+            (root/'data').mkdir();(root/'exec').mkdir()
+            cli=root/'fixture-ctr'; timer=root/'fixture-timeout'
+            program=('import sys,time; from pathlib import Path; time.sleep(.6); a=sys.argv; '
+                     'root=Path('+repr(str(root))+'); ns=a[a.index("--namespace")+1]; '
+                     'assert ns in ['+repr(token)+','+repr(token+'-plugins')+']; '
+                     'done=root/(ns+".done"); cmd=a[a.index("tasks")+1]; '
+                     'print("a"*64) if cmd=="list" and not done.exists() else None; '
+                     'done.write_text("retired") if cmd=="delete" else None')
+            cli.write_text('#!'+sys.executable+'\n'+program+'\n');cli.chmod(0o700)
+            timer.write_text('#!'+sys.executable+'\nimport subprocess,sys\n'
+                             'try:\n r=subprocess.run(sys.argv[2:],timeout=float(sys.argv[1].rstrip("s")));sys.exit(r.returncode)\n'
+                             'except subprocess.TimeoutExpired:\n sys.exit(124)\n');timer.chmod(0o700)
+            body=RETIRE_BODY.replace('/usr/bin/timeout',shlex.quote(str(timer))).replace('/usr/bin/ctr',shlex.quote(str(cli)))
+            started=time.monotonic()
+            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+                                  text=True,capture_output=True,timeout=10)
+            self.assertEqual(result.returncode,0,'delayed CLI never reached kill/delete')
+            self.assertEqual(result.stdout,'retired\n')
+            self.assertLess(time.monotonic()-started,10)
+            for namespace in (token,token+'-plugins'):
+                self.assertTrue((root/(namespace+'.done')).exists())

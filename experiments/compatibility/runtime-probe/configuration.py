@@ -107,7 +107,7 @@ class ContainerdControlUnverified(ValueError):
         super().__init__('host containerd prerequisite unverified ('+category+')')
 
 
-def audit_containerd_control(arguments, config, server, ctr_version, ctr_detail=None):
+def audit_containerd_control(arguments, config, server, ctr_detail):
     facts={}
     def require(condition,category):
         if not condition: raise ContainerdControlUnverified(category,facts)
@@ -124,9 +124,6 @@ def audit_containerd_control(arguments, config, server, ctr_version, ctr_detail=
     require(len(components)==1,'containerd-component')
     facts.update(containerd_version_match=components[0].get('Version')=='v2.3.6',containerd_commit_match=type(components[0].get('Details')) is dict and components[0]['Details'].get('GitCommit')==CONTAINERD_COMMIT)
     require(facts['containerd_version_match'] and facts['containerd_commit_match'],'containerd-version')
-    parts=ctr_version.split() if type(ctr_version) is str else []
-    facts.update(ctr_banner_fields=len(parts),ctr_banner_match=parts==['ctr','github.com/containerd/containerd/v2','v2.3.6'])
-    require(facts['ctr_banner_match'],'ctr-banner')
     require(type(ctr_detail) is str and len(ctr_detail.encode())<=65536,'ctr-version-detail')
     sections={};current=None
     for line in ctr_detail.splitlines():
@@ -144,7 +141,7 @@ def audit_containerd_control(arguments, config, server, ctr_version, ctr_detail=
         require(facts[prefix+'_version_match'],prefix+'-version')
         require(facts[prefix+'_revision_match'],prefix+'-revision')
     return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':'28.0.4','docker_commit':'6430e49',
-            'containerd_version':'2.3.6','containerd_commit':CONTAINERD_COMMIT,'ctr_revision_verified':True,
+            'containerd_version':'2.3.6','containerd_commit':CONTAINERD_COMMIT,'ctr_revision_verified':True,'version_evidence':'single-client-server-query',
             'prerequisite_observations':facts,
             'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}
 
@@ -154,6 +151,7 @@ def inspect_containerd_control():
     import hashlib
     from pathlib import Path
     import stat
+    import time
     from daemon_trace import eligible_host
     if not eligible_host(): raise RuntimeError('containerd proof host ineligible')
     def trusted(path, kind, socket=False):
@@ -166,10 +164,16 @@ def inspect_containerd_control():
                 raise RuntimeError('containerd proof ancestor ownership unverified')
         return real
     def command(args,environment=None,category='host-command'):
-        result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=5,
-                              env=environment,check=False)
+        started=time.monotonic()
+        try:
+            result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=5,
+                                  env=environment,check=False)
+        except subprocess.TimeoutExpired as error:
+            raise ContainerdControlUnverified(category,{'timed_out':True,'duration_ms':round(1000*(time.monotonic()-started)),
+                'stdout_bytes':len(error.output or b''),'stderr_bytes':len(error.stderr or b''),'cli_returncode':None}) from None
         if result.returncode or len(result.stdout)>65536 or len(result.stderr)>4096:
-            raise ContainerdControlUnverified(category,{'cli_returncode':result.returncode,'stdout_bytes':len(result.stdout),'stderr_bytes':len(result.stderr)})
+            raise ContainerdControlUnverified(category,{'duration_ms':round(1000*(time.monotonic()-started)),
+                'cli_returncode':result.returncode,'stdout_bytes':len(result.stdout),'stderr_bytes':len(result.stderr)})
         return result.stdout.decode('utf-8')
     pidfile=trusted('/var/run/docker.pid',stat.S_ISREG)
     raw=pidfile.read_bytes()
@@ -201,9 +205,8 @@ def inspect_containerd_control():
     if type(address) is not str or not address.startswith('/') or namespace!='moby':
         raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
     trusted(address,stat.S_ISSOCK,socket=True)
-    banner=command([str(ctr),'--version'],{'PATH':'/usr/bin:/bin'},category='ctr-banner-command')
     detail=command(['/usr/bin/sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','4s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command')
-    control=audit_containerd_control(arguments,config,server,banner,detail)
+    control=audit_containerd_control(arguments,config,server,detail)
     control.update({'ctr_binary_sha256':hashlib.sha256(ctr.read_bytes()).hexdigest(),
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
                     'host_access':'privileged-read-only-events','worker_authority_changed':False})

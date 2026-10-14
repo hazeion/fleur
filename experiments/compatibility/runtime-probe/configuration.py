@@ -163,10 +163,10 @@ def inspect_containerd_control():
             if value.st_uid != 0 or value.st_mode & 0o022:
                 raise RuntimeError('containerd proof ancestor ownership unverified')
         return real
-    def command(args,environment=None,category='host-command'):
+    def command(args,environment=None,category='host-command',timeout=5):
         started=time.monotonic()
         try:
-            result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=5,
+            result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=timeout,
                                   env=environment,check=False)
         except subprocess.TimeoutExpired as error:
             raise ContainerdControlUnverified(category,{'timed_out':True,'duration_ms':round(1000*(time.monotonic()-started)),
@@ -205,9 +205,14 @@ def inspect_containerd_control():
     if type(address) is not str or not address.startswith('/') or namespace!='moby':
         raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
     trusted(address,stat.S_ISSOCK,socket=True)
-    detail=command(['/usr/bin/sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','4s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command')
+    version_started=time.monotonic()
+    detail=command(['/usr/bin/sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','14s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command',timeout=15)
     control=audit_containerd_control(arguments,config,server,detail)
     control.update({'ctr_binary_sha256':hashlib.sha256(ctr.read_bytes()).hexdigest(),
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
                     'host_access':'privileged-read-only-events','worker_authority_changed':False})
+    elapsed=time.monotonic()-version_started
+    if elapsed>=15:
+        raise ContainerdControlUnverified('ctr-startup-deadline',{'duration_ms':round(1000*elapsed),'host_startup_budget_seconds':15})
+    control.update(host_startup_budget_seconds=15,host_version_duration_ms=round(1000*elapsed))
     return control

@@ -9,16 +9,17 @@ import selectors
 import subprocess
 import time
 from daemon_trace import parse_stacks, PREFIXES, STATES, NAME
+from registration_canary import register_canary
 
 # Reuse the existing bounded stack grammar inside the isolated root process.
 ROOT_PARSER = ('import json,re\nINPUT_LIMIT=65536\nOUTPUT_LIMIT=4096\n'
                +'PREFIXES='+repr(PREFIXES)+'\nSTATES='+repr(STATES)+'\nNAME='+repr(NAME)+'\n'
-               +inspect.getsource(parse_stacks))
+               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(register_canary))
 
 # The privileged supervisor owns the child process group. Control EOF and the
 # original absolute time allowance both cause root to terminate and reap it.
 SUPERVISOR = ROOT_PARSER + r'''
-import os,selectors,signal,stat,subprocess,sys,time
+import os,selectors,secrets,signal,stat,subprocess,sys,time
 ctr,address,namespace,absolute_deadline=sys.argv[1:]
 if os.geteuid()!=0: sys.exit(71)
 s=os.stat(ctr); sock=os.stat(address)
@@ -40,21 +41,36 @@ pre_retirement_returncode=None
 raw_stack=bytearray()
 p=None
 selector=None
+canary_name='fleur-observer-'+secrets.token_hex(16)
+canary_owner=secrets.token_hex(16)
+def record_error(chunk):
+    global errors
+    errors+=len(chunk)
+    if errors>65536: raise OSError('observer-error-bound')
+def forward(chunk):
+    global stdout_bytes
+    stdout_bytes+=len(chunk)
+    if os.write(1,chunk)!=len(chunk): raise OSError('observer-output')
 try:
     os.set_blocking(1,False)
     selector=selectors.DefaultSelector()
     selector.register(sys.stdin,selectors.EVENT_READ,'control')
-    p=subprocess.Popen([ctr,'--address',address,'--namespace',namespace,'events','topic==/tasks/start','topic==/tasks/exit'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    p=subprocess.Popen([ctr,'--address',address,'--namespace',namespace,'events','topic=="/tasks/start"','topic=="/tasks/exit"','topic=="/namespaces/update",namespace=="'+canary_name+'"'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS':'true'})
     selector.register(p.stdout,selectors.EVENT_READ,'out')
     selector.register(p.stderr,selectors.EVENT_READ,'err')
     phase=1
     while time.monotonic()<deadline:
         if p.poll() is not None: phase=2; break
         stop=False
-        for key,_ in selector.select(max(0,deadline-time.monotonic())):
+        for key,_ in selector.select(min(0.025,max(0,deadline-time.monotonic()))):
             chunk=os.read(key.fileobj.fileno(),4096)
             if key.data=='control':
                 control_bytes+=len(chunk)
+                if chunk==b'prepare-registration\n':
+                    result=register_canary(selector,p,ctr,address,namespace,deadline,canary_name,canary_owner,forward,record_error)
+                    os.write(1,b'[observer-registration] '+json.dumps(result).encode()+b'\n')
+                    if not result['ready']: stop=True
+                    break
                 diagnostic=chunk==b'diagnose-registration\n'
                 phase=4 if diagnostic else 3
                 stop=True; break
@@ -185,6 +201,8 @@ class ContainerdObserver:
         self.diagnostic_requested = False
         self.registration_diagnostic = None
         self.root_supervisor = None
+        self.registration = None
+        self.ready_requested = False
         self.closed = False
         self.cleanup_verified = False
         self.cleanup_late = False
@@ -214,6 +232,40 @@ class ContainerdObserver:
                 self.selector.close()
                 self.process.stdout.close()
             raise ObserverUnverified('observer-start-cleanup') from None
+
+    def ready(self, remaining):
+        """Prove subscription by owned echo and retire its namespace before launch."""
+        if self.ready_requested or self.container is not None:
+            raise ObserverUnverified('readiness-order')
+        self.ready_requested=True
+        limit=self._limit(remaining)
+        self.process.stdin.write(b'prepare-registration\n')
+        self.process.stdin.flush()
+        while True:
+            line=self._line(limit)
+            if not self._registration(line): continue
+            value=self.registration
+            if not value['ready'] or not value['cleanup_verified'] or value['category']!='verified':
+                raise ObserverUnverified('readiness-unverified',value)
+            if time.monotonic()>=limit: raise ObserverUnverified('event-timeout')
+            self.phase='ready'
+            return {'ready':True}
+
+    def _registration(self,line):
+        if not line.startswith(b'[observer-registration] '): return False
+        try:
+            value=json.loads(line[24:],object_pairs_hook=_object)
+            if type(value) is not dict or set(value)!={'ready','cleanup_verified','category','command_count','duration_ms'}: raise ValueError
+            if type(value['ready']) is not bool or type(value['cleanup_verified']) is not bool: raise ValueError
+            if type(value['category']) is not str or value['category'] not in {'verified','canary-unverified','canary-timeout','canary-cancelled',
+                    'canary-output-bound','canary-event-bound','canary-event-invalid','canary-subscriber-ended',
+                    'canary-command','canary-ownership','canary-preexisting','canary-cleanup'}: raise ValueError
+            for key in ('command_count','duration_ms'):
+                if type(value[key]) is not int or not 0<=value[key]<=2**31: raise ValueError
+            self.registration=value
+        except (ValueError,UnicodeError):
+            raise ObserverUnverified('readiness-invalid') from None
+        return True
 
     def _status(self, line):
         if not line.startswith(b'[observer-status] '): return False
@@ -348,13 +400,15 @@ class ContainerdObserver:
                 'reaped':self.reaped,'cleanup_verified':self.cleanup_verified,
                 'discarded_exec_exits':self.discarded_exec_exits,
                 'registration_diagnostic':self.registration_diagnostic,
-                'root_supervisor':self.root_supervisor}
+                'root_supervisor':self.root_supervisor,'registration':self.registration}
 
     def close(self, remaining=None):
         """Reap on failure too; a separate 1s cleanup grace never grants success."""
         if self.closed:
             if self.cleanup_late:
                 raise ObserverUnverified('observer-cleanup-deadline',self.snapshot())
+            if not self.cleanup_verified:
+                raise ObserverUnverified('observer-cleanup',self.snapshot())
             return True
         now=time.monotonic()
         success_limit=self.deadline
@@ -371,6 +425,7 @@ class ContainerdObserver:
                     line,_,tail=self.buffer.partition(b'\n')
                     self.buffer=bytearray(tail)
                     self._status(line)
+                    self._registration(line)
                     if line.startswith(b'[observer-diagnostic] ') and self.diagnostic_requested:
                         try: self.registration_diagnostic=json.loads(line[22:])
                         except (ValueError,UnicodeError): self.registration_diagnostic={'outcome':'invalid-diagnostic'}
@@ -394,7 +449,10 @@ class ContainerdObserver:
                 returncode=self.process.wait(timeout=1)
             if returncode != 0: raise ObserverUnverified('observer-cleanup')
             self.closed=True
-            self.cleanup_verified=True
+            self.cleanup_verified=(not self.ready_requested or self.registration is not None and self.registration['cleanup_verified'])
+            if not self.cleanup_verified:
+                self.phase='closed-cleanup-unverified'
+                raise ObserverUnverified('observer-cleanup',self.snapshot())
             self.cleanup_late=grace or time.monotonic()>=success_limit
             self.phase='closed-after-deadline' if self.cleanup_late else 'closed'
             if self.cleanup_late:

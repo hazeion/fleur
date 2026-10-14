@@ -29,6 +29,163 @@ class ObserverTests(unittest.TestCase):
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
 
+    def supervised_observer(self, source, timeout=3):
+        directory=tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        ctr=pathlib.Path(directory.name)/'ctr'
+        ctr.write_text('#!'+sys.executable+'\n'+source)
+        ctr.chmod(0o755)
+        address=str(pathlib.Path(directory.name)/'containerd.sock')
+        server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(address)
+        adapter="""import os
+original_stat=os.stat
+def same_user_stat(path,*args,**kwargs):
+    values=list(original_stat(path,*args,**kwargs));values[0]&=~0o022;values[4]=0
+    return os.stat_result(values)
+os.stat=same_user_stat
+os.geteuid=lambda:0
+"""
+        observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
+            launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                      str(ctr),address,'moby',str(time.monotonic()+timeout)])
+        def cleanup_supervisor():
+            try: observer.close(1)
+            except ObserverUnverified:
+                # Negative fixtures may deliberately retain a namespace in
+                # their TemporaryDirectory; always finish reaping their CLI.
+                if not observer.snapshot()['reaped'] or observer.process.poll() is None: raise
+        self.addCleanup(cleanup_supervisor)
+        return observer
+
+    def test_subscriber_arguments_preserve_literal_equality_value_quotes(self):
+        # Literal quotes are required by the pinned containerd filter parser:
+        # slash-delimited values are valid only for the regex operator.
+        source="import sys,time\nexpected=['topic==\"/tasks/start\"','topic==\"/tasks/exit\"']\nif sys.argv[6:8]!=expected: sys.exit(7)\nsys.stdout.write("+repr(START+EXIT)+");sys.stdout.flush()\ntime.sleep(10)\n"
+        observer=self.supervised_observer(source)
+        observer.bind(CID,421,2)
+        self.assertEqual(observer.completion(1)['exit_code'],0)
+        self.assertTrue(observer.close(1))
+
+    def test_child_exit_after_output_eof_is_reported_without_waiting_for_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ready=pathlib.Path(directory)/'ready'
+            go=pathlib.Path(directory)/'go'
+            source='import os,pathlib,time\npathlib.Path('+repr(str(ready))+').touch()\nwhile not pathlib.Path('+repr(str(go))+').exists(): time.sleep(.005)\nos.close(1);os.close(2)\ntime.sleep(.08)\nos._exit(7)\n'
+            observer=self.supervised_observer(source,timeout=5)
+            limit=time.monotonic()+3
+            while not ready.exists() and time.monotonic()<limit: time.sleep(.005)
+            self.assertTrue(ready.exists())
+            started=time.monotonic()
+            go.touch()
+            with self.assertRaisesRegex(ObserverUnverified,'stream-ended'):
+                observer.bind(CID,421,1)
+            self.assertLess(time.monotonic()-started,.7)
+            self.assertTrue(observer.close(1))
+            self.assertEqual(observer.snapshot()['root_supervisor']['child_returncode'],7)
+
+    def canary_observer(self, mode="valid", timeout=5):
+        directory=tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        state=pathlib.Path(directory.name)
+        source=r"""import json,os,pathlib,subprocess,sys,time
+root=pathlib.Path(STATE)
+rows_path=root/'namespaces.json'
+queue=root/'events'
+args=sys.argv[5:]
+if args[0]=='events':
+    time.sleep(.2)
+    (root/'subscribed').touch()
+    offset=0
+    while True:
+        if queue.exists():
+            data=queue.read_bytes()
+            if len(data)>offset:
+                os.write(1,data[offset:]);offset=len(data)
+        time.sleep(.005)
+rows=json.loads(rows_path.read_text()) if rows_path.exists() else {}
+verb=args[1]
+if verb=='list':
+    if MODE=='orphan-command' and not (root/'orphan.pid').exists():
+        child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
+        (root/'orphan.pid').write_text(str(child.pid))
+        sys.exit(0)
+    for name,labels in rows.items():
+        print(name if '--quiet' in args else name+' '+','.join(key+'='+value for key,value in sorted(labels.items())))
+elif verb=='create':
+    if args[2] in rows: sys.exit(17)
+    rows[args[2]]=dict(value.split('=',1) for value in args[3:])
+elif verb=='label':
+    name=args[2]
+    labels=dict(value.split('=',1) for value in args[3:])
+    rows[name].update(labels)
+    if (root/'subscribed').exists() and MODE!='missing-echo':
+        if MODE=='wrong-nonce': labels={'fleur.observer.echo':'unrelated'}
+        with queue.open('ab') as stream:
+            stream.write(('2026-10-13 20:00:00 +0000 UTC '+name+' /namespaces/update '+json.dumps({'name':name,'labels':labels})+'\n').encode())
+elif verb=='remove':
+    if MODE=='failed-delete': sys.exit(19)
+    del rows[args[2]]
+else: sys.exit(18)
+rows_path.write_text(json.dumps(rows))
+""".replace('STATE',repr(str(state))).replace('MODE',repr(mode))
+        return self.supervised_observer(source,timeout=timeout),state
+
+    def test_delayed_subscription_requires_echo_and_namespace_cleanup_before_ready(self):
+        observer,state=self.canary_observer()
+        self.assertEqual(observer.ready(4),{'ready':True})
+        self.assertEqual(json.loads((state/'namespaces.json').read_text()),{})
+        with (state/'events').open('ab') as stream: stream.write((START+EXIT).encode())
+        observer.bind(CID,421,1)
+        self.assertEqual(observer.completion(1)['exit_code'],0)
+        snapshot=observer.snapshot()
+        self.assertTrue(snapshot['registration']['cleanup_verified'])
+        self.assertGreaterEqual(snapshot['registration']['command_count'],6)
+        self.assertLess(snapshot['registration']['duration_ms'],2000)
+        observer.close(1)
+
+    def test_missing_or_wrong_echo_never_grants_readiness_and_retires_owned_namespace(self):
+        for mode in ('missing-echo','wrong-nonce'):
+            with self.subTest(mode=mode):
+                observer,state=self.canary_observer(mode,timeout=5)
+                with self.assertRaisesRegex(ObserverUnverified,'readiness-unverified'):
+                    observer.ready(5)
+                self.assertEqual(json.loads((state/'namespaces.json').read_text()),{})
+                self.assertTrue(observer.snapshot()['registration']['cleanup_verified'])
+                self.assertFalse(observer.snapshot()['registration']['ready'])
+                observer.close(1)
+
+    def test_echo_without_verified_namespace_removal_never_grants_readiness(self):
+        observer,state=self.canary_observer('failed-delete')
+        with self.assertRaisesRegex(ObserverUnverified,'readiness-unverified'):
+            observer.ready(4)
+        self.assertFalse(observer.snapshot()['registration']['cleanup_verified'])
+        self.assertEqual(observer.snapshot()['registration']['category'],'canary-cleanup')
+        self.assertTrue(json.loads((state/'namespaces.json').read_text()))
+        with self.assertRaisesRegex(ObserverUnverified,'observer-cleanup'):
+            observer.close(1)
+        self.assertTrue(observer.snapshot()['reaped'])
+        self.assertFalse(observer.snapshot()['cleanup_verified'])
+
+    def test_timed_out_control_command_retires_children_after_its_leader_exits(self):
+        observer,state=self.canary_observer('orphan-command',timeout=3)
+        try:
+            with self.assertRaisesRegex(ObserverUnverified,'readiness-unverified'):
+                observer.ready(3)
+            pid=int((state/'orphan.pid').read_text())
+            limit=time.monotonic()+.5
+            while time.monotonic()<limit:
+                try: os.kill(pid,0)
+                except ProcessLookupError: break
+                time.sleep(.01)
+            with self.assertRaises(ProcessLookupError): os.kill(pid,0)
+        finally:
+            if (state/'orphan.pid').exists():
+                try: os.kill(int((state/'orphan.pid').read_text()),signal.SIGKILL)
+                except ProcessLookupError: pass
+        observer.close(.5)
+
     def test_supervisor_status_never_supplies_task_start_or_exit_proof(self):
         status={'phase':3,'pre_retirement_returncode':None,'child_returncode':-9,
                 'ctr_stdout_bytes':0,'ctr_stderr_bytes':0,'control_bytes':0,'diagnostic_requested':False}

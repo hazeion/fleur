@@ -1,6 +1,6 @@
 import json, os
 from pathlib import Path
-import tempfile, unittest
+import tempfile, unittest, time, threading
 import subprocess
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -34,21 +34,18 @@ run)
  printf '%s\n' "$LIFECYCLE_REQUEST"
  IFS= read -r ack
  if [ "$mode" = busy ]; then
-  sleep "${LIFECYCLE_DELAY_LOOP:-0}"
+  if [ "${LIFECYCLE_DELAY_LOOP:-}" ]; then sleep "$LIFECYCLE_DELAY_LOOP"; fi
   printf 'entered\n' > "$root/$name-loop"
   printf '[compat-lifecycle] cpu-loop\n' >&2
   exec sleep 30
  else
   number=${name##*-}
   if [ ! -f "$root/owned-busy-$number-loop" ]; then printf '%s\n' "$name" > "$root/healthy-too-early"; fi
-  printf '%s\n' "$LIFECYCLE_EVIDENCE"
   if [ ! "${LIFECYCLE_STALE_HEALTHY_STATE:-}" ]; then
-   sed 's/"Running":true/"Running":false/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
-   mv "$root/$name.tmp" "$root/$name"
+   printf '{"Name":"/%s","Image":"sha256:fixture","State":{"Running":false,"ExitCode":0,"FinishedAt":"2026-10-13T00:00:01Z"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$name" "$owner" > "$root/$name"
   fi
+  printf '%s\n' "$LIFECYCLE_EVIDENCE"
   if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
-   sed 's/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
-   mv "$root/$name.tmp" "$root/$name"
    exec sleep 30
   fi
  fi
@@ -57,12 +54,17 @@ wait)
  case "$1" in
   aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) name=owned-healthy-0 ;;
   bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) name=owned-healthy-1 ;;
+  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc) name=owned-busy-0 ;;
+  dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd) name=owned-busy-1 ;;
   *) exit 3 ;;
  esac
- while grep -q '"Running":true' "$root/$name"; do sleep .02; done
+ while :; do
+  IFS= read -r state < "$root/$name"
+  case "$state" in *'"Running":true'*) sleep .02 ;; *) break ;; esac
+ done
  printf '0\n'
  ;;
-inspect) cat "$root/$1" ;;
+inspect) IFS= read -r state < "$root/$1"; printf '%s\n' "$state" ;;
 kill)
  shift
  name=$1
@@ -102,8 +104,43 @@ class LifecycleTests(unittest.TestCase):
  def observe(self,name,owner,inventory):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
-  return {'configuration':{'container_id':('a' if name.endswith('-0') else 'b')*64,'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self,timeout=2,containerd_control=None):return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control)
+  return {'configuration':{'container_id':(('c' if name.endswith('-0') else 'd') if '-busy-' in name else ('a' if name.endswith('-0') else 'b'))*64,'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
+ def run_probe(self,timeout=2,containerd_control=None):
+  parent=self
+  class FixtureDeadline:
+   # Explicit host process boundary for fake Docker state. The separate guard
+   # tests kill real same-user child processes; native CI uses actual pidfds.
+   def __init__(self,cid,pid,deadline):
+    self.name='owned-busy-'+str({'c':0,'d':1}[cid[0]])
+    self.deadline=deadline;self.done=False;self.cancel=threading.Event();self.error=None;self.result=None
+    self.thread=threading.Thread(target=self.enforce);self.thread.start()
+   def enforce(self):
+    cancelled=self.cancel.wait(max(0,self.deadline-time.monotonic()))
+    requested=time.monotonic()
+    try:
+     (parent.root/'kill-attempt').write_text(self.name+'\n')
+     # The injected delay models a late physical stop, independently of CLI
+     # loading. Native enforcement has no Docker CLI on its deadline path.
+     time.sleep(float(parent.env.get('LIFECYCLE_KILL_DELAY','0')))
+     path=parent.root/self.name;metadata=json.loads(path.read_text());state=metadata['State']
+     if not parent.env.get('LIFECYCLE_NO_KILL'):
+      state.update(Running=False,ExitCode=137,FinishedAt='2026-10-13T00:00:01Z')
+      path.write_text(json.dumps(metadata,separators=(',',':'))+'\n')
+     stopped=time.monotonic()
+     if state['Running'] or (not cancelled and stopped>self.deadline+.25):raise RuntimeError('worker termination missed deadline')
+     self.result={'outcome':'deadline','physical_exit_confirmed':True,'kill_lateness_ms':max(0,round(1000*(requested-self.deadline))),
+                  'physical_exit_lateness_ms':max(0,round(1000*(stopped-self.deadline))),'source':'fixture-process-boundary','guard_reaped':True}
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:self.error=error
+    finally:self.done=True
+   def completion(self):
+    self.thread.join(timeout+6)
+    if self.error:raise self.error
+    if not self.done:raise RuntimeError('worker termination unverified')
+    return self.result
+   def close(self):
+    self.cancel.set();self.thread.join(6)
+    if not self.done:raise RuntimeError('worker deadline guard reap unverified')
+  return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline)
  def test_deadline_terminates_daemon_worker_and_preserves_healthy_worker(self):
   result=self.run_probe();self.assertTrue(result['passed']);self.assertEqual(len(result['repeats']),2)
   for row in result['repeats']:self.assertTrue(row['healthy_completed_while_busy_running']);self.assertEqual(row['terminated_exit'],137);self.assertEqual(row['deadline_seconds'],2)
@@ -135,6 +172,14 @@ class LifecycleTests(unittest.TestCase):
   self.assertEqual(caught.exception.worker_state['FinishedAt'],'2026-10-13T00:00:01Z')
   self.assertIn('runtime-evidence',caught.exception.worker_diagnostics['stdout'])
   self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'kill-attempt'})
+ def test_healthy_failure_cancels_busy_worker_without_waiting_deadline(self):
+  started=time.monotonic()
+  with patch('lifecycle.OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:(_ for _ in ()).throw(RuntimeError('early healthy failure')),close=lambda:None)):
+   with self.assertRaisesRegex(RuntimeError,'early healthy failure') as caught:self.run_probe(timeout=30)
+  self.assertLess(time.monotonic()-started,3)
+  self.assertTrue(caught.exception.deadline_guard_cleanup_verified)
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
  def test_cleanup_failure_preserves_original_healthy_error_and_observations(self):
   self.env['LIFECYCLE_CLEANUP_FAILURE']='1'
   with patch('lifecycle.OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:(_ for _ in ()).throw(RuntimeError('completion observer fixture failure')),close=lambda:None)):
@@ -153,6 +198,7 @@ class LifecycleTests(unittest.TestCase):
     self.index=len(instances);instances.append(self)
     parent.assertFalse((parent.root/f'owned-healthy-{self.index}').exists())
     events.append('prepared')
+   def ready(self,*args):return {'ready':True}
    def bind(self,cid,pid,remaining):
     parent.assertEqual(cid,('a' if self.index==0 else 'b')*64);parent.assertEqual(pid,47)
     events.append('bound');return {'registered':True}
@@ -174,6 +220,7 @@ class LifecycleTests(unittest.TestCase):
   self.env['LIFECYCLE_CLEANUP_FAILURE']='1'
   class Observer:
    def __init__(self,*args):pass
+   def ready(self,*args):return {'ready':True}
    def bind(self,*args):return {'registered':True}
    def completion(self,*args):return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
    def close(self,*args):return True

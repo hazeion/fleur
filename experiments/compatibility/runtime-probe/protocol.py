@@ -42,13 +42,18 @@ def startup_inventory(request):
     return rows
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None, completion_stall=None, completion_prepare=None, completion_bind=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None, completion_stall=None, completion_prepare=None, completion_bind=None, cancel_event=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     started = time.monotonic()
     process = None
     output, errors = bytearray(), bytearray()
     waiter = None
     phase = 'waiting-broker-request'
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError('worker operation cancelled')
+    def pipe_wait(remaining):
+        return min(remaining,.05) if cancel_event is not None else remaining
     def deadline_error():
         error = subprocess.TimeoutExpired(args, timeout, output=bytes(output[:16384]), stderr=bytes(errors[:4096]))
         error.protocol_phase = phase
@@ -62,6 +67,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
             on_stderr(bytes(errors))
         return chunk
     try:
+        check_cancelled()
         if completion_prepare is not None:
             if completion_start is not None or completion_bind is None or startup_audit is None or completion_observer is None:
                 raise RuntimeError('prepared observer contract invalid')
@@ -70,7 +76,15 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
             if waiter is None or not callable(getattr(waiter,'completion',None)) or not callable(getattr(waiter,'close',None)):
                 if not callable(getattr(waiter,'close',None)): waiter = None
                 raise RuntimeError('prepared observer startup invalid')
+            if time.monotonic()-started >= timeout: raise deadline_error()
+            phase = 'awaiting-subscription-readiness'
+            if not callable(getattr(waiter,'ready',None)):
+                raise RuntimeError('subscription readiness unverified')
+            prepared = waiter.ready(timeout-(time.monotonic()-started))
+            if type(prepared) is not dict or prepared != {'ready':True} or type(prepared.get('ready')) is not bool:
+                raise RuntimeError('subscription readiness unverified')
         if time.monotonic()-started >= timeout: raise deadline_error()
+        check_cancelled()
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, env=environment)
         def read_request(limit):
@@ -79,11 +93,15 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                 selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
                 line = bytearray()
                 while not line.endswith(b"\n"):
+                    check_cancelled()
                     remaining = timeout - (time.monotonic() - started)
                     if remaining <= 0:
                         raise deadline_error()
-                    ready = selector.select(remaining)
+                    ready = selector.select(pipe_wait(remaining))
                     if not ready:
+                        if cancel_event is not None:
+                            check_cancelled()
+                            continue
                         raise deadline_error()
                     for key, _ in ready:
                         if key.data == 'stderr':
@@ -182,6 +200,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                     if key.data is errors and on_stderr is not None:
                         on_stderr(bytes(errors))
             while selector.get_map() or completion_observer is not None:
+                check_cancelled()
                 remaining = timeout - (time.monotonic()-started)
                 if remaining <= 0:
                     raise deadline_error()
@@ -229,19 +248,32 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                         complete_frame()
                         if time.monotonic()-started >= timeout:
                             raise deadline_error()
+                        check_cancelled()
                         phase = 'verified-worker-complete'
                         if diagnostics is not None:
                             diagnostics['daemon_completion'] = completed
                             if waiter is not None: diagnostics['completion_source'] = 'registered-containerd-init-exit' if completion_prepare is not None else 'startup-bound-docker-wait'
                             diagnostics['local_client_exit_code'] = process.returncode
                         return output.decode()
-                ready = selector.select(min(remaining,0.1) if frame is not None else remaining)
+                ready = selector.select(pipe_wait(min(remaining,0.1) if frame is not None else remaining))
                 if not ready:
+                    if cancel_event is not None:
+                        check_cancelled()
+                        continue
                     if frame is not None:
                         continue
                     raise deadline_error()
                 drain(ready)
-        process.wait(timeout=max(0.001, timeout-(time.monotonic()-started)))
+        while True:
+            check_cancelled()
+            remaining=timeout-(time.monotonic()-started)
+            if remaining<=0: raise deadline_error()
+            try:
+                process.wait(timeout=pipe_wait(remaining))
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_event is None: raise
+        check_cancelled()
         if process.returncode:
             raise RuntimeError(f"worker exited {process.returncode}: " + errors.decode(errors="replace")[-3000:])
         return output.decode()

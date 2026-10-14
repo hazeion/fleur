@@ -270,7 +270,7 @@ jobs:
         run: python3 -m unittest discover -s experiments/compatibility/runtime-probe -p 'test_*.py'
       - name: Bounded native feasibility probe, failures remain failures
         # A scoped pass cannot set the aggregate v1 compatibility gate true.
-        run: python3 experiments/compatibility/runtime-probe/run.py --architecture '${{ matrix.architecture }}' > "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"
+        run: python3 experiments/compatibility/runtime-probe/run.py --architecture '${{ matrix.architecture }}' --healthy-containerd-exit > "$RUNNER_TEMP/fleur-evidence/runtime-probe.json"
       - name: Display native probe report
         if: always()
         run: |

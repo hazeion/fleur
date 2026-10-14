@@ -14,11 +14,12 @@ from runtime_profile import select_profile, native_elf_identity
 from protocol import run_container, StartupAuditRejected
 from resources import accept_resources
 from diagnostics import snapshot_worker
-from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL
+from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL, inspect_containerd_control
 from lifecycle import run_lifecycle
 from descriptor_audit import inspect_event_inventory
 from completion import CompletionUnverified
 from waiter import OwnedWaiter, WaitUnverified
+from containerd_observer import ObserverUnverified
 from daemon_trace import capture_daemon_trace
 
 HERE = Path(__file__).resolve().parent
@@ -35,7 +36,7 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None, trusted_build_network=None):
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False):
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -72,7 +73,7 @@ def main(architecture=None, trusted_build_network=None):
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -187,8 +188,11 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['trusted_cgroup_abuse'] = resources
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
+            control = inspect_containerd_control() if healthy_containerd_exit else None
+            if control is not None: REPORT['host_containerd_control'] = control
+            REPORT['healthy_exit_evidence'] = 'containerd-init-exit' if control is not None else 'startup-bound-docker-wait'
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
-                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30)
+                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control)
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
             negative_diagnostics = {}
@@ -219,7 +223,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         REPORT['failure'] = str(error)[:4000]
         if isinstance(error,StartupAuditRejected):
             REPORT['startup_failure'] = {'category':error.category}
-        if isinstance(error,(CompletionUnverified,WaitUnverified)):
+        if isinstance(error,(CompletionUnverified,WaitUnverified,ObserverUnverified)):
             REPORT['completion_failure'] = {'category':error.category,'observations':error.observations}
         if hasattr(error,'worker_role') or hasattr(error,'lifecycle_cleanup'):
             REPORT['lifecycle_failure'] = {
@@ -301,5 +305,6 @@ if __name__ == '__main__':
     parser.add_argument('--architecture', choices=('amd64','arm64'),
                         help='require this native Linux architecture; default detects supported native host')
     parser.add_argument('--trusted-build-network',choices=('host',),help='explicit trusted dependency build networking; worker networking remains none')
+    parser.add_argument('--healthy-containerd-exit',action='store_true',help='Linux-host-only matching init exit evidence for concurrent healthy workers; removal still required')
     arguments = parser.parse_args()
-    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network))
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit))

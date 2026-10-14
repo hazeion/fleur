@@ -70,6 +70,13 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
             if waiter is None or not callable(getattr(waiter,'completion',None)) or not callable(getattr(waiter,'close',None)):
                 if not callable(getattr(waiter,'close',None)): waiter = None
                 raise RuntimeError('prepared observer startup invalid')
+            if time.monotonic()-started >= timeout: raise deadline_error()
+            phase = 'awaiting-subscription-readiness'
+            if not callable(getattr(waiter,'ready',None)):
+                raise RuntimeError('subscription readiness unverified')
+            prepared = waiter.ready(timeout-(time.monotonic()-started))
+            if type(prepared) is not dict or prepared != {'ready':True} or type(prepared.get('ready')) is not bool:
+                raise RuntimeError('subscription readiness unverified')
         if time.monotonic()-started >= timeout: raise deadline_error()
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, env=environment)

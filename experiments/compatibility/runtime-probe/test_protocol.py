@@ -315,30 +315,43 @@ class Protocol(unittest.TestCase):
             run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_start=lambda r:Waiter(),completion_observer=lambda f,r:{'completed':True,'exit_code':0},diagnostics={})
         self.assertEqual(events,['closed'])
 
+    def test_unproven_subscription_prevents_measured_worker_launch(self):
+        events=[]
+        class Observer:
+            def ready(self,r):return {'ready':False}
+            def completion(self,r):raise AssertionError('unregistered observer')
+            def close(self,r):events.append('closed');return True
+        with patch('protocol.subprocess.Popen',side_effect=AssertionError('unregistered worker launched')) as launch,self.assertRaisesRegex(RuntimeError,'subscription readiness unverified'):
+            run_container(['owned-worker'],startup_audit=lambda rows:None,completion_prepare=lambda r:Observer(),completion_bind=lambda o,r:{'registered':True},completion_observer=lambda f,r:{'completed':True,'exit_code':0})
+        launch.assert_not_called()
+        self.assertEqual(events,['closed'])
+
     def test_observer_prepare_precedes_worker_launch_and_start_bind_precedes_ack(self):
         startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
         source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
         events=[];factory=subprocess.Popen
         class Observer:
+            def ready(self,r):events.append('ready');return {'ready':True}
             def completion(self,remaining):events.append('exit-observed');return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
             def diagnose_registration(self):events.append('healthy-diagnostic-forbidden')
             def close(self,remaining):self_test.assertGreater(remaining,0);events.append('closed');return True
         self_test=self
         def prepare(remaining):self.assertGreater(remaining,0);events.append('prepared');return Observer()
-        def launch(*args,**kwargs):self.assertEqual(events,['prepared']);events.append('worker-launched');return factory(*args,**kwargs)
+        def launch(*args,**kwargs):self.assertEqual(events,['prepared','ready']);events.append('worker-launched');return factory(*args,**kwargs)
         def audit(rows):events.append('audited');return {'passed':True,'category':'verified','descriptor_count':len(rows)}
-        def bind(observer,remaining):self.assertEqual(events,['prepared','worker-launched','audited']);events.append('bound');return {'registered':True}
-        def dispatch(request):self.assertEqual(events,['prepared','worker-launched','audited','bound']);return fixture_dispatch(request)
+        def bind(observer,remaining):self.assertEqual(events,['prepared','ready','worker-launched','audited']);events.append('bound');return {'registered':True}
+        def dispatch(request):self.assertEqual(events,['prepared','ready','worker-launched','audited','bound']);return fixture_dispatch(request)
         def accept(frame,remaining):events.append('frame-accepted');return {'completed':True,'exit_code':0}
         with patch('protocol.subprocess.Popen',side_effect=launch):
             result=run_container([sys.executable,'-u','-c',source],startup_audit=audit,completion_prepare=prepare,completion_bind=bind,completion_observer=accept,dispatch=dispatch)
         self.assertEqual(json.loads(result)['kind'],'runtime-evidence')
-        self.assertEqual(events,['prepared','worker-launched','audited','bound','frame-accepted','exit-observed','closed'])
+        self.assertEqual(events,['prepared','ready','worker-launched','audited','bound','frame-accepted','exit-observed','closed'])
 
     def test_prepared_observer_without_cleanup_ack_cannot_pass(self):
         startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
         source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True); sys.stdin.readline(); print(json.dumps({'kind':'runtime-evidence'}),flush=True)"
         class Observer:
+            def ready(self,r):return {'ready':True}
             def completion(self,r):return {'completed':True,'exit_code':0}
             def close(self,r):return None
         with self.assertRaisesRegex(RuntimeError,'init exit observer cleanup unverified'):
@@ -349,6 +362,7 @@ class Protocol(unittest.TestCase):
         source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline(); print("+repr(json.dumps(REQUEST))+",flush=True)"
         events=[]
         class Observer:
+            def ready(self,r):return {'ready':True}
             def completion(self,r):events.append('exit');return {'completed':True,'exit_code':0}
             def close(self,r):events.append('closed');return True
         with self.assertRaisesRegex(RuntimeError,'init task start registration unverified'):
@@ -359,6 +373,7 @@ class Protocol(unittest.TestCase):
         import time
         events=[]
         class Observer:
+            def ready(self,r):return {'ready':True}
             def completion(self,r):return {'completed':True,'exit_code':0}
             def close(self,r):events.append('closed');return True
         def prepare(r):time.sleep(.2);return Observer()
@@ -371,6 +386,7 @@ class Protocol(unittest.TestCase):
         source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline()"
         events=[];diagnostics={}
         class Observer:
+            def ready(self,r):return {'ready':True}
             def completion(self,r):raise AssertionError('no completion on failed bind')
             def diagnose_registration(self):events.append('diagnostic');raise ValueError('diagnostic fixture failure')
             def snapshot(self):return {'registration_diagnostic':{'phase':2,'stdout_bytes':0}}

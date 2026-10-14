@@ -14,7 +14,7 @@ from runtime_profile import select_profile, native_elf_identity
 from protocol import run_container, StartupAuditRejected
 from resources import accept_resources
 from diagnostics import snapshot_worker
-from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL, inspect_containerd_control
+from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL, inspect_containerd_control, ContainerdControlUnverified
 from lifecycle import run_lifecycle
 from descriptor_audit import inspect_event_inventory
 from completion import CompletionUnverified
@@ -221,6 +221,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
+        if isinstance(error,ContainerdControlUnverified):
+            REPORT['host_containerd_failure']={'category':error.category,'observations':error.observations}
         if isinstance(error,StartupAuditRejected):
             REPORT['startup_failure'] = {'category':error.category}
         if isinstance(error,(CompletionUnverified,WaitUnverified,ObserverUnverified)):

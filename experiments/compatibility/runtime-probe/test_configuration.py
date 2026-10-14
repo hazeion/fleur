@@ -89,10 +89,25 @@ class ActualWorkerConfiguration(unittest.TestCase):
         from configuration import audit_containerd_control
         commit='ee2735368117d2eb259779949d5e75cdafec9761'
         server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        version='ctr github.com/containerd/containerd/v2 v2.3.6 '+commit+'\n'
-        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,version)
+        version='ctr github.com/containerd/containerd/v2 v2.3.6\n'
+        detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,version,detail)
         self.assertEqual(result['address'],'/run/containerd/containerd.sock')
         self.assertEqual(result['namespace'],'moby')
         for args,config,changed,cli in [(['dockerd'],{},server,version),(['dockerd','--containerd=tcp://other'],{},server,version),(['dockerd','--containerd=/run/ctr.sock'],{'containerd-namespace':'other'},server,version),(['dockerd','--containerd=/run/ctr.sock'],{},dict(server,Version='29.0.0'),version),(['dockerd','--containerd=/run/ctr.sock'],{},server,version.replace('2.3.6','2.3.5'))]:
             with self.subTest(args=args,config=config),self.assertRaises(ValueError):
-                audit_containerd_control(args,config,changed,cli)
+                audit_containerd_control(args,config,changed,cli,detail)
+
+    def test_documented_ctr_banner_omits_revision_but_local_and_server_revisions_remain_required(self):
+        from configuration import audit_containerd_control
+        commit='ee2735368117d2eb259779949d5e75cdafec9761'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
+        banner='ctr github.com/containerd/containerd/v2 v2.3.6\n'
+        detail=f'Client:\n  Version:  v2.3.6\n  Revision: {commit}\n  Go version: go1.25.1\n\nServer:\n  Version:  v2.3.6\n  Revision: {commit}\n  UUID: public-id\n'
+        result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,banner,detail)
+        self.assertTrue(result['ctr_revision_verified'])
+        for bad in (detail.replace(commit,'0'*40,1),detail.replace(commit,'0'*40),detail.replace('v2.3.6','v2.3.5',1),'Client:\n Version: v2.3.6\n'):
+            with self.subTest(bad=bad),self.assertRaises(ValueError) as error:
+                audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,banner,bad)
+            self.assertIn(error.exception.category,('ctr-version-detail','ctr-client-version','ctr-client-revision','ctr-server-revision'))
+            self.assertNotIn('public-id',str(error.exception.observations))

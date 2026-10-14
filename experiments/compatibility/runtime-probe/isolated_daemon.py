@@ -235,6 +235,7 @@ def retirement_observations(root, returncode, stdout):
                 raise ValueError('journal values')
             rows.append((stage,namespace,status,count))
         facts['journal_rows']=len(rows)
+        facts['stages']=[list(row) for row in rows]
         if rows:
             facts.update(zip(('last_stage','last_namespace','last_command_returncode','last_count'),rows[-1]))
     except FileNotFoundError:

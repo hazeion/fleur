@@ -29,6 +29,32 @@ def ready_transport(args, channel):
 
 
 class Protocol(unittest.TestCase):
+    def test_cancelled_paused_worker_transport_returns_promptly_and_reaps_client(self):
+        import os
+        import pathlib
+        import tempfile
+        import threading
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file=pathlib.Path(directory)/'client.pid'
+            event=threading.Event()
+            cancelled=[]
+            source='import os,pathlib,time\npathlib.Path('+repr(str(pid_file))+').write_text(str(os.getpid()))\ntime.sleep(30)'
+            def cancel_after_launch():
+                limit=time.monotonic()+3
+                while not pid_file.exists() and time.monotonic()<limit: time.sleep(.005)
+                cancelled.append(time.monotonic())
+                event.set()
+            thread=threading.Thread(target=cancel_after_launch)
+            thread.start()
+            try:
+                with self.assertRaisesRegex(RuntimeError,'worker operation cancelled'):
+                    run_container([sys.executable,'-u','-c',source],timeout=5,cancel_event=event)
+                self.assertLess(time.monotonic()-cancelled[0],.5)
+                self.assertTrue(pid_file.exists())
+                with self.assertRaises(ProcessLookupError): os.kill(int(pid_file.read_text()),0)
+            finally: thread.join(4)
+
     def test_only_registered_operation_and_typed_input_are_admitted(self):
         self.assertEqual(fixture_dispatch(REQUEST)["value"], {"id": 1, "name": "Squat"})
         for changed in (dict(REQUEST, action="sql"), dict(REQUEST, token="other"),

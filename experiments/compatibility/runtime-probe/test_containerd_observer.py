@@ -29,6 +29,48 @@ class ObserverTests(unittest.TestCase):
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
 
+    def test_supervisor_status_never_supplies_task_start_or_exit_proof(self):
+        status={'phase':3,'pre_retirement_returncode':None,'child_returncode':-9,
+                'ctr_stdout_bytes':0,'ctr_stderr_bytes':0,'control_bytes':0,'diagnostic_requested':False}
+        observer=self.observer('[observer-status] '+json.dumps(status)+'\n')
+        with self.assertRaisesRegex(ObserverUnverified,'event-timeout'): observer.bind(CID,421,0.05)
+        self.assertEqual(observer.snapshot()['event_count'],0)
+
+    def test_malformed_supervisor_status_fails_closed(self):
+        observer=self.observer('[observer-status] '+json.dumps({'phase':'private-secret'})+'\n'+START+EXIT)
+        with self.assertRaisesRegex(ObserverUnverified,'supervisor-status-invalid'): observer.bind(CID,421,1)
+        self.assertNotIn('private-secret',json.dumps(observer.snapshot()))
+
+    def test_early_ctr_exit_reports_safe_status_before_reap_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ctr=pathlib.Path(directory)/'ctr'
+            ctr.write_text('#!'+sys.executable+'\nimport sys\nsys.stderr.write("private-secret-diagnostic")\nsys.exit(7)\n')
+            ctr.chmod(0o755)
+            address=str(pathlib.Path(directory)/'containerd.sock')
+            adapter="""import os
+original_stat=os.stat
+def same_user_stat(path,*args,**kwargs):
+    values=list(original_stat(path,*args,**kwargs));values[0]&=~0o022;values[4]=0
+    return os.stat_result(values)
+os.stat=same_user_stat
+os.geteuid=lambda:0
+"""
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
+                server.bind(address)
+                observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',3,
+                    launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                              str(ctr),address,'moby',str(time.monotonic()+3)])
+                self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(1))
+                with self.assertRaisesRegex(ObserverUnverified,'stream-ended'): observer.bind(CID,421,2)
+                self.assertTrue(observer.close(1))
+                status=observer.snapshot()['root_supervisor']
+                self.assertEqual(status['pre_retirement_returncode'],7)
+                self.assertEqual(status['child_returncode'],7)
+                self.assertEqual(status['phase'],2)
+                self.assertGreater(status['ctr_stderr_bytes'],0)
+                self.assertFalse(status['diagnostic_requested'])
+                self.assertNotIn('private-secret',json.dumps(status))
+
     def test_failed_registration_captures_only_sanitized_owned_child_stack(self):
         self.registration_diagnostic_case()
 

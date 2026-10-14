@@ -231,6 +231,18 @@ class DriverEvidence(unittest.TestCase):
         self.assertFalse(report['bounded_probe_passed'])
         self.assertEqual(report['lifecycle_failure']['cleanup'],error.lifecycle_cleanup)
 
+    def test_removed_containers_do_not_hide_an_unreaped_lifecycle_observer(self):
+        error = RuntimeError('observer cleanup unverified')
+        error.lifecycle_cleanup_verified = True
+        error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'removed'}]
+        error.worker_diagnostics = {'waiter_cleanup_verified':False}
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,lifecycle_error=error)
+        self.assertEqual(code,1)
+        self.assertTrue(report['lifecycle_failure']['cleanup_verified'])
+        self.assertFalse(report['cleanup_complete'])
+
     def test_host_network_is_explicit_for_trusted_build_only(self):
         monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
         code, report = self.execute(json.dumps(monitor),container_exit=0,trusted_build_network='host')

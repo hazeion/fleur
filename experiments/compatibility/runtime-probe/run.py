@@ -281,7 +281,10 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         REPORT['cleanup_complete'] = (all(item['outcome'] != 'failed' for item in cleanup)
                                       and not REPORT['daemon_build_may_be_pending']
                                       and ('lifecycle_failure' not in REPORT or
-                                           REPORT['lifecycle_failure'].get('cleanup_verified') is True))
+                                           REPORT['lifecycle_failure'].get('cleanup_verified') is True)
+                                      and all(protocol.get('waiter_cleanup_verified',True) is True
+                                              for protocol in (REPORT.get('worker_protocol',{}),
+                                                  REPORT.get('lifecycle_failure',{}).get('protocol',{}))))
         evidence = REPORT.get('evidence')
         REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
             and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']), architecture)

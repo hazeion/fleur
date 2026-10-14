@@ -206,13 +206,14 @@ def inspect_containerd_control():
         raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
     trusted(address,stat.S_ISSOCK,socket=True)
     version_started=time.monotonic()
-    detail=command(['/usr/bin/sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','14s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command',timeout=15)
+    detail=command(['/usr/bin/sudo','-n','/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin','CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','14s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command',timeout=15)
     control=audit_containerd_control(arguments,config,server,detail)
     control.update({'ctr_binary_sha256':hashlib.sha256(ctr.read_bytes()).hexdigest(),
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
-                    'host_access':'privileged-read-only-events','worker_authority_changed':False})
+                    'host_access':'privileged-owned-registration-and-events','worker_authority_changed':False})
     elapsed=time.monotonic()-version_started
     if elapsed>=15:
         raise ContainerdControlUnverified('ctr-startup-deadline',{'duration_ms':round(1000*elapsed),'host_startup_budget_seconds':15})
-    control.update(host_startup_budget_seconds=15,host_version_duration_ms=round(1000*elapsed))
+    control.update(host_startup_budget_seconds=15,host_version_duration_ms=round(1000*elapsed),
+                   optional_deprecation_rpc=False)
     return control

@@ -145,6 +145,10 @@ class ActualWorkerConfiguration(unittest.TestCase):
             calls.append(args)
             if '--version' in args:raise AssertionError('redundant cold banner must not run')
             if args[0]=='/usr/bin/sudo':
+                if getattr(self,'check_optional_rpc_environment',False):
+                    self.assertIn('CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true',args,
+                                  'host CLI must avoid the redundant deprecation RPC after sudo resets environment')
+                    self.assertLess(args.index('/usr/bin/sudo'),args.index('CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true'))
                 delay=getattr(self,'ctr_startup_delay',0)
                 if delay:
                     import subprocess,sys
@@ -191,3 +195,7 @@ class ActualWorkerConfiguration(unittest.TestCase):
             self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
         self.assertEqual(caught.exception.category,'ctr-startup-deadline')
         self.assertEqual(caught.exception.observations['host_startup_budget_seconds'],15)
+
+    def test_authoritative_query_avoids_optional_deprecation_rpc_without_weakening_identity(self):
+        self.check_optional_rpc_environment=True
+        self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()

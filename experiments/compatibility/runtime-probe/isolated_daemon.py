@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import owned_mounts
 
 def owned_mount_count(contents, root):
     """Count kernel mount points only in the exact fresh data/exec trees."""
@@ -37,18 +38,40 @@ def owned_mount_count(contents, root):
 MOUNT_COUNT_CODE = 'from pathlib import Path; import sys\n'+inspect.getsource(owned_mount_count)+"\nwith open('/proc/self/mountinfo','r') as stream: data=stream.read(1048577)\nprint(owned_mount_count(data,Path(sys.argv[1])))\n"
 
 
+MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': print(json.dumps(capture(Path(sys.argv[2]),sys.argv[3])))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))\n"
+ROOT_CAPTURE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' capture "$base" "$token"'
+MOUNT_RETIRE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' retire "$base" "$token" "$mount_snapshot"'
+ROOT_REMOVE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' remove "$base" "$token" "$mount_snapshot"'
+
+
 ROOT_BODY = r'''set -eu
 base=$1; token=$2; group=$3
 case "$token" in fleur-vfs-????????????????????????????????) ;; *) exit 2 ;; esac
 [ -d "$base" ] && [ ! -L "$base" ] && [ "$(cat "$base/owner")" = "$token" ] || exit 2
 printf '%s' "$PPID" > "$base/supervisor.pid"
+mount_snapshot=$(ROOT_CAPTURE_COMMAND_PLACEHOLDER) || exit 2
 child=
 clean=false
+clock_ms() {
+    # Linux boot clock avoids spawning another CLI for every budget check.
+    IFS=' ' read -r uptime ignored < /proc/uptime || return 1
+    seconds=${uptime%.*}; hundredths=${uptime#*.}
+    printf '%s\n' "$((seconds*1000+(1$hundredths-100)*10))"
+}
+ctr_owned() {
+    now=$(clock_ms) || return 124
+    if [ -z "${retirement_deadline:-}" ]; then retirement_deadline=$((now+${retirement_window_ms:-10000})); fi
+    remaining=$((retirement_deadline-now-250))
+    [ "$remaining" -gt 0 ] || return 124
+    span=$(printf '%s.%03ds' "$((remaining/1000))" "$((remaining%1000))")
+    /usr/bin/timeout --signal=TERM --kill-after=.2s "$span" \
+      /usr/bin/env CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true /usr/bin/ctr "$@"
+}
 namespace_empty() {
     scope=0
     for namespace in "$token" "$token-plugins"; do
         scope=$((scope+1)); rc=0; command_start=$(date +%s%N)
-        /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
+        ctr_owned --address /run/containerd/containerd.sock \
           --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || rc=$?
         number=$(wc -l < "$base/tasks.tmp")
         diag 5 "$scope" "$rc" "$number"
@@ -81,7 +104,7 @@ retire_namespaces() {
     scope=0
     for namespace in "$token" "$token-plugins"; do
         scope=$((scope+1)); rc=0; command_start=$(date +%s%N)
-        /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
+        ctr_owned --address /run/containerd/containerd.sock \
           --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || rc=$?
         number=$(wc -l < "$base/tasks.tmp")
         diag 1 "$scope" "$rc" "$number"
@@ -95,13 +118,13 @@ retire_namespaces() {
         diag 2 "$scope" 0 "$#"
         for id in "$@"; do
             rc=0; command_start=$(date +%s%N)
-            /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
+            ctr_owned --address /run/containerd/containerd.sock \
               --namespace "$namespace" tasks kill --all --signal SIGKILL "$id" >/dev/null 2>&1 || rc=$?
             diag 3 "$scope" "$rc" 1
         done
         if [ "$#" -gt 0 ]; then
             rc=0; command_start=$(date +%s%N)
-            /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
+            ctr_owned --address /run/containerd/containerd.sock \
               --namespace "$namespace" tasks delete --force "$@" >/dev/null 2>&1 || rc=$?
             diag 4 "$scope" "$rc" "$#"
         fi
@@ -136,8 +159,7 @@ cleanup() {
         wait "$child" 2>/dev/null || return 1
     fi
     namespace_empty || return 1
-    rm -rf -- "$base/data" "$base/exec"
-    rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp" "$base/shim.tmp"
+    ROOT_REMOVE_COMMAND_PLACEHOLDER
     printf 'stopped\n'
 }
 trap 'cleanup' EXIT
@@ -154,16 +176,19 @@ IFS= read -r command || true
 '''
 
 
+ROOT_BODY = ROOT_BODY.replace('ROOT_CAPTURE_COMMAND_PLACEHOLDER',ROOT_CAPTURE_COMMAND).replace('ROOT_REMOVE_COMMAND_PLACEHOLDER',ROOT_REMOVE_COMMAND)
+
+
 # Exact same namespace routines for the outer forced-group fallback. Raw task
 # identifiers stay in the owned directory and never cross diagnostics output.
 RETIRE_BODY = r'''set -eu
 LC_ALL=C; export LC_ALL
-base=$1; token=$2
+base=$1; token=$2; retirement_window_ms=${3:-10000}; mount_snapshot=${4:-}
 case "$token" in fleur-vfs-????????????????????????????????) ;; *) exit 2 ;; esac
 suffix=${token#fleur-vfs-}
 case "$suffix" in *[!0-9a-f]*) exit 2 ;; esac
 [ -d "$base" ] && [ ! -L "$base" ] && [ "$(cat "$base/owner")" = "$token" ] || exit 2
-''' + ROOT_BODY[ROOT_BODY.index('namespace_empty()'):ROOT_BODY.index('cleanup()')] + r'''
+''' + ROOT_BODY[ROOT_BODY.index('clock_ms()'):ROOT_BODY.index('cleanup()')] + r'''
 retire_namespaces
 diag 10 0 0 0
 IFS= read -r daemon < "$base/docker.pid" || [ -n "$daemon" ]
@@ -175,22 +200,22 @@ if [ -r "/proc/$daemon/stat" ]; then
 fi
 diag 11 0 0 0
 mounts=0; mount_rc=0
-if mounts=$(/usr/bin/python3 -c MOUNT_COUNT_CODE_PLACEHOLDER "$base" 2>/dev/null); then :; else mount_rc=$?; mounts=0; fi
+if mounts=$(MOUNT_RETIRE_COMMAND_PLACEHOLDER 2>/dev/null); then :; else mount_rc=$?; mounts=0; fi
 diag 13 0 "$mount_rc" "$mounts"
+[ "$mount_rc" = 0 ] || exit "$mount_rc"
 remove_rc=0
-rm -rf -- "$base/data" "$base/exec" 2>"$base/removal.stderr" || remove_rc=$?
+ROOT_REMOVE_COMMAND_PLACEHOLDER 2>"$base/removal.stderr" || remove_rc=$?
 diag 14 0 "$remove_rc" "$mounts"
 busy=0
 if grep -F -- 'Device or resource busy' "$base/removal.stderr" >/dev/null; then busy=1; fi
 diag 15 0 "$remove_rc" "$busy"
 [ "$remove_rc" = 0 ] || exit "$remove_rc"
-rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp" "$base/shim.tmp"
 diag 12 0 0 0
 printf 'retired\n'
 '''
 
 
-RETIRE_BODY = RETIRE_BODY.replace('MOUNT_COUNT_CODE_PLACEHOLDER',shlex.quote(MOUNT_COUNT_CODE))
+RETIRE_BODY = RETIRE_BODY.replace('MOUNT_RETIRE_COMMAND_PLACEHOLDER',MOUNT_RETIRE_COMMAND).replace('ROOT_REMOVE_COMMAND_PLACEHOLDER',ROOT_REMOVE_COMMAND)
 
 def eligible_host():
     expected = {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted',
@@ -320,6 +345,22 @@ def _retire_supervisor(endpoint, budget):
     arguments = Path('/proc/'+str(pid)+'/cmdline').read_bytes().split(b'\0')
     if int(record[2]) != pid or str(endpoint.root).encode() not in arguments or endpoint.token.encode() not in arguments:
         raise IsolatedDaemonError('owned supervisor group invalid')
+    capture_window=deadline-time.monotonic()-.3
+    if capture_window<=0:
+        raise IsolatedDaemonError('owned retirement budget expired')
+    captured=subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',
+                  format(capture_window,'.3f')+'s','/usr/bin/python3','-I','-c',MOUNT_PROGRAM,
+                  'capture',str(endpoint.root),endpoint.token],stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                  timeout=max(.001,deadline-time.monotonic()),check=False)
+    if captured.returncode or len(captured.stdout)>65536:
+        raise IsolatedDaemonError('owned mount capture failed')
+    try:
+        mount_snapshot=json.loads(captured.stdout)
+        if type(mount_snapshot) is not dict or set(mount_snapshot)!={'root','mounts'}:
+            raise ValueError('capture shape')
+    except (ValueError,UnicodeError):
+        raise IsolatedDaemonError('owned mount capture invalid') from None
     result = subprocess.run(['sudo','-n','/bin/kill','-KILL','--','-'+str(pid)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=max(.001,min(1,deadline-time.monotonic())), check=False)
@@ -330,7 +371,8 @@ def _retire_supervisor(endpoint, budget):
     if window<=0:
         raise IsolatedDaemonError('owned retirement budget expired')
     retirement = subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',format(window,'.3f')+'s',
-                    '/bin/sh','-c',RETIRE_BODY,'fleur-owned-retire',str(endpoint.root),endpoint.token],
+                    '/bin/sh','-c',RETIRE_BODY,'fleur-owned-retire',str(endpoint.root),endpoint.token,
+                    str(math.floor(window*1000)),json.dumps(mount_snapshot,separators=(',',':'))],
                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                    timeout=max(.001,deadline-time.monotonic()),check=False)
     endpoint.retirement_facts = retirement_observations(endpoint.root,retirement.returncode,retirement.stdout)
@@ -491,3 +533,23 @@ def privileged_self_test():
             raise IsolatedDaemonError('forced namespace retirement unverified',getattr(endpoint,'retirement_facts',{}))
     return dict(endpoint.facts,namespace_tasks_retired=True,namespace_shims_retired=True,
                 cleanup_verified=endpoint.cleanup_verified)
+
+
+def privileged_mount_self_test():
+    """Actual kernel positive/negative mount checks, before the owned daemon proof."""
+    if not eligible_host():
+        raise IsolatedDaemonError('native mount test host invalid')
+    program=inspect.getsource(owned_mounts)+'\nprint(json.dumps(native_self_test()))\n'
+    result=subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s','15s',
+                           '/usr/bin/python3','-I','-c',program],stdin=subprocess.DEVNULL,
+                          capture_output=True,timeout=16,check=False)
+    if result.returncode or len(result.stdout)>4096:
+        raise IsolatedDaemonError('native mount lifecycle proof failed',
+                                  {'returncode':result.returncode,'stderr_bytes':len(result.stderr)})
+    facts=json.loads(result.stdout)
+    if facts!={'ordinary_unmount_verified':True,'busy_mount_rejected':True,
+               'replacement_mount_rejected':True,'unknown_mount_rejected':True,
+               'unrelated_mount_preserved':True,'anchored_removal_verified':True,
+               'symlink_removal_rejected':True,'owned_mounts_remaining':0}:
+        raise IsolatedDaemonError('native mount lifecycle proof invalid')
+    return facts

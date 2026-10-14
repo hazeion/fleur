@@ -6,6 +6,61 @@ import unittest
 from unittest.mock import patch
 from isolated_daemon import Endpoint, IsolatedDaemonError, eligible_host, isolated_vfs_daemon
 
+def timeout_fixture(root):
+    """Cheap native timeout stand-in; child is always killed and reaped on expiry."""
+    import subprocess
+    source=root/'timeout.c'; binary=root/'fixture-timeout'
+    source.write_text(r'''
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec+t.tv_nsec/1e9; }
+int main(int n,char **a) {
+ int i=1; while(i<n && (!strncmp(a[i],"--signal=",9)||!strncmp(a[i],"--kill-after=",13)))i++;
+ if(i+1>=n)return 2;
+ double end=now()+atof(a[i++]);
+ pid_t child=fork(); if(child<0)return 2;
+ if(!child){
+   if(!strcmp(a[i],"/usr/bin/env")){setenv("CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS","true",1);i+=2;}
+   execvp(a[i],a+i);_exit(127);
+ }
+ int status=0;
+ for(;;){if(waitpid(child,&status,WNOHANG)==child)return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
+   if(now()>=end){kill(child,SIGKILL);waitpid(child,&status,0);return 124;}usleep(1000);}
+}
+''')
+    subprocess.run(['cc','-O2',str(source),'-o',str(binary)],check=True,capture_output=True,timeout=10)
+    return binary
+
+def daemon_fixture(root):
+    """Native signal-aware fake daemon keeps Python startup out of lifecycle timing."""
+    import subprocess
+    source=root/'daemon.c';binary=root/'fixture-daemon'
+    source.write_text(r'''
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+static void stop(int s) { (void)s; _exit(0); }
+int main(int n,char **a) {
+ signal(SIGTERM,stop);
+ for(int i=1;i+1<n;i++) {
+   if(!strcmp(a[i],"--data-root")||!strcmp(a[i],"--exec-root"))mkdir(a[i+1],0700);
+   if(!strcmp(a[i],"--pidfile")){FILE *p=fopen(a[i+1],"w");if(!p)return 2;fprintf(p,"%ld",(long)getpid());fclose(p);}
+ }
+ char path[4096];snprintf(path,sizeof(path),"%s",a[0]);char *end=strrchr(path,'/');if(!end)return 2;
+ strcpy(end+1,"docker.sock");FILE *p=fopen(path,"w");if(!p)return 2;fputs("fixture-ready",p);fclose(p);
+ strcpy(end+1,"ready");p=fopen(path,"w");if(!p)return 2;fputs("ready",p);fclose(p);
+ for(;;)pause();
+}
+''')
+    subprocess.run(['cc','-O2',str(source),'-o',str(binary)],check=True,capture_output=True,timeout=10)
+    return binary
+
 class OwnedCounterfactual(unittest.TestCase):
     def test_endpoint_cannot_inherit_context_or_tls_redirects(self):
         with tempfile.TemporaryDirectory(prefix='fleur-vfs-endpoint-') as temporary:
@@ -54,24 +109,17 @@ class OwnedCounterfactual(unittest.TestCase):
         import shlex
         import subprocess
         import time
-        from isolated_daemon import ROOT_BODY
+        from isolated_daemon import ROOT_BODY, ROOT_CAPTURE_COMMAND, ROOT_REMOVE_COMMAND
         with tempfile.TemporaryDirectory(prefix='fleur-vfs-supervisor-') as temporary:
             root = Path(temporary)
             token = 'fleur-vfs-'+'b'*32
             (root/'owner').write_text(token)
             (root/'comm').write_text('dockerd\n')
             (root/'unrelated').write_text('preserve')
-            daemon = root/'fixture-daemon'
-            import sys
-            stop_program = 'import signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM,lambda *_:sys.exit(0)); Path('+repr(str(root/'ready'))+').write_text("ready"); time.sleep(60)'
-            daemon.write_text('#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\ncase "$1" in\n'
-                              '--data-root) mkdir -p "$2" ;;\n--exec-root) mkdir -p "$2" ;;\n'
-                              '--pidfile) printf "%s" "$$" > "$2" ;;\nesac\nshift\ndone\nexec '
-                              + shlex.quote(sys.executable) + ' -c ' + shlex.quote(stop_program) + '\n')
-            daemon.chmod(0o700)
-            body = ROOT_BODY.replace('/usr/bin/dockerd', shlex.quote(str(daemon))).replace('"/proc/$child/comm"', shlex.quote(str(root/'comm')))
+            daemon = daemon_fixture(root)
+            body = ROOT_BODY.replace(ROOT_CAPTURE_COMMAND,"printf '{}'").replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace('/usr/bin/dockerd', shlex.quote(str(daemon))).replace('"/proc/$child/comm"', shlex.quote(str(root/'comm')))
             body = body.replace('record=$(cat "/proc/$child/stat")', 'record="$child (fixture) S $$ $$"')
-            body = body.replace('/usr/bin/timeout 2s /usr/bin/ctr', '/usr/bin/true')
+            body = body.replace('ctr_owned --address', '/usr/bin/true --address')
             process = subprocess.Popen(['/bin/sh','-c',body,'fixture',str(root),token,str(os.getgid())],
                                        stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:
@@ -95,30 +143,40 @@ class OwnedCounterfactual(unittest.TestCase):
                 for stream in (process.stdin,process.stdout,process.stderr):
                     stream.close()
 
+    def test_unverified_initial_mount_snapshot_cannot_launch_normal_daemon(self):
+        import subprocess
+        import isolated_daemon as module
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-no-owner-') as temporary:
+            root=Path(temporary);token='fleur-vfs-'+'b'*32
+            (root/'owner').write_text(token)
+            # The real shell must stop before invoking Docker when its root
+            # ownership/mount-table boundary cannot establish the initial identity.
+            body=module.ROOT_BODY.replace(module.ROOT_CAPTURE_COMMAND,'/usr/bin/false')
+            body=body.replace('/usr/bin/dockerd','touch "'+str(root/'launched')+'"')
+            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,str(os.getgid())],
+                                  input=b'stop\n',capture_output=True,timeout=3)
+            self.assertNotEqual(result.returncode,0)
+            self.assertFalse((root/'launched').exists())
+
     def test_failed_inspection_cannot_skip_actual_supervisor_stop_and_reap(self):
         import shlex
         import subprocess
         import sys
-        from isolated_daemon import ROOT_BODY
+        from isolated_daemon import ROOT_BODY, ROOT_CAPTURE_COMMAND, ROOT_REMOVE_COMMAND
         real_popen = subprocess.Popen
         processes = []
         with tempfile.TemporaryDirectory(prefix='fleur-vfs-failure-',dir='/tmp') as temporary:
+            compiled_daemon=daemon_fixture(Path(temporary))
             def launch(arguments, **kwargs):
                 root = Path(arguments[-3])
                 (root/'comm').write_text('dockerd\n')
-                fixture = root/'fixture-daemon'
-                program = ('import os,sys,signal,time; from pathlib import Path; '
-                           'signal.signal(signal.SIGTERM,lambda *_:sys.exit(0)); '
-                           'a=sys.argv; root=Path(a[a.index("--pidfile")+1]).parent; '
-                           '(root/"data").mkdir(); (root/"exec").mkdir(); '
-                           '(root/"docker.pid").write_text(str(os.getpid())); '
-                           '(root/"docker.sock").write_text("fixture-ready"); time.sleep(60)')
-                fixture.write_text('#!/bin/sh\nexec '+shlex.quote(sys.executable)+' -c '+shlex.quote(program)+' "$@"\n')
-                fixture.chmod(0o700)
-                body = ROOT_BODY.replace('/usr/bin/dockerd',shlex.quote(str(fixture)))
+                import shutil
+                fixture=root/'fixture-daemon'
+                shutil.copyfile(compiled_daemon,fixture);fixture.chmod(0o700)
+                body = ROOT_BODY.replace(ROOT_CAPTURE_COMMAND,"printf '{}'").replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace('/usr/bin/dockerd',shlex.quote(str(fixture)))
                 body = body.replace('"/proc/$child/comm"',shlex.quote(str(root/'comm')))
                 body = body.replace('record=$(cat "/proc/$child/stat")','record="$child (fixture) S $$ $$"')
-                body = body.replace('/usr/bin/timeout 2s /usr/bin/ctr','/usr/bin/true')
+                body = body.replace('ctr_owned --address','/usr/bin/true --address')
                 process = real_popen(['/bin/sh','-c',body,'fixture',*arguments[-3:]],**kwargs)
                 processes.append(process)
                 import time
@@ -154,7 +212,7 @@ class OwnedCounterfactual(unittest.TestCase):
         import shlex
         import subprocess
         import sys
-        from isolated_daemon import RETIRE_BODY
+        from isolated_daemon import RETIRE_BODY, MOUNT_RETIRE_COMMAND, ROOT_REMOVE_COMMAND
         with tempfile.TemporaryDirectory(prefix='fleur-vfs-retirement-') as temporary:
             root=Path(temporary); token='fleur-vfs-'+'c'*32
             (root/'owner').write_text(token); (root/'docker.pid').write_text('2147483647')
@@ -171,9 +229,7 @@ class OwnedCounterfactual(unittest.TestCase):
                        'print("a"*64) if cmd=="list" and not done.exists() else None; '
                        'done.write_text("retired") if cmd=="delete" else None')
             cli.write_text('#!'+sys.executable+'\n'+program+'\n');cli.chmod(0o700)
-            body=RETIRE_BODY
-            for span in ('2s','.5s','.25s','1s'):
-                body=body.replace('/usr/bin/timeout '+span+' /usr/bin/ctr',shlex.quote(str(cli)))
+            body=RETIRE_BODY.replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace(MOUNT_RETIRE_COMMAND,'printf \'0\\n\'').replace('ctr_owned --address',shlex.quote(str(cli))+' --address')
             result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
                                   text=True,capture_output=True,timeout=5)
             self.assertEqual(result.returncode,0,result.stderr)
@@ -228,7 +284,7 @@ class OwnedCounterfactual(unittest.TestCase):
         import subprocess
         import sys
         import time
-        from isolated_daemon import RETIRE_BODY
+        from isolated_daemon import RETIRE_BODY, MOUNT_RETIRE_COMMAND, ROOT_REMOVE_COMMAND
         with tempfile.TemporaryDirectory(prefix='fleur-vfs-delayed-') as temporary:
             root=Path(temporary);token='fleur-vfs-'+'d'*32
             (root/'owner').write_text(token);(root/'docker.pid').write_text('2147483647')
@@ -241,14 +297,73 @@ class OwnedCounterfactual(unittest.TestCase):
                      'print("a"*64) if cmd=="list" and not done.exists() else None; '
                      'done.write_text("retired") if cmd=="delete" else None')
             cli.write_text('#!'+sys.executable+'\n'+program+'\n');cli.chmod(0o700)
-            timer.write_text('#!'+sys.executable+'\nimport subprocess,sys\n'
-                             'try:\n r=subprocess.run(sys.argv[2:],timeout=float(sys.argv[1].rstrip("s")));sys.exit(r.returncode)\n'
-                             'except subprocess.TimeoutExpired:\n sys.exit(124)\n');timer.chmod(0o700)
-            body=RETIRE_BODY.replace('/usr/bin/timeout',shlex.quote(str(timer))).replace('/usr/bin/ctr',shlex.quote(str(cli)))
+            timer=timeout_fixture(root)
+            body=RETIRE_BODY.replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace(MOUNT_RETIRE_COMMAND,'printf \'0\\n\'').replace('/usr/bin/timeout',shlex.quote(str(timer))).replace('/usr/bin/ctr',shlex.quote(str(cli)))
             body=body.replace('/usr/bin/python3',shlex.quote(sys.executable))
+            clock='clock_ms() { IFS= read -r now < '+shlex.quote(str(root/'clock'))+'; printf \'%s\\n\' "$now"; }\n'
+            begin=body.index('clock_ms()'); finish=body.index('ctr_owned()',begin)
+            body=body[:begin]+clock+body[finish:]
+            import threading
+            finished=threading.Event()
+            def clock_writer():
+                while not finished.is_set():
+                    (root/'clock.new').write_text(str(int(time.monotonic()*1000))+'\n')
+                    (root/'clock.new').replace(root/'clock')
+                    finished.wait(.01)
+            (root/'clock').write_text(str(int(time.monotonic()*1000))+'\n')
+            thread=threading.Thread(target=clock_writer);thread.start()
             started=time.monotonic()
-            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
-                                  text=True,capture_output=True,timeout=10)
+            try:
+                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+                                      text=True,capture_output=True,timeout=10)
+            finally:
+                finished.set();thread.join(timeout=1)
+            self.assertEqual(result.returncode,0,'delayed CLI never reached kill/delete')
+            self.assertEqual(result.stdout,'retired\n')
+            self.assertLess(time.monotonic()-started,10)
+            for namespace in (token,token+'-plugins'):
+                self.assertTrue((root/(namespace+'.done')).exists())
+
+    def test_single_slow_cli_startup_uses_remaining_retirement_budget(self):
+        import shlex
+        import subprocess
+        import sys
+        import time
+        from isolated_daemon import RETIRE_BODY, MOUNT_RETIRE_COMMAND, ROOT_REMOVE_COMMAND
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-delayed-') as temporary:
+            root=Path(temporary);token='fleur-vfs-'+'d'*32
+            (root/'owner').write_text(token);(root/'docker.pid').write_text('2147483647')
+            (root/'data').mkdir();(root/'exec').mkdir()
+            cli=root/'fixture-ctr'; timer=root/'fixture-timeout'
+            program=('import sys,time; from pathlib import Path; a=sys.argv; '
+                     'root=Path('+repr(str(root))+'); ns=a[a.index("--namespace")+1]; '
+                     'assert ns in ['+repr(token)+','+repr(token+'-plugins')+']; '
+                     'time.sleep(2.15) if not (root/"started").exists() else None; (root/"started").touch(); '
+                     'done=root/(ns+".done"); cmd=a[a.index("tasks")+1]; '
+                     'print("a"*64) if cmd=="list" and not done.exists() else None; '
+                     'done.write_text("retired") if cmd=="delete" else None')
+            cli.write_text('#!'+sys.executable+'\n'+program+'\n');cli.chmod(0o700)
+            timer=timeout_fixture(root)
+            body=RETIRE_BODY.replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace(MOUNT_RETIRE_COMMAND,'printf \'0\\n\'').replace('/usr/bin/timeout',shlex.quote(str(timer))).replace('/usr/bin/ctr',shlex.quote(str(cli)))
+            body=body.replace('/usr/bin/python3',shlex.quote(sys.executable))
+            clock='clock_ms() { IFS= read -r now < '+shlex.quote(str(root/'clock'))+'; printf \'%s\\n\' "$now"; }\n'
+            begin=body.index('clock_ms()'); finish=body.index('ctr_owned()',begin)
+            body=body[:begin]+clock+body[finish:]
+            import threading
+            finished=threading.Event()
+            def clock_writer():
+                while not finished.is_set():
+                    (root/'clock.new').write_text(str(int(time.monotonic()*1000))+'\n')
+                    (root/'clock.new').replace(root/'clock')
+                    finished.wait(.01)
+            (root/'clock').write_text(str(int(time.monotonic()*1000))+'\n')
+            thread=threading.Thread(target=clock_writer);thread.start()
+            started=time.monotonic()
+            try:
+                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+                                      text=True,capture_output=True,timeout=10)
+            finally:
+                finished.set();thread.join(timeout=1)
             self.assertEqual(result.returncode,0,'delayed CLI never reached kill/delete')
             self.assertEqual(result.stdout,'retired\n')
             self.assertLess(time.monotonic()-started,10)
@@ -264,7 +379,7 @@ class OwnedCounterfactual(unittest.TestCase):
             root=Path(temporary);token='fleur-vfs-'+'e'*32
             (root/'supervisor.pid').write_text('12345')
             executable=root/'sudo'
-            executable.write_text('#!/bin/sh\ncase "$2" in /bin/kill) exit 0 ;; /usr/bin/timeout) printf "retired\\n" ;; *) exit 9 ;; esac\n')
+            executable.write_text('#!/bin/sh\ncase "$*" in *" capture "*) printf \'{"root":[],"mounts":[]}\\n\'; exit 0 ;; esac\ncase "$2" in /bin/kill) exit 0 ;; /usr/bin/timeout) printf "retired\\n" ;; *) exit 9 ;; esac\n')
             executable.chmod(0o700)
             def text(path,*args,**kwargs):
                 if str(path)=='/proc/12345/comm': return 'timeout\n'

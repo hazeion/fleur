@@ -29,6 +29,60 @@ class ObserverTests(unittest.TestCase):
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
 
+    def test_failed_registration_captures_only_sanitized_owned_child_stack(self):
+        self.registration_diagnostic_case()
+
+    def registration_diagnostic_case(self, expired=False):
+        with tempfile.TemporaryDirectory() as directory:
+            ctr=pathlib.Path(directory)/'ctr'
+            ready=pathlib.Path(directory)/'ready'
+            raw="goroutine 7 gp=0x1234 m=2 mp=0x5678 [IO wait]:\ngithub.com/containerd/containerd/api/services/introspection/v1.(*introspectionClient).Server(secret-argument)\n\t/private/secret-file.go:123\n"
+            ctr.write_text('#!'+sys.executable+'\nimport os,pathlib,signal,sys,time\ndef quit_handler(*args):\n os.write(2,'+repr(raw.encode())+');sys.exit(2)\nsignal.signal(signal.SIGQUIT,quit_handler)\npathlib.Path('+repr(str(ready))+').write_text(str(os.getpid()))\nwhile True: signal.pause()\n')
+            ctr.chmod(0o755)
+            address=str(pathlib.Path(directory)/'containerd.sock')
+            adapter="""import os
+original_stat=os.stat
+def same_user_stat(path,*args,**kwargs):
+    values=list(original_stat(path,*args,**kwargs));values[0]&=~0o022;values[4]=0
+    return os.stat_result(values)
+os.stat=same_user_stat
+os.geteuid=lambda:0
+"""
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
+                server.bind(address)
+                allowance=1.5 if expired else 3
+                observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',allowance,
+                    launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                              str(ctr),address,'moby',str(time.monotonic()+allowance)])
+                self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(1))
+                deadline=time.monotonic()+1
+                while not ready.exists() and time.monotonic()<deadline: time.sleep(0.01)
+                self.assertTrue(ready.exists())
+                pid=int(ready.read_text())
+                with self.assertRaisesRegex(ObserverUnverified,'event-timeout'):
+                    observer.bind(CID,421,allowance if expired else 0.05)
+                self.assertTrue(observer.diagnose_registration()['requested'])
+                if expired:
+                    with self.assertRaisesRegex(ObserverUnverified,'observer-cleanup-deadline'): observer.close(-0.01)
+                else:
+                    self.assertTrue(observer.close(1))
+                diagnostic=observer.snapshot()['registration_diagnostic']
+                self.assertEqual(diagnostic['goroutines'][0]['functions'],[
+                    'github.com/containerd/containerd/api/services/introspection/v1.(*introspectionClient).Server'])
+                self.assertNotIn('secret-argument',json.dumps(diagnostic))
+                self.assertNotIn('secret-file',json.dumps(diagnostic))
+                self.assertNotIn('0x1234',json.dumps(diagnostic))
+                self.assertNotIn('0x5678',json.dumps(diagnostic))
+                self.assertEqual(diagnostic['ctr_stdout_bytes'],0)
+                with self.assertRaises(ProcessLookupError): os.kill(pid,0)
+
+    def test_expired_registration_can_capture_diagnostic_without_late_success(self):
+        self.registration_diagnostic_case(expired=True)
+
+    def test_registration_diagnostic_requires_actual_failed_binding(self):
+        observer=self.observer(START+EXIT)
+        with self.assertRaises(ObserverUnverified): observer.diagnose_registration()
+
     def test_embedded_supervisor_reaps_real_child_after_os_setup_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             pid_file=pathlib.Path(directory)/'ctr.pid'
@@ -158,7 +212,8 @@ selectors.DefaultSelector=FailingSelector
 
     def test_wrong_namespace_never_proves_registration(self):
         observer=self.observer(START.replace(' moby ',' other ')+EXIT.replace(' moby ',' other '))
-        with self.assertRaisesRegex(ObserverUnverified,'event-timeout'): observer.bind(CID,421,0.05)
+        with self.assertRaisesRegex(ObserverUnverified,'event-timeout'):
+                    observer.bind(CID,421,0.05)
         self.assertTrue(observer.close(1))
 
     def test_malformed_or_duplicate_key_event_fails(self):

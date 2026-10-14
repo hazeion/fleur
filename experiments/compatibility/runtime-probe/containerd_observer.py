@@ -1,16 +1,23 @@
 """Host-only, registered containerd init-exit evidence. Never validates worker output."""
 from datetime import datetime
 import json
+import inspect
 import math
 import os
 import re
 import selectors
 import subprocess
 import time
+from daemon_trace import parse_stacks, PREFIXES, STATES, NAME
+
+# Reuse the existing bounded stack grammar inside the isolated root process.
+ROOT_PARSER = ('import json,re\nINPUT_LIMIT=65536\nOUTPUT_LIMIT=4096\n'
+               +'PREFIXES='+repr(PREFIXES)+'\nSTATES='+repr(STATES)+'\nNAME='+repr(NAME)+'\n'
+               +inspect.getsource(parse_stacks))
 
 # The privileged supervisor owns the child process group. Control EOF and the
 # original absolute time allowance both cause root to terminate and reap it.
-SUPERVISOR = r'''
+SUPERVISOR = ROOT_PARSER + r'''
 import os,selectors,signal,stat,subprocess,sys,time
 ctr,address,namespace,absolute_deadline=sys.argv[1:]
 if os.geteuid()!=0: sys.exit(71)
@@ -25,6 +32,9 @@ for path in (ctr,address):
 deadline=float(absolute_deadline)
 if time.monotonic()>=deadline: sys.exit(75)
 errors=0
+stdout_bytes=0
+diagnostic=False
+raw_stack=bytearray()
 p=None
 selector=None
 try:
@@ -39,9 +49,12 @@ try:
         stop=False
         for key,_ in selector.select(max(0,deadline-time.monotonic())):
             chunk=os.read(key.fileobj.fileno(),4096)
-            if key.data=='control': stop=True; break
+            if key.data=='control':
+                diagnostic=chunk==b'diagnose-registration\n'
+                stop=True; break
             if not chunk: selector.unregister(key.fileobj)
             elif key.data=='out':
+                stdout_bytes+=len(chunk)
                 try:
                     if os.write(1,chunk)!=len(chunk): stop=True; break
                 except BlockingIOError: stop=True; break
@@ -50,17 +63,55 @@ try:
                 if errors>65536: stop=True; break
             # Raw ctr diagnostics must never reach artifact logs.
         if stop: break
+    # At the operation deadline only failure cleanup may continue. Give the
+    # failed caller a bounded control window before retiring the root child.
+    if not diagnostic and time.monotonic()>=deadline and p.poll() is None:
+        control_deadline=time.monotonic()+0.2
+        while time.monotonic()<control_deadline:
+            for key,_ in selector.select(max(0,control_deadline-time.monotonic())):
+                if key.data=='control':
+                    diagnostic=os.read(key.fileobj.fileno(),4096)==b'diagnose-registration\n'
+                    control_deadline=0
+                    break
 finally:
     try:
         if p is not None:
-            try: os.killpg(p.pid,signal.SIGKILL)
-            except ProcessLookupError: pass
-            try: p.wait(timeout=0.75) # failure-only reap grace, never operation success
-            except subprocess.TimeoutExpired: sys.exit(74)
+            try:
+                if diagnostic and p.poll() is None:
+                    try: os.kill(p.pid,signal.SIGQUIT)
+                    except ProcessLookupError: pass
+                    capture_deadline=time.monotonic()+0.2
+                    os.set_blocking(p.stderr.fileno(),False)
+                    while time.monotonic()<capture_deadline and len(raw_stack)<65536:
+                        try:
+                            chunk=os.read(p.stderr.fileno(),min(4096,65536-len(raw_stack)))
+                            if not chunk: break
+                            raw_stack.extend(chunk)
+                        except BlockingIOError: time.sleep(0.005)
+            finally:
+                p.poll() # retire a child that already exited during trace capture
+                try: os.killpg(p.pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+                try: p.wait(timeout=0.4 if diagnostic else 0.75) # failure-only reap grace, never operation success
+                except subprocess.TimeoutExpired: sys.exit(74)
     finally:
         if p is not None:
             p.stdout.close();p.stderr.close()
         if selector is not None: selector.close()
+if diagnostic:
+    normalized=[]
+    for line in raw_stack.decode('utf-8','replace').splitlines():
+        header=re.fullmatch(r'goroutine ([0-9]+)(?: gp=0x[0-9a-f]+ m=(?:nil|[0-9]+ mp=0x[0-9a-f]+))? \[([^\]]{1,100})\]:',line)
+        normalized.append('goroutine '+header[1]+' ['+header[2]+']:' if header else line)
+    result=parse_stacks('\n'.join(normalized))
+    result.update(outcome='captured' if result['goroutines'] else 'empty-stack',
+                  phase='quit-after-registration-failure',ctr_stdout_bytes=stdout_bytes,
+                  ctr_stderr_bytes=errors+len(raw_stack),child_returncode=p.returncode,
+                  snapshot_may_be_partial=True)
+    while len(json.dumps(result).encode())>6000 and result['goroutines']:
+        result['goroutines'].pop();result['truncated']=True
+    try: os.write(1,b'[observer-diagnostic] '+json.dumps(result).encode()+b'\n')
+    except BlockingIOError: sys.exit(73)
 try: os.write(1,b'[observer-reaped]\n')
 except BlockingIOError: sys.exit(73)
 '''
@@ -104,6 +155,9 @@ class ContainerdObserver:
         self.events = 0
         self.discarded_exec_exits = 0
         self.phase = 'prepared'
+        self.registration_failed = False
+        self.diagnostic_requested = False
+        self.registration_diagnostic = None
         self.closed = False
         self.cleanup_verified = False
         self.cleanup_late = False
@@ -184,16 +238,31 @@ class ContainerdObserver:
                 or type(host_pid) is not int or not 0 < host_pid <= 2**32-1):
             raise ObserverUnverified('identity-invalid')
         limit=self._limit(remaining)
-        while True:
-            namespace,topic,event,seconds,nanos=self._event(limit)
-            if namespace != self.namespace or event.get('container_id') != container: continue
-            if topic != '/tasks/start': raise ObserverUnverified('start-unobserved')
-            if set(event) != {'container_id','pid'} or type(event['pid']) is not int or event['pid'] != host_pid:
-                raise ObserverUnverified('start-identity')
-            self.container,self.pid = container,host_pid
-            self.start_seconds,self.start_nanos = seconds,nanos
-            self.phase = 'bound'
-            return {'registered':True}
+        try:
+            while True:
+                namespace,topic,event,seconds,nanos=self._event(limit)
+                if namespace != self.namespace or event.get('container_id') != container: continue
+                if topic != '/tasks/start': raise ObserverUnverified('start-unobserved')
+                if set(event) != {'container_id','pid'} or type(event['pid']) is not int or event['pid'] != host_pid:
+                    raise ObserverUnverified('start-identity')
+                self.container,self.pid = container,host_pid
+                self.start_seconds,self.start_nanos = seconds,nanos
+                self.phase = 'bound'
+                return {'registered':True}
+        except ObserverUnverified:
+            self.registration_failed = True
+            raise
+
+    def diagnose_registration(self):
+        if not self.registration_failed or self.container is not None or self.diagnostic_requested:
+            raise ObserverUnverified('diagnostic-order')
+        self.diagnostic_requested = True
+        try:
+            self.process.stdin.write(b'diagnose-registration\n')
+            self.process.stdin.flush()
+        except (OSError,ValueError):
+            raise ObserverUnverified('diagnostic-unavailable') from None
+        return {'requested':True}
 
     def completion(self, remaining):
         if self.container is None or self.completed: raise ObserverUnverified('completion-order')
@@ -231,7 +300,8 @@ class ContainerdObserver:
     def snapshot(self):
         return {'phase':self.phase,'event_count':self.events,'stdout_bytes':self.total,
                 'reaped':self.reaped,'cleanup_verified':self.cleanup_verified,
-                'discarded_exec_exits':self.discarded_exec_exits}
+                'discarded_exec_exits':self.discarded_exec_exits,
+                'registration_diagnostic':self.registration_diagnostic}
 
     def close(self, remaining=None):
         """Reap on failure too; a separate 1s cleanup grace never grants success."""
@@ -253,6 +323,9 @@ class ContainerdObserver:
                 while b'\n' in self.buffer:
                     line,_,tail=self.buffer.partition(b'\n')
                     self.buffer=bytearray(tail)
+                    if line.startswith(b'[observer-diagnostic] ') and self.diagnostic_requested:
+                        try: self.registration_diagnostic=json.loads(line[22:])
+                        except (ValueError,UnicodeError): self.registration_diagnostic={'outcome':'invalid-diagnostic'}
                     if line == b'[observer-reaped]': self.reaped=True; break
                 if self.reaped: break
                 if time.monotonic()>=limit:

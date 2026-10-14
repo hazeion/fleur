@@ -219,6 +219,18 @@ class DriverEvidence(unittest.TestCase):
         self.assertNotIn('completion_failure',report)
         self.assertTrue(report['cleanup_complete'])
 
+    def test_unverified_lifecycle_removal_prevents_aggregate_cleanup_success(self):
+        error = RuntimeError('owned lifecycle cleanup incomplete')
+        error.lifecycle_cleanup_verified = False
+        error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'inspection-unverified'}]
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,lifecycle_error=error)
+        self.assertEqual(code,1)
+        self.assertFalse(report['cleanup_complete'])
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertEqual(report['lifecycle_failure']['cleanup'],error.lifecycle_cleanup)
+
     def test_host_network_is_explicit_for_trusted_build_only(self):
         monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
         code, report = self.execute(json.dumps(monitor),container_exit=0,trusted_build_network='host')

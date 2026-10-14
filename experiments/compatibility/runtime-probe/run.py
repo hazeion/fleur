@@ -279,7 +279,9 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         # its CLI has died. Removing a current tag does not cancel that work.
         REPORT['daemon_build_may_be_pending'] = build_started and not build_finished
         REPORT['cleanup_complete'] = (all(item['outcome'] != 'failed' for item in cleanup)
-                                      and not REPORT['daemon_build_may_be_pending'])
+                                      and not REPORT['daemon_build_may_be_pending']
+                                      and ('lifecycle_failure' not in REPORT or
+                                           REPORT['lifecycle_failure'].get('cleanup_verified') is True))
         evidence = REPORT.get('evidence')
         REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
             and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']), architecture)

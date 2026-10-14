@@ -1,6 +1,8 @@
 """Owned VFS counterfactual daemon; never a fallback for the required gate."""
 from contextlib import contextmanager
 import json
+import inspect
+import shlex
 import math
 import os
 from pathlib import Path
@@ -13,6 +15,27 @@ import subprocess
 import tempfile
 import time
 import uuid
+
+def owned_mount_count(contents, root):
+    """Count kernel mount points only in the exact fresh data/exec trees."""
+    if type(contents) is not str or len(contents.encode('utf-8'))>1048576:
+        raise ValueError('owned mount input invalid')
+    prefixes=(str(root/'data'),str(root/'exec'))
+    count=0
+    for line in contents.splitlines():
+        fields=line.split()
+        if len(fields)<10 or '-' not in fields:
+            raise ValueError('owned mount row invalid')
+        point=fields[4]
+        for escaped,actual in ((r'\040',' '),(r'\011','\t'),(r'\012','\n'),(r'\134','\\')):
+            point=point.replace(escaped,actual)
+        if any(point==prefix or point.startswith(prefix+'/') for prefix in prefixes):
+            count+=1
+    return count
+
+
+MOUNT_COUNT_CODE = 'from pathlib import Path; import sys\n'+inspect.getsource(owned_mount_count)+"\nwith open('/proc/self/mountinfo','r') as stream: data=stream.read(1048577)\nprint(owned_mount_count(data,Path(sys.argv[1])))\n"
+
 
 ROOT_BODY = r'''set -eu
 base=$1; token=$2; group=$3
@@ -134,6 +157,7 @@ IFS= read -r command || true
 # Exact same namespace routines for the outer forced-group fallback. Raw task
 # identifiers stay in the owned directory and never cross diagnostics output.
 RETIRE_BODY = r'''set -eu
+LC_ALL=C; export LC_ALL
 base=$1; token=$2
 case "$token" in fleur-vfs-????????????????????????????????) ;; *) exit 2 ;; esac
 suffix=${token#fleur-vfs-}
@@ -150,12 +174,23 @@ if [ -r "/proc/$daemon/stat" ]; then
     if [ "$1" != Z ]; then diag 11 0 0 1; exit 3; fi
 fi
 diag 11 0 0 0
-rm -rf -- "$base/data" "$base/exec"
+mounts=0; mount_rc=0
+if mounts=$(/usr/bin/python3 -c MOUNT_COUNT_CODE_PLACEHOLDER "$base" 2>/dev/null); then :; else mount_rc=$?; mounts=0; fi
+diag 13 0 "$mount_rc" "$mounts"
+remove_rc=0
+rm -rf -- "$base/data" "$base/exec" 2>"$base/removal.stderr" || remove_rc=$?
+diag 14 0 "$remove_rc" "$mounts"
+busy=0
+if grep -F -- 'Device or resource busy' "$base/removal.stderr" >/dev/null; then busy=1; fi
+diag 15 0 "$remove_rc" "$busy"
+[ "$remove_rc" = 0 ] || exit "$remove_rc"
 rm -f -- "$base/docker.sock" "$base/docker.pid" "$base/daemon.log" "$base/tasks.tmp" "$base/shim.tmp"
 diag 12 0 0 0
 printf 'retired\n'
 '''
 
+
+RETIRE_BODY = RETIRE_BODY.replace('MOUNT_COUNT_CODE_PLACEHOLDER',shlex.quote(MOUNT_COUNT_CODE))
 
 def eligible_host():
     expected = {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted',
@@ -240,7 +275,7 @@ def retirement_observations(root, returncode, stdout):
             if len(fields)!=4 or any(re.fullmatch(r'-?[0-9]{1,3}',field) is None for field in fields):
                 raise ValueError('journal fields')
             stage,namespace,status,count=map(int,fields)
-            if not 1<=stage<=12 or not 0<=namespace<=2 or not -255<=status<=255 or not 0<=count<=64 or len(rows)>=192:
+            if not 1<=stage<=15 or not 0<=namespace<=2 or not -255<=status<=255 or not 0<=count<=64 or len(rows)>=192:
                 raise ValueError('journal values')
             rows.append((stage,namespace,status,count))
         facts['journal_rows']=len(rows)

@@ -185,6 +185,25 @@ class OwnedCounterfactual(unittest.TestCase):
             self.assertNotIn('moby ',calls)
             self.assertFalse((root/'data').exists());self.assertFalse((root/'exec').exists())
             self.assertEqual((root/'unrelated').read_text(),'preserve')
+            # A failed owned-root removal must preserve the roots and expose a
+            # numeric return code without returning the success marker.
+            (root/'docker.pid').write_text('2147483647')
+            (root/'data').mkdir();(root/'exec').mkdir()
+            remove=root/'fixture-remove'
+            remove.write_text('#!/bin/sh\nprintf "private-path: Device or resource busy\\n" >&2\nexit 1\n')
+            remove.chmod(0o700)
+            failing=body.replace('rm -rf -- "$base/data" "$base/exec"',shlex.quote(str(remove)))
+            failed=subprocess.run(['/bin/sh','-c',failing,'fixture',str(root),token],
+                                  text=True,capture_output=True,timeout=5)
+            self.assertNotEqual(failed.returncode,0)
+            self.assertEqual(failed.stdout,'')
+            self.assertTrue((root/'data').exists());self.assertTrue((root/'exec').exists())
+            from isolated_daemon import retirement_observations
+            evidence=retirement_observations(root,failed.returncode,failed.stdout.encode())
+            self.assertEqual(evidence['last_stage'],15)
+            self.assertEqual(evidence['last_command_returncode'],1)
+            self.assertEqual(evidence['last_count'],1)
+            self.assertNotIn('private-path',str(evidence))
 
     def test_retirement_failure_journal_is_bounded_numeric_and_redacted(self):
         from isolated_daemon import retirement_observations
@@ -226,6 +245,7 @@ class OwnedCounterfactual(unittest.TestCase):
                              'try:\n r=subprocess.run(sys.argv[2:],timeout=float(sys.argv[1].rstrip("s")));sys.exit(r.returncode)\n'
                              'except subprocess.TimeoutExpired:\n sys.exit(124)\n');timer.chmod(0o700)
             body=RETIRE_BODY.replace('/usr/bin/timeout',shlex.quote(str(timer))).replace('/usr/bin/ctr',shlex.quote(str(cli)))
+            body=body.replace('/usr/bin/python3',shlex.quote(sys.executable))
             started=time.monotonic()
             result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
                                   text=True,capture_output=True,timeout=10)
@@ -262,3 +282,15 @@ class OwnedCounterfactual(unittest.TestCase):
                  patch.object(Path,'read_text',text),patch.object(Path,'read_bytes',binary), \
                  patch('isolated_daemon.retirement_observations',side_effect=delayed_observations):
                 self.assertFalse(_retire_supervisor(endpoint,1),'late successful output escaped overall deadline')
+
+    def test_owned_mount_count_includes_only_exact_data_exec_trees(self):
+        from isolated_daemon import owned_mount_count
+        root=Path('/runner/fleur-vfs-owned')
+        body=('1 0 0:1 / / rw - ext4 /dev/root rw\n'
+              '2 1 0:2 / /runner/fleur-vfs-owned/data/containers/a/shm rw - tmpfs shm rw\n'
+              '3 1 0:3 / /runner/fleur-vfs-owned/exec rw - tmpfs state rw\n'
+              '4 1 0:4 / /runner/fleur-vfs-owned/data-other rw - tmpfs unrelated rw\n'
+              '5 1 0:5 / /var/lib/docker/containers/a/shm rw - tmpfs default rw\n')
+        self.assertEqual(owned_mount_count(body,root),2)
+        self.assertEqual(owned_mount_count(body.replace('fleur-vfs-owned','fleur-vfs-owned\\040space'),Path('/runner/fleur-vfs-owned space')),2)
+        self.assertNotIn('/var/lib/docker',str(owned_mount_count(body,root)))

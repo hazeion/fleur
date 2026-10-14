@@ -1,6 +1,7 @@
 """Owned VFS counterfactual daemon; never a fallback for the required gate."""
 from contextlib import contextmanager
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -23,7 +24,7 @@ clean=false
 namespace_empty() {
     scope=0
     for namespace in "$token" "$token-plugins"; do
-        scope=$((scope+1)); rc=0
+        scope=$((scope+1)); rc=0; command_start=$(date +%s%N)
         /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
           --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || rc=$?
         number=$(wc -l < "$base/tasks.tmp")
@@ -44,12 +45,20 @@ namespace_empty() {
     done
     diag 9 0 0 0
 }
-diag() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$base/retirement.facts"; }
+diag() {
+    printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$base/retirement.facts"
+    case "$1" in 1|3|4|5)
+        end=$(date +%s%N)
+        case "$end${command_start:-}" in ''|*[!0-9]*) return 0 ;; esac
+        elapsed=$(((end-command_start)/1000000))
+        printf '%s %s %s\n' "$1" "$2" "$elapsed" >> "$base/retirement.times" ;;
+    esac
+}
 retire_namespaces() {
     scope=0
     for namespace in "$token" "$token-plugins"; do
-        scope=$((scope+1)); rc=0
-        /usr/bin/timeout .5s /usr/bin/ctr --address /run/containerd/containerd.sock \
+        scope=$((scope+1)); rc=0; command_start=$(date +%s%N)
+        /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
           --namespace "$namespace" tasks list --quiet > "$base/tasks.tmp" 2>/dev/null || rc=$?
         number=$(wc -l < "$base/tasks.tmp")
         diag 1 "$scope" "$rc" "$number"
@@ -62,14 +71,14 @@ retire_namespaces() {
         done < "$base/tasks.tmp"
         diag 2 "$scope" 0 "$#"
         for id in "$@"; do
-            rc=0
-            /usr/bin/timeout .25s /usr/bin/ctr --address /run/containerd/containerd.sock \
+            rc=0; command_start=$(date +%s%N)
+            /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
               --namespace "$namespace" tasks kill --all --signal SIGKILL "$id" >/dev/null 2>&1 || rc=$?
             diag 3 "$scope" "$rc" 1
         done
         if [ "$#" -gt 0 ]; then
-            rc=0
-            /usr/bin/timeout 1s /usr/bin/ctr --address /run/containerd/containerd.sock \
+            rc=0; command_start=$(date +%s%N)
+            /usr/bin/timeout 2s /usr/bin/ctr --address /run/containerd/containerd.sock \
               --namespace "$namespace" tasks delete --force "$@" >/dev/null 2>&1 || rc=$?
             diag 4 "$scope" "$rc" "$#"
         fi
@@ -242,11 +251,33 @@ def retirement_observations(root, returncode, stdout):
         facts['journal_missing']=True
     except (OSError,ValueError,UnicodeError):
         facts['journal_invalid']=True
+    try:
+        with (root/'retirement.times').open('rb') as stream:
+            raw=stream.read(8193)
+        if len(raw)>8192:
+            raise ValueError('timing bound')
+        timings=[]
+        for line in raw.decode('ascii').splitlines():
+            fields=line.split()
+            if len(fields)!=3 or any(re.fullmatch(r'[0-9]{1,5}',value) is None for value in fields):
+                raise ValueError('timing fields')
+            stage,namespace,elapsed=map(int,fields)
+            if stage not in (1,3,4,5) or namespace not in (1,2) or not 0<=elapsed<=10000 or len(timings)>=192:
+                raise ValueError('timing values')
+            timings.append([stage,namespace,elapsed])
+        facts['command_elapsed_ms']=timings
+    except FileNotFoundError:
+        facts['timings_missing']=True
+    except (OSError,ValueError,UnicodeError):
+        facts['timings_invalid']=True
     return facts
 
 
 def _retire_supervisor(endpoint, budget):
     """Escalate only the verified fresh root timeout process group."""
+    if type(budget) not in (int,float) or not math.isfinite(budget) or budget<=0:
+        raise IsolatedDaemonError('owned retirement budget invalid')
+    deadline=time.monotonic()+min(10,budget)
     pid = int((endpoint.root/'supervisor.pid').read_text())
     if pid <= 1 or Path('/proc/'+str(pid)+'/comm').read_text().strip() != 'timeout':
         raise IsolatedDaemonError('owned supervisor identity unavailable')
@@ -256,14 +287,17 @@ def _retire_supervisor(endpoint, budget):
         raise IsolatedDaemonError('owned supervisor group invalid')
     result = subprocess.run(['sudo','-n','/bin/kill','-KILL','--','-'+str(pid)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            timeout=max(.1,min(1,budget)), check=False)
+                            timeout=max(.001,min(1,deadline-time.monotonic())), check=False)
     if result.returncode:
         raise IsolatedDaemonError('owned supervisor escalation failed')
     # Shared containerd can own detached shims outside the killed process group.
-    retirement = subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s','2s',
+    window=math.floor((deadline-time.monotonic()-.3)*1000)/1000
+    if window<=0:
+        raise IsolatedDaemonError('owned retirement budget expired')
+    retirement = subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',format(window,'.3f')+'s',
                     '/bin/sh','-c',RETIRE_BODY,'fleur-owned-retire',str(endpoint.root),endpoint.token],
                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                   timeout=max(.1,min(2.5,budget)),check=False)
+                   timeout=max(.001,deadline-time.monotonic()),check=False)
     endpoint.retirement_facts = retirement_observations(endpoint.root,retirement.returncode,retirement.stdout)
     return retirement.returncode == 0 and retirement.stdout == b'retired\n'
 

@@ -321,6 +321,7 @@ class Protocol(unittest.TestCase):
         events=[];factory=subprocess.Popen
         class Observer:
             def completion(self,remaining):events.append('exit-observed');return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
+            def diagnose_registration(self):events.append('healthy-diagnostic-forbidden')
             def close(self,remaining):self_test.assertGreater(remaining,0);events.append('closed');return True
         self_test=self
         def prepare(remaining):self.assertGreater(remaining,0);events.append('prepared');return Observer()
@@ -364,3 +365,19 @@ class Protocol(unittest.TestCase):
         with patch('protocol.subprocess.Popen') as launch,self.assertRaises(subprocess.TimeoutExpired):
             run_container(['owned-worker'],timeout=.1,startup_audit=lambda rows:None,completion_prepare=prepare,completion_bind=lambda o,r:{'registered':True},completion_observer=lambda f,r:{'completed':True,'exit_code':0})
         launch.assert_not_called();self.assertEqual(events,['closed'])
+
+    def test_failed_start_binding_requests_diagnostic_before_close_without_masking_failure(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="import json,sys; print("+repr(json.dumps(startup))+",flush=True); sys.stdin.readline()"
+        events=[];diagnostics={}
+        class Observer:
+            def completion(self,r):raise AssertionError('no completion on failed bind')
+            def diagnose_registration(self):events.append('diagnostic');raise ValueError('diagnostic fixture failure')
+            def snapshot(self):return {'registration_diagnostic':{'phase':2,'stdout_bytes':0}}
+            def close(self,r):events.append('closed');return True
+        def bind(observer,remaining):raise RuntimeError('original binding fixture failure')
+        with self.assertRaisesRegex(RuntimeError,'original binding fixture failure'):
+            run_container([sys.executable,'-u','-c',source],startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},completion_prepare=lambda r:Observer(),completion_bind=bind,completion_observer=lambda f,r:{'completed':True,'exit_code':0},diagnostics=diagnostics)
+        self.assertEqual(events,['diagnostic','closed'])
+        self.assertEqual(diagnostics['protocol_phase'],'binding-init-task-start')
+        self.assertEqual(diagnostics['observer_after_close']['registration_diagnostic']['stdout_bytes'],0)

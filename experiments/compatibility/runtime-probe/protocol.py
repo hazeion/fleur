@@ -118,7 +118,16 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                     raise deadline_error()
             if completion_bind is not None:
                 phase = 'binding-init-task-start'
-                bound = completion_bind(waiter,timeout-(time.monotonic()-started))
+                try:
+                    bound = completion_bind(waiter,timeout-(time.monotonic()-started))
+                except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
+                    # A failed registration is the only permission to request
+                    # the helper's bounded host-only diagnostic. Never signal
+                    # a healthy observer or replace the original bind error.
+                    if callable(getattr(waiter,'diagnose_registration',None)):
+                        try: waiter.diagnose_registration()
+                        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError): pass
+                    raise
                 if type(bound) is not dict or bound.get('registered') is not True:
                     raise RuntimeError('init task start registration unverified')
                 if time.monotonic()-started >= timeout: raise deadline_error()

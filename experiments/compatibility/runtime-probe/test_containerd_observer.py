@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -13,15 +14,26 @@ EXIT_STAMP = STAMP.replace('20:00:00','20:00:02')
 EXIT = EXIT_STAMP+'/tasks/exit '+json.dumps({'container_id':CID,'id':CID,'pid':421,'exited_at':{'seconds':1791921601}})+'\n'
 
 class ObserverTests(unittest.TestCase):
-    def observer(self, frames, delay=0):
+    def observer(self, frames, delay=0, timeout=2):
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         script=pathlib.Path(directory.name)/'events.py'
-        script.write_text("import sys,time\ntime.sleep("+repr(delay)+")\nsys.stdout.write("+repr(frames)+")\nsys.stdout.flush()\nsys.stdin.read()\nprint('[observer-reaped]',flush=True)\n")
-        observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',2,
-            launcher=[sys.executable,'-u',str(script)])
-        self.addCleanup(lambda: observer.close(0.5))
+        self.cli_pid_file=pathlib.Path(directory.name)/'observer.pid'
+        script.write_text("import sys,time,os,pathlib\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep("+repr(delay)+")\nsys.stdout.write("+repr(frames)+")\nsys.stdout.flush()\nsys.stdin.read()\nprint('[observer-reaped]',flush=True)\n")
+        observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
+            launcher=[sys.executable,'-u',str(script),str(self.cli_pid_file)])
+        self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
+
+    def test_expired_operation_still_reaps_observer_without_late_success(self):
+        observer=self.observer('',timeout=0.03)
+        time.sleep(0.2)
+        pid=int(self.cli_pid_file.read_text())
+        with self.assertRaisesRegex(ObserverUnverified,'observer-cleanup-deadline'): observer.close(-0.01)
+        with self.assertRaises(ProcessLookupError): os.kill(pid,0)
+        self.assertTrue(observer.snapshot()['reaped'])
+        self.assertTrue(observer.snapshot()['cleanup_verified'])
+        with self.assertRaisesRegex(ObserverUnverified,'observer-cleanup-deadline'): observer.close()
 
     def test_exit_time_cannot_be_after_its_host_event_envelope(self):
         event=json.loads(EXIT.split('/tasks/exit ',1)[1]);event['exited_at']={'seconds':1791921700}

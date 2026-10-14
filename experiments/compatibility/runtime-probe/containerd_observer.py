@@ -52,7 +52,7 @@ finally:
     selector.close()
     try: os.killpg(p.pid,signal.SIGKILL)
     except ProcessLookupError: pass
-    try: p.wait(timeout=max(0.001,deadline-time.monotonic()))
+    try: p.wait(timeout=0.75) # failure-only reap grace, never operation success
     except subprocess.TimeoutExpired: sys.exit(74)
     p.stdout.close();p.stderr.close()
 try: os.write(1,b'[observer-reaped]\n')
@@ -61,9 +61,9 @@ except BlockingIOError: sys.exit(73)
 
 
 class ObserverUnverified(RuntimeError):
-    def __init__(self, category):
+    def __init__(self, category, observations=None):
         self.category = category
-        self.observations = {}
+        self.observations = dict(observations or {})
         super().__init__('containerd exit evidence unverified ('+category+')')
 
 
@@ -98,6 +98,8 @@ class ContainerdObserver:
         self.events = 0
         self.phase = 'prepared'
         self.closed = False
+        self.cleanup_verified = False
+        self.cleanup_late = False
         self.buffer = bytearray()
         self.total = 0
         self.reaped = False
@@ -110,7 +112,16 @@ class ContainerdObserver:
         except OSError:
             raise ObserverUnverified('observer-start') from None
         self.selector = selectors.DefaultSelector()
-        self.selector.register(self.process.stdout,selectors.EVENT_READ)
+        try:
+            self.selector.register(self.process.stdout,selectors.EVENT_READ)
+        except (OSError,ValueError):
+            self.process.stdin.close()
+            try: self.process.wait(timeout=1)
+            except subprocess.TimeoutExpired: pass
+            finally:
+                self.selector.close()
+                self.process.stdout.close()
+            raise ObserverUnverified('observer-start-cleanup') from None
 
     def _limit(self, remaining):
         return min(self.deadline,time.monotonic()+_budget(remaining))
@@ -199,35 +210,58 @@ class ContainerdObserver:
             return {'completed':True,'exit_code':0,'source':'containerd-init-exit'}
 
     def snapshot(self):
-        return {'phase':self.phase,'event_count':self.events,'stdout_bytes':self.total,'reaped':self.reaped}
+        return {'phase':self.phase,'event_count':self.events,'stdout_bytes':self.total,
+                'reaped':self.reaped,'cleanup_verified':self.cleanup_verified}
 
     def close(self, remaining=None):
-        if self.closed: return True
-        limit=self.deadline if remaining is None else self._limit(remaining)
-        self.process.stdin.close() # root-owned supervisor must kill/reap its own child
+        """Reap on failure too; a separate 1s cleanup grace never grants success."""
+        if self.closed:
+            if self.cleanup_late:
+                raise ObserverUnverified('observer-cleanup-deadline',self.snapshot())
+            return True
+        now=time.monotonic()
+        success_limit=self.deadline
+        if remaining is not None:
+            if type(remaining) not in (int,float) or not math.isfinite(remaining):
+                remaining=0
+            success_limit=min(success_limit,now+remaining)
+        limit=success_limit
+        grace=False
+        self.process.stdin.close() # root supervisor owns child kill and reap
         try:
             while not self.reaped:
-                # Cleanup discards rejected event frames rather than parsing them
-                # again. It still requires the supervisor's reap acknowledgment.
                 while b'\n' in self.buffer:
                     line,_,tail=self.buffer.partition(b'\n')
                     self.buffer=bytearray(tail)
                     if line == b'[observer-reaped]': self.reaped=True; break
                 if self.reaped: break
-                if time.monotonic() >= limit or not self.selector.select(max(0,limit-time.monotonic())):
-                    raise ObserverUnverified('observer-cleanup')
+                if time.monotonic()>=limit:
+                    if grace: raise ObserverUnverified('observer-cleanup')
+                    grace=True
+                    limit=time.monotonic()+1
+                if not self.selector.select(max(0,limit-time.monotonic())): continue
                 chunk=os.read(self.process.stdout.fileno(),4096)
                 if not chunk: raise ObserverUnverified('observer-cleanup')
                 self.buffer.extend(chunk)
                 if len(self.buffer)>8192: self.buffer=self.buffer[-4096:]
-            returncode=self.process.wait(timeout=max(0,limit-time.monotonic()))
-            if returncode != 0 or time.monotonic() >= limit:
-                raise ObserverUnverified('observer-cleanup')
+            try:
+                returncode=self.process.wait(timeout=max(0,limit-time.monotonic()))
+            except subprocess.TimeoutExpired:
+                if grace: raise
+                grace=True
+                limit=time.monotonic()+1
+                returncode=self.process.wait(timeout=1)
+            if returncode != 0: raise ObserverUnverified('observer-cleanup')
             self.closed=True
-            self.phase = 'closed'
+            self.cleanup_verified=True
+            self.cleanup_late=grace or time.monotonic()>=success_limit
+            self.phase='closed-after-deadline' if self.cleanup_late else 'closed'
+            if self.cleanup_late:
+                raise ObserverUnverified('observer-cleanup-deadline',self.snapshot())
             return True
-        except (subprocess.TimeoutExpired,ObserverUnverified):
-            raise ObserverUnverified('observer-cleanup') from None
+        except (subprocess.TimeoutExpired,OSError,ObserverUnverified) as error:
+            if isinstance(error,ObserverUnverified) and error.category=='observer-cleanup-deadline': raise
+            raise ObserverUnverified('observer-cleanup',self.snapshot()) from None
         finally:
             if self.closed or self.process.poll() is not None:
                 self.selector.close()

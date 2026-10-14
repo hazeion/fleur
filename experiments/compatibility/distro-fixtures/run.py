@@ -30,7 +30,8 @@ DEBIAN = '''RUN rm -f /etc/apt/sources.list.d/* && printf '%s\\n' \
  fonts-liberation fonts-noto-color-emoji && \
  mkdir -p /evidence && dpkg-query -W > /evidence/packages.txt
 '''
-ARCH = '''RUN printf '%s\\n' 'Server = https://archive.archlinux.org/repos/2026/10/12/$repo/os/$arch' \
+ARCH = '''COPY distro-fixtures/arch-download.sh /usr/local/bin/fleur-arch-download
+RUN test -x /usr/bin/curl && sed -i '/^\\[options\\]$/a XferCommand = /bin/sh /usr/local/bin/fleur-arch-download %u %o' /etc/pacman.conf && printf '%s\\n' 'Server = https://archive.archlinux.org/repos/2026/10/12/$repo/os/$arch' \
  > /etc/pacman.d/mirrorlist && pacman -Syyuu --noconfirm && \
  pacman -S --noconfirm --needed python ca-certificates alsa-lib at-spi2-core \
  cairo cups dbus glib2 libdrm libx11 libxcb libxcomposite libxdamage \
@@ -99,7 +100,7 @@ def main():
                                        for path in source.rglob('*')
                                        if path.is_file() and ('node_modules' not in path.parts)
                                        and (path.name == 'bun.lock' or path.suffix == '.patch'
-                                            or path.name == 'bootstrap.py')}
+                                            or path.name in ('bootstrap.py', 'arch-download.sh'))}
             for fixture in ('platforms', 'tooling', 'rendering', 'distro-fixtures'):
                 shutil.copytree(source / fixture, context / fixture,
                                 ignore=shutil.ignore_patterns('node_modules', '__pycache__', 'dist', 'test-results', 'playwright-report'))

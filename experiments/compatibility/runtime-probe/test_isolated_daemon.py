@@ -197,6 +197,7 @@ class OwnedCounterfactual(unittest.TestCase):
             self.assertEqual(facts['last_namespace'],1)
             self.assertEqual(facts['last_command_returncode'],124)
             self.assertEqual(facts['last_count'],1)
+            self.assertEqual(facts.get('stages'),[[1,1,0,1],[3,1,0,1],[4,1,124,1]])
             for malformed in ('1 1 0 /private/path\n','99 1 0 1\n','1 3 0 1\n','x'*8193):
                 (root/'retirement.facts').write_text(malformed)
                 result=retirement_observations(root,1,b'')

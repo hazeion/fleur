@@ -11,7 +11,7 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False, control_error=None):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
@@ -86,7 +86,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
              patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error) as lifecycle_call, \
-             patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby'}), \
+             patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby'},side_effect=control_error), \
              patch.object(run,'OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':True,'exit_code':0},close=lambda:None)), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
                  {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
@@ -238,3 +238,14 @@ class DriverEvidence(unittest.TestCase):
         self.assertEqual(code,0)
         self.assertIsNone(self.last_lifecycle_call.kwargs['containerd_control'])
         self.assertNotIn('host_containerd_control',report)
+
+    def test_failed_host_prerequisite_reports_safe_category_before_lifecycle(self):
+        from configuration import ContainerdControlUnverified
+        error=ContainerdControlUnverified('ctr-client-revision',{'ctr_banner_fields':3,'ctr-client_revision_match':False})
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report=self.execute(json.dumps(monitor),container_exit=0,healthy_containerd_exit=True,control_error=error)
+        self.assertEqual(code,1)
+        self.assertEqual(report['host_containerd_failure']['category'],'ctr-client-revision')
+        self.assertEqual(report['host_containerd_failure']['observations']['ctr_banner_fields'],3)
+        self.assertIsNone(self.last_lifecycle_call)
+        self.assertTrue(report['cleanup_complete'])

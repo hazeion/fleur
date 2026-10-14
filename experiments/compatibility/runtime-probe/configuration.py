@@ -100,23 +100,52 @@ def _option(arguments, name):
     return values[0] if values else None
 
 
-def audit_containerd_control(arguments, config, server, ctr_version):
-    def require(condition):
-        if not condition: raise ValueError('host containerd prerequisite unverified')
+class ContainerdControlUnverified(ValueError):
+    def __init__(self, category, observations):
+        self.category=category
+        self.observations=dict(observations)
+        super().__init__('host containerd prerequisite unverified ('+category+')')
+
+
+def audit_containerd_control(arguments, config, server, ctr_version, ctr_detail=None):
+    facts={}
+    def require(condition,category):
+        if not condition: raise ContainerdControlUnverified(category,facts)
     require(type(arguments) is list and all(type(value) is str for value in arguments)
-            and type(config) is dict and type(server) is dict)
+            and type(config) is dict and type(server) is dict,'input-shape')
     address = _option(arguments,'--containerd') or config.get('containerd')
     namespace = _option(arguments,'--containerd-namespace') or config.get('containerd-namespace','moby')
-    require(type(address) is str and address.startswith('/') and namespace == 'moby')
-    require(server.get('Version') == '28.0.4' and server.get('GitCommit') == '6430e49' and type(server.get('Components')) is list)
-    components = [row for row in server['Components'] if type(row) is dict and row.get('Name') == 'containerd']
-    require(len(components)==1 and components[0].get('Version') == 'v2.3.6'
-            and type(components[0].get('Details')) is dict
-            and components[0]['Details'].get('GitCommit') == CONTAINERD_COMMIT)
-    require(type(ctr_version) is str and ctr_version.strip() ==
-            'ctr github.com/containerd/containerd/v2 v2.3.6 '+CONTAINERD_COMMIT)
+    facts.update(address_configured=type(address) is str and address.startswith('/'),namespace_moby=namespace=='moby')
+    require(facts['address_configured'] and facts['namespace_moby'],'address-namespace')
+    facts.update(docker_version_match=server.get('Version')=='28.0.4',docker_commit_match=server.get('GitCommit')=='6430e49')
+    require(facts['docker_version_match'] and facts['docker_commit_match'] and type(server.get('Components')) is list,'docker-version')
+    components=[row for row in server['Components'] if type(row) is dict and row.get('Name')=='containerd']
+    facts['containerd_component_count']=len(components)
+    require(len(components)==1,'containerd-component')
+    facts.update(containerd_version_match=components[0].get('Version')=='v2.3.6',containerd_commit_match=type(components[0].get('Details')) is dict and components[0]['Details'].get('GitCommit')==CONTAINERD_COMMIT)
+    require(facts['containerd_version_match'] and facts['containerd_commit_match'],'containerd-version')
+    parts=ctr_version.split() if type(ctr_version) is str else []
+    facts.update(ctr_banner_fields=len(parts),ctr_banner_match=parts==['ctr','github.com/containerd/containerd/v2','v2.3.6'])
+    require(facts['ctr_banner_match'],'ctr-banner')
+    require(type(ctr_detail) is str and len(ctr_detail.encode())<=65536,'ctr-version-detail')
+    sections={};current=None
+    for line in ctr_detail.splitlines():
+        if not line.strip():continue
+        if line in ('Client:','Server:'):
+            require(line not in sections,'ctr-version-detail');current={};sections[line]=current;continue
+        require(current is not None and ':' in line,'ctr-version-detail')
+        key,value=line.strip().split(':',1);value=value.strip()
+        require(key in ('Version','Revision','Go version','UUID') and key not in current,'ctr-version-detail')
+        current[key]=value
+    require(set(sections)=={'Client:','Server:'},'ctr-version-detail')
+    for section,prefix in (('Client:','ctr-client'),('Server:','ctr-server')):
+        facts[prefix+'_version_match']=sections[section].get('Version')=='v2.3.6'
+        facts[prefix+'_revision_match']=sections[section].get('Revision')==CONTAINERD_COMMIT
+        require(facts[prefix+'_version_match'],prefix+'-version')
+        require(facts[prefix+'_revision_match'],prefix+'-revision')
     return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':'28.0.4','docker_commit':'6430e49',
-            'containerd_version':'2.3.6','containerd_commit':CONTAINERD_COMMIT,
+            'containerd_version':'2.3.6','containerd_commit':CONTAINERD_COMMIT,'ctr_revision_verified':True,
+            'prerequisite_observations':facts,
             'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}
 
 
@@ -136,11 +165,11 @@ def inspect_containerd_control():
             if value.st_uid != 0 or value.st_mode & 0o022:
                 raise RuntimeError('containerd proof ancestor ownership unverified')
         return real
-    def command(args,environment=None):
+    def command(args,environment=None,category='host-command'):
         result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=5,
                               env=environment,check=False)
         if result.returncode or len(result.stdout)>65536 or len(result.stderr)>4096:
-            raise RuntimeError('containerd proof inspection failed')
+            raise ContainerdControlUnverified(category,{'cli_returncode':result.returncode,'stdout_bytes':len(result.stdout),'stderr_bytes':len(result.stderr)})
         return result.stdout.decode('utf-8')
     pidfile=trusted('/var/run/docker.pid',stat.S_ISREG)
     raw=pidfile.read_bytes()
@@ -166,8 +195,15 @@ def inspect_containerd_control():
     if not default_id.strip() or default_id!=active_id: raise RuntimeError('Docker host association unverified')
     server=json.loads(command(['docker','--host','unix:///var/run/docker.sock','version','--format','{{json .Server}}'],environment))
     ctr=trusted('/usr/bin/ctr',stat.S_ISREG)
-    control=audit_containerd_control(arguments,config,server,command([str(ctr),'--version'],{'PATH':'/usr/bin:/bin'}))
-    trusted(control['address'],stat.S_ISSOCK,socket=True)
+    if type(config) is not dict: raise ContainerdControlUnverified('configuration-shape',{})
+    address=_option(arguments,'--containerd') or config.get('containerd')
+    namespace=_option(arguments,'--containerd-namespace') or config.get('containerd-namespace','moby')
+    if type(address) is not str or not address.startswith('/') or namespace!='moby':
+        raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
+    trusted(address,stat.S_ISSOCK,socket=True)
+    banner=command([str(ctr),'--version'],{'PATH':'/usr/bin:/bin'},category='ctr-banner-command')
+    detail=command(['/usr/bin/sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','4s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command')
+    control=audit_containerd_control(arguments,config,server,banner,detail)
     control.update({'ctr_binary_sha256':hashlib.sha256(ctr.read_bytes()).hexdigest(),
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
                     'host_access':'privileged-read-only-events','worker_authority_changed':False})

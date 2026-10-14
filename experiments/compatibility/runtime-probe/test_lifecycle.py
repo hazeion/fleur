@@ -67,6 +67,7 @@ kill)
  shift
  name=$1
  printf '%s\n' "$name" > "$root/kill-attempt"
+ sleep "${LIFECYCLE_KILL_DELAY:-0}"
  if [ ! "${LIFECYCLE_NO_KILL:-}" ]; then
   sed 's/"Running":true/"Running":false/;s/"ExitCode":0/"ExitCode":137/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
   mv "$root/$name.tmp" "$root/$name"
@@ -111,6 +112,9 @@ class LifecycleTests(unittest.TestCase):
   self.env['LIFECYCLE_NO_KILL']='1'
   with self.assertRaisesRegex(RuntimeError,'termination'):self.run_probe()
   self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'kill-attempt'})
+ def test_late_worker_termination_is_not_accepted_as_on_time(self):
+  self.env['LIFECYCLE_KILL_DELAY']='.5'
+  with self.assertRaisesRegex(RuntimeError,'deadline|termination'):self.run_probe()
  def test_unverified_ownership_never_sends_daemon_kill(self):
   self.env['LIFECYCLE_FOREIGN']='1'
   with self.assertRaises(RuntimeError):self.run_probe()

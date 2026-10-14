@@ -75,7 +75,7 @@ def run_counterfactual(architecture, directory):
     result={'scope':'vfs-storage-counterfactual','v1_gate_passed':False,'replaces_overlay_requirement':False,
             'passed':False,'architecture':architecture,'daemon_cleanup_verified':False,
             'source_sha256':{name:hashlib.sha256((HERE/name).read_bytes()).hexdigest()
-                             for name in ('vfs.py','isolated_daemon.py','run.py')}}
+                             for name in ('vfs.py','isolated_daemon.py','owned_mounts.py','run.py')}}
     endpoint=None;probe=None;exit_code=None
     try:
         with isolated_vfs_daemon(lifetime=540) as endpoint:

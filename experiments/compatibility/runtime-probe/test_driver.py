@@ -222,6 +222,7 @@ class DriverEvidence(unittest.TestCase):
     def test_unverified_lifecycle_removal_prevents_aggregate_cleanup_success(self):
         error = RuntimeError('owned lifecycle cleanup incomplete')
         error.lifecycle_cleanup_verified = False
+        error.deadline_guard_cleanup_verified = False
         error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'inspection-unverified'}]
         monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
                    'memory_max':536870912,'swap_max':0}
@@ -230,6 +231,7 @@ class DriverEvidence(unittest.TestCase):
         self.assertFalse(report['cleanup_complete'])
         self.assertFalse(report['bounded_probe_passed'])
         self.assertEqual(report['lifecycle_failure']['cleanup'],error.lifecycle_cleanup)
+        self.assertFalse(report['lifecycle_failure']['deadline_guard_cleanup_verified'])
 
     def test_removed_containers_do_not_hide_an_unreaped_lifecycle_observer(self):
         error = RuntimeError('observer cleanup unverified')

@@ -18,16 +18,58 @@ EXIT_STAMP = STAMP.replace('20:00:00','20:00:02')
 EXIT = EXIT_STAMP+'/tasks/exit '+json.dumps({'container_id':CID,'id':CID,'pid':421,'exited_at':{'seconds':1791921601}})+'\n'
 
 class ObserverTests(unittest.TestCase):
-    def observer(self, frames, delay=0, timeout=2):
+    def observer(self, frames, delay=0, timeout=2, startup_delay=0):
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         script=pathlib.Path(directory.name)/'events.py'
         self.cli_pid_file=pathlib.Path(directory.name)/'observer.pid'
-        script.write_text("import sys,time,os,pathlib\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep("+repr(delay)+")\nsys.stdout.write("+repr(frames)+")\nsys.stdout.flush()\nsys.stdin.read()\nprint('[observer-reaped]',flush=True)\n")
+        script.write_text("import sys,time,os,pathlib\ntime.sleep("+repr(startup_delay)+")\npid_path=pathlib.Path(sys.argv[1]);pending_pid=pid_path.with_suffix('.pending');pending_pid.write_text(str(os.getpid()));pending_pid.replace(pid_path)\ntime.sleep("+repr(delay)+")\nsys.stdout.write("+repr(frames)+")\nsys.stdout.flush()\nsys.stdin.read()\nprint('[observer-reaped]',flush=True)\n")
         observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
             launcher=[sys.executable,'-u',str(script),str(self.cli_pid_file)])
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
+
+    def test_supervisor_status_never_supplies_task_start_or_exit_proof(self):
+        status={'phase':3,'pre_retirement_returncode':None,'child_returncode':-9,
+                'ctr_stdout_bytes':0,'ctr_stderr_bytes':0,'control_bytes':0,'diagnostic_requested':False}
+        observer=self.observer('[observer-status] '+json.dumps(status)+'\n')
+        with self.assertRaisesRegex(ObserverUnverified,'event-timeout'): observer.bind(CID,421,0.05)
+        self.assertEqual(observer.snapshot()['event_count'],0)
+
+    def test_malformed_supervisor_status_fails_closed(self):
+        observer=self.observer('[observer-status] '+json.dumps({'phase':'private-secret'})+'\n'+START+EXIT)
+        with self.assertRaisesRegex(ObserverUnverified,'supervisor-status-invalid'): observer.bind(CID,421,1)
+        self.assertNotIn('private-secret',json.dumps(observer.snapshot()))
+
+    def test_early_ctr_exit_reports_safe_status_before_reap_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ctr=pathlib.Path(directory)/'ctr'
+            ctr.write_text('#!'+sys.executable+'\nimport sys\nsys.stderr.write("private-secret-diagnostic")\nsys.exit(7)\n')
+            ctr.chmod(0o755)
+            address=str(pathlib.Path(directory)/'containerd.sock')
+            adapter="""import os
+original_stat=os.stat
+def same_user_stat(path,*args,**kwargs):
+    values=list(original_stat(path,*args,**kwargs));values[0]&=~0o022;values[4]=0
+    return os.stat_result(values)
+os.stat=same_user_stat
+os.geteuid=lambda:0
+"""
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
+                server.bind(address)
+                observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',3,
+                    launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                              str(ctr),address,'moby',str(time.monotonic()+3)])
+                self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(1))
+                with self.assertRaisesRegex(ObserverUnverified,'stream-ended'): observer.bind(CID,421,2)
+                self.assertTrue(observer.close(1))
+                status=observer.snapshot()['root_supervisor']
+                self.assertEqual(status['pre_retirement_returncode'],7)
+                self.assertEqual(status['child_returncode'],7)
+                self.assertEqual(status['phase'],2)
+                self.assertGreater(status['ctr_stderr_bytes'],0)
+                self.assertFalse(status['diagnostic_requested'])
+                self.assertNotIn('private-secret',json.dumps(status))
 
     def test_failed_registration_captures_only_sanitized_owned_child_stack(self):
         self.registration_diagnostic_case()
@@ -163,8 +205,11 @@ selectors.DefaultSelector=FailingSelector
             self.assertFalse(marker.exists(),'observer launched before its OS resources were owned')
 
     def test_expired_operation_still_reaps_observer_without_late_success(self):
-        observer=self.observer('',timeout=0.03)
-        time.sleep(0.2)
+        observer=self.observer('',timeout=0.03,startup_delay=0.3)
+        startup_limit=time.monotonic()+2
+        while not self.cli_pid_file.exists() and time.monotonic()<startup_limit:
+            time.sleep(0.005)
+        self.assertTrue(self.cli_pid_file.exists(),'owned test child did not become ready')
         pid=int(self.cli_pid_file.read_text())
         with self.assertRaisesRegex(ObserverUnverified,'observer-cleanup-deadline'): observer.close(-0.01)
         with self.assertRaises(ProcessLookupError): os.kill(pid,0)

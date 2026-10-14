@@ -34,6 +34,9 @@ if time.monotonic()>=deadline: sys.exit(75)
 errors=0
 stdout_bytes=0
 diagnostic=False
+phase=0
+control_bytes=0
+pre_retirement_returncode=None
 raw_stack=bytearray()
 p=None
 selector=None
@@ -44,13 +47,16 @@ try:
     p=subprocess.Popen([ctr,'--address',address,'--namespace',namespace,'events','topic==/tasks/start','topic==/tasks/exit'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
     selector.register(p.stdout,selectors.EVENT_READ,'out')
     selector.register(p.stderr,selectors.EVENT_READ,'err')
+    phase=1
     while time.monotonic()<deadline:
-        if p.poll() is not None: break
+        if p.poll() is not None: phase=2; break
         stop=False
         for key,_ in selector.select(max(0,deadline-time.monotonic())):
             chunk=os.read(key.fileobj.fileno(),4096)
             if key.data=='control':
+                control_bytes+=len(chunk)
                 diagnostic=chunk==b'diagnose-registration\n'
+                phase=4 if diagnostic else 3
                 stop=True; break
             if not chunk: selector.unregister(key.fileobj)
             elif key.data=='out':
@@ -66,16 +72,22 @@ try:
     # At the operation deadline only failure cleanup may continue. Give the
     # failed caller a bounded control window before retiring the root child.
     if not diagnostic and time.monotonic()>=deadline and p.poll() is None:
+        phase=5
         control_deadline=time.monotonic()+0.2
         while time.monotonic()<control_deadline:
             for key,_ in selector.select(max(0,control_deadline-time.monotonic())):
                 if key.data=='control':
-                    diagnostic=os.read(key.fileobj.fileno(),4096)==b'diagnose-registration\n'
+                    control=os.read(key.fileobj.fileno(),4096)
+                    control_bytes+=len(control)
+                    diagnostic=control==b'diagnose-registration\n'
+                    phase=7 if diagnostic else 6
                     control_deadline=0
                     break
+    if phase==5: phase=8
 finally:
     try:
         if p is not None:
+            pre_retirement_returncode=p.poll()
             try:
                 if diagnostic and p.poll() is None:
                     try: os.kill(p.pid,signal.SIGQUIT)
@@ -96,6 +108,14 @@ finally:
                 except subprocess.TimeoutExpired: sys.exit(74)
     finally:
         if p is not None:
+            # Count any final stderr bytes without retaining raw diagnostics.
+            try:
+                os.set_blocking(p.stderr.fileno(),False)
+                while errors<65536:
+                    chunk=os.read(p.stderr.fileno(),min(4096,65536-errors))
+                    if not chunk: break
+                    errors+=len(chunk)
+            except (OSError,ValueError): pass
             p.stdout.close();p.stderr.close()
         if selector is not None: selector.close()
 if diagnostic:
@@ -112,6 +132,12 @@ if diagnostic:
         result['goroutines'].pop();result['truncated']=True
     try: os.write(1,b'[observer-diagnostic] '+json.dumps(result).encode()+b'\n')
     except BlockingIOError: sys.exit(73)
+status={'phase':phase,'pre_retirement_returncode':pre_retirement_returncode,
+        'child_returncode':p.returncode,'ctr_stdout_bytes':stdout_bytes,
+        'ctr_stderr_bytes':errors+len(raw_stack),'control_bytes':control_bytes,
+        'diagnostic_requested':diagnostic}
+try: os.write(1,b'[observer-status] '+json.dumps(status).encode()+b'\n')
+except BlockingIOError: sys.exit(73)
 try: os.write(1,b'[observer-reaped]\n')
 except BlockingIOError: sys.exit(73)
 '''
@@ -158,6 +184,7 @@ class ContainerdObserver:
         self.registration_failed = False
         self.diagnostic_requested = False
         self.registration_diagnostic = None
+        self.root_supervisor = None
         self.closed = False
         self.cleanup_verified = False
         self.cleanup_late = False
@@ -188,6 +215,24 @@ class ContainerdObserver:
                 self.process.stdout.close()
             raise ObserverUnverified('observer-start-cleanup') from None
 
+    def _status(self, line):
+        if not line.startswith(b'[observer-status] '): return False
+        try:
+            value=json.loads(line[18:],object_pairs_hook=_object)
+            expected={'phase','pre_retirement_returncode','child_returncode',
+                      'ctr_stdout_bytes','ctr_stderr_bytes','control_bytes','diagnostic_requested'}
+            if type(value) is not dict or set(value)!=expected: raise ValueError
+            if type(value['phase']) is not int or not 0<=value['phase']<=8: raise ValueError
+            for key in ('pre_retirement_returncode','child_returncode'):
+                if value[key] is not None and (type(value[key]) is not int or not -127<=value[key]<=255): raise ValueError
+            for key in ('ctr_stdout_bytes','ctr_stderr_bytes','control_bytes'):
+                if type(value[key]) is not int or not 0<=value[key]<=2**31: raise ValueError
+            if type(value['diagnostic_requested']) is not bool: raise ValueError
+            self.root_supervisor=value
+            return True
+        except (ValueError,UnicodeError):
+            raise ObserverUnverified('supervisor-status-invalid') from None
+
     def _limit(self, remaining):
         return min(self.deadline,time.monotonic()+_budget(remaining))
 
@@ -198,6 +243,7 @@ class ContainerdObserver:
                 line,_,tail=self.buffer.partition(b'\n')
                 if len(line)>4096 or self.total>65536: raise ObserverUnverified('stream-bound')
                 self.buffer=bytearray(tail)
+                if self._status(line): continue
                 if line == b'[observer-reaped]':
                     self.reaped = True
                     raise ObserverUnverified('stream-ended')
@@ -301,7 +347,8 @@ class ContainerdObserver:
         return {'phase':self.phase,'event_count':self.events,'stdout_bytes':self.total,
                 'reaped':self.reaped,'cleanup_verified':self.cleanup_verified,
                 'discarded_exec_exits':self.discarded_exec_exits,
-                'registration_diagnostic':self.registration_diagnostic}
+                'registration_diagnostic':self.registration_diagnostic,
+                'root_supervisor':self.root_supervisor}
 
     def close(self, remaining=None):
         """Reap on failure too; a separate 1s cleanup grace never grants success."""
@@ -323,6 +370,7 @@ class ContainerdObserver:
                 while b'\n' in self.buffer:
                     line,_,tail=self.buffer.partition(b'\n')
                     self.buffer=bytearray(tail)
+                    self._status(line)
                     if line.startswith(b'[observer-diagnostic] ') and self.diagnostic_requested:
                         try: self.registration_diagnostic=json.loads(line[22:])
                         except (ValueError,UnicodeError): self.registration_diagnostic={'outcome':'invalid-diagnostic'}

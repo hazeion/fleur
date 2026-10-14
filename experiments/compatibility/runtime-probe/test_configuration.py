@@ -131,6 +131,8 @@ class ActualWorkerConfiguration(unittest.TestCase):
         commit='ee2735368117d2eb259779949d5e75cdafec9761'
         server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
         detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        import subprocess
+        real_run=subprocess.run
         calls=[]
         def metadata(path,*args,**kwargs):
             kind=stat.S_IFSOCK if str(path).endswith('.sock') else stat.S_IFREG if str(path) in ('/usr/bin/ctr','/var/run/docker.pid') else stat.S_IFDIR
@@ -143,8 +145,17 @@ class ActualWorkerConfiguration(unittest.TestCase):
             calls.append(args)
             if '--version' in args:raise AssertionError('redundant cold banner must not run')
             if args[0]=='/usr/bin/sudo':
-                self.assertEqual(kwargs['timeout'],5);self.assertIn('4s',args)
-                output=detail
+                delay=getattr(self,'ctr_startup_delay',0)
+                if delay:
+                    import subprocess,sys
+                    inner=float(args[args.index('--kill-after=0.2s')+1][:-1])
+                    prefix='import os,time;'
+                    if getattr(self,'ctr_pidfile',None):prefix+='open('+repr(self.ctr_pidfile)+',"w").write(str(os.getpid()));'
+                    actual=real_run([sys.executable,'-c',prefix+'time.sleep('+str(delay)+');print('+repr(detail)+')'],capture_output=True,timeout=min(inner,kwargs['timeout']))
+                    output=actual.stdout.decode()
+                else:output=detail
+                if getattr(self,'host_test_clock',None) is not None:self.host_test_clock[0]=16
+                self.assertEqual(kwargs['timeout'],15);self.assertIn('14s',args)
             elif 'version' in args:output=json.dumps(server)
             else:output='owned-server\n'
             return SimpleNamespace(returncode=0,stdout=output.encode(),stderr=b'')
@@ -152,3 +163,31 @@ class ActualWorkerConfiguration(unittest.TestCase):
             result=inspect_containerd_control()
         self.assertTrue(result['ctr_revision_verified'])
         self.assertEqual(sum(args[0]=='/usr/bin/sudo' for args in calls),1)
+        self.assertEqual(result['host_startup_budget_seconds'],15)
+
+    def test_measured_cold_cli_startup_above_old_four_second_bound_can_complete(self):
+        self.ctr_startup_delay=4.5
+        self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+
+    def test_late_host_cli_is_rejected_and_real_child_is_reaped(self):
+        import os,tempfile
+        from pathlib import Path
+        from configuration import ContainerdControlUnverified
+        with tempfile.TemporaryDirectory() as directory:
+            self.ctr_pidfile=str(Path(directory)/'pid')
+            self.ctr_startup_delay=15.5
+            with self.assertRaises(ContainerdControlUnverified) as caught:
+                self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+            self.assertEqual(caught.exception.category,'ctr-version-command')
+            self.assertTrue(caught.exception.observations['timed_out'])
+            pid=int(Path(self.ctr_pidfile).read_text())
+            with self.assertRaises(ProcessLookupError):os.kill(pid,0)
+
+    def test_host_prerequisite_final_observation_cannot_escape_fifteen_second_fence(self):
+        from unittest.mock import patch
+        from configuration import ContainerdControlUnverified
+        self.host_test_clock=[0]
+        with patch('time.monotonic',side_effect=lambda:self.host_test_clock[0]),self.assertRaises(ContainerdControlUnverified) as caught:
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        self.assertEqual(caught.exception.category,'ctr-startup-deadline')
+        self.assertEqual(caught.exception.observations['host_startup_budget_seconds'],15)

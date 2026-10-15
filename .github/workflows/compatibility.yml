@@ -266,6 +266,8 @@ jobs:
           test "$(gcc -dumpfullversion -dumpversion)" = 13.3.0
           mkdir -p "$RUNNER_TEMP/fleur-evidence"
           { uname -srm; python3 --version; gcc --version; docker version; } > "$RUNNER_TEMP/fleur-evidence/runtime-platform.txt"
+      - name: Measure bounded host CLI startup and required RPC latency
+        run: python3 experiments/compatibility/runtime-probe/cli_latency.py > "$RUNNER_TEMP/fleur-evidence/host-cli-latency.json"
       - name: Driver diagnostic requirements
         run: python3 -m unittest discover -s experiments/compatibility/runtime-probe -p 'test_*.py'
       - name: Bounded native feasibility probe, failures remain failures
@@ -307,6 +309,9 @@ jobs:
           test "$(docker version --format '{{.Server.Version}}')" = 28.0.4
           mkdir -p "$RUNNER_TEMP/fleur-vfs-evidence"
           { uname -srm; python3 --version; gcc --version; docker version; } > "$RUNNER_TEMP/fleur-vfs-evidence/runtime-platform.txt"
+      - name: Actual owned mount retirement and refusal controls
+        working-directory: experiments/compatibility/runtime-probe
+        run: python3 -c 'import json; from isolated_daemon import privileged_mount_self_test; print(json.dumps(privileged_mount_self_test()))' > "$RUNNER_TEMP/fleur-vfs-evidence/mount-lifecycle-proof.json"
       - name: Actual owned privileged daemon lifecycle proof
         working-directory: experiments/compatibility/runtime-probe
         run: python3 -c 'import json; from isolated_daemon import privileged_self_test; print(json.dumps(privileged_self_test()))' > "$RUNNER_TEMP/fleur-vfs-evidence/daemon-lifecycle-proof.json"

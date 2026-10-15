@@ -73,7 +73,8 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py')}
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
+                                               'registration_canary.py','worker_deadline.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -238,6 +239,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 'cleanup':getattr(error,'lifecycle_cleanup',[]),
                 'cleanup_verified':getattr(error,'lifecycle_cleanup_verified',False),
             }
+            if hasattr(error,'deadline_guard_cleanup_verified'):
+                REPORT['lifecycle_failure']['deadline_guard_cleanup_verified'] = error.deadline_guard_cleanup_verified is True
         if isinstance(error, subprocess.TimeoutExpired) and run_started and hasattr(error,'protocol_phase'):
             REPORT['worker_timeout'] = {
                 'protocol_phase':getattr(error,'protocol_phase','unknown'),

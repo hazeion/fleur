@@ -9,12 +9,12 @@ from pathlib import Path
 import platform
 import re
 import tarfile
-import shutil
 import stat
 import subprocess
 import tempfile
 import time
 import uuid
+import weakref
 import owned_mounts
 
 def owned_mount_count(contents, root):
@@ -38,14 +38,14 @@ def owned_mount_count(contents, root):
 MOUNT_COUNT_CODE = 'from pathlib import Path; import sys\n'+inspect.getsource(owned_mount_count)+"\nwith open('/proc/self/mountinfo','r') as stream: data=stream.read(1048577)\nprint(owned_mount_count(data,Path(sys.argv[1])))\n"
 
 
-MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': print(json.dumps(capture(Path(sys.argv[2]),sys.argv[3])))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))\n"
-ROOT_CAPTURE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' capture "$base" "$token"'
+MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': print(json.dumps(capture(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))\n"
+ROOT_CAPTURE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' capture "$base" "$token" "$expected_root"'
 MOUNT_RETIRE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' retire "$base" "$token" "$mount_snapshot"'
 ROOT_REMOVE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' remove "$base" "$token" "$mount_snapshot"'
 
 
 ROOT_BODY = r'''set -eu
-base=$1; token=$2; group=$3
+expected_root=$1; base=$2; token=$3; group=$4
 case "$token" in fleur-vfs-????????????????????????????????) ;; *) exit 2 ;; esac
 [ -d "$base" ] && [ ! -L "$base" ] && [ "$(cat "$base/owner")" = "$token" ] || exit 2
 printf '%s' "$PPID" > "$base/supervisor.pid"
@@ -235,6 +235,10 @@ class IsolatedDaemonError(RuntimeError):
 class Endpoint:
     def __init__(self, root, token, deadline):
         self.root, self.token, self.deadline = root, token, deadline
+        self._root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        self._close_root=weakref.finalize(self,os.close,self._root_fd)
+        record=os.fstat(self._root_fd)
+        self.root_identity=(record.st_dev,record.st_ino,record.st_uid)
         self.cleanup_verified = False
         self.forced_probe_verified = False
         self.facts = {}
@@ -242,6 +246,36 @@ class Endpoint:
         for key in ('DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_API_VERSION'):
             self.environment.pop(key, None)
         self.environment['DOCKER_HOST'] = 'unix://' + str(root / 'docker.sock')
+
+    def verify_root(self):
+        """The current name must still designate the retained original directory."""
+        try:
+            current=os.open(self.root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:
+                record=os.fstat(current)
+                if (record.st_dev,record.st_ino,record.st_uid)!=self.root_identity:
+                    raise IsolatedDaemonError('initial owned root changed')
+            finally:os.close(current)
+        except OSError:
+            raise IsolatedDaemonError('initial owned root unavailable') from None
+
+    def remove_root(self):
+        """Remove top-level artifacts through the original, still-open root."""
+        self.verify_root()
+        names=os.listdir(self._root_fd)
+        # data/exec were already removed under the privileged zero-mount fence.
+        # Only top-level artifacts may remain. Never recurse into an unexpected
+        # directory, including a mounted one; unlinking a mounted file fails busy.
+        if any(stat.S_ISDIR(os.stat(name,dir_fd=self._root_fd,follow_symlinks=False).st_mode) for name in names):
+            raise IsolatedDaemonError('unexpected staging directory remains')
+        for name in names:os.unlink(name,dir_fd=self._root_fd)
+        self.verify_root()
+        os.rmdir(self.root)
+        if os.fstat(self._root_fd).st_nlink!=0:
+            raise IsolatedDaemonError('original root removal unverified')
+
+    def close(self):
+        self._close_root()
 
     def remaining_seconds(self):
         return max(0, self.deadline - time.monotonic())
@@ -338,6 +372,7 @@ def _retire_supervisor(endpoint, budget):
     if type(budget) not in (int,float) or not math.isfinite(budget) or budget<=0:
         raise IsolatedDaemonError('owned retirement budget invalid')
     deadline=time.monotonic()+min(10,budget)
+    endpoint.verify_root()
     pid = int((endpoint.root/'supervisor.pid').read_text())
     if pid <= 1 or Path('/proc/'+str(pid)+'/comm').read_text().strip() != 'timeout':
         raise IsolatedDaemonError('owned supervisor identity unavailable')
@@ -350,17 +385,19 @@ def _retire_supervisor(endpoint, budget):
         raise IsolatedDaemonError('owned retirement budget expired')
     captured=subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',
                   format(capture_window,'.3f')+'s','/usr/bin/python3','-I','-c',MOUNT_PROGRAM,
-                  'capture',str(endpoint.root),endpoint.token],stdin=subprocess.DEVNULL,
+                  'capture',str(endpoint.root),endpoint.token,json.dumps(endpoint.root_identity)],stdin=subprocess.DEVNULL,
                   stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                   timeout=max(.001,deadline-time.monotonic()),check=False)
     if captured.returncode or len(captured.stdout)>65536:
         raise IsolatedDaemonError('owned mount capture failed')
     try:
         mount_snapshot=json.loads(captured.stdout)
-        if type(mount_snapshot) is not dict or set(mount_snapshot)!={'root','mounts'}:
+        if (type(mount_snapshot) is not dict or set(mount_snapshot)!={'root','mounts'}
+                or mount_snapshot['root']!=list(endpoint.root_identity)):
             raise ValueError('capture shape')
     except (ValueError,UnicodeError):
         raise IsolatedDaemonError('owned mount capture invalid') from None
+    endpoint.verify_root()
     result = subprocess.run(['sudo','-n','/bin/kill','-KILL','--','-'+str(pid)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=max(.001,min(1,deadline-time.monotonic())), check=False)
@@ -414,7 +451,7 @@ def isolated_vfs_daemon(lifetime=540):
     try:
         process = subprocess.Popen(['sudo', '-n', '/usr/bin/timeout', '--signal=TERM', '--kill-after=15s',
                                     str(lifetime-15)+'s', '/bin/sh', '-c', ROOT_BODY,
-                                    'fleur-owned-vfs', str(root), token, str(os.getgid())],
+                                    'fleur-owned-vfs', json.dumps(endpoint.root_identity), str(root), token, str(os.getgid())],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                    env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'})
         startup = min(time.monotonic()+30, endpoint.deadline-15)
@@ -479,9 +516,12 @@ def isolated_vfs_daemon(lifetime=540):
                     if stream is not None:
                         stream.close()
             if endpoint.cleanup_verified:
-                shutil.rmtree(root)
-            else:
+                try:endpoint.remove_root()
+                except (OSError,ValueError,IsolatedDaemonError):
+                    endpoint.cleanup_verified=False
+            if not endpoint.cleanup_verified:
                 cleanup_error = IsolatedDaemonError('owned daemon cleanup unverified')
+        endpoint.close()
         if cleanup_error is not None and error is None:
             raise cleanup_error
 
@@ -550,6 +590,7 @@ def privileged_mount_self_test():
     if facts!={'ordinary_unmount_verified':True,'busy_mount_rejected':True,
                'replacement_mount_rejected':True,'unknown_mount_rejected':True,
                'unrelated_mount_preserved':True,'anchored_removal_verified':True,
-               'symlink_removal_rejected':True,'owned_mounts_remaining':0}:
+               'symlink_removal_rejected':True,'shared_parent_slave_rejected':True,
+               'owned_mounts_remaining':0}:
         raise IsolatedDaemonError('native mount lifecycle proof invalid')
     return facts

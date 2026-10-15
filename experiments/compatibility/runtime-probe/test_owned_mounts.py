@@ -85,3 +85,12 @@ class MountScope(unittest.TestCase):
             with patch('owned_mounts._table',return_value=empty):remove_roots(root,token,snapshot)
             self.assertFalse((root/'data').exists());self.assertFalse((root/'exec').exists())
             self.assertEqual((root/'unrelated/keep').read_text(),'preserve')
+
+    def test_shared_parent_with_external_slave_cannot_authorize_unmount(self):
+        from owned_mounts import plan
+        table=('1 0 8:1 / / rw - ext4 /dev/root rw\n'
+               '10 1 8:1 /runner /runner rw shared:10 - ext4 /dev/root rw\n'
+               '11 1 8:1 /runner /alias rw master:10 - ext4 /dev/root rw\n'
+               '20 10 0:4 net:[12] /runner/owned/exec/netns/abc rw shared:20 - nsfs nsfs rw\n'
+               '21 11 0:4 net:[12] /alias/owned/exec/netns/abc rw master:20 - nsfs nsfs rw\n')
+        with self.assertRaises(ValueError):plan(table,'/runner/owned')

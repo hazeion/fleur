@@ -37,7 +37,9 @@ def compare_host_cli(control):
         # inspection; every sample must still return both pinned ctr revisions.
         server={'Version':control['docker_version'],'GitCommit':control['docker_commit'],
                 'Components':[{'Name':'containerd','Version':'v'+control['containerd_version'],
-                               'Details':{'GitCommit':control['containerd_commit']}}]}
+                               'Details':{'GitCommit':control['containerd_commit']}},
+                              {'Name':'runc','Version':control['runc_version'],
+                               'Details':{'GitCommit':control['runc_commit']}}]}
         audit_containerd_control(['dockerd','--containerd='+control['address']],
                                  {'containerd-namespace':control['namespace']},server,output.decode('utf-8'))
     rows=[]
@@ -58,6 +60,8 @@ def compare_host_cli(control):
             'host_startup_budget_seconds':control['host_startup_budget_seconds'],
             'ctr_revision_verified':control['ctr_revision_verified'],
             'containerd_version':control['containerd_version'],'containerd_commit':control['containerd_commit'],
+            'docker_version':control['docker_version'],'docker_commit':control['docker_commit'],
+            'runc_version':control['runc_version'],'runc_commit':control['runc_commit'],
             'sample_command_budget_seconds':5,'samples':rows,
             'baseline_comparable':all(row['passed'] for row in rows if row['operation']=='version'),
             'passed':all(row['passed'] for row in rows if row['operation']=='version' and not row['optional_deprecation_rpc']),

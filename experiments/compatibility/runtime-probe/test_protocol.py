@@ -29,6 +29,64 @@ def ready_transport(args, channel):
 
 
 class Protocol(unittest.TestCase):
+    def test_startup_stall_is_captured_once_inside_original_operation_deadline(self):
+        import time
+        captures=[]
+        diagnostics={}
+        started=time.monotonic()
+        def capture(remaining):
+            captures.append(remaining)
+            time.sleep(.08)
+            return {'outcome':'captured'}
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container(['/bin/sleep','30'],timeout=2.5,startup_audit=lambda rows:None,
+                          startup_stall=capture,diagnostics=diagnostics)
+        self.assertEqual(len(captures),1)
+        self.assertGreater(captures[0],0)
+        self.assertLess(captures[0],.6)
+        self.assertLess(time.monotonic()-started,3.2)
+        self.assertEqual(caught.exception.protocol_phase,'waiting-startup-audit')
+        self.assertEqual(diagnostics['startup_stall_trace'],{'outcome':'captured'})
+
+    def test_startup_diagnostic_failure_preserves_timeout_and_redacts_error(self):
+        diagnostics={}
+        captures=[]
+        def capture(remaining):
+            captures.append(remaining)
+            raise RuntimeError('private diagnostic failure')
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container(['/bin/sleep','30'],timeout=2.2,startup_audit=lambda rows:None,
+                          startup_stall=capture,diagnostics=diagnostics)
+        self.assertEqual(len(captures),1)
+        self.assertEqual(caught.exception.protocol_phase,'waiting-startup-audit')
+        self.assertEqual(diagnostics['startup_stall_trace'],{'outcome':'unavailable'})
+        self.assertNotIn('private diagnostic failure',json.dumps(diagnostics))
+
+    def test_fast_startup_and_later_broker_stall_cannot_trigger_startup_capture(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="printf '%s\\n' \"$1\"; IFS= read -r ack; exec sleep 30"
+        captures=[]
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            run_container(['/bin/sh','-c',source,'fixture',json.dumps(startup)],timeout=2.3,
+                          startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},
+                          startup_stall=lambda remaining:captures.append(remaining))
+        self.assertEqual(captures,[])
+        self.assertEqual(caught.exception.protocol_phase,'waiting-broker-request')
+
+    def test_recovered_startup_and_later_completion_stall_share_one_diagnostic(self):
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        source="sleep 2.1; printf '%s\\n' \"$1\"; IFS= read -r startup; printf '%s\\n' \"$2\"; IFS= read -r reply; printf '{\"kind\":\"runtime-evidence\"}\\n'; exec sleep 30"
+        captures=[]
+        class Waiter:
+            def completion(self,remaining):return {'completed':False}
+            def close(self):pass
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_container(['/bin/sh','-c',source,'fixture',json.dumps(startup),json.dumps(REQUEST)],timeout=4.8,
+                startup_audit=lambda rows:{'passed':True,'category':'verified','descriptor_count':len(rows)},
+                completion_start=lambda remaining:Waiter(),completion_observer=lambda frame,remaining:{'completed':True,'exit_code':0},
+                startup_stall=lambda remaining:captures.append('startup'),completion_stall=lambda remaining:captures.append('completion'))
+        self.assertEqual(captures,['startup'])
+
     def test_cancelled_paused_worker_transport_returns_promptly_and_reaps_client(self):
         import os
         import pathlib

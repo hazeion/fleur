@@ -28,6 +28,7 @@ run)
  if [ "${LIFECYCLE_FOREIGN:-}" ]; then owner=foreign; fi
  case "$owner" in owned|foreign) ;; *) exit 2 ;; esac
  printf '{"Name":"/%s","Image":"sha256:fixture","State":{"Running":true,"ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$name" "$owner" > "$root/$name"
+ if [ "$mode" != busy ] && [ "${LIFECYCLE_STALL_HEALTHY_STARTUP:-}" ]; then exec sleep 30; fi
  printf '%s\n' "$LIFECYCLE_STARTUP"
  IFS= read -r startup
  [ "$startup" = startup:approved ] || exit 3
@@ -141,6 +142,27 @@ class LifecycleTests(unittest.TestCase):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
   return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline)
+ def test_silent_healthy_startup_captures_once_before_busy_deadline(self):
+  self.env['LIFECYCLE_STALL_HEALTHY_STARTUP']='1'
+  captures=[]
+  def capture(remaining):
+   self.assertTrue((self.root/'owned-busy-0-loop').exists())
+   self.assertFalse((self.root/'kill-attempt').exists())
+   captures.append(remaining)
+   return {'outcome':'captured'}
+  with patch('lifecycle.capture_daemon_trace',side_effect=capture),self.assertRaises(subprocess.TimeoutExpired) as caught:
+   self.run_probe(timeout=3)
+  self.assertEqual(len(captures),1)
+  self.assertGreater(captures[0],0)
+  self.assertEqual(caught.exception.worker_diagnostics['startup_stall_trace'],{'outcome':'captured'})
+  self.assertEqual(caught.exception.worker_diagnostics['protocol_phase'],'waiting-startup-audit')
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_fast_healthy_startup_never_requests_privileged_diagnostic(self):
+  with patch('lifecycle.capture_daemon_trace',side_effect=AssertionError('unexpected healthy diagnostic')) as capture:
+   self.assertTrue(self.run_probe()['passed'])
+  capture.assert_not_called()
+
  def test_deadline_terminates_daemon_worker_and_preserves_healthy_worker(self):
   result=self.run_probe();self.assertTrue(result['passed']);self.assertEqual(len(result['repeats']),2)
   for row in result['repeats']:self.assertTrue(row['healthy_completed_while_busy_running']);self.assertEqual(row['terminated_exit'],137);self.assertEqual(row['deadline_seconds'],2)

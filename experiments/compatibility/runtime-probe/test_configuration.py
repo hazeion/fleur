@@ -135,20 +135,24 @@ class ActualWorkerConfiguration(unittest.TestCase):
         real_run=subprocess.run
         calls=[]
         def metadata(path,*args,**kwargs):
-            kind=stat.S_IFSOCK if str(path).endswith('.sock') else stat.S_IFREG if str(path) in ('/usr/bin/ctr','/var/run/docker.pid') else stat.S_IFDIR
+            kind=stat.S_IFSOCK if str(path).endswith('.sock') else stat.S_IFREG if str(path) in ('/usr/bin/ctr','/usr/bin/true','/var/run/docker.pid') else stat.S_IFDIR
             return SimpleNamespace(st_uid=0,st_mode=kind|0o755,st_size=0)
         def contents(path):
+            if str(path)=='/usr/bin/ctr' and getattr(self,'host_phase_clock',None) is not None:self.host_phase_clock[0]+=2
             if str(path)=='/var/run/docker.pid':return b'47'
             if str(path)=='/proc/47/cmdline':return b'/usr/bin/dockerd\0--containerd=/run/containerd/containerd.sock\0'
             return b'owned-executable'
         def command(args,**kwargs):
             calls.append(args)
-            if '--version' in args:raise AssertionError('redundant cold banner must not run')
+            if '--version' in args and not getattr(self,'probe_first_use',False):raise AssertionError('redundant cold banner must not run')
             if args[0]=='/usr/bin/sudo':
                 if getattr(self,'check_optional_rpc_environment',False):
                     self.assertIn('CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true',args,
                                   'host CLI must avoid the redundant deprecation RPC after sudo resets environment')
                     self.assertLess(args.index('/usr/bin/sudo'),args.index('CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true'))
+                if getattr(self,'host_phase_clock',None) is not None:self.host_phase_clock[0]+=getattr(self,'host_phase_step',3)
+                if getattr(self,'probe_first_use',False) and args[-1] in ('/usr/bin/true','--version'):
+                    return SimpleNamespace(returncode=0,stdout=b'',stderr=b'')
                 delay=getattr(self,'ctr_startup_delay',0)
                 if delay:
                     import subprocess,sys
@@ -159,14 +163,17 @@ class ActualWorkerConfiguration(unittest.TestCase):
                     output=actual.stdout.decode()
                 else:output=detail
                 if getattr(self,'host_test_clock',None) is not None:self.host_test_clock[0]=16
-                self.assertEqual(kwargs['timeout'],15);self.assertIn('14s',args)
+                if getattr(self,'probe_first_use',False):
+                    self.assertLessEqual(kwargs['timeout'],15);self.assertGreater(kwargs['timeout'],0)
+                else:self.assertEqual(kwargs['timeout'],15);self.assertIn('14s',args)
             elif 'version' in args:output=json.dumps(server)
             else:output='owned-server\n'
             return SimpleNamespace(returncode=0,stdout=output.encode(),stderr=b'')
         with patch('daemon_trace.eligible_host',return_value=True),patch.object(Path,'resolve',lambda self,**kwargs:self),patch.object(Path,'stat',metadata),patch.object(Path,'read_bytes',contents),patch.object(Path,'read_text',return_value='dockerd\n'),patch.object(Path,'exists',return_value=False),patch('configuration.subprocess.run',side_effect=command):
-            result=inspect_containerd_control()
+            result=inspect_containerd_control(probe_first_use=getattr(self,'probe_first_use',False))
+        self.last_host_control=result
         self.assertTrue(result['ctr_revision_verified'])
-        self.assertEqual(sum(args[0]=='/usr/bin/sudo' for args in calls),1)
+        self.assertEqual(sum(args[0]=='/usr/bin/sudo' for args in calls),3 if getattr(self,'probe_first_use',False) else 1)
         self.assertEqual(result['host_startup_budget_seconds'],15)
 
     def test_measured_cold_cli_startup_above_old_four_second_bound_can_complete(self):
@@ -221,3 +228,38 @@ class ActualWorkerConfiguration(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 audit_containerd_control(arguments,{},changed,detail)
             self.assertNotIn(value,str(caught.exception))
+
+    def test_cli_duration_excludes_identity_audit_and_binary_hash_cost(self):
+        from unittest.mock import patch
+        self.host_phase_clock=[0]
+        with patch('time.monotonic',side_effect=lambda:self.host_phase_clock[0]):
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        result=self.last_host_control
+        self.assertEqual(result['host_version_duration_ms'],3000)
+        self.assertEqual(result['host_startup_duration_ms'],5000)
+        self.assertEqual(result['host_startup_phases_ms']['binary_sha256'],2000)
+        self.assertEqual(result['host_startup_phases_ms']['authoritative_version'],3000)
+
+    def test_first_use_probes_separate_privilege_binary_and_rpc_cost_within_original_budget(self):
+        from unittest.mock import patch
+        self.host_phase_clock=[0]
+        self.probe_first_use=True
+        with patch('time.monotonic',side_effect=lambda:self.host_phase_clock[0]):
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        result=self.last_host_control
+        self.assertEqual(result['host_startup_duration_ms'],11000)
+        self.assertEqual(result['host_startup_phases_ms']['privileged_noop'],3000)
+        self.assertEqual(result['host_startup_phases_ms']['ctr_banner'],3000)
+        self.assertEqual(result['host_startup_phases_ms']['authoritative_version'],3000)
+        self.assertTrue(result['first_version_preceded_by_startup_probes'])
+
+    def test_first_use_probes_cannot_extend_the_fifteen_second_total_fence(self):
+        from unittest.mock import patch
+        from configuration import ContainerdControlUnverified
+        self.host_phase_clock=[0]
+        self.host_phase_step=6
+        self.probe_first_use=True
+        with patch('time.monotonic',side_effect=lambda:self.host_phase_clock[0]),self.assertRaises(ContainerdControlUnverified) as caught:
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        self.assertEqual(caught.exception.category,'ctr-startup-deadline')
+        self.assertEqual(caught.exception.observations['host_startup_budget_seconds'],15)

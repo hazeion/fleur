@@ -34,9 +34,13 @@ Run the bounded native comparison before launching application workers:
 python3 experiments/compatibility/runtime-probe/cli_latency.py > host-cli-latency.json
 ```
 
-The command first verifies the actual host Docker association, root-owned socket
-and executable, and exact client/server pins. It records that first authoritative
-query's duration. It then measures one no-RPC banner and four version queries in
+The command first verifies the actual host Docker association and root-owned
+socket/executable. Inside the existing 15-second startup envelope, it measures
+one privileged no-op, then the first no-RPC ctr banner, then the authoritative
+version query, identity audit and executable SHA calculation separately. The
+query still must validate exact client/server pins. It explicitly records that
+this first RPC follows startup probes, so it is not described as a cold binary
+load. It then measures one warm no-RPC banner and four version queries in
 an interleaved default/optimized/optimized/default order. This avoids attributing
 a warm executable alone to RPC removal. Each comparison has a root-owned
 four-second command deadline, bounded termination escalation, and a five-second
@@ -87,3 +91,29 @@ access check. These source checks establish a candidate, not a native CI pass.
 The earlier controlled timing table applies only to 2.3.6. Native 2.4.1 timings,
 readiness, lifecycle termination and cleanup still require successful AMD64 and
 ARM64 CI evidence before compatibility or speed improvements are claimed.
+
+## Native measurements and remaining first-use cost
+
+[CI run 38807006869](https://github.com/hazeion/fleur/actions/runs/38807006869)
+passed both exact host identity and CLI comparison checks on containerd 2.4.1.
+AMD64 version samples were 19/19 ms with the default RPC and 18/19 ms with the
+optional RPC suppressed. ARM64 samples were 13/15 ms and 12/12 ms respectively.
+Warm no-RPC banners were 17 ms and 11 ms. The native difference is 0–3 ms; the
+250 ms controlled-server result above is not the native speedup.
+
+The earlier report's `first_authoritative_version_ms` values, 2168 ms and
+2208 ms, included the version subprocess, identity audit and executable read/SHA.
+Those aggregate values cannot identify a slow RPC or executable startup. New
+reports separate `privileged_noop`, `ctr_banner`, `authoritative_version`,
+`identity_audit` and `binary_sha256` milliseconds, and retain their aggregate as
+`host_startup_duration_ms`. `first_authoritative_version_ms` now measures only
+the actual subprocess. The no-op distinguishes first sudo/session startup; the
+first banner isolates ctr loading without server calls; the following version
+command measures the remaining first RPC work; hashing is measured afterward.
+
+Only the standalone performance benchmark requests these two initial probes.
+The lifecycle driver's normal identity check adds no extra commands. Probes
+consume the same startup budget and the final observation must still occur
+before 15 seconds; all application operation limits remain unchanged. A slower
+phase must be observed before changing its code or claiming the first-use cost
+has been fixed.

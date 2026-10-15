@@ -45,6 +45,8 @@ class NativeComparisonPolicy(unittest.TestCase):
         from cli_latency import compare_host_cli
         control={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby',
                  'host_version_duration_ms':4000,'host_startup_budget_seconds':15,
+                 'host_startup_duration_ms':5000,'host_startup_phases_ms':{'authoritative_version':4000,'binary_sha256':1000},
+                 'first_version_preceded_by_startup_probes':True,
                  'ctr_revision_verified':True,'containerd_version':'2.4.1','containerd_commit':'f2551031d7276a770f65f98c9b52e57e7dad07e8',
                  'docker_version':'28.0.4','docker_commit':'6430e49',
                  'runc_version':'1.5.2','runc_commit':'v1.5.2-0-g29dd3dc2'}
@@ -55,6 +57,9 @@ class NativeComparisonPolicy(unittest.TestCase):
         with patch('cli_latency.subprocess.run',side_effect=command):
             report=compare_host_cli(control)
         self.assertTrue(report['passed'])
+        self.assertEqual(report['first_authoritative_version_ms'],4000)
+        self.assertEqual(report['host_startup_duration_ms'],5000)
+        self.assertTrue(report['first_version_preceded_by_startup_probes'])
         self.assertFalse(report['baseline_comparable'])
         self.assertEqual([row['returncode'] for row in report['samples']],[0,124,0,0,124])
         self.assertEqual([row['passed'] for row in report['samples']],[True,False,True,True,False])
@@ -65,6 +70,8 @@ class NativeComparisonPolicy(unittest.TestCase):
         from cli_latency import compare_host_cli
         control={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby',
                  'host_version_duration_ms':40,'host_startup_budget_seconds':15,
+                 'host_startup_duration_ms':50,'host_startup_phases_ms':{'authoritative_version':40,'binary_sha256':10},
+                 'first_version_preceded_by_startup_probes':True,
                  'ctr_revision_verified':True,'containerd_version':'2.4.1',
                  'containerd_commit':'f2551031d7276a770f65f98c9b52e57e7dad07e8',
                  'docker_version':'28.0.4','docker_commit':'6430e49',

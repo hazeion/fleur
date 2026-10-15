@@ -154,7 +154,7 @@ def audit_containerd_control(arguments, config, server, ctr_detail):
             'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}
 
 
-def inspect_containerd_control():
+def inspect_containerd_control(*, probe_first_use=False):
     """Linux CI host infrastructure only; no socket/privilege reaches a worker."""
     import hashlib
     from pathlib import Path
@@ -213,15 +213,51 @@ def inspect_containerd_control():
     if type(address) is not str or not address.startswith('/') or namespace!='moby':
         raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
     trusted(address,stat.S_ISSOCK,socket=True)
+    startup_started=time.monotonic()
+    phases={}
+    prefix=['/usr/bin/sudo','-n','/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin',
+            'CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true','/usr/bin/timeout',
+            '--signal=TERM','--kill-after=0.2s']
+    environment={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'}
+    def remaining_budget():
+        remaining=15-(time.monotonic()-startup_started)
+        if remaining<=1:
+            raise ContainerdControlUnverified('ctr-startup-deadline',
+                {'duration_ms':round(1000*(time.monotonic()-startup_started)),
+                 'host_startup_budget_seconds':15})
+        return remaining
+    if probe_first_use:
+        # Diagnostic benchmark only: isolate sudo/session startup, then cold ctr
+        # loading without any server RPC. Each still consumes the same 15s fence.
+        trusted('/usr/bin/true',stat.S_ISREG)
+        for phase,arguments_to_run in [('privileged_noop',['/usr/bin/true']),
+                                       ('ctr_banner',[str(ctr),'--version'])]:
+            remaining=min(5,remaining_budget())
+            started=time.monotonic()
+            command(prefix+[str(remaining-1)+'s']+arguments_to_run,environment,
+                    category=phase,timeout=remaining)
+            phases[phase]=round(1000*(time.monotonic()-started))
     version_started=time.monotonic()
-    detail=command(['/usr/bin/sudo','-n','/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin','CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true','/usr/bin/timeout','--signal=TERM','--kill-after=0.2s','14s',str(ctr),'--address',address,'--namespace',namespace,'version'],{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},category='ctr-version-command',timeout=15)
+    remaining=remaining_budget() if probe_first_use else 15
+    inner_timeout=str(remaining-1)+'s' if probe_first_use else '14s'
+    detail=command(prefix+[inner_timeout,str(ctr),'--address',address,'--namespace',namespace,'version'],
+                   environment,category='ctr-version-command',timeout=remaining)
+    version_completed=time.monotonic()
     control=audit_containerd_control(arguments,config,server,detail)
-    control.update({'ctr_binary_sha256':hashlib.sha256(ctr.read_bytes()).hexdigest(),
+    audit_completed=time.monotonic()
+    binary_sha256=hashlib.sha256(ctr.read_bytes()).hexdigest()
+    hash_completed=time.monotonic()
+    control.update({'ctr_binary_sha256':binary_sha256,
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
                     'host_access':'privileged-owned-registration-and-events','worker_authority_changed':False})
-    elapsed=time.monotonic()-version_started
+    elapsed=time.monotonic()-startup_started
     if elapsed>=15:
         raise ContainerdControlUnverified('ctr-startup-deadline',{'duration_ms':round(1000*elapsed),'host_startup_budget_seconds':15})
-    control.update(host_startup_budget_seconds=15,host_version_duration_ms=round(1000*elapsed),
+    control.update(host_startup_budget_seconds=15,host_startup_duration_ms=round(1000*elapsed),
+                   host_version_duration_ms=round(1000*(version_completed-version_started)),
+                   first_version_preceded_by_startup_probes=probe_first_use,
+                   host_startup_phases_ms={**phases,'authoritative_version':round(1000*(version_completed-version_started)),
+                                          'identity_audit':round(1000*(audit_completed-version_completed)),
+                                          'binary_sha256':round(1000*(hash_completed-audit_completed))},
                    optional_deprecation_rpc=False)
     return control

@@ -57,6 +57,9 @@ def compare_host_cli(control):
         rows.append({'operation':operation,'optional_deprecation_rpc':not suppressed,**result})
     return {'schema_version':1,'scope':'native-host-ctr-startup',
             'first_authoritative_version_ms':control['host_version_duration_ms'],
+            'host_startup_duration_ms':control['host_startup_duration_ms'],
+            'host_startup_phases_ms':control['host_startup_phases_ms'],
+            'first_version_preceded_by_startup_probes':control['first_version_preceded_by_startup_probes'],
             'host_startup_budget_seconds':control['host_startup_budget_seconds'],
             'ctr_revision_verified':control['ctr_revision_verified'],
             'containerd_version':control['containerd_version'],'containerd_commit':control['containerd_commit'],
@@ -71,7 +74,7 @@ def compare_host_cli(control):
 def main():
     from configuration import inspect_containerd_control
     try:
-        report=compare_host_cli(inspect_containerd_control())
+        report=compare_host_cli(inspect_containerd_control(probe_first_use=True))
     except Exception as error:
         # Raw CLI/configuration errors can contain local paths or credentials.
         report={'schema_version':1,'scope':'native-host-ctr-startup','passed':False,

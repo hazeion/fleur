@@ -45,11 +45,12 @@ class NativeComparisonPolicy(unittest.TestCase):
         from cli_latency import compare_host_cli
         control={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby',
                  'host_version_duration_ms':4000,'host_startup_budget_seconds':15,
-                 'ctr_revision_verified':True,'containerd_version':'2.3.6','containerd_commit':'ee2735368117d2eb259779949d5e75cdafec9761',
-                 'docker_version':'28.0.4','docker_commit':'6430e49'}
+                 'ctr_revision_verified':True,'containerd_version':'2.4.1','containerd_commit':'f2551031d7276a770f65f98c9b52e57e7dad07e8',
+                 'docker_version':'28.0.4','docker_commit':'6430e49',
+                 'runc_version':'1.5.2','runc_commit':'v1.5.2-0-g29dd3dc2'}
         def command(args,**kwargs):
             optimized='CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true' in args
-            detail=b'Client:\n Version: v2.3.6\n Revision: ee2735368117d2eb259779949d5e75cdafec9761\nServer:\n Version: v2.3.6\n Revision: ee2735368117d2eb259779949d5e75cdafec9761\n'
+            detail=b'Client:\n Version: v2.4.1\n Revision: f2551031d7276a770f65f98c9b52e57e7dad07e8\nServer:\n Version: v2.4.1\n Revision: f2551031d7276a770f65f98c9b52e57e7dad07e8\n'
             return SimpleNamespace(returncode=0 if optimized else 124,stdout=detail if optimized else b'',stderr=b'')
         with patch('cli_latency.subprocess.run',side_effect=command):
             report=compare_host_cli(control)
@@ -64,10 +65,11 @@ class NativeComparisonPolicy(unittest.TestCase):
         from cli_latency import compare_host_cli
         control={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby',
                  'host_version_duration_ms':40,'host_startup_budget_seconds':15,
-                 'ctr_revision_verified':True,'containerd_version':'2.3.6',
-                 'containerd_commit':'ee2735368117d2eb259779949d5e75cdafec9761',
-                 'docker_version':'28.0.4','docker_commit':'6430e49'}
-        detail=b'Client:\n Version: v2.3.6\n Revision: wrong\nServer:\n Version: v2.3.6\n Revision: wrong\n'
+                 'ctr_revision_verified':True,'containerd_version':'2.4.1',
+                 'containerd_commit':'f2551031d7276a770f65f98c9b52e57e7dad07e8',
+                 'docker_version':'28.0.4','docker_commit':'6430e49',
+                 'runc_version':'1.5.2','runc_commit':'v1.5.2-0-g29dd3dc2'}
+        detail=b'Client:\n Version: v2.4.1\n Revision: wrong\nServer:\n Version: v2.4.1\n Revision: wrong\n'
         with patch('cli_latency.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=detail,stderr=b'')):
             report=compare_host_cli(control)
         self.assertFalse(report['passed'])

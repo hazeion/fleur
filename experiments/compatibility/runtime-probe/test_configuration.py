@@ -87,24 +87,24 @@ class ActualWorkerConfiguration(unittest.TestCase):
 
     def test_containerd_control_requires_measured_docker_association_and_pinned_schema(self):
         from configuration import audit_containerd_control
-        commit='ee2735368117d2eb259779949d5e75cdafec9761'
-        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        commit='f2551031d7276a770f65f98c9b52e57e7dad07e8'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.4.1','Details':{'GitCommit':commit}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}]}
+        detail=f'Client:\n Version: v2.4.1\n Revision: {commit}\nServer:\n Version: v2.4.1\n Revision: {commit}\n'
         result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,detail)
         self.assertEqual(result['address'],'/run/containerd/containerd.sock')
         self.assertEqual(result['namespace'],'moby')
-        for args,config,changed,cli in [(['dockerd'],{},server,detail),(['dockerd','--containerd=tcp://other'],{},server,detail),(['dockerd','--containerd=/run/ctr.sock'],{'containerd-namespace':'other'},server,detail),(['dockerd','--containerd=/run/ctr.sock'],{},dict(server,Version='29.0.0'),detail),(['dockerd','--containerd=/run/ctr.sock'],{},server,detail.replace('2.3.6','2.3.5'))]:
+        for args,config,changed,cli in [(['dockerd'],{},server,detail),(['dockerd','--containerd=tcp://other'],{},server,detail),(['dockerd','--containerd=/run/ctr.sock'],{'containerd-namespace':'other'},server,detail),(['dockerd','--containerd=/run/ctr.sock'],{},dict(server,Version='29.0.0'),detail),(['dockerd','--containerd=/run/ctr.sock'],{},server,detail.replace('2.4.1','2.3.5'))]:
             with self.subTest(args=args,config=config),self.assertRaises(ValueError):
                 audit_containerd_control(args,config,changed,cli)
 
     def test_authoritative_client_server_query_requires_local_and_server_revisions(self):
         from configuration import audit_containerd_control
-        commit='ee2735368117d2eb259779949d5e75cdafec9761'
-        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        detail=f'Client:\n  Version:  v2.3.6\n  Revision: {commit}\n  Go version: go1.25.1\n\nServer:\n  Version:  v2.3.6\n  Revision: {commit}\n  UUID: public-id\n'
+        commit='f2551031d7276a770f65f98c9b52e57e7dad07e8'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.4.1','Details':{'GitCommit':commit}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}]}
+        detail=f'Client:\n  Version:  v2.4.1\n  Revision: {commit}\n  Go version: go1.25.1\n\nServer:\n  Version:  v2.4.1\n  Revision: {commit}\n  UUID: public-id\n'
         result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,detail)
         self.assertTrue(result['ctr_revision_verified'])
-        for bad in (detail.replace(commit,'0'*40,1),detail.replace(commit,'0'*40),detail.replace('v2.3.6','v2.3.5',1),'Client:\n Version: v2.3.6\n'):
+        for bad in (detail.replace(commit,'0'*40,1),detail.replace(commit,'0'*40),detail.replace('v2.4.1','v2.3.5',1),'Client:\n Version: v2.4.1\n'):
             with self.subTest(bad=bad),self.assertRaises(ValueError) as error:
                 audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,bad)
             self.assertIn(error.exception.category,('ctr-version-detail','ctr-client-version','ctr-client-revision','ctr-server-revision'))
@@ -112,13 +112,13 @@ class ActualWorkerConfiguration(unittest.TestCase):
 
     def test_single_authoritative_version_query_retains_both_exact_revisions(self):
         from configuration import audit_containerd_control
-        commit='ee2735368117d2eb259779949d5e75cdafec9761'
-        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        commit='f2551031d7276a770f65f98c9b52e57e7dad07e8'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.4.1','Details':{'GitCommit':commit}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}]}
+        detail=f'Client:\n Version: v2.4.1\n Revision: {commit}\nServer:\n Version: v2.4.1\n Revision: {commit}\n'
         result=audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,detail)
         self.assertTrue(result['ctr_revision_verified'])
         self.assertEqual(result['version_evidence'],'single-client-server-query')
-        for wrong in (detail.replace(commit,'0'*40,1),detail.replace('v2.3.6','v2.3.5'),detail.split('Server:')[0]):
+        for wrong in (detail.replace(commit,'0'*40,1),detail.replace('v2.4.1','v2.3.5'),detail.split('Server:')[0]):
             with self.assertRaises(ValueError):
                 audit_containerd_control(['dockerd','--containerd=/run/containerd/containerd.sock'],{},server,wrong)
 
@@ -128,9 +128,9 @@ class ActualWorkerConfiguration(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import patch
         from configuration import inspect_containerd_control
-        commit='ee2735368117d2eb259779949d5e75cdafec9761'
-        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.3.6','Details':{'GitCommit':commit}}]}
-        detail=f'Client:\n Version: v2.3.6\n Revision: {commit}\nServer:\n Version: v2.3.6\n Revision: {commit}\n'
+        commit='f2551031d7276a770f65f98c9b52e57e7dad07e8'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[{'Name':'containerd','Version':'v2.4.1','Details':{'GitCommit':commit}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}]}
+        detail=f'Client:\n Version: v2.4.1\n Revision: {commit}\nServer:\n Version: v2.4.1\n Revision: {commit}\n'
         import subprocess
         real_run=subprocess.run
         calls=[]
@@ -199,3 +199,25 @@ class ActualWorkerConfiguration(unittest.TestCase):
     def test_authoritative_query_avoids_optional_deprecation_rpc_without_weakening_identity(self):
         self.check_optional_rpc_environment=True
         self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+
+    def test_report_binds_observed_runc_and_rejects_previous_or_unknown_runtime_builds(self):
+        from configuration import audit_containerd_control
+        commit='f2551031d7276a770f65f98c9b52e57e7dad07e8'
+        server={'Version':'28.0.4','GitCommit':'6430e49','Components':[
+            {'Name':'containerd','Version':'v2.4.1','Details':{'GitCommit':commit}},
+            {'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}]}
+        detail=f'Client:\n Version: v2.4.1\n Revision: {commit}\nServer:\n Version: v2.4.1\n Revision: {commit}\n'
+        arguments=['dockerd','--containerd=/run/containerd/containerd.sock']
+        result=audit_containerd_control(arguments,{},server,detail)
+        self.assertEqual(result['runc_version'],'1.5.2')
+        self.assertEqual(result['runc_commit'],'v1.5.2-0-g29dd3dc2')
+        for version,revision in [('v2.3.6','ee2735368117d2eb259779949d5e75cdafec9761'),
+                                 ('v2.4.1','0'*40),('v2.4.2',commit)]:
+            changed=copy.deepcopy(server);changed['Components'][0].update(Version=version,Details={'GitCommit':revision})
+            with self.subTest(version=version),self.assertRaises(ValueError):
+                audit_containerd_control(arguments,{},changed,detail)
+        for value in ('1.5.1','unknown-runtime-secret'):
+            changed=copy.deepcopy(server);changed['Components'][1]['Version']=value
+            with self.assertRaises(ValueError) as caught:
+                audit_containerd_control(arguments,{},changed,detail)
+            self.assertNotIn(value,str(caught.exception))

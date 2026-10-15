@@ -3,7 +3,7 @@
 The compatibility probe invokes the host's pinned `ctr` to observe and retire
 owned resources. These host commands do not run inside an application worker.
 
-The [pinned client constructor](https://github.com/containerd/containerd/blob/ee2735368117d2eb259779949d5e75cdafec9761/cmd/ctr/commands/client.go)
+The [pinned client constructor](https://github.com/containerd/containerd/blob/f2551031d7276a770f65f98c9b52e57e7dad07e8/cmd/ctr/commands/client.go)
 performs an optional `Introspection.Server` RPC to print deprecation warnings
 before the requested command. The documented
 `CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true` setting removes that optional
@@ -12,7 +12,8 @@ versions and revisions, and still performs its required server information RPC.
 The setting is supplied in a fixed root host command environment after `sudo`;
 application environment and authority are unchanged.
 
-A local controlled experiment built the exact pinned upstream `ctr` source and
+A local controlled experiment built the previously pinned upstream `ctr` 2.3.6
+source at `ee2735368117d2eb259779949d5e75cdafec9761` and
 used a disposable Unix-socket gRPC server that delayed each introspection
 response by 250 ms. It exercised the actual upstream CLI, client constructor,
 and protocol, rather than a simulated CLI argument parser. Two observations per
@@ -51,3 +52,38 @@ unknown environment values or credentials. They retain every sample instead of
 selecting the fastest. Native AMD64 and ARM64 measurements are required before
 claiming that CI startup latency improved. The existing 30-second application
 operation limit and all isolation/lifecycle assertions remain in force.
+
+## Containerd candidate update on October 15, 2026
+
+[CI run 38805744792](https://github.com/hazeion/fleur/actions/runs/38805744792)
+measured the same host builds on AMD64 and ARM64: Docker 28.0.4 commit
+`6430e49`, containerd v2.4.1 commit
+`f2551031d7276a770f65f98c9b52e57e7dad07e8`, and runc 1.5.2 commit
+`v1.5.2-0-g29dd3dc2`. The existing exact 2.3.6 gate rejected the changed runtime
+before observer or worker tests; this was an expected identity rejection.
+
+The candidate now requires exactly those measured builds, including both ctr
+client and containerd server revisions. Unknown versions, the earlier 2.3.6
+build, changed revisions and missing components are rejected. Reports emit only
+the accepted version/commit facts and bounded match flags on rejection. They do
+not emit arbitrary runtime metadata. No runtime is installed or downgraded.
+
+Source audit against the prior pin found the filter parser/scanner, event
+exchange and subscription service, task/namespace protobufs and generated JSON
+structs, and task RPC schema byte-identical. The CLI uses urfave/cli v3; the
+reviewed event, namespace, version and task commands retain their argument and
+RPC behavior, with `DisableSliceFlagSeparator` enabled. The optional deprecation
+introspection setting is unchanged.
+
+An executable oracle built from the exact new upstream commit accepted all three
+observer filters, matched task start/exit and the owned namespace update,
+rejected another namespace and another topic, and rejected the old unquoted
+topic syntax. Actual generated event values retained the required field names:
+`container_id`, `id`, `pid`, `exited_at` with numeric `seconds`/`nanos`, and
+namespace `name`/`labels`; zero exit status remains omitted. The source-built new
+CLI also accepted the observer's three filter arguments and reached its socket
+access check. These source checks establish a candidate, not a native CI pass.
+
+The earlier controlled timing table applies only to 2.3.6. Native 2.4.1 timings,
+readiness, lifecycle termination and cleanup still require successful AMD64 and
+ARM64 CI evidence before compatibility or speed improvements are claimed.

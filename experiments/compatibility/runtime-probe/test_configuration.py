@@ -151,6 +151,8 @@ class ActualWorkerConfiguration(unittest.TestCase):
                                   'host CLI must avoid the redundant deprecation RPC after sudo resets environment')
                     self.assertLess(args.index('/usr/bin/sudo'),args.index('CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true'))
                 if getattr(self,'host_phase_clock',None) is not None:self.host_phase_clock[0]+=getattr(self,'host_phase_step',3)
+                if args[-1]=='--version' and getattr(self,'fail_optional_banner',False):
+                    return SimpleNamespace(returncode=124,stdout=b'private-host-output',stderr=b'private-host-error')
                 if getattr(self,'probe_first_use',False) and args[-1] in ('/usr/bin/true','--version'):
                     return SimpleNamespace(returncode=0,stdout=b'',stderr=b'')
                 delay=getattr(self,'ctr_startup_delay',0)
@@ -263,3 +265,20 @@ class ActualWorkerConfiguration(unittest.TestCase):
             self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
         self.assertEqual(caught.exception.category,'ctr-startup-deadline')
         self.assertEqual(caught.exception.observations['host_startup_budget_seconds'],15)
+
+    def test_optional_banner_failure_preserves_evidence_and_allows_required_version_proof(self):
+        from unittest.mock import patch
+        self.host_phase_clock=[0]
+        self.probe_first_use=True
+        self.fail_optional_banner=True
+        with patch('time.monotonic',side_effect=lambda:self.host_phase_clock[0]):
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        result=self.last_host_control
+        self.assertTrue(result['ctr_revision_verified'])
+        self.assertEqual(result['host_startup_duration_ms'],11000)
+        sample=result['host_startup_probes']['ctr_banner']
+        self.assertFalse(sample['passed'])
+        self.assertTrue(sample['timed_out'])
+        self.assertEqual(sample['cli_returncode'],124)
+        self.assertEqual(sample['duration_ms'],3000)
+        self.assertNotIn('private-host',json.dumps(result))

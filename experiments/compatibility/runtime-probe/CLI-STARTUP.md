@@ -117,3 +117,18 @@ consume the same startup budget and the final observation must still occur
 before 15 seconds; all application operation limits remain unchanged. A slower
 phase must be observed before changing its code or claiming the first-use cost
 has been fixed.
+
+The first no-op and banner are diagnostic samples. A failed sample remains
+`passed: false` in `host_startup_probes`, with its elapsed time, timeout status,
+return code and available byte counts. It is not retried. If the original
+15-second startup envelope still has time, the mandatory authoritative query
+continues and must verify the exact identities. No-op/banner failure cannot
+substitute for a failed required query or optimized comparison sample. If the
+required path fails, the JSON retains a fixed allowlist of numeric/status
+observations and completed phase timings; unknown fields and raw output are
+removed. The normal lifecycle inspection still adds no diagnostic commands.
+
+Run 38812419549's AMD64 benchmark failed at `ctr_banner`, but its old error
+report omitted status/count evidence, so the cause cannot be inferred from that
+artifact. The exact source-built 2.4.1 CLI accepts bare `--version` and exits
+successfully; the next native report must establish what failed on the runner.

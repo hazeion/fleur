@@ -262,6 +262,76 @@ class OwnedCounterfactual(unittest.TestCase):
             self.assertEqual(evidence['last_count'],1)
             self.assertNotIn('private-path',str(evidence))
 
+    def test_capture_cli_reports_safe_failure_without_private_paths_or_traceback(self):
+        import subprocess
+        import sys
+        from isolated_daemon import MOUNT_PROGRAM
+        with tempfile.TemporaryDirectory(prefix='fleur-private-capture-') as temporary:
+            root=Path(temporary).resolve();record=root.stat()
+            result=subprocess.run([sys.executable,'-I','-c',MOUNT_PROGRAM,'capture',str(root),
+                                   'fleur-vfs-'+'a'*32,json.dumps([record.st_dev,record.st_ino,record.st_uid])],
+                                  capture_output=True,timeout=5,check=False)
+            self.assertEqual(result.returncode,1)
+            payload=json.loads(result.stdout)
+            self.assertEqual(payload['capture_error']['phase'],'owner')
+            self.assertEqual(payload['capture_error']['category'],'filesystem')
+            self.assertEqual(payload['capture_error']['errno'],2)
+            self.assertLessEqual(len(result.stdout),2048)
+            self.assertEqual(result.stderr,b'')
+            self.assertNotIn(str(root).encode(),result.stdout)
+
+    def test_capture_failure_observations_distinguish_timeout_and_reject_raw_details(self):
+        import subprocess
+        import owned_mounts
+        from isolated_daemon import capture_observations
+        failure={'phase':'mount-plan','category':'shared-parent',
+                 'layout':dict.fromkeys(owned_mounts.LAYOUT_COUNTS,0)}
+        failure['layout']['shared_parent']=1
+        result=subprocess.CompletedProcess([],1,json.dumps({'capture_error':failure}).encode(),b'private stderr')
+        facts=capture_observations(result,17)
+        self.assertEqual(facts['cli_returncode'],1)
+        self.assertEqual(facts['elapsed_ms'],17)
+        self.assertEqual(facts['capture_error'],failure)
+        self.assertNotIn('private stderr',str(facts))
+        timeout=subprocess.CompletedProcess([],124,b'',b'')
+        self.assertEqual(capture_observations(timeout,9700)['cli_returncode'],124)
+        malformed={'phase':'/private/path','category':'shared-parent','raw':'secret'}
+        result=subprocess.CompletedProcess([],1,json.dumps({'capture_error':malformed}).encode(),b'')
+        facts=capture_observations(result,19)
+        self.assertTrue(facts['diagnostic_invalid'])
+        self.assertNotIn('/private/path',str(facts));self.assertNotIn('secret',str(facts))
+
+    def test_capture_rejection_preserves_diagnostics_before_any_group_kill(self):
+        import subprocess
+        import time
+        from isolated_daemon import _retire_supervisor
+        real_text=Path.read_text;real_bytes=Path.read_bytes
+        with tempfile.TemporaryDirectory(prefix='fleur-capture-failure-') as temporary:
+            root=Path(temporary);token='fleur-vfs-'+'a'*32
+            (root/'supervisor.pid').write_text('12345')
+            endpoint=Endpoint(root,token,time.monotonic()+30)
+            def text(path,*args,**kwargs):
+                if str(path)=='/proc/12345/comm':return 'timeout\n'
+                if str(path)=='/proc/12345/stat':return '12345 (timeout) S 1 12345 0\n'
+                return real_text(path,*args,**kwargs)
+            def binary(path,*args,**kwargs):
+                if str(path)=='/proc/12345/cmdline':
+                    return b'/usr/bin/timeout\0'+str(root).encode()+b'\0'+token.encode()+b'\0'
+                return real_bytes(path,*args,**kwargs)
+            diagnostic={'phase':'mount-plan','category':'shared-parent'}
+            result=subprocess.CompletedProcess([],1,json.dumps({'capture_error':diagnostic}).encode(),b'private error')
+            try:
+                with patch.object(Path,'read_text',text),patch.object(Path,'read_bytes',binary), \
+                     patch('isolated_daemon.subprocess.run',return_value=result) as command:
+                    with self.assertRaises(IsolatedDaemonError) as raised:_retire_supervisor(endpoint,5)
+                self.assertEqual(command.call_count,1)
+                self.assertIn('capture',command.call_args.args[0])
+                self.assertEqual(raised.exception.observations['capture_error'],diagnostic)
+                self.assertEqual(raised.exception.observations['cli_returncode'],1)
+                self.assertGreaterEqual(raised.exception.observations['elapsed_ms'],0)
+                self.assertNotIn('private error',str(raised.exception))
+            finally:endpoint.close()
+
     def test_retirement_failure_journal_is_bounded_numeric_and_redacted(self):
         from isolated_daemon import retirement_observations
         with tempfile.TemporaryDirectory(prefix='fleur-retire-journal-') as temporary:

@@ -22,6 +22,29 @@ class MountScope(unittest.TestCase):
             with self.subTest(additional=additional), self.assertRaises(ValueError):
                 plan(table+additional,root)
 
+    def test_capture_cli_classifies_shared_parent_without_disclosing_mount_paths(self):
+        import inspect,json,subprocess,sys,tempfile
+        import owned_mounts
+        with tempfile.TemporaryDirectory(prefix='fleur-capture-layout-') as temporary:
+            root=Path(temporary).resolve();token='fleur-vfs-'+'a'*32
+            (root/'owner').write_text(token);identity=root.stat()
+            table=('1 0 8:1 / / rw shared:10 - ext4 /dev/root rw\n'
+                   '2 1 0:4 net:[12] '+str(root/'exec/netns/abc')+' rw - nsfs nsfs rw\n')
+            program=(inspect.getsource(owned_mounts)+'\n_table=lambda:'+repr(table)+
+                     '\nsys.exit(capture_cli(Path(sys.argv[1]),sys.argv[2],json.loads(sys.argv[3])))\n')
+            result=subprocess.run([sys.executable,'-I','-c',program,str(root),token,
+                                   json.dumps([identity.st_dev,identity.st_ino,identity.st_uid])],
+                                  capture_output=True,timeout=5,check=False)
+            self.assertEqual(result.returncode,1)
+            diagnostic=json.loads(result.stdout)['capture_error']
+            self.assertEqual(diagnostic['phase'],'mount-plan')
+            self.assertEqual(diagnostic['category'],'shared-parent')
+            for key in ('owned','network_namespace','shared_parent','fs_nsfs'):
+                self.assertEqual(diagnostic['layout'][key],1)
+            self.assertEqual(result.stderr,b'')
+            self.assertNotIn(str(root).encode(),result.stdout)
+            self.assertNotIn(b'net:[12]',result.stdout)
+
     def test_mount_parser_decodes_paths_without_accepting_dot_segments(self):
         from owned_mounts import plan
         table='1 0 8:1 / / rw - ext4 /dev/root rw\n2 1 8:1 /owned\\040space/data /owned\\040space/data rw - ext4 /dev/root rw\n'

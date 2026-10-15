@@ -144,12 +144,83 @@ def _target(root_fd, relative):
         raise
 
 
-def capture(root,token,expected_root=None):
+CAPTURE_PHASES=('owner','root-identity','mount-table','mount-plan','mount-target')
+CAPTURE_CATEGORIES=('filesystem','owner','mount-class','shared-parent','shared-peers',
+                    'unique-id','mount-identity','validation','unsupported','unexpected')
+LAYOUT_COUNTS=('owned','data_root','exec_root','network_namespace','nested_data','nested_exec',
+               'shared_parent','unknown_parent','shared_mount','slave_mount',
+               'fs_ext4','fs_xfs','fs_btrfs','fs_overlay','fs_tmpfs','fs_nsfs','fs_other')
+
+
+def capture_layout(contents,root):
+    """Only bounded classifications leave the private mount-table boundary."""
+    counts={key:0 for key in LAYOUT_COUNTS}
+    if type(contents) is not str or len(contents.encode())>1048576:
+        raise ValueError('mount table bound')
+    rows=[];root=str(root)
+    for line in contents.splitlines():
+        fields=line.split();separator=fields.index('-')
+        if separator<6 or len(fields)!=separator+4:
+            raise ValueError('mount row invalid')
+        rows.append((int(fields[0]),int(fields[1]),_decode(fields[4]),fields[separator+1],
+                     any(part.startswith('shared:') for part in fields[6:separator]),
+                     any(part.startswith('master:') for part in fields[6:separator])))
+    parents={row[0]:row for row in rows}
+    for _,parent,point,filesystem,shared,slave in rows:
+        if not any(point==root+'/'+part or point.startswith(root+'/'+part+'/') for part in ('data','exec')):
+            continue
+        relative=point[len(root)+1:];counts['owned']+=1
+        if relative=='data':kind='data_root'
+        elif relative=='exec':kind='exec_root'
+        elif relative.startswith('exec/netns/'):kind='network_namespace'
+        elif relative.startswith('data/'):kind='nested_data'
+        else:kind='nested_exec'
+        counts[kind]+=1
+        counts['fs_'+(filesystem if filesystem in ('ext4','xfs','btrfs','overlay','tmpfs','nsfs') else 'other')]+=1
+        counts['shared_mount']+=int(shared);counts['slave_mount']+=int(slave)
+        counts['unknown_parent']+=int(parent not in parents)
+        counts['shared_parent']+=int(parent in parents and parents[parent][4])
+    return {key:min(value,65) for key,value in counts.items()}
+
+
+def capture_cli(root,token,expected_root):
+    diagnostics={'phase':'owner'}
+    try:
+        result=capture(root,token,expected_root,diagnostics)
+    except Exception as error:
+        category={
+            'owner token mismatch':'owner','owner root permissions invalid':'owner',
+            'initial owned root changed':'owner','unknown owned mount class':'mount-class',
+            'owned unmount propagation unconfined':'shared-parent','shared mount peers present':'shared-peers',
+            'unique mount identity unavailable':'unique-id','mount identity invalid':'mount-identity',
+            'mount changed during capture':'mount-identity',
+        }.get(str(error),'validation' if isinstance(error,ValueError) else 'unexpected')
+        if isinstance(error,OSError):
+            category='filesystem'
+            if type(error.errno) is int and 0<=error.errno<=4095:diagnostics['errno']=error.errno
+        elif isinstance(error,AttributeError):category='unsupported'
+        diagnostics['category']=category
+        print(json.dumps({'capture_error':diagnostics},separators=(',',':'),sort_keys=True))
+        return 1
+    print(json.dumps(result,separators=(',',':')))
+    return 0
+
+
+def capture(root,token,expected_root=None,diagnostics=None):
+    diagnostics={} if diagnostics is None else diagnostics
+    diagnostics['phase']='owner'
     root_fd,identity=_owner(root,token)
     try:
+        diagnostics['phase']='root-identity'
         if expected_root is not None and identity!=expected_root:
             raise ValueError('initial owned root changed')
-        mounts=plan(_table(),str(root))
+        diagnostics['phase']='mount-table'
+        contents=_table()
+        try:diagnostics['layout']=capture_layout(contents,root)
+        except (ValueError,IndexError):diagnostics['layout_invalid']=True
+        diagnostics['phase']='mount-plan'
+        mounts=plan(contents,str(root))
+        diagnostics['phase']='mount-target'
         for row in mounts:
             parent,_,target=_target(root_fd,row['relative'])
             os.close(parent)

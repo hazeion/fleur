@@ -38,7 +38,7 @@ def owned_mount_count(contents, root):
 MOUNT_COUNT_CODE = 'from pathlib import Path; import sys\n'+inspect.getsource(owned_mount_count)+"\nwith open('/proc/self/mountinfo','r') as stream: data=stream.read(1048577)\nprint(owned_mount_count(data,Path(sys.argv[1])))\n"
 
 
-MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': print(json.dumps(capture(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))\n"
+MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': sys.exit(capture_cli(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))\n"
 ROOT_CAPTURE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' capture "$base" "$token" "$expected_root"'
 MOUNT_RETIRE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' retire "$base" "$token" "$mount_snapshot"'
 ROOT_REMOVE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' remove "$base" "$token" "$mount_snapshot"'
@@ -367,6 +367,32 @@ def retirement_observations(root, returncode, stdout):
     return facts
 
 
+def capture_observations(result,elapsed_ms):
+    """Allow only the fixed child diagnostic schema across the report boundary."""
+    facts={'cli_returncode':result.returncode,'elapsed_ms':elapsed_ms,
+           'stdout_bytes':len(result.stdout or b''),'stderr_bytes':len(result.stderr or b'')}
+    if not result.stdout:return facts
+    try:
+        if len(result.stdout)>2048:raise ValueError('diagnostic bound')
+        envelope=json.loads(result.stdout)
+        if type(envelope) is not dict or set(envelope)!={'capture_error'}:raise ValueError('envelope')
+        error=envelope['capture_error']
+        if (type(error) is not dict or not {'phase','category'}<=set(error)
+                or set(error)-{'phase','category','errno','layout','layout_invalid'}
+                or error['phase'] not in owned_mounts.CAPTURE_PHASES
+                or error['category'] not in owned_mounts.CAPTURE_CATEGORIES):raise ValueError('diagnostic')
+        if 'errno' in error and (type(error['errno']) is not int or not 0<=error['errno']<=4095):raise ValueError('errno')
+        if 'layout_invalid' in error and type(error['layout_invalid']) is not bool:raise ValueError('layout marker')
+        if 'layout' in error:
+            layout=error['layout']
+            if (type(layout) is not dict or set(layout)!=set(owned_mounts.LAYOUT_COUNTS)
+                    or any(type(count) is not int or not 0<=count<=65 for count in layout.values())):
+                raise ValueError('layout')
+        facts['capture_error']=error
+    except (ValueError,TypeError,UnicodeError):facts['diagnostic_invalid']=True
+    return facts
+
+
 def _retire_supervisor(endpoint, budget):
     """Escalate only the verified fresh root timeout process group."""
     if type(budget) not in (int,float) or not math.isfinite(budget) or budget<=0:
@@ -383,20 +409,29 @@ def _retire_supervisor(endpoint, budget):
     capture_window=deadline-time.monotonic()-.3
     if capture_window<=0:
         raise IsolatedDaemonError('owned retirement budget expired')
-    captured=subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',
-                  format(capture_window,'.3f')+'s','/usr/bin/python3','-I','-c',MOUNT_PROGRAM,
-                  'capture',str(endpoint.root),endpoint.token,json.dumps(endpoint.root_identity)],stdin=subprocess.DEVNULL,
-                  stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                  timeout=max(.001,deadline-time.monotonic()),check=False)
+    capture_started=time.monotonic()
+    try:
+        captured=subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',
+                      format(capture_window,'.3f')+'s','/usr/bin/python3','-I','-c',MOUNT_PROGRAM,
+                      'capture',str(endpoint.root),endpoint.token,json.dumps(endpoint.root_identity)],stdin=subprocess.DEVNULL,
+                      stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                      timeout=max(.001,deadline-time.monotonic()),check=False)
+    except subprocess.TimeoutExpired as error:
+        failed=subprocess.CompletedProcess([],124,error.stdout or b'',error.stderr or b'')
+        observations=capture_observations(failed,int((time.monotonic()-capture_started)*1000))
+        observations['parent_timeout']=True
+        raise IsolatedDaemonError('owned mount capture timeout',observations) from None
     if captured.returncode or len(captured.stdout)>65536:
-        raise IsolatedDaemonError('owned mount capture failed')
+        observations=capture_observations(captured,int((time.monotonic()-capture_started)*1000))
+        raise IsolatedDaemonError('owned mount capture failed',observations)
     try:
         mount_snapshot=json.loads(captured.stdout)
         if (type(mount_snapshot) is not dict or set(mount_snapshot)!={'root','mounts'}
                 or mount_snapshot['root']!=list(endpoint.root_identity)):
             raise ValueError('capture shape')
     except (ValueError,UnicodeError):
-        raise IsolatedDaemonError('owned mount capture invalid') from None
+        observations=capture_observations(captured,int((time.monotonic()-capture_started)*1000))
+        raise IsolatedDaemonError('owned mount capture invalid',observations) from None
     endpoint.verify_root()
     result = subprocess.run(['sudo','-n','/bin/kill','-KILL','--','-'+str(pid)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

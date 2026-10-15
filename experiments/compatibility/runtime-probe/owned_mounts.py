@@ -29,7 +29,8 @@ def plan(contents, root):
             raise ValueError('mount path invalid')
         rows.append({'id':int(fields[0]),'parent':int(fields[1]),'device':fields[2],
                      'source':source,'point':point,'type':fields[separator+1],
-                     'shared':next((value[7:] for value in fields[6:separator] if value.startswith('shared:')),None)})
+                     'shared':next((value[7:] for value in fields[6:separator] if value.startswith('shared:')),None),
+                     'master':next((value[7:] for value in fields[6:separator] if value.startswith('master:')),None)})
     if len({row['id'] for row in rows})!=len(rows):
         raise ValueError('duplicate mount id')
     enclosing=[row for row in rows if root==row['point'] or root.startswith(row['point'].rstrip('/')+'/')]
@@ -48,6 +49,13 @@ def plan(contents, root):
                and row['type']=='nsfs' and re.fullmatch(r'net:\[[0-9]+\]',row['source']) is not None)
         if not (data or netns):
             raise ValueError('unknown owned mount class')
+        parent=next((other for other in rows if other['id']==row['parent']),None)
+        # Unmount propagates through the PARENT's peer/slave receiver closure,
+        # including receivers in other mount namespaces absent from mountinfo.
+        # A private or slave-only parent cannot send that propagation. A shared
+        # parent is unprovable here; reject rather than changing host propagation.
+        if parent is None or parent['shared'] is not None:
+            raise ValueError('owned unmount propagation unconfined')
         if row['shared'] is not None and any(other['id']!=row['id'] and other['shared']==row['shared'] for other in rows):
             raise ValueError('shared mount peers present')
         selected.append(dict(row,relative=relative))
@@ -136,9 +144,11 @@ def _target(root_fd, relative):
         raise
 
 
-def capture(root,token):
+def capture(root,token,expected_root=None):
     root_fd,identity=_owner(root,token)
     try:
+        if expected_root is not None and identity!=expected_root:
+            raise ValueError('initial owned root changed')
         mounts=plan(_table(),str(root))
         for row in mounts:
             parent,_,target=_target(root_fd,row['relative'])
@@ -196,6 +206,7 @@ def native_self_test():
     import tempfile
     if sys.platform!='linux' or os.geteuid()!=0:
         raise ValueError('native mount prerequisite required')
+    propagation_verified=native_propagation_test()
     library=ctypes.CDLL(None,use_errno=True)
     if library.unshare(0x00020000):  # CLONE_NEWNS; never modify the host namespace.
         raise OSError(ctypes.get_errno(),'test namespace creation failed')
@@ -261,7 +272,8 @@ def native_self_test():
             return {'ordinary_unmount_verified':True,'busy_mount_rejected':True,
                     'replacement_mount_rejected':True,'unknown_mount_rejected':True,
                     'unrelated_mount_preserved':True,'anchored_removal_verified':True,
-                    'symlink_removal_rejected':True,'owned_mounts_remaining':0}
+                    'symlink_removal_rejected':True,'shared_parent_slave_rejected':propagation_verified,
+                    'owned_mounts_remaining':0}
         finally:
             # Fixture-only cleanup is exact and ordinary. The private namespace
             # also prevents a failing test from leaving mounts in the host.
@@ -286,3 +298,56 @@ def remove_roots(root,token,expected):
             try:os.unlink(name,dir_fd=root_fd)
             except FileNotFoundError:pass
     finally:os.close(root_fd)
+
+
+def native_propagation_test():
+    """Reject shared-parent/slave cleanup in a new private test mount namespace."""
+    import tempfile
+    if sys.platform!='linux' or os.geteuid()!=0:
+        raise ValueError('native mount prerequisite required')
+    library=ctypes.CDLL(None,use_errno=True)
+    # Establish this boundary here even when called independently of the other
+    # native fixture. No propagation change occurs in the caller's namespace.
+    if library.unshare(0x00020000):  # CLONE_NEWNS
+        raise OSError(ctypes.get_errno(),'propagation test namespace creation failed')
+    mount=library.mount
+    mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_char_p]
+    mount.restype=ctypes.c_int
+    if mount(None,b'/',None,0x4000|0x40000,None):  # MS_REC | MS_PRIVATE
+        raise OSError(ctypes.get_errno(),'propagation test namespace isolation failed')
+    with tempfile.TemporaryDirectory(prefix='fleur-propagation-native-') as temporary:
+        base=Path(temporary);parent=base/'parent';alias=base/'alias'
+        parent.mkdir();alias.mkdir()
+        root=parent/'owned';outside=alias/'owned/exec/netns/abc'
+        def change(source,target,flags):
+            if mount(None if source is None else os.fsencode(source),os.fsencode(target),None,flags,None):
+                raise OSError(ctypes.get_errno(),'test propagation setup failed')
+        def ids():
+            return {_decode(fields[4]):int(fields[0]) for fields in (line.split() for line in _table().splitlines())}
+        def cleanup(target):
+            if str(target) not in ids():return
+            descriptor=os.open(target.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:_unmount(descriptor,target.name)
+            finally:os.close(descriptor)
+        change(parent,parent,4096)
+        try:
+            change(None,parent,0x100000)  # MS_SHARED inside private test namespace.
+            change(parent,alias,4096)
+            change(None,alias,0x80000)  # MS_SLAVE; receives parent propagation.
+            root.mkdir(mode=0o700);(root/'data').mkdir();(root/'exec/netns').mkdir(parents=True)
+            token='fleur-vfs-'+'e'*32;(root/'owner').write_text(token)
+            target=root/'exec/netns/abc';target.touch()
+            change('/proc/self/ns/net',target,4096)
+            before=ids()
+            if str(target) not in before or str(outside) not in before:
+                raise AssertionError('slave mount propagation premise absent')
+            try:capture(root,token)
+            except ValueError:pass
+            else:raise AssertionError('external propagation accepted')
+            after=ids()
+            if any(after.get(str(path))!=before[str(path)] for path in (target,outside)):
+                raise AssertionError('rejected propagation changed mounts')
+        finally:
+            # Every target below is a fresh fixture in this private namespace.
+            cleanup(outside);cleanup(root/'exec/netns/abc');cleanup(alias);cleanup(parent)
+    return True

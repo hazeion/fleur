@@ -1,5 +1,6 @@
 """Counterfactual scope and endpoint invariants; privileged proof belongs to CI."""
 import os
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -120,7 +121,7 @@ class OwnedCounterfactual(unittest.TestCase):
             body = ROOT_BODY.replace(ROOT_CAPTURE_COMMAND,"printf '{}'").replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace('/usr/bin/dockerd', shlex.quote(str(daemon))).replace('"/proc/$child/comm"', shlex.quote(str(root/'comm')))
             body = body.replace('record=$(cat "/proc/$child/stat")', 'record="$child (fixture) S $$ $$"')
             body = body.replace('ctr_owned --address', '/usr/bin/true --address')
-            process = subprocess.Popen(['/bin/sh','-c',body,'fixture',str(root),token,str(os.getgid())],
+            process = subprocess.Popen(['/bin/sh','-c',body,'fixture',json.dumps([root.stat().st_dev,root.stat().st_ino,root.stat().st_uid]),str(root),token,str(os.getgid())],
                                        stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:
                 ready = time.monotonic()+2
@@ -153,7 +154,7 @@ class OwnedCounterfactual(unittest.TestCase):
             # ownership/mount-table boundary cannot establish the initial identity.
             body=module.ROOT_BODY.replace(module.ROOT_CAPTURE_COMMAND,'/usr/bin/false')
             body=body.replace('/usr/bin/dockerd','touch "'+str(root/'launched')+'"')
-            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,str(os.getgid())],
+            result=subprocess.run(['/bin/sh','-c',body,'fixture',json.dumps([root.stat().st_dev,root.stat().st_ino,root.stat().st_uid]),str(root),token,str(os.getgid())],
                                   input=b'stop\n',capture_output=True,timeout=3)
             self.assertNotEqual(result.returncode,0)
             self.assertFalse((root/'launched').exists())
@@ -177,7 +178,7 @@ class OwnedCounterfactual(unittest.TestCase):
                 body = body.replace('"/proc/$child/comm"',shlex.quote(str(root/'comm')))
                 body = body.replace('record=$(cat "/proc/$child/stat")','record="$child (fixture) S $$ $$"')
                 body = body.replace('ctr_owned --address','/usr/bin/true --address')
-                process = real_popen(['/bin/sh','-c',body,'fixture',*arguments[-3:]],**kwargs)
+                process = real_popen(['/bin/sh','-c',body,'fixture',*arguments[-4:]],**kwargs)
                 processes.append(process)
                 import time
                 deadline = time.monotonic()+2
@@ -370,6 +371,103 @@ class OwnedCounterfactual(unittest.TestCase):
             for namespace in (token,token+'-plugins'):
                 self.assertTrue((root/(namespace+'.done')).exists())
 
+    def test_replacement_after_normal_child_success_cannot_be_deleted_or_reported_clean(self):
+        import io
+        import subprocess
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-final-replacement-') as temporary:
+            parent=Path(temporary).resolve();replacement=None;original=None
+            class Process:
+                def __init__(self,arguments,**kwargs):
+                    self.root=Path(arguments[-3]);self.returncode=None
+                    self.stdin=io.BytesIO();self.stdout=io.BytesIO()
+                    (self.root/'docker.pid').write_text('12345')
+                    (self.root/'docker.sock').write_text('ready')
+                def poll(self):return self.returncode
+                def communicate(self,**kwargs):
+                    nonlocal replacement,original
+                    original=parent/'preserved-original';self.root.rename(original)
+                    replacement=self.root;replacement.mkdir(mode=0o700)
+                    (replacement/'unrelated').write_text('preserve')
+                    self.returncode=0;return b'stopped\n',None
+            def verified(endpoint):endpoint.facts={'driver':'vfs'}
+            with patch('isolated_daemon.eligible_host',return_value=True), \
+                 patch.dict(os.environ,{'RUNNER_TEMP':str(parent)}), \
+                 patch('isolated_daemon._default_identity',return_value={'ID':'unchanged'}), \
+                 patch('isolated_daemon.subprocess.Popen',side_effect=Process), \
+                 patch.object(Endpoint,'verify',verified), \
+                 patch.object(Endpoint,'command',return_value=subprocess.CompletedProcess([],0,b'',b'')):
+                with self.assertRaises(IsolatedDaemonError):
+                    with isolated_vfs_daemon(lifetime=45) as endpoint:pass
+            self.assertFalse(endpoint.cleanup_verified)
+            self.assertEqual((replacement/'unrelated').read_text(),'preserve')
+            self.assertTrue(original.is_dir())
+
+    def test_final_root_cleanup_rejects_unexpected_directories_without_traversal(self):
+        import time
+        with tempfile.TemporaryDirectory(prefix='fleur-final-mounted-') as temporary:
+            root=Path(temporary).resolve()/'owned';root.mkdir(mode=0o700)
+            (root/'unexpected').mkdir();(root/'unexpected/keep').write_text('preserve')
+            endpoint=Endpoint(root,'fleur-vfs-'+'a'*32,time.monotonic()+5)
+            try:
+                with self.assertRaises(IsolatedDaemonError):endpoint.remove_root()
+                self.assertEqual((root/'unexpected/keep').read_text(),'preserve')
+            finally:endpoint.close()
+
+    def test_final_root_cleanup_rejects_replacement_and_preserves_both_directories(self):
+        import time
+        with tempfile.TemporaryDirectory(prefix='fleur-final-original-') as temporary:
+            parent=Path(temporary);root=parent/'owned';root.mkdir(mode=0o700)
+            (root/'original').write_text('original')
+            endpoint=Endpoint(root,'fleur-vfs-'+'a'*32,time.monotonic()+5)
+            try:
+                original=parent/'saved';root.rename(original);root.mkdir(mode=0o700)
+                (root/'unrelated').write_text('preserve')
+                with self.assertRaises(IsolatedDaemonError):endpoint.remove_root()
+                self.assertEqual((root/'unrelated').read_text(),'preserve')
+                self.assertEqual((original/'original').read_text(),'original')
+            finally:endpoint.close()
+
+    def test_replaced_root_cannot_authorize_forced_kill_or_remove_replacement_contents(self):
+        import json
+        import subprocess
+        import time
+        import owned_mounts
+        from isolated_daemon import _retire_supervisor
+        real_text=Path.read_text;real_bytes=Path.read_bytes
+        with tempfile.TemporaryDirectory(prefix='fleur-vfs-original-root-') as temporary:
+            parent=Path(temporary).resolve();root=parent/'owned';root.mkdir(mode=0o700)
+            token='fleur-vfs-'+'a'*32
+            (root/'owner').write_text(token);(root/'supervisor.pid').write_text('12345')
+            endpoint=Endpoint(root,token,time.monotonic()+30)
+            original=parent/'original';root.rename(original);root.mkdir(mode=0o700)
+            (root/'owner').write_text(token);(root/'supervisor.pid').write_text('12345')
+            (root/'data').mkdir();(root/'exec').mkdir();(root/'data/unrelated').write_text('preserve')
+            actions=[];snapshot=None
+            def text(path,*args,**kwargs):
+                if str(path)=='/proc/12345/comm':return 'timeout\n'
+                if str(path)=='/proc/12345/stat':return '12345 (timeout) S 1 12345 0\n'
+                return real_text(path,*args,**kwargs)
+            def binary(path,*args,**kwargs):
+                if str(path)=='/proc/12345/cmdline':
+                    return b'/usr/bin/timeout\0'+str(root).encode()+b'\0'+token.encode()+b'\0'
+                return real_bytes(path,*args,**kwargs)
+            def command(arguments,**kwargs):
+                nonlocal snapshot
+                if 'capture' in arguments:
+                    snapshot=owned_mounts.capture(root,token)
+                    return subprocess.CompletedProcess(arguments,0,json.dumps(snapshot).encode(),b'')
+                if '/bin/kill' in arguments:
+                    actions.append('kill');return subprocess.CompletedProcess(arguments,0,b'',b'')
+                actions.append('remove');owned_mounts.remove_roots(root,token,snapshot)
+                return subprocess.CompletedProcess(arguments,0,b'retired\n',b'')
+            with patch.object(Path,'read_text',text),patch.object(Path,'read_bytes',binary), \
+                 patch('owned_mounts._table',return_value='1 0 8:1 / / rw - ext4 /dev/root rw\n'), \
+                 patch('isolated_daemon.subprocess.run',side_effect=command):
+                with self.assertRaises(IsolatedDaemonError):_retire_supervisor(endpoint,5)
+            self.assertEqual(actions,[])
+            self.assertEqual((root/'data/unrelated').read_text(),'preserve')
+            self.assertTrue(original.is_dir())
+
     def test_late_observation_cannot_escape_overall_retirement_deadline(self):
         import sys
         import time
@@ -379,7 +477,7 @@ class OwnedCounterfactual(unittest.TestCase):
             root=Path(temporary);token='fleur-vfs-'+'e'*32
             (root/'supervisor.pid').write_text('12345')
             executable=root/'sudo'
-            executable.write_text('#!/bin/sh\ncase "$*" in *" capture "*) printf \'{"root":[],"mounts":[]}\\n\'; exit 0 ;; esac\ncase "$2" in /bin/kill) exit 0 ;; /usr/bin/timeout) printf "retired\\n" ;; *) exit 9 ;; esac\n')
+            executable.write_text('#!/bin/sh\ncase "$*" in *" capture "*) printf \'{"root":ROOT_ID_FIXTURE,"mounts":[]}\\n\'; exit 0 ;; esac\ncase "$2" in /bin/kill) exit 0 ;; /usr/bin/timeout) printf "retired\\n" ;; *) exit 9 ;; esac\n'.replace('ROOT_ID_FIXTURE',json.dumps([root.stat().st_dev,root.stat().st_ino,root.stat().st_uid])))
             executable.chmod(0o700)
             def text(path,*args,**kwargs):
                 if str(path)=='/proc/12345/comm': return 'timeout\n'

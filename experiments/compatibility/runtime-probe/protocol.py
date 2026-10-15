@@ -42,12 +42,13 @@ def startup_inventory(request):
     return rows
 
 
-def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None, completion_stall=None, completion_prepare=None, completion_bind=None, cancel_event=None):
+def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, diagnostics=None, environment=None, on_stderr=None, startup_audit=None, completion_observer=None, completion_start=None, completion_stall=None, completion_prepare=None, completion_bind=None, cancel_event=None, startup_stall=None):
     """Perform one actual pipe request/response and await final worker evidence."""
     started = time.monotonic()
     process = None
     output, errors = bytearray(), bytearray()
     waiter = None
+    stall_captured = False
     phase = 'waiting-broker-request'
     def check_cancelled():
         if cancel_event is not None and cancel_event.is_set():
@@ -87,7 +88,10 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         check_cancelled()
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, env=environment)
-        def read_request(limit):
+        def read_request(limit, stalled=None):
+            nonlocal stall_captured
+            capture_at=time.monotonic()+2
+            captured=False
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ, 'request')
                 selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
@@ -97,8 +101,26 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                     remaining = timeout - (time.monotonic() - started)
                     if remaining <= 0:
                         raise deadline_error()
-                    ready = selector.select(pipe_wait(remaining))
+                    wait=pipe_wait(remaining)
+                    if stalled is not None and not captured:
+                        wait=min(wait,max(0,capture_at-time.monotonic()))
+                    ready = selector.select(wait)
                     if not ready:
+                        if stalled is not None and not captured and time.monotonic()>=capture_at:
+                            remaining=timeout-(time.monotonic()-started)
+                            if remaining<=0: raise deadline_error()
+                            captured=True
+                            stall_captured=True
+                            capture_started=time.monotonic()
+                            try: trace=stalled(remaining)
+                            except Exception:
+                                trace={'outcome':'unavailable'}
+                            if diagnostics is not None:
+                                diagnostics['startup_stall_trace']=trace
+                                diagnostics['daemon_stall_phase']=phase
+                                diagnostics['startup_stall_started_ms']=round(1000*(capture_started-started))
+                                diagnostics['startup_stall_duration_ms']=round(1000*(time.monotonic()-capture_started))
+                            continue
                         if cancel_event is not None:
                             check_cancelled()
                             continue
@@ -117,7 +139,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
             return json.loads(line)
         if startup_audit is not None:
             phase = 'waiting-startup-audit'
-            inventory = startup_inventory(read_request(16384))
+            inventory = startup_inventory(read_request(16384, startup_stall))
             phase = 'startup-audit'
             audited = startup_audit(inventory)
             if (type(audited) is not dict or audited.get('passed') is not True
@@ -172,7 +194,6 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         phase = 'waiting-worker-completion'
         checked_at = 0.0
         pending_since = None
-        stall_captured = False
         def complete_frame():
             if b'\n' not in output:
                 return None
@@ -225,7 +246,9 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                         if completion_stall is not None and not stall_captured and time.monotonic()-pending_since >= 2:
                             stall_captured = True
                             trace = completion_stall(timeout-(time.monotonic()-started))
-                            if diagnostics is not None: diagnostics['daemon_stall_trace'] = trace
+                            if diagnostics is not None:
+                                diagnostics['daemon_stall_trace'] = trace
+                                diagnostics['daemon_stall_phase'] = phase
                     checked_at = time.monotonic()
                     remaining = timeout-(checked_at-started)
                     if remaining <= 0:

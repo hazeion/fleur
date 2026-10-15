@@ -125,6 +125,18 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             def bind_healthy_observer(observer,remaining_budget):
                 configuration = observed[healthy_name]['configuration']
                 return observer.bind(configuration['container_id'],configuration['host_init_pid'],remaining_budget)
+            def stalled_healthy_startup(remaining_budget):
+                left=started+timeout-time.monotonic()
+                if (not ready.is_set() or busy_name not in observed or guard is None
+                        or abort.is_set() or getattr(guard,'closed',False) or left<=0):
+                    return {'outcome':'busy-worker-inactive'}
+                # Inspecting this container may block behind the startup path
+                # being diagnosed. Capture the eligible daemon first; no
+                # unaudited healthy PID is supplied to a privileged helper.
+                guard_process=getattr(guard,'process',None)
+                if guard_process is not None and guard_process.poll() is not None:
+                    return {'outcome':'busy-worker-inactive'}
+                return capture_daemon_trace(min(remaining_budget,left))
             active_role = 'healthy'
             healthy_diagnostics = {}
             try:
@@ -133,7 +145,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter if containerd_control is None else None,
                     completion_prepare=prepare_healthy_observer if containerd_control is not None else None,
                     completion_bind=bind_healthy_observer if containerd_control is not None else None,
-                    completion_stall=capture_daemon_trace))
+                    completion_stall=capture_daemon_trace,startup_stall=stalled_healthy_startup))
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
                 # Capture this actual worker before finally removes it. Do
                 # not ask the outer driver to inspect the exited primary.

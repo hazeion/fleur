@@ -37,6 +37,14 @@ export async function findProjectPin(project: string): Promise<ProjectPin> {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { kind: "invalid" };
     }
+    // A release-owned application marker identifies a damaged existing project.
+    // It never supplies a substitute version for the authoritative fleur.json pin.
+    try {
+      const manifest = await readMetadata(join(root, "package.json"));
+      if (manifest !== null && typeof manifest === "object" && !Array.isArray(manifest) && "fleur" in manifest) return { kind: "invalid" };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { kind: "invalid" };
+    }
     const parent = dirname(root);
     if (parent === root) return { kind: "unconfigured" };
     root = parent;

@@ -31,7 +31,7 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
   expect(response.stderr).toBe("");
   const value = JSON.parse(response.stdout);
   expect(value).toMatchObject({ formatVersion: 1, command: "help", ok: true, error: null, truncated: false });
-  expect(value.data.commands).toEqual([{ name: "help", summary: "Show available commands and global options." }]);
+  expect(value.data.commands).toEqual([{ name: "help", summary: "Show available commands and global options." }, { name: "new", summary: "Create an exactly pinned Fleur project." }, { name: "init", summary: "Initialize a Fleur project without overwriting user files." }]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });
 test("invalid invocations return category 2 JSON without interpreting shell arguments", async () => {
@@ -67,4 +67,10 @@ test("bunx launches the installed packed release without Node or registry fallba
   expect(exit, stderr).toBe(0);
   expect(stderr).toBe("");
   expect(JSON.parse(stdout)).toMatchObject({ formatVersion: 1, command: "help", ok: true });
+});
+test("packed release exposes project creation through its real executable", async () => {
+  const response = await cli("--json", "new", "packed-project", "--no-git");
+  expect(response.exit).toBe(0);
+  expect(JSON.parse(response.stdout)).toMatchObject({ command: "new", ok: true });
+  expect(await Bun.file(join(scratch, "packed-project", "fleur.json")).json()).toMatchObject({ fleurVersion: "0.1.0" });
 });

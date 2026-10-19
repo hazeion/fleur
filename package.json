@@ -8,7 +8,8 @@
   "files": [
     "bin",
     "src",
-    "docs/cli.md"
+    "docs/cli.md",
+    "docs/project-creation.md"
   ],
   "engines": {
     "bun": "1.4.3"

@@ -315,3 +315,15 @@ test("new protected tooling files collide before writes and existing unrelated d
   expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
   expect(await readFile(join(cwd, "docs", "user.md"), "utf8")).toBe("Keep user documentation\n");
 });
+test("generated compiler accepts ordinary explicit TypeScript and TSX module imports", async () => {
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  await symlink(join(import.meta.dir, "../../node_modules"), join(cwd, "node_modules"));
+  await writeFile(join(cwd, "shared", "local.ts"), "export const value = 1;\n");
+  await writeFile(join(cwd, "client", "local.tsx"), 'export const label = "fixture";\n');
+  await writeFile(join(cwd, "server", "consumer.ts"), 'import { value } from "../shared/local.ts";\nexport const result: number = value;\n');
+  await writeFile(join(cwd, "client", "consumer.ts"), 'import { label } from "./local.tsx";\nexport const result: string = label;\n');
+  const child = Bun.spawn([process.execPath, "run", "types"], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect({ exit, stdout, stderr }).toMatchObject({ exit: 0 });
+});

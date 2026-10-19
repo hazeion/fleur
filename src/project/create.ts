@@ -16,7 +16,7 @@ export async function createProject(command: string, target: string, git: boolea
   const files: Record<string, string> = {
     ".fleur/.gitignore": "*\n",
     "docs/fleur.md": offlineGuidance,
-    "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", types: ["bun"], strict: true, noUncheckedIndexedAccess: true, jsx: "react-jsx", jsxImportSource: "preact", noEmit: true, skipLibCheck: false }, include: ["client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "server/**/*.tsx", "shared/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"] }, null, 2) + "\n",
+    "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", types: ["bun"], strict: true, noUncheckedIndexedAccess: true, allowImportingTsExtensions: true, jsx: "react-jsx", jsxImportSource: "preact", noEmit: true, skipLibCheck: false }, include: ["client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "server/**/*.tsx", "shared/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"] }, null, 2) + "\n",
     ".oxlintrc.json": JSON.stringify({ plugins: ["typescript"], categories: { correctness: "error" } }, null, 2) + "\n",
     "lint/package.json": await readFile(new URL("./template/lint-package.json.txt", import.meta.url), "utf8"),
     "lint/bun.lock": await readFile(new URL("./template/lint-bun.lock.txt", import.meta.url), "utf8"),

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { copyFile, lstat, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -153,4 +153,48 @@ test.each(["output", "parent"] as const)("replacing the %s directory during pack
     if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await child.exited; }
     await rm(scratch, { recursive: true, force: true });
   }
+}, 20000);
+
+test.each(["inventoried", "opened"] as const)("replacing the %s parent before output creation cannot create a directory inside source", async (phase) => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-creation-race-"));
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const archive = join(scratch, "source.tgz");
+    expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
+    const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
+    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
+    await mkdir(join(scratch, "outside"));
+    const parent = await realpath(join(scratch, "outside"));
+    const output = join(parent, "artifacts");
+    const sourceDirectory = join(source, "src"); const before = (await readdir(sourceDirectory)).sort();
+    const preload = join(scratch, "replace-parent.ts");
+    // Replace the external filesystem node after its inventory, before any output mutation.
+    await writeFile(preload, `import * as fs from "node:fs/promises";
+import { mock } from "bun:test";
+const original = { ...fs }; let changed = false;
+mock.module("node:fs/promises", () => ({ ...original, lstat: async (...args: Parameters<typeof fs.lstat>) => {
+  const result = await Reflect.apply(original.lstat, original, args);
+  if (!changed && ${JSON.stringify(phase)} === "inventoried" && String(args[0]) === "/") {
+    changed = true; await original.rename(${JSON.stringify(parent)}, ${JSON.stringify(parent + "-saved")});
+    await original.symlink(${JSON.stringify(sourceDirectory)}, ${JSON.stringify(parent)});
+  }
+  return result;
+}, open: async (...args: Parameters<typeof fs.open>) => {
+  const result = await Reflect.apply(original.open, original, args);
+  if (!changed && ${JSON.stringify(phase)} === "opened" && String(args[0]) === ${JSON.stringify(parent)}) {
+    changed = true; await original.rename(${JSON.stringify(parent)}, ${JSON.stringify(parent + "-saved")});
+    await original.symlink(${JSON.stringify(sourceDirectory)}, ${JSON.stringify(parent)});
+  }
+  return result;
+} }));
+`);
+    const built = await command([process.execPath, "--preload", preload, join(source, "scripts/build-native-candidate.ts"), "--out", output], source, environment);
+    expect(built.exit).toBe(1);
+    expect(built.stdout).toBe("");
+    expect((await readdir(sourceDirectory)).sort()).toEqual(before);
+    expect((await lstat(parent)).isSymbolicLink()).toBe(true);
+    expect(await readlink(parent)).toBe(sourceDirectory);
+    expect(await readdir(parent + "-saved")).toEqual(phase === "opened" ? ["artifacts"] : []);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 }, 20000);

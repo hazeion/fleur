@@ -1,5 +1,5 @@
-import { closeSync, constants, fstatSync, readFileSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { closeSync, constants, fstatSync, fsyncSync, readFileSync } from "node:fs";
+import { lstat, mkdtemp, open, readFile, readdir, realpath, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type catalogShape from "./native-candidate-ubuntu24-amd64.json";
@@ -31,7 +31,7 @@ async function run(args: string[], cwd: string): Promise<void> {
   } finally { process.chdir(previous); }
 }
 interface DirectoryIdentity { readonly dev: bigint; readonly ino: bigint }
-async function outputDirectory(path: string): Promise<{ directory: FileHandle; verify: () => Promise<void> }> {
+async function outputDirectory(path: string) {
   const ancestors = new Map<string, DirectoryIdentity>();
   for (let parent = dirname(path);;) {
     const info = await lstat(parent, { bigint: true });
@@ -39,22 +39,50 @@ async function outputDirectory(path: string): Promise<{ directory: FileHandle; v
     ancestors.set(parent, { dev: info.dev, ino: info.ino });
     const next = dirname(parent); if (next === parent) break; parent = next;
   }
-  await mkdir(path, { mode: 0o700 });
-  const created = await lstat(path, { bigint: true });
-  if (!created.isDirectory() || created.isSymbolicLink()) throw new Error("Output directory changed during creation.");
-  const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  const verify = async () => {
-    for (const [parent, expected] of ancestors) {
-      const current = await lstat(parent, { bigint: true });
-      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino) throw new Error("Output ancestor changed; refusing publication.");
-    }
-    const bound = await directory.stat({ bigint: true });
-    const current = await lstat(path, { bigint: true });
-    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== created.dev || current.ino !== created.ino
-      || !bound.isDirectory() || bound.dev !== created.dev || bound.ino !== created.ino || bound.uid !== BigInt(process.getuid?.() ?? -1) || (bound.mode & 0o077n) !== 0n) throw new Error("Output directory changed; refusing publication.");
-  };
-  try { await verify(); return { directory, verify }; }
-  catch (error) { await directory.close(); throw error; }
+  if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Descriptor-relative output creation is unavailable on this platform.");
+  const { dlopen, FFIType, ptr } = await import("bun:ffi");
+  const library = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+    mkdirat: { args: [FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+    // Open an already-created directory: no variadic mode argument or path fallback.
+    openat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+  });
+  let parent: FileHandle | undefined;
+  let descriptor = -1;
+  try {
+    parent = await open(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const expected = ancestors.get(dirname(path))!;
+    const boundParent = await parent.stat({ bigint: true });
+    if (!boundParent.isDirectory() || boundParent.dev !== expected.dev || boundParent.ino !== expected.ino) throw new Error("Output parent changed; refusing creation.");
+    const name = Buffer.from(basename(path) + "\0");
+    // Every mutation is relative to the approved parent descriptor, even if its path moves.
+    if (library.symbols.mkdirat(parent.fd, ptr(name), 0o700) !== 0) throw new Error("Exclusive descriptor-relative output creation failed.");
+    descriptor = library.symbols.openat(parent.fd, ptr(name), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (descriptor < 0) throw new Error("Created output directory could not be opened without following links.");
+    const fd = descriptor;
+    const directory = {
+      fd,
+      stat: () => fstatSync(fd, { bigint: true }),
+      sync: () => fsyncSync(fd),
+      close: () => closeSync(fd),
+    };
+    const created = directory.stat();
+    const verify = async () => {
+      for (const [ancestor, identity] of ancestors) {
+        const current = await lstat(ancestor, { bigint: true });
+        if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino) throw new Error("Output ancestor changed; refusing publication.");
+      }
+      const bound = directory.stat();
+      const current = await lstat(path, { bigint: true });
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== created.dev || current.ino !== created.ino
+        || !bound.isDirectory() || bound.dev !== created.dev || bound.ino !== created.ino || bound.uid !== BigInt(process.getuid?.() ?? -1) || (bound.mode & 0o077n) !== 0n) throw new Error("Output directory changed; refusing publication.");
+    };
+    await verify();
+    descriptor = -1;
+    return { directory, verify };
+  } finally {
+    try { if (descriptor >= 0) closeSync(descriptor); }
+    finally { try { await parent?.close(); } finally { library.close(); } }
+  }
 }
 async function publish(scratch: string, output: Awaited<ReturnType<typeof outputDirectory>>, expected: readonly { filename: string; sha256: string }[]) {
   if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Descriptor-relative artifact publication is unavailable on this platform.");
@@ -67,7 +95,7 @@ async function publish(scratch: string, output: Awaited<ReturnType<typeof output
   let sourceDirectory: FileHandle | undefined;
   try {
     sourceDirectory = await open(scratch, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    if ((await sourceDirectory.stat({ bigint: true })).dev !== (await output.directory.stat({ bigint: true })).dev) throw new Error("Staging and output must share a filesystem; choose an owned TMPDIR on the output filesystem.");
+    if ((await sourceDirectory.stat({ bigint: true })).dev !== output.directory.stat().dev) throw new Error("Staging and output must share a filesystem; choose an owned TMPDIR on the output filesystem.");
     for (const artifact of expected) {
       await output.verify();
       const source = await open(join(scratch, artifact.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);

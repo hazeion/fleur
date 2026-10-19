@@ -45,7 +45,7 @@ class DriverEvidence(unittest.TestCase):
                             'Config':{'Image':'sha256:'+'a'*64,'User':'65534:65534','Labels':{'fleur.compatibility.runtime-owner':owner.get('value','')},
                             'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
                                    'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0',
-                                   'BUN_JSC_useConcurrentJIT=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0']},
+                                   'BUN_JSC_useConcurrentJIT=0','BUN_JSC_useConcurrentGC=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0']},
                             'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
                             'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
                             'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
@@ -292,7 +292,7 @@ class DriverEvidence(unittest.TestCase):
         self.assertIn('heap_probe.ts',self.last_context_files);self.assertIn('heap_probe.test.ts',self.last_context_files)
         self.assertIn('COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./',self.last_dockerfile)
         self.assertIn('bun test heap_probe.test.ts',self.last_dockerfile)
-        for setting in ('BUN_JSC_useConcurrentJIT=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0'):
+        for setting in ('BUN_JSC_useConcurrentJIT=0','BUN_JSC_useConcurrentGC=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0'):
             self.assertEqual(self.last_dockerfile.count(setting),2)
         self.assertIn('heap_probe.ts',report['source_sha256']);self.assertIn('heap_probe.test.ts',report['source_sha256'])
 

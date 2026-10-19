@@ -13,6 +13,7 @@ SAFE_ENVIRONMENT = {
     'BUN_INSTALL_BIN':'/usr/local/bin',
     'GLIBC_TUNABLES':'glibc.pthread.rseq=0',
     'BUN_JSC_useConcurrentJIT':'0',
+    'BUN_JSC_useConcurrentGC':'0',
     'BUN_JSC_numberOfGCMarkers':'1',
     'BUN_JSC_useWarmUpMarkedBlocks':'0',
 }

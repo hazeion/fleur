@@ -86,7 +86,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
              patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error) as lifecycle_call, \
-             patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby'},side_effect=control_error), \
+             patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby','_docker_state_endpoint':{'path':'/private-fixture-engine'}},side_effect=control_error), \
              patch.object(run,'OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':True,'exit_code':0},close=lambda:None)), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
                  {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
@@ -260,6 +260,9 @@ class DriverEvidence(unittest.TestCase):
         self.assertEqual(report['healthy_exit_evidence'],'containerd-init-exit')
         self.assertEqual(self.last_lifecycle_call.kwargs['containerd_control']['namespace'],'moby')
         self.assertEqual(self.last_lifecycle_call.kwargs['timeout'],30)
+        self.assertTrue(callable(self.last_lifecycle_call.kwargs['inspect_worker_state']))
+        self.assertNotIn('_docker_state_endpoint',report['host_containerd_control'])
+        self.assertNotIn('/private-fixture-engine',json.dumps(report))
         code, report=self.execute(json.dumps(monitor),container_exit=0)
         self.assertEqual(code,0)
         self.assertIsNone(self.last_lifecycle_call.kwargs['containerd_control'])

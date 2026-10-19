@@ -16,6 +16,7 @@ from resources import accept_resources
 from diagnostics import snapshot_worker
 from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL, inspect_containerd_control, ContainerdControlUnverified
 from lifecycle import run_lifecycle
+from engine_state import read_owned_container_state
 from descriptor_audit import inspect_event_inventory
 from completion import CompletionUnverified
 from waiter import OwnedWaiter, WaitUnverified
@@ -79,7 +80,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
                                                'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
-                                               'registration_canary.py','worker_deadline.py','kernel_network.py','kernel_docker.py')}
+                                               'registration_canary.py','worker_deadline.py','kernel_network.py','kernel_docker.py','engine_state.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -203,12 +204,18 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
             control = inspect_containerd_control() if healthy_containerd_exit else None
-            if control is not None: REPORT['host_containerd_control'] = control
+            state_endpoint=None
+            if control is not None:
+                state_endpoint=control.pop('_docker_state_endpoint',None)
+                if creator is None and type(state_endpoint) is not dict:
+                    raise RuntimeError('verified default Engine endpoint missing')
+                REPORT['host_containerd_control'] = control
             REPORT['healthy_exit_evidence'] = 'containerd-init-exit' if control is not None else 'startup-bound-docker-wait'
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
                 REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,
                 create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
-                aggregate_preparation_budget=creator is not None)
+                aggregate_preparation_budget=creator is not None,
+                inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
             negative_diagnostics = {}

@@ -289,6 +289,11 @@ def inspect_containerd_control(*, probe_first_use=False):
         config=json.loads(path.read_text())
     docker_started=time.monotonic();docker_phases={}
     default_socket=trusted('/var/run/docker.sock',stat.S_ISSOCK,socket=True)
+    def endpoint_identity(info):return [info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode]
+    state_endpoint={'path':str(default_socket),
+                    'directory_identity':endpoint_identity(default_socket.parent.stat(follow_symlinks=False)),
+                    'socket_identity':endpoint_identity(default_socket.stat(follow_symlinks=False))}
+
     try:
         remaining=15-(time.monotonic()-docker_started)
         if remaining<=0:raise ContainerdControlUnverified('docker-preflight-deadline',{'timed_out':True})
@@ -376,6 +381,10 @@ def inspect_containerd_control(*, probe_first_use=False):
     audit_completed=time.monotonic()
     binary_sha256=hashlib.sha256(ctr.read_bytes()).hexdigest()
     hash_completed=time.monotonic()
+    if (endpoint_identity(default_socket.parent.stat(follow_symlinks=False))!=state_endpoint['directory_identity']
+            or endpoint_identity(default_socket.stat(follow_symlinks=False))!=state_endpoint['socket_identity']):
+        raise ContainerdControlUnverified('docker-default-endpoint-changed',{})
+    control['_docker_state_endpoint']=state_endpoint
     control.update({'ctr_binary_sha256':binary_sha256,
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
                     'docker_default_socket_verified':True,'docker_preflight_source':'verified-unix-api-and-active-cli',

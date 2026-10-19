@@ -401,3 +401,79 @@ test("grant inspection rejects an owned FIFO promptly instead of blocking before
     expect(JSON.parse(stdout)).toMatchObject({ exitCode: 5, result: { command: "setup grants list", error: { code: "RECOVERY_REQUIRED" } } });
   } finally { if (cutoff) clearTimeout(cutoff); if (child) { child.kill("SIGKILL"); await child.exited; } await rm(directory, { recursive: true, force: true }); }
 });
+
+test("malformed grant enum arrays cannot become reusable noninteractive authority", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-malformed-grant-");
+  let pulls = 0;
+  try {
+    const image = "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e";
+    const scope = { action: "image-acquire", method: "docker-digest-pull", target: image + " via unix:///var/run/docker.sock", machine: "c".repeat(64), user: process.getuid!() };
+    const grant = { ...scope, id: crypto.randomUUID(), planChecksum: Bun.CryptoHasher.hash("sha256", JSON.stringify(scope), "hex"), mode: "once", revoked: false };
+    const fixture = localHost(async (args) => {
+      if (args.includes("image") && args.includes("inspect")) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such image" };
+      if (args.includes("pull")) { pulls++; return { status: "completed", exitCode: 1, stdout: "", stderr: "Acquisition failed" }; }
+      throw new Error("Unexpected external operation");
+    });
+    const handlers = setupCommands({ ...fixture, stateDirectory: directory, host: async () => ({ ...(await fixture.host()), machineId: "c".repeat(64) }) });
+    for (const field of ["mode", "action", "method"] as const) {
+      await writeFile(directory + "/grants.json", JSON.stringify({ formatVersion: 1, grants: [{ ...grant, [field]: [grant[field]] }] }), { mode: 0o600 });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers });
+        expect(outcome).toMatchObject({ exitCode: 5, result: { error: { code: "RECOVERY_REQUIRED" } } });
+      }
+    }
+    expect(pulls).toBe(0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a full active grant store refuses new authority without publishing an unreadable store or acquiring an image", async () => {
+  const { mkdtemp, writeFile, readFile, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-full-grants-");
+  let pulls = 0;
+  try {
+    const grants = Array.from({ length: 100 }, () => ({ id: crypto.randomUUID(), action: "image-acquire", method: "docker-digest-pull", target: "old-scope", planChecksum: "a".repeat(64), machine: "a".repeat(64), user: process.getuid!(), mode: "remembered", revoked: false }));
+    const initial = JSON.stringify({ formatVersion: 1, grants });
+    await writeFile(directory + "/grants.json", initial, { mode: 0o600 });
+    const fixture = localHost(async (args) => {
+      if (args.includes("image") && args.includes("inspect")) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such image" };
+      if (args.includes("pull")) { pulls++; return { status: "completed", exitCode: 1, stdout: "", stderr: "Acquisition failed" }; }
+      throw new Error("Unexpected external operation");
+    });
+    const handlers = setupCommands({ ...fixture, stateDirectory: directory, interactive: true, host: async () => ({ ...(await fixture.host()), machineId: "b".repeat(64) }), confirmHuman: async () => "once" });
+    const before = await runCli(["setup", "grants", "list", "--json"], { cwd: "/tmp", handlers });
+    expect(before.exitCode).toBe(0);
+    const attempted = await runCli(["setup"], { cwd: "/tmp", handlers });
+    expect(attempted).toMatchObject({ exitCode: 5, result: { error: { code: "RECOVERY_REQUIRED" } } });
+    const after = await runCli(["setup", "grants", "list", "--json"], { cwd: "/tmp", handlers });
+    expect(after).toEqual(before);
+    expect(await readFile(directory + "/grants.json", "utf8")).toBe(initial);
+    expect(pulls).toBe(0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("the UTF-8 grant-store bound is enforced before publication even below the grant-count limit", async () => {
+  const { mkdtemp, writeFile, readFile, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-grant-byte-bound-");
+  let pulls = 0;
+  try {
+    const grants = Array.from({ length: 78 }, () => ({ id: crypto.randomUUID(), action: "image-acquire", method: "docker-digest-pull", target: "x".repeat(500), planChecksum: "a".repeat(64), machine: "a".repeat(64), user: process.getuid!(), mode: "remembered", revoked: false }));
+    let extraBytes = 65480 - Buffer.byteLength(JSON.stringify({ formatVersion: 1, grants }), "utf8");
+    for (const grant of grants) { const count = Math.min(extraBytes, 500); grant.target = "é".repeat(count) + "x".repeat(500 - count); extraBytes -= count; }
+    const initial = JSON.stringify({ formatVersion: 1, grants });
+    expect(Buffer.byteLength(initial, "utf8")).toBe(65480);
+    await writeFile(directory + "/grants.json", initial, { mode: 0o600 });
+    const fixture = localHost(async (args) => {
+      if (args.includes("image") && args.includes("inspect")) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such image" };
+      if (args.includes("pull")) { pulls++; return { status: "completed", exitCode: 1, stdout: "", stderr: "Acquisition failed" }; }
+      throw new Error("Unexpected external operation");
+    });
+    const handlers = setupCommands({ ...fixture, stateDirectory: directory, interactive: true, host: async () => ({ ...(await fixture.host()), machineId: "b".repeat(64) }), confirmHuman: async () => "once" });
+    const before = await runCli(["setup", "grants", "list", "--json"], { cwd: "/tmp", handlers });
+    expect(before.exitCode).toBe(0);
+    expect(await runCli(["setup"], { cwd: "/tmp", handlers })).toMatchObject({ exitCode: 5, result: { error: { code: "RECOVERY_REQUIRED" } } });
+    expect(await runCli(["setup", "grants", "list", "--json"], { cwd: "/tmp", handlers })).toEqual(before);
+    expect(await readFile(directory + "/grants.json", "utf8")).toBe(initial);
+    expect(pulls).toBe(0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

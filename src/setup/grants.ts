@@ -21,7 +21,25 @@ export function stateDirectory(host: SetupHost): string { return host.stateDirec
 function isGrant(value: unknown): value is Grant {
   if (value === null || typeof value !== "object") return false;
   const grant = value as Record<string, unknown>;
-  return typeof grant.id === "string" && /^[a-f0-9-]{36}$/.test(grant.id) && ["install", "service-start", "service-enable", "docker-access", "configuration", "image-acquire"].includes(String(grant.action)) && ["docker-desktop-official-dmg", "docker-official-apt", "arch-official-pacman", "docker-digest-pull"].includes(String(grant.method)) && typeof grant.target === "string" && grant.target.length > 0 && grant.target.length <= 512 && [...grant.target].every((character) => character.charCodeAt(0) >= 32) && typeof grant.planChecksum === "string" && /^[a-f0-9]{64}$/.test(grant.planChecksum) && typeof grant.machine === "string" && /^[a-f0-9]{64}$/.test(grant.machine) && grant.user === process.getuid?.() && ["once", "remembered"].includes(String(grant.mode)) && typeof grant.revoked === "boolean";
+  const fields = ["id", "action", "method", "target", "planChecksum", "machine", "user", "mode", "revoked"];
+  return !Array.isArray(value)
+    && Object.keys(grant).length === fields.length
+    && Object.keys(grant).every((key) => fields.includes(key))
+    && typeof grant.id === "string" && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(grant.id)
+    && typeof grant.action === "string" && ["install", "service-start", "service-enable", "docker-access", "configuration", "image-acquire"].includes(grant.action)
+    && typeof grant.method === "string" && ["docker-desktop-official-dmg", "docker-official-apt", "arch-official-pacman", "docker-digest-pull"].includes(grant.method)
+    && typeof grant.target === "string" && grant.target.length > 0 && grant.target.length <= 512 && [...grant.target].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+    && typeof grant.planChecksum === "string" && /^[a-f0-9]{64}$/.test(grant.planChecksum)
+    && typeof grant.machine === "string" && /^[a-f0-9]{64}$/.test(grant.machine)
+    && typeof grant.user === "number" && Number.isSafeInteger(grant.user) && grant.user >= 0 && grant.user === process.getuid?.()
+    && typeof grant.mode === "string" && ["once", "remembered"].includes(grant.mode)
+    && typeof grant.revoked === "boolean";
+}
+function validateStore(value: unknown): readonly Grant[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid grant store");
+  const store = value as Record<string, unknown>;
+  if (Object.keys(store).length !== 2 || !Object.keys(store).every((key) => ["formatVersion", "grants"].includes(key)) || store.formatVersion !== 1 || !Array.isArray(store.grants) || store.grants.length > 100 || !store.grants.every(isGrant) || new Set(store.grants.map((grant) => grant.id)).size !== store.grants.length) throw new Error("Invalid grant store");
+  return store.grants;
 }
 export async function readGrants(host: SetupHost): Promise<readonly Grant[]> {
   const directory = stateDirectory(host);
@@ -43,10 +61,7 @@ export async function readGrants(host: SetupHost): Promise<readonly Grant[]> {
     }
     if (used > 65536) throw new Error("Grant file exceeded the bounded read");
     const value: unknown = JSON.parse(bytes.subarray(0, used).toString("utf8"));
-    if (value === null || typeof value !== "object") throw new Error("Invalid grant store");
-    const store = value as Record<string, unknown>;
-    if (store.formatVersion !== 1 || !Array.isArray(store.grants) || store.grants.length > 100 || !store.grants.every(isGrant) || new Set(store.grants.map((grant) => grant.id)).size !== store.grants.length) throw new Error("Invalid grant store");
-    return store.grants;
+    return validateStore(value);
   } finally { await file.close(); }
 }
 export async function listGrants(input: CommandInput, host: SetupHost): Promise<CliOutcome> {
@@ -70,10 +85,16 @@ export async function revokeGrant(input: CommandInput, host: SetupHost): Promise
 
 /** Caller holds the setup lock across validation, consumption and the external action. */
 export async function writeGrants(host: SetupHost, grants: readonly Grant[]): Promise<void> {
+  const store = { formatVersion: 1, grants };
+  validateStore(store);
+  const encoded = JSON.stringify(store) + "\n";
+  if (Buffer.byteLength(encoded, "utf8") > 65536) throw new Error("Grant store exceeds encoded byte limit");
+  // Validate the exact payload before publishing authority, not merely the in-memory inputs.
+  validateStore(JSON.parse(encoded));
   const temporary = join(stateDirectory(host), `grants-${crypto.randomUUID()}.tmp`);
   try {
     const file = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    try { await file.writeFile(JSON.stringify({ formatVersion: 1, grants }) + "\n"); await file.sync(); }
+    try { await file.writeFile(encoded); await file.sync(); }
     finally { await file.close(); }
     await rename(temporary, join(stateDirectory(host), "grants.json"));
     // A rename is not durable authority until its directory entry is flushed.

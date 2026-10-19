@@ -1,3 +1,5 @@
+import { selectNativeProfile, type NativeInstallProfile } from "./native.ts";
+import { setupNativeApt } from "./native-apt.ts";
 import { installationMethod } from "./profiles.ts";
 import { failure, type CliOutcome, type Json } from "../cli/result.ts";
 import type { CommandInput } from "../cli/catalog.ts";
@@ -7,7 +9,7 @@ import { readGrants, stateDirectory, writeGrants, type Grant } from "./grants.ts
 import { withSetupLock, SetupBusy } from "./lock.ts";
 function diagnostic(data: Json): Readonly<Record<string, Json>> { return data !== null && typeof data === "object" && !Array.isArray(data) ? data as Readonly<Record<string, Json>> : {}; }
 function reframe(outcome: CliOutcome, extra: Readonly<Record<string, Json>> = {}): CliOutcome { return { ...outcome, result: { ...outcome.result, command: "setup", data: { ...diagnostic(outcome.result.data), ...extra } } }; }
-export async function setup(input: CommandInput, host: SetupHost): Promise<CliOutcome> {
+export async function setup(input: CommandInput, host: SetupHost, profiles: readonly NativeInstallProfile[] = []): Promise<CliOutcome> {
   if (input.args.some((arg, index) => arg !== "--grant" && input.args[index - 1] !== "--grant")) return failure("setup", 2, { code: "ARGUMENT_INVALID", message: "Setup accepts only --grant <id>.", actions: [] });
   const deadline = performance.now() + input.timeoutSeconds * 1000;
   const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
@@ -53,5 +55,7 @@ export async function setup(input: CommandInput, host: SetupHost): Promise<CliOu
   }
   const cli = diagnostic(diagnostic(diagnostic(observed.result.data).components ?? null).cli ?? null);
   if (cli.state !== "missing") return reframe(observed);
-  return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The official installation method requires a verified release profile and separately authorized machine changes. Existing software was preserved.", actions: [{ command: "fleur doctor", description: "Inspect current prerequisites; complete the documented official setup manually and rerun setup." }] }, { plan: { method, verified: false, actions: ["install", "repository-configuration", "service-start", "service-enable", "docker-access", "profile-configuration", "legal-acceptance"], reason: "Native installer and side-effect verification is incomplete." }, grantsCreated: false, resumable: true });
+  const profile = selectNativeProfile(identity, profiles);
+  if (profile) return setupNativeApt(input, host, identity, profile, remaining);
+  return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The official installation method requires a verified release profile and separately authorized machine changes. Existing software was preserved.", actions: [{ command: "fleur doctor", description: "Inspect current prerequisites; complete the documented official setup manually and rerun setup." }] }, { plan: { method, verified: false, actions: ["install", "repository-configuration", "service-start", "service-enable", "docker-access", "profile-configuration", "legal-acceptance"], steps: method === "docker-official-apt" ? [{ action: "repository-configuration", method, state: "unverified" }, { action: "install", method, state: "unverified", requires: ["service-start", "service-enable"] }] : [{ action: "install", method, state: "unverified", requires: method === "docker-desktop-official-dmg" ? ["profile-configuration", "legal-acceptance"] : [] }], reason: "Native installer and side-effect verification is incomplete." }, grantsCreated: false, resumable: true });
 }

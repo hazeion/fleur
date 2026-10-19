@@ -207,3 +207,15 @@ test("non-directory planned parents produce a zero-write collision result", asyn
     expect(await readFile(join(cwd, parent), "utf8")).toBe("Preserve this file\n");
   }
 });
+test("a changed project pin cannot be reported as successful creation", async () => {
+  const cwd = await root(); const commands = join(cwd, "commands"); await mkdir(commands);
+  await writeFile(join(commands, "git"), '#!/bin/sh\nprintf \'{"fleurVersion":"9.9.9"}\\n\' > "$6/fleur.json"\nexit 0\n', { mode: 0o755 });
+  const target = join(cwd, "project"); await mkdir(target);
+  const previous = process.env.PATH; process.env.PATH = commands; let outcome;
+  try { outcome = await runCli(["init"], { cwd: target, handlers: projectCommands }); }
+  finally { process.env.PATH = previous; }
+  expect(outcome.exitCode).toBe(5);
+  expect(outcome.result.ok).toBe(false);
+  expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(JSON.parse(await readFile(join(target, "fleur.json"), "utf8"))).toEqual({ fleurVersion: "9.9.9" });
+});

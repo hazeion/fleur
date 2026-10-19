@@ -127,6 +127,18 @@ export async function createProject(command: string, target: string, git: boolea
       }
     }
     await guard();
+    for (const item of [...created.filter((entry) => !entry.directory).map((entry) => ({ ...entry, expected: entry.bytes })), ...modified.map((entry) => ({ ...entry, expected: entry.after }))]) {
+      await verifyFile(item.path, item);
+      const handle = await open(item.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const identity = await handle.stat();
+        if (!item.expected || identity.ino !== item.ino || identity.dev !== item.dev || identity.size !== item.expected.length) throw new Error("Generated files changed concurrently");
+        const bytes = await handle.readFile();
+        if (!bytes.equals(item.expected)) throw new Error("Generated files changed concurrently");
+        await verifyFile(item.path, item);
+      } finally { await handle.close(); }
+    }
+    await guard();
     return success(command, { fleurVersion: version, compiler: "microsoft", git: gitState });
   } catch {
     const incomplete: string[] = [];

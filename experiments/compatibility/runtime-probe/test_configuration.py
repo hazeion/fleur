@@ -136,7 +136,7 @@ class ActualWorkerConfiguration(unittest.TestCase):
         calls=[]
         def metadata(path,*args,**kwargs):
             kind=stat.S_IFSOCK if str(path).endswith('.sock') else stat.S_IFREG if str(path) in ('/usr/bin/ctr','/usr/bin/true','/var/run/docker.pid') else stat.S_IFDIR
-            return SimpleNamespace(st_uid=0,st_mode=kind|0o755,st_size=0)
+            return SimpleNamespace(st_uid=0,st_gid=0,st_dev=1,st_ino=2,st_mode=kind|0o755,st_size=0)
         def contents(path):
             if str(path)=='/usr/bin/ctr' and getattr(self,'host_phase_clock',None) is not None:self.host_phase_clock[0]+=2
             if str(path)=='/var/run/docker.pid':return b'47'

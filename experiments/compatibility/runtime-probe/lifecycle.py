@@ -12,6 +12,7 @@ from waiter import OwnedWaiter
 from containerd_observer import ContainerdObserver
 from daemon_trace import capture_daemon_trace
 from worker_deadline import HostDeadlineGuard
+from engine_state import EngineStateUnverified
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
 PREPARATION_BUDGET_SECONDS = 20
@@ -29,7 +30,7 @@ def safe_worker_state(state):
 
 
 def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
-                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False):
+                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False, inspect_worker_state=None):
     if type(image_id) is not str or not re.fullmatch('sha256:[0-9a-f]{64}',image_id):
         raise ValueError('lifecycle immutable image invalid')
     if type(aggregate_preparation_budget) is not bool or (aggregate_preparation_budget and create_worker is None):
@@ -45,8 +46,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
         if deadline is not None and time.monotonic()>=deadline:
             raise RuntimeError('lifecycle '+phase+' deadline expired')
         return result.stdout
-    def metadata(name, identifier=None, deadline=None, maximum=5, phase='preparation'):
-        value = json.loads(command(['inspect', identifier or name, '--format', '{{json .}}'],deadline,maximum,phase))
+    def checked_metadata(value,name,identifier=None):
         if type(value) is not dict: raise RuntimeError('lifecycle container identity mismatch')
         config=value.get('Config')
         labels=config.get('Labels') if type(config) is dict else None
@@ -58,6 +58,9 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 or type(value.get('State')) is not dict):
             raise RuntimeError('lifecycle container identity mismatch')
         return value
+    def metadata(name, identifier=None, deadline=None, maximum=5, phase='preparation'):
+        value = json.loads(command(['inspect', identifier or name, '--format', '{{json .}}'],deadline,maximum,phase))
+        return checked_metadata(value,name,identifier)
     def inspect(name):
         return metadata(name,prepared.get(name))['State']
     def create_args(name, busy=False):
@@ -246,8 +249,22 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                           'duration_ms':0,'passed':False}
             busy_diagnostics['retirement_confirmation']=confirmation
             try:
-                state=metadata(busy_name,prepared[busy_name],confirmation_deadline,
-                               RETIREMENT_CONFIRMATION_BUDGET_SECONDS,'retirement confirmation')['State']
+                if inspect_worker_state is None:
+                    state=metadata(busy_name,prepared[busy_name],confirmation_deadline,
+                                   RETIREMENT_CONFIRMATION_BUDGET_SECONDS,'retirement confirmation')['State']
+                    confirmation['source']='docker-cli-inspect'
+                else:
+                    remaining_confirmation=confirmation_deadline-time.monotonic()
+                    if remaining_confirmation<=0:
+                        raise RuntimeError('lifecycle retirement confirmation deadline expired')
+                    try:
+                        value,transport=inspect_worker_state(prepared[busy_name],remaining_confirmation)
+                        confirmation['transport']=transport
+                    except EngineStateUnverified as error:
+                        confirmation['transport']=dict(error.observations)
+                        raise
+                    state=checked_metadata(value,busy_name,prepared[busy_name])['State']
+                    confirmation['source']='verified-default-engine-unix-api'
                 safe=safe_worker_state(state)
                 if (safe.get('Running') is not False or safe.get('ExitCode')!=137
                         or safe.get('FinishedAt','0001-').startswith('0001-')):

@@ -141,7 +141,7 @@ class LifecycleTests(unittest.TestCase):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
   return {'configuration':{'container_id':data['Id'],'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self,timeout=2,containerd_control=None,create_worker=None,aggregate_preparation_budget=False):
+ def run_probe(self,timeout=2,containerd_control=None,create_worker=None,aggregate_preparation_budget=False,inspect_worker_state=None):
   parent=self
   class FixtureDeadline:
    # Explicit host process boundary for fake Docker state. The separate guard
@@ -180,7 +180,36 @@ class LifecycleTests(unittest.TestCase):
    def close(self):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
-  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker,aggregate_preparation_budget=aggregate_preparation_budget)
+  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker,aggregate_preparation_budget=aggregate_preparation_budget,inspect_worker_state=inspect_worker_state)
+ def test_trusted_state_reader_keeps_full_identity_status_and_physical_deadline_checks(self):
+  calls=[]
+  def reader(cid,remaining):
+   self.assertGreater(remaining,0);self.assertLessEqual(remaining,10)
+   name='owned-busy-'+str({'c':0,'d':1}[cid[0]])
+   calls.append(cid)
+   return json.loads((self.root/name).read_text()),{'source':'fixture-engine-api','connection_closed':True,'deadline_timer_reaped':True}
+  result=self.run_probe(inspect_worker_state=reader)
+  self.assertTrue(result['passed']);self.assertEqual(calls,['c'*64,'d'*64])
+  for row in result['repeats']:
+   self.assertEqual(row['terminated_exit'],137)
+   self.assertLessEqual(row['termination']['physical_exit_lateness_ms'],250)
+   self.assertEqual(row['retirement_confirmation']['source'],'verified-default-engine-unix-api')
+   self.assertEqual(row['retirement_confirmation']['transport']['source'],'fixture-engine-api')
+
+ def test_trusted_state_reader_cannot_substitute_another_worker_or_wrong_exit(self):
+  for field,value in (('Id','f'*64),('Image','sha256:'+'f'*64),('ExitCode',0)):
+   with self.subTest(field=field):
+    def reader(cid,remaining):
+     data=json.loads((self.root/'owned-busy-0').read_text())
+     if field=='ExitCode':data['State'][field]=value
+     else:data[field]=value
+     return data,{'source':'fixture-engine-api'}
+    with self.assertRaisesRegex(RuntimeError,'identity mismatch|termination unconfirmed') as caught:
+     self.run_probe(inspect_worker_state=reader)
+    self.assertTrue(caught.exception.worker_diagnostics['termination']['physical_exit_confirmed'])
+    self.assertFalse(caught.exception.worker_diagnostics['retirement_confirmation']['passed'])
+    self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
  def test_owned_stopped_state_confirms_retirement_without_redundant_wait_rpc(self):
   self.env['LIFECYCLE_STALL_BUSY_WAIT']='1'
   result=self.run_probe()

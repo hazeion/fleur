@@ -1,0 +1,21 @@
+name: CLI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  packed-cli:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun install --cwd lint --frozen-lockfile --ignore-scripts
+      - run: bun test tests/cli
+      - run: bun run types
+      - run: bun run lint

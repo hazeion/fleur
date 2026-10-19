@@ -10,7 +10,8 @@ def metadata():
     return {'Id':'a'*64,'Name':'/worker','Image':IMAGE,
             'Config':{'Image':IMAGE,'User':'65534:65534','Labels':{OWNER_LABEL:'owner'},
                       'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
-                             'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0']},
+                             'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0',
+                             'BUN_JSC_useConcurrentJIT=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0']},
             'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
                           'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
                           'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
@@ -24,9 +25,19 @@ class ActualWorkerConfiguration(unittest.TestCase):
         result = audit_configuration(metadata(),'owner','worker',IMAGE)
         self.assertTrue(result['owned'])
         self.assertEqual(result['memory_bytes'],536870912)
-        self.assertEqual(result['environment_keys'],['BUN_INSTALL_BIN','BUN_RUNTIME_TRANSPILER_CACHE_PATH','GLIBC_TUNABLES','PATH'])
+        self.assertEqual(result['environment_keys'],['BUN_INSTALL_BIN','BUN_JSC_numberOfGCMarkers','BUN_JSC_useConcurrentJIT','BUN_JSC_useWarmUpMarkedBlocks','BUN_RUNTIME_TRANSPILER_CACHE_PATH','GLIBC_TUNABLES','PATH'])
         self.assertTrue(result['host_canary_absent'])
         self.assertNotIn('Env',json.dumps(result))
+
+    def test_experimental_helper_profile_requires_each_exact_approved_value(self):
+        self.assertTrue(audit_configuration(metadata(),'owner','worker',IMAGE)['owned'])
+        for key,expected in (('BUN_JSC_useConcurrentJIT','0'),('BUN_JSC_numberOfGCMarkers','1'),('BUN_JSC_useWarmUpMarkedBlocks','0')):
+            for replacement in (None,'unexpected'):
+                changed=metadata()
+                changed['Config']['Env']=[entry for entry in changed['Config']['Env'] if not entry.startswith(key+'=')]
+                if replacement is not None:changed['Config']['Env'].append(key+'='+replacement)
+                with self.subTest(key=key,replacement=replacement),self.assertRaises(ValueError):
+                    audit_configuration(changed,'owner','worker',IMAGE)
 
     def test_unsafe_identity_authority_or_resource_metadata_is_refused(self):
         changes = [('Name','/another-worker'),('Image','sha256:'+'b'*64),

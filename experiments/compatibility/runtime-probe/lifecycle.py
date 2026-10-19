@@ -1,6 +1,7 @@
 """Deadline proof across Docker CLI and owned daemon worker boundaries."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import math
 import re
 import subprocess
 import sys
@@ -30,11 +31,14 @@ def safe_worker_state(state):
 
 
 def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
-                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False, inspect_worker_state=None):
+                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False, inspect_worker_state=None, broker_ack_delay=0):
     if type(image_id) is not str or not re.fullmatch('sha256:[0-9a-f]{64}',image_id):
         raise ValueError('lifecycle immutable image invalid')
     if type(aggregate_preparation_budget) is not bool or (aggregate_preparation_budget and create_worker is None):
         raise ValueError('trusted preparation adapter required')
+    if (type(broker_ack_delay) not in (int,float) or not math.isfinite(broker_ack_delay)
+            or not 0<=broker_ack_delay<=11 or broker_ack_delay>=timeout):
+        raise ValueError('bounded host broker pause invalid')
     repeats = []
     def command(args, deadline=None, maximum=5, phase='preparation'):
         allowance=maximum if deadline is None else min(maximum,deadline-time.monotonic())
@@ -83,6 +87,10 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
         observed = {}
         busy_diagnostics = {'preparation':preparation}
         healthy_diagnostics = {'preparation':preparation}
+        pause={'requested_ms':round(broker_ack_delay*1000),'duration_ms':0,
+               'after_restriction_audit':False,'registered_request_verified':False,'completed':False}
+        busy_diagnostics['broker_ack_pause']=pause
+        healthy_diagnostics['broker_ack_pause']=pause
         stopped = {}
         abort = threading.Event()
         active_role = 'busy'
@@ -110,11 +118,39 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             return evidence.get('descriptor_audit')
         def dispatch(request):
             response = fixture_dispatch(request)
+            if busy_name not in observed or guard is None:
+                raise RuntimeError('broker pause before worker restriction audit')
+            pause['after_restriction_audit']=True
+            pause['registered_request_verified']=True
+            pause_started=time.monotonic()
+            remaining=started+timeout-pause_started
+            if remaining<=broker_ack_delay:
+                raise RuntimeError('broker pause consumes remaining operation deadline')
+            try:
+                if abort.wait(broker_ack_delay):
+                    raise RuntimeError('broker pause cancelled before acknowledgment')
+                if time.monotonic()>=started+timeout:
+                    raise RuntimeError('broker pause exceeded operation deadline')
+                pause['completed']=True
+            finally:
+                pause['duration_ms']=round(1000*(time.monotonic()-pause_started))
             return response
         def progress(stderr):
             if b'[compat-lifecycle] cpu-loop' in stderr:
                 if busy_name not in observed:
                     raise RuntimeError('CPU loop observed before worker restriction audit')
+                heap_at=stderr.find(b'[compat-gc] retained-values-verified')
+                if heap_at<0 or heap_at>stderr.find(b'[compat-lifecycle] cpu-loop'):
+                    raise RuntimeError('CPU loop observed before retained heap verification')
+                post_broker_heap_at=stderr.find(b'[compat-gc] post-broker-retained-values-verified')
+                if (post_broker_heap_at<0 or post_broker_heap_at<heap_at
+                        or post_broker_heap_at>stderr.find(b'[compat-lifecycle] cpu-loop')):
+                    raise RuntimeError('CPU loop observed before post-broker retained heap verification')
+                if pause['completed'] is not True:
+                    raise RuntimeError('CPU loop observed before registered broker acknowledgment')
+                if broker_ack_delay>10 and pause['duration_ms']<=10000:
+                    raise RuntimeError('idle broker pause did not exceed ten seconds')
+                stopped['retained_heap_verified_before_cpu_loop']=True
                 if not ready.is_set():
                     stopped['cpu_loop_entered_ms'] = round(1000*(time.monotonic()-started))
                 ready.set()
@@ -290,6 +326,8 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     or '[compat-lifecycle] cpu-loop' not in busy_diagnostics.get('stderr', '')):
                 raise RuntimeError('busy worker failed before application execution')
             repeats.append({'preparation':dict(preparation),
+                            'broker_ack_pause':dict(pause),
+                            'retained_heap_verified_before_cpu_loop':stopped['retained_heap_verified_before_cpu_loop'],
                             'retirement_confirmation':dict(confirmation),
                             'healthy_completed_while_busy_running':True,
                             'deadline_seconds':timeout,

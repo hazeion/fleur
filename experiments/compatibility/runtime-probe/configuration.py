@@ -12,6 +12,9 @@ SAFE_ENVIRONMENT = {
     'BUN_RUNTIME_TRANSPILER_CACHE_PATH':'0',
     'BUN_INSTALL_BIN':'/usr/local/bin',
     'GLIBC_TUNABLES':'glibc.pthread.rseq=0',
+    'BUN_JSC_useConcurrentJIT':'0',
+    'BUN_JSC_numberOfGCMarkers':'1',
+    'BUN_JSC_useWarmUpMarkedBlocks':'0',
 }
 
 
@@ -80,7 +83,7 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
             'cpu_nanocpus':host['NanoCpus'],'memory_bytes':host['Memory'],
             'memory_swap_bytes':host['MemorySwap'],'pids_limit':host['PidsLimit'],
             'network_mode':'none','kernel_network_isolated':kernel_private,'network_addresses_empty':True,'mount_count':0,'device_count':0,
-            'glibc_rseq_registration':'disabled','environment_keys':sorted(admitted),'host_canary_absent':True,'running':True}
+            'glibc_rseq_registration':'disabled','experimental_helper_policy':'foreground-jit-single-gc-marker-no-block-warmup','environment_keys':sorted(admitted),'host_canary_absent':True,'running':True}
 
 
 def inspect_worker_configuration(container, owner, image_id, owner_label=OWNER_LABEL, *, kernel_private=False, timeout=5):

@@ -1,3 +1,4 @@
+import { validateSetupArguments } from "./syntax.ts";
 import { failure, type CliOutcome } from "../cli/result.ts";
 import type { CommandInput } from "../cli/catalog.ts";
 import type { SetupHost, HostCommandResult } from "./commands.ts";
@@ -5,7 +6,8 @@ import { smokeContainer } from "./smoke.ts";
 import { smokeImages, installationMethod } from "./profiles.ts";
 /** Endpoint callback stays within trusted prerequisite orchestration, never CLI JSON. */
 export async function doctor({ args, timeoutSeconds }: CommandInput, host: SetupHost, localEndpoint?: (endpoint: string) => void): Promise<CliOutcome> {
-    if (args.length) return failure("doctor", 2, { code: "ARGUMENT_INVALID", message: "Doctor takes no positional arguments.", actions: [] });
+    const invalid = validateSetupArguments("doctor", args);
+    if (invalid) return invalid;
     const deadline = performance.now() + timeoutSeconds * 1000;
     const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
     const run = (args: readonly string[]) => remaining() > 0 ? host.run(args, remaining()) : Promise.resolve<HostCommandResult>({ status: "timeout", stdout: "", stderr: "" });

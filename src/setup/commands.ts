@@ -1,3 +1,4 @@
+import { validateSetupArguments } from "./syntax.ts";
 import { nativeInstallProfiles, type NativeInstallProfile } from "./native.ts";
 import { doctor } from "./doctor.ts";
 import { listGrants, revokeGrant } from "./grants.ts";
@@ -31,10 +32,11 @@ export interface SetupHost {
   readonly run: (args: readonly string[], timeoutMs: number) => Promise<HostCommandResult>;
 }
 export function setupCommands(host: SetupHost = productionHost(), profiles: readonly NativeInstallProfile[] = nativeInstallProfiles): readonly CommandDefinition[] {
-  return [
+  const commands: readonly CommandDefinition[] = [
     { name: "setup grants revoke", usage: "setup grants revoke <id>", summary: "Revoke a setup grant without changing installed software.", run: (input) => revokeGrant(input, host) },
     { name: "setup grants list", usage: "setup grants list", summary: "Inspect this OS user's setup grants.", run: (input) => listGrants(input, host) },
     { name: "setup", usage: "setup [--grant <id>]", summary: "Inspect authorized resumable prerequisite setup actions.", options: [{ name: "--grant", value: true }], run: (input) => setup(input, host, profiles) },
     { name: "doctor", usage: "doctor", summary: "Inspect local prerequisites without installing software.", run: (input) => doctor(input, host) },
   ];
+  return commands.map((command) => ({ ...command, validateArgs: (args: readonly string[]) => validateSetupArguments(command.name, args) }));
 }

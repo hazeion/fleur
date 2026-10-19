@@ -1,3 +1,4 @@
+import { validateSetupArguments } from "./syntax.ts";
 import { withSetupLock, SetupBusy, syncStateDirectory } from "./lock.ts";
 import { constants } from "node:fs";
 import { lstat, open, rename, unlink } from "node:fs/promises";
@@ -65,14 +66,16 @@ export async function readGrants(host: SetupHost): Promise<readonly Grant[]> {
   } finally { await file.close(); }
 }
 export async function listGrants(input: CommandInput, host: SetupHost): Promise<CliOutcome> {
-  if (input.args.length) return failure("setup grants list", 2, { code: "ARGUMENT_INVALID", message: "Grant inspection takes no positional arguments.", actions: [] });
+  const invalid = validateSetupArguments("setup grants list", input.args);
+  if (invalid) return invalid;
   try { return success("setup grants list", { grants: (await readGrants(host)).map(({ id, action, method, target, mode, revoked }) => ({ id, action, method, target, mode, revoked })) }); }
   catch { return failure("setup grants list", 5, { code: "RECOVERY_REQUIRED", message: "The private grant store is malformed or unsafe; no authority was used.", actions: [] }); }
 }
 
 export async function revokeGrant(input: CommandInput, host: SetupHost): Promise<CliOutcome> {
-  const id = input.args[0];
-  if (input.args.length !== 1 || !id || !/^[a-f0-9-]{36}$/.test(id)) return failure("setup grants revoke", 2, { code: "ARGUMENT_INVALID", message: "Specify exactly one setup grant ID.", actions: [] });
+  const id = input.args[0] ?? "";
+  const invalid = validateSetupArguments("setup grants revoke", input.args);
+  if (invalid) return invalid;
   try {
     return await withSetupLock(stateDirectory(host), async () => {
       const grants = await readGrants(host);

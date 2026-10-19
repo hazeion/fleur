@@ -115,3 +115,29 @@ test("project-local release delegation precedes the launcher's different Bun req
   expect(result.stderr).toBe("");
   expect(await Bun.file(sentinel).exists()).toBe(false);
 });
+
+test("invalid project positionals and compiler values retain argument errors before Bun compatibility", async () => {
+  for (const args of [["new"], ["init", "extra"], ["new", "abc", "--compiler", "invalid"]]) {
+    const result = await invoke(...args, "--json");
+    expect(result.exit).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({ formatVersion: 1, ok: false, error: { code: "ARGUMENT_INVALID" } });
+    expect(result.stderr).toBe("");
+  }
+  await expect(lstat(join(scratch, "abc"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await Bun.file(sentinel).exists()).toBe(false);
+});
+
+test("invalid prerequisite and grant arguments stop before Bun compatibility or host access", async () => {
+  for (const args of [["doctor", "extra"], ["setup", "extra"], ["setup", "grants", "list", "extra"], ["setup", "grants", "revoke"], ["setup", "grants", "revoke", "invalid"]]) {
+    const result = await invoke(...args, "--json");
+    expect(result.exit).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({ formatVersion: 1, ok: false, error: { code: "ARGUMENT_INVALID" } });
+    expect(result.stderr).toBe("");
+  }
+  const experimental = await invoke("new", "rust-target", "--compiler", "rust-experimental", "--json");
+  expect(experimental.exit).toBe(4);
+  expect(JSON.parse(experimental.stdout).error.code).not.toBe("ARGUMENT_INVALID");
+  await expect(lstat(join(scratch, "rust-target"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(join(scratch, ".local"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await Bun.file(sentinel).exists()).toBe(false);
+});

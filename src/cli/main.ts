@@ -69,6 +69,8 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   const { guardProjectPin } = await import("./project-pin.ts");
   const blocked = await guardProjectPin(handler.name, project);
   if (blocked) return blocked;
+  const invalidArguments = handler.validateArgs?.(commandArgs);
+  if (invalidArguments) return invalidArguments;
   if (Bun.version !== release.engines.bun) return failure(handler.name, 4, {
     code: "BUN_VERSION_MISMATCH", expected: release.engines.bun, actual: Bun.version,
     message: `Fleur ${release.version} requires Bun ${release.engines.bun}; invoking Bun is ${Bun.version}. Install the required Bun version manually and retry.`,

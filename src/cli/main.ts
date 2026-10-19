@@ -62,7 +62,7 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   const { handler, commandArgs, project, timeoutSeconds, json, help } = parsed.invocation;
   const handlers = context.handlers ?? [];
   if (help || !handler) return success("help", {
-    commands: [helpCommand, ...handlers.map(({ name, summary }) => ({ name, summary }))],
+    commands: [helpCommand, ...handlers.map(({ name, summary, usage, options }) => ({ name, summary, ...(usage ? { usage } : {}), ...(options ? { options } : {}) }))],
     options: globalOptions,
   });
   const { guardProjectPin } = await import("./project-pin.ts");

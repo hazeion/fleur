@@ -57,8 +57,10 @@ export async function createProject(command: string, target: string, git: boolea
   };
   const remember = async (path: string, directory: boolean, identity?: { ino: number; dev: number }, bytes?: Buffer) => {
     const item = identity ?? await lstat(path);
-    created.push({ path, directory, ino: item.ino, dev: item.dev, bytes });
+    const entry = { path, directory, ino: item.ino, dev: item.dev, bytes };
+    created.push(entry);
     if (directory) parents.set(path, { ino: item.ino, dev: item.dev });
+    return entry;
   };
   const ensure = async (path: string): Promise<void> => {
     const item = await stat(path);
@@ -84,7 +86,14 @@ export async function createProject(command: string, target: string, git: boolea
       const path = resolve(target, name);
       await guard();
       const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
-      try { const identity = await handle.stat(); await remember(path, false, identity, Buffer.from(content)); await verifyFile(path, identity); await handle.writeFile(content); await verifyFile(path, identity); } finally { await handle.close(); }
+      try {
+        const identity = await handle.stat();
+        const owned = await remember(path, false, identity, Buffer.alloc(0));
+        await verifyFile(path, identity);
+        await handle.writeFile(content);
+        owned.bytes = Buffer.from(content);
+        await verifyFile(path, identity);
+      } finally { await handle.close(); }
     }
     for (const name of ["AGENTS.md", "CLAUDE.md"]) {
       const path = resolve(target, name);
@@ -93,16 +102,18 @@ export async function createProject(command: string, target: string, git: boolea
       const handle = await open(path, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW | (existing ? 0 : constants.O_CREAT | constants.O_EXCL), 0o644);
       try {
         const identity = await handle.stat();
+        const owned = existing ? null : await remember(path, false, identity, Buffer.alloc(0));
         if (!identity.isFile()) throw new Error("Unsafe guidance path");
         await verifyFile(path, identity);
         const before = await handle.readFile();
+        if (owned && before.length !== 0) throw new Error("New guidance changed concurrently");
         if (before.includes(Buffer.from("<!-- fleur:generated:"))) throw new Error("Guidance changed concurrently");
         const appended = Buffer.from((before.length && before[before.length - 1] !== 10 ? "\n" : "") + generatedGuidance);
         const after = Buffer.concat([before, appended]);
         if (existing) modified.push({ path, ino: identity.ino, dev: identity.dev, before, after });
-        else await remember(path, false, identity, after);
         await verifyFile(path, identity);
-        await handle.write(appended);
+        await handle.writeFile(appended);
+        if (owned) owned.bytes = after;
         await verifyFile(path, identity);
       } finally { await handle.close(); }
     }
@@ -150,7 +161,9 @@ export async function createProject(command: string, target: string, git: boolea
         try {
           const current = await handle.stat();
           const bytes = await handle.readFile();
-          if (current.ino !== item.ino || current.dev !== item.dev || !bytes.equals(item.after)) throw new Error("Guidance changed concurrently");
+          if (current.ino !== item.ino || current.dev !== item.dev) throw new Error("Guidance changed concurrently");
+          if (bytes.equals(item.before)) continue;
+          if (!bytes.equals(item.after)) throw new Error("Guidance changed concurrently");
           await handle.write(item.before, 0, item.before.length, 0); await handle.truncate(item.before.length);
         } finally { await handle.close(); }
       } catch { incomplete.push(item.path); }

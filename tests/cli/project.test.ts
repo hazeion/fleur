@@ -219,3 +219,28 @@ test("a changed project pin cannot be reported as successful creation", async ()
   expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
   expect(JSON.parse(await readFile(join(target, "fleur.json"), "utf8"))).toEqual({ fleurVersion: "9.9.9" });
 });
+test("ordinary no-git deadline expiry completely removes only its own partial scaffold", async () => {
+  for (const timeout of ["0.000001", "0.001", "0.003", "0.005", "0.01", "0.015", "0.02", "0.025", "0.03", "0.04"]) {
+    const cwd = await root();
+    const outcome = await runCli(["new", "project", "--no-git", "--timeout", timeout], { cwd, handlers: projectCommands });
+    if (!outcome.result.ok) {
+      expect(outcome.exitCode).toBe(1);
+      expect(outcome.result.error?.code).toBe("PROJECT_CREATION_FAILED");
+      expect(await readdir(cwd)).toEqual([]);
+    }
+  }
+});
+test("deadline rollback preserves original guidance through each observed creation stage", async () => {
+  for (const timeout of ["0.000001", "0.005", "0.01", "0.015", "0.02", "0.025", "0.03", "0.04", "0.05", "0.06"]) {
+    const cwd = await root();
+    await writeFile(join(cwd, "AGENTS.md"), "Original agent instructions\n");
+    await writeFile(join(cwd, "CLAUDE.md"), "Original Claude instructions\n");
+    const outcome = await runCli(["init", "--no-git", "--timeout", timeout], { cwd, handlers: projectCommands });
+    if (!outcome.result.ok) {
+      expect(outcome.exitCode).toBe(1);
+      expect(await readdir(cwd)).toEqual(["AGENTS.md", "CLAUDE.md"]);
+      expect(await readFile(join(cwd, "AGENTS.md"), "utf8")).toBe("Original agent instructions\n");
+      expect(await readFile(join(cwd, "CLAUDE.md"), "utf8")).toBe("Original Claude instructions\n");
+    }
+  }
+});

@@ -11,11 +11,24 @@ export interface AptInstallProfile {
   readonly repositoryFingerprint: string;
   readonly packages: Readonly<Record<"docker-ce" | "docker-ce-cli" | "containerd.io" | "docker-buildx-plugin" | "docker-compose-plugin", string>>;
 }
-export type NativeInstallProfile = AptInstallProfile;
+export interface DesktopInstallProfile {
+  readonly method: "docker-desktop-official-dmg";
+  readonly artifactAuthentication: "authenticated";
+  readonly nativeEvidence: "pending" | "verified";
+  readonly release: string;
+  readonly architecture: "x64" | "arm64";
+  readonly version: string;
+  readonly build: string;
+  readonly url: string;
+  readonly sha256: string;
+  readonly bytes: number;
+  readonly teamId: string;
+}
+export type NativeInstallProfile = AptInstallProfile | DesktopInstallProfile;
 /** No native profile is admitted until release artifact/native verification is recorded. */
 export const nativeInstallProfiles: readonly NativeInstallProfile[] = [];
 export function selectNativeProfile(identity: HostIdentity, profiles: readonly NativeInstallProfile[]): NativeInstallProfile | undefined {
-  return profiles.find((profile) => profile.verified === true && profile.distribution === identity.distribution && profile.release === identity.release && profile.architecture === identity.architecture);
+  return profiles.find((profile) => (profile.method === "docker-official-apt" ? profile.verified === true && profile.distribution === identity.distribution : identity.system === "darwin" && profile.artifactAuthentication === "authenticated") && profile.release === identity.release && profile.architecture === identity.architecture);
 }
 export { validAptProfile, inspectAptPackageState } from "./native-state.ts";
 export async function inspectAptInstallation(profile: AptInstallProfile, host: SetupHost, remaining: () => number): Promise<"installed" | "absent" | "conflict" | "unavailable"> {

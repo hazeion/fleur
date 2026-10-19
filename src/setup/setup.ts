@@ -1,4 +1,5 @@
 import { selectNativeProfile, type NativeInstallProfile } from "./native.ts";
+import { setupNativeDesktop } from "./native-desktop.ts";
 import { setupNativeApt } from "./native-apt.ts";
 import { installationMethod } from "./profiles.ts";
 import { failure, type CliOutcome, type Json } from "../cli/result.ts";
@@ -60,7 +61,8 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
   const localUnready = endpoint !== undefined && cli.state === "ready" && (daemon.state === "ready" || daemon.state === "unavailable" || daemon.state === "denied");
   const packageInspectionAllowed = observed.exitCode === 4 && observed.result.error?.code === "PREREQUISITE_UNAVAILABLE" && (cli.state === "missing" || localUnready);
   const profile = packageInspectionAllowed ? selectNativeProfile(identity, profiles) : undefined;
-  if (profile) return setupNativeApt(input, host, identity, profile, remaining, cli.state === "ready");
+  if (profile?.method === "docker-official-apt") return setupNativeApt(input, host, identity, profile, remaining, cli.state === "ready");
   if (cli.state !== "missing") return reframe(observed);
+  if (profile?.method === "docker-desktop-official-dmg") return setupNativeDesktop(input, host, identity, profile, remaining);
   return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The official installation method requires a verified release profile and separately authorized machine changes. Existing software was preserved.", actions: [{ command: "fleur doctor", description: "Inspect current prerequisites; complete the documented official setup manually and rerun setup." }] }, { plan: { method, verified: false, actions: ["install", "repository-configuration", "service-start", "service-enable", "docker-access", "profile-configuration", "legal-acceptance"], steps: method === "docker-official-apt" ? [{ action: "repository-configuration", method, state: "unverified" }, { action: "install", method, state: "unverified", requires: ["service-start", "service-enable"] }] : [{ action: "install", method, state: "unverified", requires: method === "docker-desktop-official-dmg" ? ["profile-configuration", "legal-acceptance"] : [] }], reason: "Native installer and side-effect verification is incomplete." }, grantsCreated: false, resumable: true });
 }

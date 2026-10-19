@@ -10,6 +10,8 @@ A smoke container uses an existing exact architecture-specific Bun image from th
 
 Grants live in the OS user's private state directory outside application projects. `setup grants list` inspects them without changing state. `setup grants revoke <id>` atomically revokes a grant without changing installed software. An OS file lock serializes grant changes and image setup actions; it releases on process death. Contention returns `MAINTENANCE_BUSY` with exit 5. Unsafe, malformed or symlinked state is rejected. Grant records require exact primitive field types; array-to-string coercion never grants authority. Both reads and writes enforce at most 100 records and 64 KiB of encoded UTF-8, including the published newline. A new grant that exceeds either bound is refused before publication or acquisition, preserving all existing authority. No records are silently pruned; existing valid grants remain usable while creation requires explicit store recovery. Never delete another process's lock by guessing whether a PID is stale.
 
+See [Docker Desktop application placement](setup-desktop.md) for its separate authority and recovery rules, and [setup artifact evidence](setup-artifact-evidence.md) for verified payload observations and their native-support limits.
+
 ## Current evidence and remaining work
 
 Observed CLI, daemon, Compose and smoke readiness do not yet establish a verified native release installation profile. Doctor therefore reports the release profile as unverified and returns exit 4 even after a successful smoke check. This is an explicit implementation limitation, not a passed release gate. Native Docker Desktop installation/readiness and native Debian/Arch Docker installations were not established by the earlier compatibility userspace fixtures.

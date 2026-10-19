@@ -1,3 +1,4 @@
+import type { ArchInstallProfile } from "./native-arch.ts";
 import { inspectAptPackageState } from "./native-state.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
 
@@ -11,7 +12,7 @@ export interface AptInstallProfile {
   readonly repositoryFingerprint: string;
   readonly packages: Readonly<Record<"docker-ce" | "docker-ce-cli" | "containerd.io" | "docker-buildx-plugin" | "docker-compose-plugin", string>>;
 }
-export type NativeInstallProfile = AptInstallProfile;
+export type NativeInstallProfile = AptInstallProfile | ArchInstallProfile;
 /** No native profile is admitted until release artifact/native verification is recorded. */
 export const nativeInstallProfiles: readonly NativeInstallProfile[] = [];
 export function selectNativeProfile(identity: HostIdentity, profiles: readonly NativeInstallProfile[]): NativeInstallProfile | undefined {

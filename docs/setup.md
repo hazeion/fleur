@@ -74,3 +74,33 @@ Desktop disk image identities have been authenticated during development. This
 artifact evidence does not establish native installation or runtime support. The
 compiled native profile catalog is still disabled; disposable command fixtures
 exercise the adapters without changing host software.
+
+### Arch adapter checkpoint
+
+The disabled native catalog also has an executable Arch x86_64 adapter for the
+exact authenticated October 12, 2026 package inventory. Installation,
+configuration hooks and system Docker group creation require separate scoped
+grants. Installing packages does not authorize starting/enabling services or
+adding a user to the Docker group; those actions remain separate work.
+
+The adapter preserves exact existing packages and downloads only missing pinned
+archives into private staging. It checks size, digest, exact signer and current
+keyring trust. Preverification disables ambient GPG options and automatic key
+retrieval. A private configuration strengthens local signatures to Required and
+TrustedOnly, preserves the effective root/database/keyring/hooks, and registers
+no sync repositories. Global configuration, mirrorlists and keyrings are not
+reconfigured. Unreviewed dependencies, custom hooks or conflicting package state
+fail closed.
+
+The reviewed backend is exactly Pacman 7.1.0 with libalpm 16.0.0. Its source-defined
+question policy denies automatic key imports, replacement, ignored-package
+installation and corrupt-file deletion, retaining existing negative answers for
+conflict removals. A release-owned PreTransaction guard checks every transaction
+target and rechecks package state under ALPM's normal lock before installation.
+Fixture tests execute the generated guard; native ALPM, hook and installation
+proof remains pending. The production catalog is not enabled by these tests.
+
+An unconfirmed privileged transaction retains private installer data and reports
+recovery. Further setup cannot create new grants while that transaction remains
+indeterminate. Native verification must still establish privileged child cleanup
+before this adapter can be admitted as supported.

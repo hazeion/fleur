@@ -28,7 +28,11 @@ record() {
  if [ "${LIFECYCLE_RECORD_EVENTS:-}" ]; then printf '%s:%s\n' "$1" "$name" >> "$root/events"; fi
 }
 write_state() {
- printf '{"Id":"%s","Name":"/%s","Image":"%s","State":{"Status":"%s","Pid":%s,"Running":%s,"ExitCode":0,"FinishedAt":"%s"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$cid" "$name" "$LIFECYCLE_IMAGE" "$1" "$2" "$3" "$4" "$owner" > "$root/$name"
+ {
+ if [ "$1" = exited ] && [ "${LIFECYCLE_STATE_PUBLISH_DELAY:-}" ]; then sleep .1; fi
+ printf '{"Id":"%s","Name":"/%s","Image":"%s","State":{"Status":"%s","Pid":%s,"Running":%s,"ExitCode":0,"FinishedAt":"%s"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$cid" "$name" "$LIFECYCLE_IMAGE" "$1" "$2" "$3" "$4" "$owner"
+ } > "$root/$name.$$.tmp"
+ mv "$root/$name.$$.tmp" "$root/$name"
 }
 provision() {
  if [ "${LIFECYCLE_FOREIGN:-}" ]; then owner=foreign; fi
@@ -148,7 +152,9 @@ class LifecycleTests(unittest.TestCase):
      path=parent.root/self.name;metadata=json.loads(path.read_text());state=metadata['State']
      if not parent.env.get('LIFECYCLE_NO_KILL'):
       state.update(Running=False,ExitCode=137,FinishedAt='2026-10-13T00:00:01Z')
-      path.write_text(json.dumps(metadata,separators=(',',':'))+'\n')
+      publication=path.with_name(path.name+'.guard.tmp')
+      publication.write_text(json.dumps(metadata,separators=(',',':'))+'\n')
+      publication.replace(path)
      stopped=time.monotonic()
      if state['Running'] or (not cancelled and stopped>self.deadline+.25):raise RuntimeError('worker termination missed deadline')
      self.result={'outcome':'deadline','physical_exit_confirmed':True,'kill_lateness_ms':max(0,round(1000*(requested-self.deadline))),
@@ -164,6 +170,10 @@ class LifecycleTests(unittest.TestCase):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
   return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker)
+ def test_concurrent_exit_notification_never_reads_partially_published_fixture_state(self):
+  self.env['LIFECYCLE_STATE_PUBLISH_DELAY']='1'
+  self.assertTrue(self.run_probe()['passed'])
+
  def test_both_workers_are_prepared_without_processes_before_busy_execution(self):
   self.env['LIFECYCLE_RECORD_EVENTS']='1'
   original=self.observe

@@ -9,7 +9,8 @@
     "bin",
     "src",
     "docs/cli.md",
-    "docs/project-creation.md"
+    "docs/project-creation.md",
+    "docs/setup.md"
   ],
   "engines": {
     "bun": "1.4.3"
@@ -17,7 +18,7 @@
   "scripts": {
     "test": "bun test tests/cli",
     "types": "bun ./node_modules/typescript/bin/tsc --noEmit",
-    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli"
+    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli scripts"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",

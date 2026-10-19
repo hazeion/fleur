@@ -24,10 +24,9 @@ Official method references: [macOS](https://docs.docker.com/desktop/setup/instal
 
 The compiled native profile catalog remains empty until release verification admits
 an exact platform row. Candidate metadata cannot authorize execution. The apt
-adapter currently handles an entirely missing exact package set against an
-already configured official Docker repository. It never upgrades or repairs an
-existing or partially installed package set. Repository creation, Desktop and
-Arch installation remain unfinished.
+adapter currently handles an entirely missing exact package set against the exact official Docker repository. It never upgrades or repairs an
+existing or partially installed package set. Repository creation has a separate scoped adapter. Desktop and Arch installation
+remain unfinished.
 
 A verified apt plan requires separate installation, configuration, Docker access,
 service start and service enable grants because authenticated maintainer scripts
@@ -38,7 +37,7 @@ lock serializes that bounded mutation; grant revocation can report busy while it
 is running. No automatic license acceptance or interactive sudo prompt occurs.
 
 Before installation the adapter checks exact Docker repository configuration and
-key identity, then simulates exact pinned packages with upgrades and removals
+the authenticated public key bytes, then simulates exact pinned packages with upgrades and removals
 forbidden. Unexpected dependency changes fail closed. Actual installation uses
 noninteractive OS authentication and the same restricted repository selection.
 A successful package command still requires exact installed-state verification;
@@ -48,3 +47,19 @@ actual package state rather than repeating an installation from a checkpoint.
 Disposable command fixtures exercise this path without installing Docker or
 changing services on the developer machine. They are not native installation
 proof.
+
+Repository configuration requires its own `repository-configuration` grant,
+separate from the package maintainer scripts' `configuration` grant. It permits
+only fixed official key/source files, their required directories and a source
+scoped index refresh. Root-owned regular files and safe root directory metadata
+are checked before reuse. Differing files are preserved. New files use private
+staging, create-only publication and exact metadata/byte readback; a skipped copy
+or racing file cannot count as success. A failed index refresh preserves completed
+configuration and leaves package installation authority unused. No rollback
+removes successful shared system configuration automatically.
+
+Official apt signatures and package payloads, Arch package signatures and Docker
+Desktop disk image identities have been authenticated during development. This
+artifact evidence does not establish native installation or runtime support. The
+compiled native profile catalog is still disabled; disposable command fixtures
+exercise the adapters without changing host software.

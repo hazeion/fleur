@@ -1,3 +1,4 @@
+import { ensureAptRepository } from "./apt-repository.ts";
 import type { CommandInput } from "../cli/catalog.ts";
 import { failure, type CliOutcome } from "../cli/result.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
@@ -56,18 +57,8 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       const suite = profile.distribution === "debian" ? "trixie" : profile.release === "24.04" ? "noble" : "resolute";
       const architecture = profile.architecture === "x64" ? "amd64" : "arm64";
       const expectedSource = `Types: deb\nURIs: https://download.docker.com/linux/${profile.distribution}\nSuites: ${suite}\nComponents: stable\nArchitectures: ${architecture}\nSigned-By: /etc/apt/keyrings/docker.asc`;
-      const source = await run(["cat", "/etc/apt/sources.list.d/docker.sources"]);
-      const key = await run(["gpg", "--batch", "--with-colons", "--show-keys", "/etc/apt/keyrings/docker.asc"]);
-      const primaryFingerprints: string[] = [];
-      let primaryPending = false;
-      let primaryCount = 0;
-      for (const line of key.stdout.split("\n")) {
-        const fields = line.split(":");
-        if (fields[0] === "pub") { primaryCount++; primaryPending = true; }
-        else if (fields[0] === "sub") primaryPending = false;
-        else if (fields[0] === "fpr" && primaryPending) { primaryFingerprints.push(fields[9] ?? ""); primaryPending = false; }
-      }
-      if (source.status !== "completed" || source.exitCode !== 0 || source.stdout.trim() !== expectedSource || key.status !== "completed" || key.exitCode !== 0 || primaryCount !== 1 || primaryFingerprints.length !== 1 || primaryFingerprints[0] !== profile.repositoryFingerprint) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The exact Docker signed repository configuration is not present; no packages were changed.", actions: [] }, { plan: { action: "repository-configuration", method: profile.method }, resumable: true });
+      const repository = await ensureAptRepository(input, host, identity, profile, target, checksum, expectedSource, remaining);
+      if (repository) return repository;
       const sourceOptions = ["-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-"];
       const packages = Object.entries(profile.packages).map(([name, version]) => `${name}=${version}`);
       const simulated = await run(["apt-get", ...sourceOptions, "--simulate", "--no-remove", "--no-upgrade", "install", ...packages]);

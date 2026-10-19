@@ -32,8 +32,8 @@ test("missing Arch Docker packages require installation, configuration and acces
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "untrusted" | "extra-dependency" | "partial" | "timeout" | "missing-key" | "foreign-removal" | "conflict-question") {
-  const { writeFile, readFile, mkdir, readdir } = await import("node:fs/promises");
+async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "untrusted" | "extra-dependency" | "partial" | "timeout" | "missing-key" | "foreign-removal" | "conflict-question" | "marker-sync-failure" | "marker-remove-sync-failure") {
+  const { writeFile, readFile, mkdir, readdir, lstat } = await import("node:fs/promises");
   const directory = await mkdtemp("/tmp/fleur-arch-install-");
   const bytes = Object.fromEntries(Object.keys(packages).map((name) => [name, Buffer.from(`disposable archive ${name}\n`)]));
   const fixturePackages = Object.fromEntries(Object.entries(packages).map(([name, artifact]) => [name, { ...artifact, sha256: Bun.CryptoHasher.hash("sha256", bytes[name]!, "hex"), size: bytes[name]!.length }]));
@@ -43,6 +43,7 @@ async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "un
   const calls: string[][] = [];
   let importedKeys = 0;
   let foreignPresent = true;
+  let markerSynced = false;
   const baseline = "[options]\nRootDir = /\nDBPath = /var/lib/pacman/\nGPGDir = /etc/pacman.d/gnupg/\nHookDir = /etc/pacman.d/hooks/\nLocalFileSigLevel = Optional\n[core]\nServer = https://mirror.invalid/arch/$repo/os/$arch\n";
   const done = (stdout = "", exitCode = 0, stderr = "") => ({ status: "completed" as const, exitCode, stdout, stderr });
   try {
@@ -52,6 +53,12 @@ async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "un
     await writeFile(join(fixtureBin, "pacman"), `#!${process.execPath}\nconst rows = await Bun.file(${JSON.stringify(fixtureInventory)}).json(); process.stdout.write(rows.join("\\n")); process.exit(rows.length === 4 ? 0 : 1);\n`, { mode: 0o700 });
     const handlers = setupCommands({
       stateDirectory: join(directory, "state"), interactive: true,
+      syncDirectory: async (path) => {
+        let markerExists = false;
+        try { await lstat(join(path, "arch-transaction-pending.json")); markerExists = true; } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+        if (mode === "marker-sync-failure" && markerExists) throw Object.assign(new Error("Injected directory sync failure"), { code: "EIO" });
+        if (mode === "marker-remove-sync-failure") { if (markerExists) markerSynced = true; else if (markerSynced) throw Object.assign(new Error("Injected removal directory sync failure"), { code: "EIO" }); }
+      },
       confirmHuman: async ({ action }) => { authorized.push(action); return "once"; },
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "rolling", distribution: "arch", machineId: "a".repeat(64) }),
       run: async (args) => {
@@ -181,4 +188,19 @@ test("Arch's reviewed question policy denies conflict-removal questions", async 
   expect(installed.size).toBe(0);
   expect(foreignPresent).toBe(true);
   expect(outcome.exitCode).toBe(5);
+});
+
+test("a pending-fence durability failure prevents privileged Arch installation and retains blocked state", async () => {
+  const { outcome, installed, stateEntries } = await archScenario("marker-sync-failure");
+  expect(installed.size).toBe(0);
+  expect(outcome.exitCode).toBe(5);
+  expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(stateEntries).toContain("arch-transaction-pending.json");
+});
+test("failure to durably remove a completed Arch transaction fence cannot report completed setup", async () => {
+  const { outcome, installed, stateEntries } = await archScenario("marker-remove-sync-failure");
+  expect(installed.size).toBe(4);
+  expect(outcome.exitCode).toBe(5);
+  expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(stateEntries.some((name) => name.startsWith("arch-") && name !== "arch-transaction-pending.json")).toBe(true);
 });

@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/prom
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readGrants, stateDirectory, writeGrants, type Grant } from "./grants.ts";
-import { withSetupLock, SetupBusy } from "./lock.ts";
+import { withSetupLock, SetupBusy, syncStateDirectory } from "./lock.ts";
 import type { CommandInput } from "../cli/catalog.ts";
 import { failure, type CliOutcome } from "../cli/result.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
@@ -157,13 +157,18 @@ export async function setupNativeArch(input: CommandInput, host: SetupHost, iden
         if (covered.some((grant) => !grant)) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Arch installation authority changed before the transaction.", actions: [] });
         const once = new Set(covered.filter((grant) => grant?.mode === "once").map((grant) => grant!.id));
         await writeGrants(host, grants.map((grant) => once.has(grant.id) ? { ...grant, revoked: true } : grant));
-        await writeFile(pendingPath, JSON.stringify({ formatVersion: 1, checksum }), { flag: "wx", mode: 0o600 });
+        const fence = await open(pendingPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
         retain = true;
+        try { await fence.writeFile(JSON.stringify({ formatVersion: 1, checksum })); await fence.sync(); }
+        finally { await fence.close(); }
+        await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
         const result = await run(["sudo", "-n", "pacman", "--config", configPath, "--hookdir", hookDirectory, "--ask", "75", "--upgrade", "--needed", "--noconfirm", "--noprogressbar", "--", ...payloads]);
         if (result.status !== "completed" || result.exitCode !== 0) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The privileged package transaction has no verified successful terminal result. Private installer data was retained; no locks were removed.", actions: [] }, { resumable: true });
         const final = await inventory();
         if (!final || final.missing.length) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The completed package command did not establish the exact installed state. Private installer data was retained.", actions: [] }, { resumable: true });
-        await unlink(pendingPath); retain = false;
+        await unlink(pendingPath);
+        await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
+        retain = false;
         return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Exact Arch packages are installed. Starting/enabling services and user access are separate actions; native runtime support is still unverified.", actions: [{ command: "fleur doctor", description: "Inspect separate service, access and runtime readiness." }] }, { setupAction: { action: "install", state: "completed" }, resumable: true });
       } finally { if (!retain) await rm(staging, { recursive: true, force: true }); }
     }, host.syncDirectory);

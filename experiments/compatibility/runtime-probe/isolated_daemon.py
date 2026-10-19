@@ -184,6 +184,9 @@ ROOT_BODY = ROOT_BODY.replace('ROOT_CAPTURE_COMMAND_PLACEHOLDER',ROOT_CAPTURE_CO
 RETIRE_BODY = r'''set -eu
 LC_ALL=C; export LC_ALL
 base=$1; token=$2; retirement_window_ms=${3:-10000}; mount_snapshot=${4:-}
+daemon=${5:-}; daemon_started=${6:-}
+case "$daemon:$daemon_started" in *[!0-9:]*|:*|*:) exit 2 ;; esac
+[ "$daemon" -gt 1 ] && [ "$daemon_started" -gt 0 ] || exit 2
 case "$token" in fleur-vfs-????????????????????????????????) ;; *) exit 2 ;; esac
 suffix=${token#fleur-vfs-}
 case "$suffix" in *[!0-9a-f]*) exit 2 ;; esac
@@ -191,12 +194,13 @@ case "$suffix" in *[!0-9a-f]*) exit 2 ;; esac
 ''' + ROOT_BODY[ROOT_BODY.index('clock_ms()'):ROOT_BODY.index('cleanup()')] + r'''
 retire_namespaces
 diag 10 0 0 0
-IFS= read -r daemon < "$base/docker.pid" || [ -n "$daemon" ]
-case "$daemon" in ''|*[!0-9]*|0|1) exit 2 ;; esac
-if [ -r "/proc/$daemon/stat" ]; then
-    record=$(cat "/proc/$daemon/stat")
+if [ -e "/proc/$daemon/stat" ]; then
+    record=$(cat "/proc/$daemon/stat") || exit 2
     rest=${record##*) }; set -- $rest
-    if [ "$1" != Z ]; then diag 11 0 0 1; exit 3; fi
+    [ "$#" -ge 20 ] || exit 2
+    state=$1; shift 19
+    [ "$1" = "$daemon_started" ] || { diag 11 0 0 2; exit 3; }
+    if [ "$state" != Z ]; then diag 11 0 0 1; exit 3; fi
 fi
 diag 11 0 0 0
 mounts=0; mount_rc=0
@@ -242,6 +246,7 @@ class Endpoint:
         self.cleanup_verified = False
         self.cleanup_observations = {}
         self.forced_probe_verified = False
+        self.daemon_identity = None
         self.facts = {}
         self.environment = dict(os.environ)
         for key in ('DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_API_VERSION'):
@@ -293,6 +298,13 @@ class Endpoint:
         pid = int((self.root / 'docker.pid').read_text())
         if pid <= 1 or Path('/proc/' + str(pid) + '/comm').read_text().strip() != 'dockerd':
             raise IsolatedDaemonError('owned daemon identity invalid')
+        def process_identity():
+            proc=Path('/proc/'+str(pid))
+            record=(proc/'stat').read_text().rpartition(') ')[2].split()
+            if proc.stat().st_uid!=0 or len(record)<20 or not record[19].isdigit() or int(record[19])<=0:
+                raise IsolatedDaemonError('owned daemon process identity invalid')
+            return pid,int(record[19])
+        identity=process_identity()
         args = Path('/proc/' + str(pid) + '/cmdline').read_bytes().split(b'\0')
         for flag, value in (('--data-root', str(self.root/'data')), ('--exec-root', str(self.root/'exec')),
                             ('--pidfile', str(self.root/'docker.pid')), ('--config-file', str(self.root/'config.json')),
@@ -315,6 +327,8 @@ class Endpoint:
                 or 'fleur.compatibility.vfs-owner='+self.token not in info.get('Labels', [])
                 or info.get('Containers') != 0):
             raise IsolatedDaemonError('owned VFS prerequisite invalid')
+        if process_identity()!=identity:raise IsolatedDaemonError('owned daemon process identity changed')
+        self.daemon_identity=identity
         self.facts = {'driver': 'vfs', 'server_version': '28.0.4', 'owned': True,
                       'socket_verified': True, 'data_root_verified': True,
                       'exec_root_verified': True, 'namespace_verified': True,
@@ -437,6 +451,10 @@ def _retire_supervisor(endpoint, budget):
         endpoint.capture_facts=observations
         raise IsolatedDaemonError('owned mount capture invalid',observations) from None
     endpoint.verify_root()
+    identity=endpoint.daemon_identity
+    if (type(identity) is not tuple or len(identity)!=2 or any(type(value) is not int for value in identity)
+            or not 1<identity[0]<=2**31-1 or identity[1]<=0):
+        raise IsolatedDaemonError('retained owned daemon identity unavailable')
     result = subprocess.run(['sudo','-n','/bin/kill','-KILL','--','-'+str(pid)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=max(.001,min(1,deadline-time.monotonic())), check=False)
@@ -448,7 +466,7 @@ def _retire_supervisor(endpoint, budget):
         raise IsolatedDaemonError('owned retirement budget expired')
     retirement = subprocess.run(['sudo','-n','/usr/bin/timeout','--signal=TERM','--kill-after=.2s',format(window,'.3f')+'s',
                     '/bin/sh','-c',RETIRE_BODY,'fleur-owned-retire',str(endpoint.root),endpoint.token,
-                    str(math.floor(window*1000)),json.dumps(mount_snapshot,separators=(',',':'))],
+                    str(math.floor(window*1000)),json.dumps(mount_snapshot,separators=(',',':')),str(identity[0]),str(identity[1])],
                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                    timeout=max(.001,deadline-time.monotonic()),check=False)
     endpoint.retirement_facts = retirement_observations(endpoint.root,retirement.returncode,retirement.stdout)
@@ -538,13 +556,16 @@ def isolated_vfs_daemon(lifetime=540):
                 try:
                     output, _ = process.communicate(timeout=max(.1, cleanup_deadline-time.monotonic()-5))
                 except subprocess.TimeoutExpired:
-                    _retire_supervisor(endpoint, cleanup_deadline-time.monotonic())
+                    independently_retired=_retire_supervisor(endpoint, cleanup_deadline-time.monotonic())
                     process.wait(timeout=max(.1,min(2,cleanup_deadline-time.monotonic()-2)))
-                    # Forced group retirement never proves detached task cleanup.
-                    raise IsolatedDaemonError('owned daemon forced retirement')
+                    # Group death alone is insufficient: the helper independently
+                    # proves owned task/shim absence and exact mount/root removal.
+                    if not independently_retired:raise IsolatedDaemonError('owned daemon forced retirement')
+                    endpoint.forced_probe_verified=True
                 observations.update(daemon_returncode=process.returncode,daemon_stdout_bytes=len(output),
                     owned_process_reaped=process.poll() is not None)
-                endpoint.retirement_facts=retirement_observations(root,process.returncode,output)
+                if not endpoint.forced_probe_verified:
+                    endpoint.retirement_facts=retirement_observations(root,process.returncode,output)
                 retired = endpoint.forced_probe_verified or (empty and process.returncode == 0 and output == b'stopped\n')
                 endpoint.cleanup_verified = (retired and process.poll() is not None
                                               and not (root/'data').exists() and not (root/'exec').exists()

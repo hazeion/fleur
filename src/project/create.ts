@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { failure, success } from "../cli/result.ts";
 import { generatedGuidance, tddGuidance } from "./guidance.ts";
 const version = "0.1.0";
-const directories = ["client", "server", "shared", "assets", "tests", "migrations", "seeds", ".agents", ".agents/skills", ".agents/skills/fleur-tdd"];
+const directories = ["client", "server", "shared", "assets", "tests", "migrations", "seeds", ".agents", ".agents/skills", ".agents/skills/fleur-tdd", ".fleur"];
 async function stat(path: string) {
   try { return await lstat(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
@@ -12,6 +12,7 @@ async function stat(path: string) {
 export async function createProject(command: string, target: string, git: boolean, timeoutSeconds: number) {
   const deadline = performance.now() + timeoutSeconds * 1000;
   const files: Record<string, string> = {
+    ".fleur/.gitignore": "*\n",
     "fleur.json": JSON.stringify({ formatVersion: 1, fleurVersion: version, contractVersion: 1, compiler: "microsoft" }, null, 2) + "\n",
     "package.json": await readFile(new URL("./template/package.json.txt", import.meta.url), "utf8"),
     "bun.lock": await readFile(new URL("./template/bun.lock.txt", import.meta.url), "utf8"),
@@ -33,9 +34,9 @@ export async function createProject(command: string, target: string, git: boolea
     if (item && (item.isSymbolicLink() || (name.endsWith(".md") ? !item.isFile() : !item.isDirectory()))) collisions.push(name);
     if (item?.isFile() && name.endsWith(".md") && (await readFile(resolve(target, name), "utf8")).includes("<!-- fleur:generated:")) collisions.push(name);
   }
-  for (const name of [...directories.slice(0, 7), ...Object.keys(files)]) if (await stat(resolve(target, name))) collisions.push(name);
+  for (const name of [...directories.slice(0, 7), ".fleur", ...Object.keys(files)]) if (await stat(resolve(target, name))) collisions.push(name);
   if (collisions.length) return failure(command, 5, { code: "PROJECT_COLLISION", message: "Project files already exist; no files were changed.", actual: collisions, actions: [{ command: "fleur new <empty-directory>", description: "Choose a directory without application or protected file collisions." }] });
-  const created: { path: string; ino: number; dev: number; directory: boolean }[] = [];
+  const created: { path: string; ino: number; dev: number; directory: boolean; bytes?: Buffer }[] = [];
   let attemptedGit = false;
   const modified: { path: string; ino: number; dev: number; before: Buffer; after: Buffer }[] = [];
   const validateParents = async () => {
@@ -44,9 +45,18 @@ export async function createProject(command: string, target: string, git: boolea
       if (!item || !item.isDirectory() || item.isSymbolicLink() || item.ino !== identity.ino || item.dev !== identity.dev) throw new Error("Project directory changed concurrently");
     }
   };
-  const remember = async (path: string, directory: boolean) => {
-    const item = await lstat(path);
-    created.push({ path, directory, ino: item.ino, dev: item.dev });
+  const guard = async () => {
+    if (performance.now() >= deadline) throw new Error("Creation timeout");
+    await validateParents();
+  };
+  const verifyFile = async (path: string, identity: { ino: number; dev: number }) => {
+    await guard();
+    const current = await stat(path);
+    if (!current?.isFile() || current.isSymbolicLink() || current.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Project file changed concurrently");
+  };
+  const remember = async (path: string, directory: boolean, identity?: { ino: number; dev: number }, bytes?: Buffer) => {
+    const item = identity ?? await lstat(path);
+    created.push({ path, directory, ino: item.ino, dev: item.dev, bytes });
     if (directory) parents.set(path, { ino: item.ino, dev: item.dev });
   };
   const ensure = async (path: string): Promise<void> => {
@@ -54,38 +64,41 @@ export async function createProject(command: string, target: string, git: boolea
     if (item) { if (!item.isDirectory() || item.isSymbolicLink()) throw new Error("Unsafe project path"); return; }
     const parent = dirname(path);
     if (parent !== path) await ensure(parent);
-    await validateParents();
+    await guard();
     await mkdir(path);
     await remember(path, true);
-    await validateParents();
+    await guard();
   };
   try {
     await ensure(target);
     for (const directory of directories) await ensure(resolve(target, directory));
     for (const [name, content] of Object.entries(files)) {
       const path = resolve(target, name);
-      await validateParents();
+      await guard();
       const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
-      try { await remember(path, false); await handle.writeFile(content); await validateParents(); } finally { await handle.close(); }
+      try { const identity = await handle.stat(); await remember(path, false, identity, Buffer.from(content)); await verifyFile(path, identity); await handle.writeFile(content); await verifyFile(path, identity); } finally { await handle.close(); }
     }
     for (const name of ["AGENTS.md", "CLAUDE.md"]) {
       const path = resolve(target, name);
-      await validateParents();
+      await guard();
       const existing = await stat(path);
-      const handle = await open(path, constants.O_RDWR | constants.O_NOFOLLOW | (existing ? 0 : constants.O_CREAT | constants.O_EXCL), 0o644);
+      const handle = await open(path, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW | (existing ? 0 : constants.O_CREAT | constants.O_EXCL), 0o644);
       try {
         const identity = await handle.stat();
         if (!identity.isFile()) throw new Error("Unsafe guidance path");
+        await verifyFile(path, identity);
         const before = await handle.readFile();
-        const after = Buffer.concat([before, Buffer.from((before.length && before[before.length - 1] !== 10 ? "\n" : "") + generatedGuidance)]);
+        if (before.includes(Buffer.from("<!-- fleur:generated:"))) throw new Error("Guidance changed concurrently");
+        const appended = Buffer.from((before.length && before[before.length - 1] !== 10 ? "\n" : "") + generatedGuidance);
+        const after = Buffer.concat([before, appended]);
         if (existing) modified.push({ path, ino: identity.ino, dev: identity.dev, before, after });
-        else await remember(path, false);
-        await handle.write(after, 0, after.length, 0);
-        await handle.truncate(after.length);
-        await validateParents();
+        else await remember(path, false, identity, after);
+        await verifyFile(path, identity);
+        await handle.write(appended);
+        await verifyFile(path, identity);
       } finally { await handle.close(); }
     }
-    await validateParents();
+    await guard();
     let gitState = "disabled";
     if (git) {
       let cursor = target;
@@ -105,7 +118,7 @@ export async function createProject(command: string, target: string, git: boolea
         gitState = "created";
       }
     }
-    await validateParents();
+    await guard();
     return success(command, { fleurVersion: version, compiler: "microsoft", git: gitState });
   } catch {
     const incomplete: string[] = [];
@@ -129,7 +142,18 @@ export async function createProject(command: string, target: string, git: boolea
         const current = await stat(item.path);
         if (!current) continue;
         if (current.ino !== item.ino || current.dev !== item.dev || current.isSymbolicLink()) throw new Error("Path changed concurrently");
-        if (item.directory) await rmdir(item.path); else await unlink(item.path);
+        if (item.directory) await rmdir(item.path);
+        else {
+          const handle = await open(item.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          try {
+            const identity = await handle.stat();
+            const bytes = await handle.readFile();
+            if (identity.ino !== item.ino || identity.dev !== item.dev || !item.bytes || !bytes.equals(item.bytes)) throw new Error("Created file changed concurrently");
+            const currentPath = await stat(item.path);
+            if (!currentPath || currentPath.ino !== item.ino || currentPath.dev !== item.dev || currentPath.isSymbolicLink()) throw new Error("Created path changed concurrently");
+            await unlink(item.path);
+          } finally { await handle.close(); }
+        }
       } catch { incomplete.push(item.path); }
     }
     return failure(command, incomplete.length ? 5 : 1, { code: incomplete.length ? "RECOVERY_REQUIRED" : "PROJECT_CREATION_FAILED", message: incomplete.length ? "Creation failed and some owned changes could not be restored safely." : "Creation failed; newly created files were removed and user guidance restored.", actual: { unrestored: incomplete }, actions: incomplete.length ? [{ command: "fleur doctor", description: "Inspect the reported paths before retrying creation." }] : [] });

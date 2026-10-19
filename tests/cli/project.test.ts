@@ -135,3 +135,47 @@ test("partial Git metadata is reported for recovery and never recursively delete
   expect(await readFile(join(target, ".git", "unexpected"), "utf8")).toBe("user");
   expect(outcome.result.error?.actual).toEqual({ unrestored: [join(target, ".git")] });
 });
+test("runtime state is ignored without modifying an existing user gitignore", async () => {
+  const cwd = await root();
+  await writeFile(join(cwd, ".gitignore"), "user-data/\n");
+  const outcome = await runCli(["init"], { cwd, handlers: projectCommands });
+  expect(outcome.exitCode).toBe(0);
+  expect(await readFile(join(cwd, ".gitignore"), "utf8")).toBe("user-data/\n");
+  await writeFile(join(cwd, ".fleur", "runtime-secret"), "test fixture\n");
+  const ignored = Bun.spawnSync(["git", "check-ignore", ".fleur/runtime-secret", ".fleur/.gitignore"], { cwd, stdout: "pipe", stderr: "pipe" });
+  expect(ignored.exitCode).toBe(0);
+  expect(new TextDecoder().decode(ignored.stdout).trim().split("\n")).toEqual([".fleur/runtime-secret", ".fleur/.gitignore"]);
+});
+test("concurrent user edits to created files and guidance survive failed creation", async () => {
+  const cwd = await root(); const commands = join(cwd, "commands"); await mkdir(commands);
+  await writeFile(join(commands, "git"), '#!/bin/sh\nprintf "User package edit\\n" > "$6/package.json"\nprintf "Concurrent instruction\\n" >> "$6/AGENTS.md"\nexit 1\n', { mode: 0o755 });
+  const target = join(cwd, "project"); await mkdir(target);
+  await writeFile(join(target, "AGENTS.md"), "Original instructions\n");
+  const previous = process.env.PATH; process.env.PATH = commands; let outcome;
+  try { outcome = await runCli(["init"], { cwd: target, handlers: projectCommands }); }
+  finally { process.env.PATH = previous; }
+  expect(outcome.exitCode).toBe(5);
+  expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(await readFile(join(target, "package.json"), "utf8")).toBe("User package edit\n");
+  const guidance = await readFile(join(target, "AGENTS.md"), "utf8");
+  expect(guidance).toStartWith("Original instructions\n");
+  expect(guidance).toEndWith("Concurrent instruction\n");
+});
+test("no-git creation observes its absolute timeout before writing", async () => {
+  const cwd = await root();
+  const outcome = await runCli(["new", "project", "--no-git", "--timeout", "0.000001"], { cwd, handlers: projectCommands });
+  expect(outcome.exitCode).toBe(1);
+  expect(await readdir(cwd)).toEqual([]);
+});
+test("a replaced project directory is left untouched and requires recovery", async () => {
+  const cwd = await root(); const commands = join(cwd, "commands"); await mkdir(commands);
+  await writeFile(join(commands, "git"), '#!/bin/sh\n/bin/mv "$6" "$6.saved"\n/bin/mkdir "$6"\nprintf "User replacement\\n" > "$6/package.json"\nexit 1\n', { mode: 0o755 });
+  const previous = process.env.PATH; process.env.PATH = commands; let outcome;
+  try { outcome = await runCli(["new", "project"], { cwd, handlers: projectCommands }); }
+  finally { process.env.PATH = previous; }
+  expect(outcome.exitCode).toBe(5);
+  expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(await readdir(join(cwd, "project"))).toEqual(["package.json"]);
+  expect(await readFile(join(cwd, "project", "package.json"), "utf8")).toBe("User replacement\n");
+  expect(await Bun.file(join(cwd, "project.saved", "fleur.json")).exists()).toBe(true);
+});

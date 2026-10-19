@@ -115,6 +115,7 @@ export async function setupNativeDesktop(input: CommandInput, host: SetupHost, i
       let published = false;
       let publicationUncertain = false;
       let preserveStage = false;
+      let copyCompleted = false;
       let copiedAppIdentity: { dev: number; ino: number } | undefined;
       const installationState = () => publicationUncertain ? "uncertain" : installed ? "completed" : "incomplete";
       const sameApp = async () => {
@@ -126,9 +127,10 @@ export async function setupNativeDesktop(input: CommandInput, host: SetupHost, i
       const stageContentsOwned = async () => {
         try {
           const entries = await readdir(stage!);
-          if (published) return entries.length === 0;
+          if (published || entries.length === 0) return entries.length === 0;
+          if (!copyCompleted || !copiedAppIdentity) return false;
           if (entries.some((entry) => entry !== "Docker.app")) return false;
-          return !copiedAppIdentity || await sameApp();
+          return await sameApp();
         } catch { return false; }
       };
       let authenticating = false;
@@ -208,6 +210,7 @@ export async function setupNativeDesktop(input: CommandInput, host: SetupHost, i
             const openedStage = await stageHandle.stat();
             if (!openedStage.isDirectory() || openedStage.dev !== stageIdentity.dev || openedStage.ino !== stageIdentity.ino) { preserveStage = true; throw new Error("Stage descriptor identity changed"); }
             await run(["ditto", app, join(stage, "Docker.app")]);
+            copyCompleted = true;
             const copied = await lstat(join(stage, "Docker.app"));
             copiedAppIdentity = copied;
             if (!copied.isDirectory() || copied.isSymbolicLink() || !await parentMatches()) throw new Error("Application staging changed");

@@ -343,3 +343,51 @@ test("concurrent Desktop setup reports maintenance busy without requesting or us
     expect(fixture.prompts).toEqual(["image-acquire"]);
   } finally { release(); await first; await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("a failed Desktop copy preserves any unverified child for recovery", async () => {
+  const fixture = await desktopFixture();
+  const run = fixture.host.run;
+  let unknown = "";
+  try {
+    fixture.host.run = async (args) => {
+      const result = await run(args);
+      if (args[0] === "ditto") {
+        const { rename } = await import("node:fs/promises");
+        await rename(args[2]!, join(fixture.root, "completed-copy"));
+        await mkdir(args[2]!);
+        unknown = join(args[2]!, "user-content");
+        await Bun.write(unknown, "preserve unknown content");
+        return { ...result, exitCode: 1 };
+      }
+      return result;
+    };
+    const outcome = await runCli(["setup"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    expect(outcome.exitCode).toBe(5);
+    expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+    expect(outcome.result.data).toMatchObject({ cleanup: false, setupAction: { state: "incomplete" } });
+    expect(await Bun.file(unknown).text()).toBe("preserve unknown content");
+    expect(await Bun.file(join(fixture.root, "completed-copy", "Contents", "MacOS", "com.docker.backend")).text()).toBe("owned app");
+    expect(await Bun.file(join(fixture.applications, "Docker.app", "user-content")).exists()).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("a failed Desktop copy can clean its verified empty stage", async () => {
+  const fixture = await desktopFixture();
+  const run = fixture.host.run;
+  let stage = "";
+  try {
+    fixture.host.run = async (args) => {
+      if (args[0] === "ditto") {
+        fixture.calls.push([...args]);
+        stage = (await import("node:path")).dirname(args[2]!);
+        return { status: "completed", exitCode: 1, stdout: "", stderr: "copy did not create a child" };
+      }
+      return run(args);
+    };
+    const outcome = await runCli(["setup"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    expect(outcome.exitCode).toBe(3);
+    expect(outcome.result.data).toMatchObject({ cleanup: true, setupAction: { state: "incomplete" } });
+    expect(stage.startsWith(`${fixture.applications}/.fleur-desktop-`)).toBe(true);
+    await expect((await import("node:fs/promises")).lstat(stage)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});

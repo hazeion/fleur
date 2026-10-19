@@ -211,3 +211,32 @@ test("a delegate terminated by the forwarded signal retains the actual signal-de
     await cleanupOwnedDelegate(parent, project, delegated);
   }
 });
+test("deleting the authoritative pin from a created Fleur project blocks descendant creation", async () => {
+  const created = await invoke(scratch, "new", "missing-authoritative-pin", "--no-git");
+  expect(created.exit).toBe(0);
+  const project = join(scratch, "missing-authoritative-pin");
+  const manifestBefore = await Bun.file(join(project, "package.json")).text();
+  await rm(join(project, "fleur.json"));
+  const before = await readdir(project);
+  for (const selected of [project, join(project, "client")]) {
+    const response = await invoke(selected, "new", "child", "--no-git");
+    expect(response.exit).toBe(4);
+    expect(response.result.error).toMatchObject({ code: "VERSION_MISMATCH", expected: "exact Fleur version", actual: "invalid or missing pin" });
+    expect(await Bun.file(join(selected, "child/fleur.json")).exists()).toBe(false);
+  }
+  expect(await readdir(project)).toEqual(before);
+  expect(await Bun.file(join(project, "package.json")).text()).toBe(manifestBefore);
+  expect((await invoke(project, "--help")).exit).toBe(0);
+  expect((await invoke(project, "setup", "grants", "list")).exit).toBe(0);
+  expect((await invoke(project, "setup", "grants", "revoke", "00000000-0000-0000-0000-000000000000")).exit).toBe(1);
+});
+test("ordinary JavaScript manifests and the CLI package name do not masquerade as configured Fleur applications", async () => {
+  const ordinary = join(scratch, "ordinary-project");
+  await mkdir(ordinary);
+  await writeFile(join(ordinary, "package.json"), JSON.stringify({ name: "ordinary-project", version: "1.0.0" }));
+  for (const project of [ordinary, join(scratch, "package")]) {
+    const response = await invoke(project, "new", "allowed-child", "--no-git");
+    expect(response.exit).toBe(0);
+    expect(await Bun.file(join(project, "allowed-child/fleur.json")).json()).toMatchObject({ fleurVersion: "0.1.0" });
+  }
+});

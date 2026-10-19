@@ -5,6 +5,29 @@ import { readGrants, stateDirectory, writeGrants, type Grant } from "./grants.ts
 import { SetupBusy, withSetupLock } from "./lock.ts";
 import { inspectAptInstallation, validAptProfile, type AptInstallProfile } from "./native.ts";
 
+/** Reject every unrecognized simulation operation; prose is a small fail-closed grammar. */
+function exactSimulation(stdout: string, packages: Readonly<Record<string, string>>): boolean {
+  const installed = new Set<string>();
+  const configured = new Set<string>();
+  for (const line of stdout.split("\n").filter((value) => value.trim())) {
+    const operation = /^(Inst|Conf) ([a-z0-9.-]+) \(([^ ]+) [^\r\n]*\)$/.exec(line);
+    if (operation) {
+      const [, action, name, version] = operation;
+      if (!name || !Object.hasOwn(packages, name) || packages[name] !== version) return false;
+      const seen = action === "Inst" ? installed : configured;
+      if (seen.has(name)) return false;
+      seen.add(name);
+      continue;
+    }
+    if (/^(?:Reading package lists|Building dependency tree|Reading state information)\.\.\.$/.test(line)) continue;
+    if (/^The following (?:NEW packages will be installed|additional packages will be installed):$/.test(line)) continue;
+    if (/^0 upgraded, [0-9]+ newly installed, 0 to remove and [0-9]+ not upgraded\.$/.test(line)) continue;
+    if (/^  [a-z0-9. -]+$/.test(line) && line.trim().split(/\s+/).every((name) => Object.hasOwn(packages, name))) continue;
+    return false;
+  }
+  return installed.size === Object.keys(packages).length;
+}
+
 export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number): Promise<CliOutcome> {
   if (!validAptProfile(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
   const requiredAuthorities = ["install", "configuration", "docker-access", "service-start", "service-enable"] as const;
@@ -18,7 +41,7 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       if (specified && !(await readGrants(host)).some((grant) => grant.id === specified && !grant.revoked && grant.action === "install" && grant.method === profile.method && grant.target === target && grant.planChecksum === checksum && grant.machine === identity.machineId && grant.user === process.getuid?.())) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "The selected native installation grant does not cover this exact plan.", actions: [] });
       for (const action of requiredAuthorities) {
         const grants = [...await readGrants(host)];
-        let grant = grants.find((candidate) => !candidate.revoked && candidate.action === action && candidate.method === profile.method && candidate.target === target && candidate.planChecksum === checksum && candidate.machine === identity.machineId && candidate.user === process.getuid?.());
+        let grant = grants.find((candidate) => !candidate.revoked && candidate.action === action && (action !== "install" || !specified || candidate.id === specified) && candidate.method === profile.method && candidate.target === target && candidate.planChecksum === checksum && candidate.machine === identity.machineId && candidate.user === process.getuid?.());
         if (!grant && !specified && !input.json && host.interactive && host.confirmHuman) {
           const decision = await host.confirmHuman({ action, method: profile.method, target, checksum }, remaining());
           if (decision === "once" || decision === "remembered") {
@@ -35,17 +58,24 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       const expectedSource = `Types: deb\nURIs: https://download.docker.com/linux/${profile.distribution}\nSuites: ${suite}\nComponents: stable\nArchitectures: ${architecture}\nSigned-By: /etc/apt/keyrings/docker.asc`;
       const source = await run(["cat", "/etc/apt/sources.list.d/docker.sources"]);
       const key = await run(["gpg", "--batch", "--with-colons", "--show-keys", "/etc/apt/keyrings/docker.asc"]);
-      const fingerprints = key.stdout.split("\n").filter((line) => line.startsWith("fpr:")).map((line) => line.split(":")[9]);
-      if (source.status !== "completed" || source.exitCode !== 0 || source.stdout.trim() !== expectedSource || key.status !== "completed" || key.exitCode !== 0 || fingerprints[0] !== profile.repositoryFingerprint) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The exact Docker signed repository configuration is not present; no packages were changed.", actions: [] }, { plan: { action: "repository-configuration", method: profile.method }, resumable: true });
+      const primaryFingerprints: string[] = [];
+      let primaryPending = false;
+      let primaryCount = 0;
+      for (const line of key.stdout.split("\n")) {
+        const fields = line.split(":");
+        if (fields[0] === "pub") { primaryCount++; primaryPending = true; }
+        else if (fields[0] === "sub") primaryPending = false;
+        else if (fields[0] === "fpr" && primaryPending) { primaryFingerprints.push(fields[9] ?? ""); primaryPending = false; }
+      }
+      if (source.status !== "completed" || source.exitCode !== 0 || source.stdout.trim() !== expectedSource || key.status !== "completed" || key.exitCode !== 0 || primaryCount !== 1 || primaryFingerprints.length !== 1 || primaryFingerprints[0] !== profile.repositoryFingerprint) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The exact Docker signed repository configuration is not present; no packages were changed.", actions: [] }, { plan: { action: "repository-configuration", method: profile.method }, resumable: true });
       const sourceOptions = ["-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-"];
       const packages = Object.entries(profile.packages).map(([name, version]) => `${name}=${version}`);
       const simulated = await run(["apt-get", ...sourceOptions, "--simulate", "--no-remove", "--no-upgrade", "install", ...packages]);
-      const planned = simulated.stdout.split("\n").filter((line) => line.startsWith("Inst ")).map((line) => /^Inst ([a-z0-9.-]+) \(([^ ]+) /.exec(line)).map((match) => match ? `${match[1]}=${match[2]}` : "invalid").sort();
-      if (simulated.status !== "completed" || simulated.exitCode !== 0 || /^Remv /m.test(simulated.stdout) || JSON.stringify(planned) !== JSON.stringify([...packages].sort())) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The package plan requires changes outside the exact verified missing package set; existing software was preserved.", actions: [] });
+      if (simulated.status !== "completed" || simulated.exitCode !== 0 || !exactSimulation(simulated.stdout, profile.packages)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The package plan requires changes outside the exact verified missing package set; existing software was preserved.", actions: [] });
       // Re-read all authority after probes and consume every implicit side-effect permission
       // durably in one publication before apt can start or enable its service.
       let grants = [...await readGrants(host)];
-      const covered = requiredAuthorities.map((action) => grants.find((candidate) => !candidate.revoked && candidate.action === action && candidate.method === profile.method && candidate.target === target && candidate.planChecksum === checksum && candidate.machine === identity.machineId && candidate.user === process.getuid?.()));
+      const covered = requiredAuthorities.map((action) => grants.find((candidate) => !candidate.revoked && candidate.action === action && (action !== "install" || !specified || candidate.id === specified) && candidate.method === profile.method && candidate.target === target && candidate.planChecksum === checksum && candidate.machine === identity.machineId && candidate.user === process.getuid?.()));
       if (covered.some((grant) => !grant)) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Native setup authority changed before package installation.", actions: [] });
       const once = new Set(covered.filter((grant) => grant?.mode === "once").map((grant) => grant!.id));
       grants = grants.map((grant) => once.has(grant.id) ? { ...grant, revoked: true } : grant);

@@ -59,6 +59,7 @@ def compare_host_cli(control):
             'first_authoritative_version_ms':control['host_version_duration_ms'],
             'host_startup_duration_ms':control['host_startup_duration_ms'],
             'host_startup_phases_ms':control['host_startup_phases_ms'],
+            'host_startup_probes':control.get('host_startup_probes',{}),
             'first_version_preceded_by_startup_probes':control['first_version_preceded_by_startup_probes'],
             'host_startup_budget_seconds':control['host_startup_budget_seconds'],
             'ctr_revision_verified':control['ctr_revision_verified'],
@@ -71,14 +72,42 @@ def compare_host_cli(control):
             'worker_authority_changed':False}
 
 
+
+def safe_failure_observations(observations):
+    """Only bounded numeric/status fields from owned diagnostics leave the host."""
+    def counts(value):
+        if type(value) is not dict:return {}
+        safe={}
+        for name in ('duration_ms','stdout_bytes','stderr_bytes','host_startup_budget_seconds','cli_returncode'):
+            entry=value.get(name)
+            if type(entry) is int and (-2147483648 if name=='cli_returncode' else 0)<=entry<=2147483647:safe[name]=entry
+            elif name=='cli_returncode' and name in value and entry is None:safe[name]=None
+        for name in ('passed','timed_out','launch_or_encoding_failed'):
+            if type(value.get(name)) is bool:safe[name]=value[name]
+        return safe
+    result=counts(observations)
+    if type(observations) is not dict:return result
+    phases=observations.get('host_startup_phases_ms')
+    if type(phases) is dict:
+        result['host_startup_phases_ms']={name:phases[name] for name in
+            ('privileged_noop','ctr_banner','authoritative_version','identity_audit','binary_sha256')
+            if type(phases.get(name)) is int and 0<=phases[name]<=2147483647}
+    probes=observations.get('host_startup_probes')
+    if type(probes) is dict:
+        result['host_startup_probes']={name:counts(probes[name]) for name in
+            ('privileged_noop','ctr_banner') if type(probes.get(name)) is dict}
+    return result
+
+
 def main():
-    from configuration import inspect_containerd_control
+    from configuration import inspect_containerd_control, ContainerdControlUnverified
     try:
         report=compare_host_cli(inspect_containerd_control(probe_first_use=True))
     except Exception as error:
         # Raw CLI/configuration errors can contain local paths or credentials.
         report={'schema_version':1,'scope':'native-host-ctr-startup','passed':False,
-                'failure_category':getattr(error,'category','host-startup-unverified')}
+                'failure_category':error.category if isinstance(error,ContainerdControlUnverified) else 'host-startup-unverified',
+                'failure_observations':safe_failure_observations(getattr(error,'observations',{}))}
     print(json.dumps(report,sort_keys=True))
     return 0 if report['passed'] else 1
 

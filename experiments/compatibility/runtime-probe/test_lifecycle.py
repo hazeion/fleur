@@ -89,13 +89,22 @@ start)
  ;;
 wait)
  identify "$1"
+ if [ "$mode" = busy ] && [ "${LIFECYCLE_STALL_BUSY_WAIT:-}" ]; then exec sleep 30; fi
  while :; do
   IFS= read -r state < "$root/$name"
   case "$state" in *'"Running":true'*) sleep .02 ;; *) break ;; esac
  done
  printf '0\n'
  ;;
-inspect) identify "$1"; IFS= read -r state < "$root/$name"; printf '%s\n' "$state" ;;
+inspect)
+ identify "$1"; IFS= read -r state < "$root/$name"
+ case "$mode:$state" in busy:*'"ExitCode":137'*)
+  if [ "${LIFECYCLE_BUSY_INSPECT_DELAY:-}" ] && [ ! -f "$root/$name-inspection-delayed" ]; then
+   : > "$root/$name-inspection-delayed"
+   sleep "$LIFECYCLE_BUSY_INSPECT_DELAY"
+  fi ;;
+ esac
+ printf '%s\n' "$state" ;;
 kill)
  shift
  identify "$1"
@@ -112,7 +121,7 @@ rm)
  shift
  identify "$1"
  if [ "${LIFECYCLE_CLEANUP_FAILURE:-}" ] && [ "$name" = owned-healthy-0 ]; then exit 4; fi
- rm -f "$root/$name" "$root/$name-loop"
+ rm -f "$root/$name" "$root/$name-loop" "$root/$name-inspection-delayed"
  printf '%s\n' "$name"
  ;;
 *) exit 2 ;;
@@ -151,7 +160,9 @@ class LifecycleTests(unittest.TestCase):
      time.sleep(float(parent.env.get('LIFECYCLE_KILL_DELAY','0')))
      path=parent.root/self.name;metadata=json.loads(path.read_text());state=metadata['State']
      if not parent.env.get('LIFECYCLE_NO_KILL'):
-      state.update(Running=False,ExitCode=137,FinishedAt='2026-10-13T00:00:01Z')
+      state.update(Running=False,ExitCode=int(parent.env.get('LIFECYCLE_BUSY_EXIT_CODE','137')),
+                  FinishedAt=parent.env.get('LIFECYCLE_BUSY_FINISHED_AT','2026-10-13T00:00:01Z'))
+      if parent.env.get('LIFECYCLE_BUSY_REPLACED_ID'):metadata['Id']='f'*64
       publication=path.with_name(path.name+'.guard.tmp')
       publication.write_text(json.dumps(metadata,separators=(',',':'))+'\n')
       publication.replace(path)
@@ -170,6 +181,57 @@ class LifecycleTests(unittest.TestCase):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
   return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker)
+ def test_owned_stopped_state_confirms_retirement_without_redundant_wait_rpc(self):
+  self.env['LIFECYCLE_STALL_BUSY_WAIT']='1'
+  result=self.run_probe()
+  self.assertTrue(result['passed'])
+  for row in result['repeats']:
+   self.assertEqual(row['terminated_exit'],137)
+   self.assertTrue(row['termination']['physical_exit_confirmed'])
+
+ def test_host_confirmation_reuses_prior_aggregate_budget_without_extending_execution(self):
+  self.env['LIFECYCLE_BUSY_INSPECT_DELAY']='6'
+  result=self.run_probe()
+  self.assertTrue(result['passed'])
+  for row in result['repeats']:
+   self.assertEqual(row['deadline_seconds'],2)
+   self.assertLessEqual(row['termination']['physical_exit_lateness_ms'],250)
+   self.assertEqual(row['retirement_confirmation']['budget_seconds'],10)
+   self.assertGreaterEqual(row['retirement_confirmation']['duration_ms'],6000)
+   self.assertTrue(row['retirement_confirmation']['passed'])
+
+ def test_expired_confirmation_retains_healthy_and_physical_proof_but_cannot_pass(self):
+  self.env['LIFECYCLE_BUSY_INSPECT_DELAY']='.2'
+  with patch('lifecycle.RETIREMENT_CONFIRMATION_BUDGET_SECONDS',.05),self.assertRaises(subprocess.TimeoutExpired) as caught:
+   self.run_probe()
+  evidence=caught.exception.worker_diagnostics
+  self.assertTrue(evidence['healthy_completed_while_busy_running'])
+  self.assertEqual(evidence['healthy_completion'],{'completed':True,'exit_code':0})
+  self.assertTrue(evidence['termination']['physical_exit_confirmed'])
+  self.assertLessEqual(evidence['termination']['physical_exit_lateness_ms'],250)
+  self.assertFalse(evidence['retirement_confirmation']['passed'])
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_physical_exit_does_not_excuse_wrong_docker_status_or_missing_finish(self):
+  for key,value in (('LIFECYCLE_BUSY_EXIT_CODE','0'),('LIFECYCLE_BUSY_FINISHED_AT','0001-01-01T00:00:00Z'),('LIFECYCLE_BUSY_FINISHED_AT','invalid')):
+   with self.subTest(key=key,value=value):
+    self.env[key]=value
+    try:
+     with self.assertRaisesRegex(RuntimeError,'termination unconfirmed') as caught:self.run_probe()
+     self.assertTrue(caught.exception.worker_diagnostics['termination']['physical_exit_confirmed'])
+     self.assertFalse(caught.exception.worker_diagnostics['retirement_confirmation']['passed'])
+     self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+    finally:self.env.pop(key)
+
+ def test_retirement_rejects_replaced_identity_despite_original_physical_exit(self):
+  self.env['LIFECYCLE_BUSY_REPLACED_ID']='1'
+  with self.assertRaisesRegex(RuntimeError,'identity mismatch') as caught:self.run_probe()
+  self.assertTrue(caught.exception.worker_diagnostics['termination']['physical_exit_confirmed'])
+  self.assertFalse(caught.exception.worker_diagnostics['retirement_confirmation']['passed'])
+  self.assertFalse(caught.exception.lifecycle_cleanup_verified)
+  self.assertEqual(json.loads((self.root/'owned-busy-0').read_text())['Id'],'f'*64)
+  self.assertFalse((self.root/'owned-healthy-0').exists())
+
  def test_concurrent_exit_notification_never_reads_partially_published_fixture_state(self):
   self.env['LIFECYCLE_STATE_PUBLISH_DELAY']='1'
   self.assertTrue(self.run_probe()['passed'])

@@ -15,6 +15,8 @@ from worker_deadline import HostDeadlineGuard
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
 PREPARATION_BUDGET_SECONDS = 20
+# Reuse the former sequential wait(5s) + inspect(5s) host budget.
+RETIREMENT_CONFIRMATION_BUDGET_SECONDS = 10
 
 
 def safe_worker_state(state):
@@ -31,18 +33,18 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
     if type(image_id) is not str or not re.fullmatch('sha256:[0-9a-f]{64}',image_id):
         raise ValueError('lifecycle immutable image invalid')
     repeats = []
-    def command(args, deadline=None):
-        allowance=5 if deadline is None else min(5,deadline-time.monotonic())
-        if allowance<=0: raise RuntimeError('lifecycle preparation deadline expired')
+    def command(args, deadline=None, maximum=5, phase='preparation'):
+        allowance=maximum if deadline is None else min(maximum,deadline-time.monotonic())
+        if allowance<=0: raise RuntimeError('lifecycle '+phase+' deadline expired')
         result = subprocess.run([docker, *args], env=environment,
                                 capture_output=True, text=True, timeout=allowance)
         if result.returncode or len(result.stdout) > 65536:
             raise RuntimeError('owned lifecycle Docker command failed')
         if deadline is not None and time.monotonic()>=deadline:
-            raise RuntimeError('lifecycle preparation deadline expired')
+            raise RuntimeError('lifecycle '+phase+' deadline expired')
         return result.stdout
-    def metadata(name, identifier=None, deadline=None):
-        value = json.loads(command(['inspect', identifier or name, '--format', '{{json .}}'],deadline))
+    def metadata(name, identifier=None, deadline=None, maximum=5, phase='preparation'):
+        value = json.loads(command(['inspect', identifier or name, '--format', '{{json .}}'],deadline,maximum,phase))
         if type(value) is not dict: raise RuntimeError('lifecycle container identity mismatch')
         config=value.get('Config')
         labels=config.get('Labels') if type(config) is dict else None
@@ -219,21 +221,40 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 raise RuntimeError('healthy restricted worker failed evidence acceptance')
             if inspect(busy_name).get('Running') is not True:
                 raise RuntimeError('busy worker ended before healthy worker completed')
+            busy_diagnostics['healthy_completed_while_busy_running']=True
+            busy_diagnostics['healthy_completion']=healthy_diagnostics.get('daemon_completion')
+            busy_diagnostics['healthy_waiter_cleanup_verified']=healthy_diagnostics.get('waiter_cleanup_verified')
             active_role = 'busy'
             if guard is None:
                 raise RuntimeError('worker deadline guard was not armed')
             termination = guard.completion()
+            busy_diagnostics['termination']=dict(termination)
             stopped['kill_requested_ms'] = round(timeout*1000) + termination['kill_lateness_ms']
             stopped['physical_exit_ms'] = round(timeout*1000) + termination['physical_exit_lateness_ms']
             # Physical termination is already proved by the retained pidfd.
             # Docker's eventual exit status and resource retirement remain
             # mandatory independent checks, never the deadline oracle.
-            command(['wait', observed[busy_name]['configuration']['container_id']])
-            state = inspect(busy_name)
-            if (state.get('Running') is not False or type(state.get('ExitCode')) is not int
-                    or state['ExitCode'] != 137 or type(state.get('FinishedAt')) is not str
-                    or not state['FinishedAt'] or state['FinishedAt'].startswith('0001-')):
-                raise RuntimeError('daemon worker termination unconfirmed')
+            # Docker wait contributes no additional accepted proof: its output
+            # was discarded and Docker's not-running wait takes the same state
+            # lock as inspect. Spend the existing aggregate host budget on the
+            # required immutable owned state itself, once, without retries.
+            confirmation_started=time.monotonic()
+            confirmation_deadline=confirmation_started+RETIREMENT_CONFIRMATION_BUDGET_SECONDS
+            confirmation={'budget_seconds':RETIREMENT_CONFIRMATION_BUDGET_SECONDS,
+                          'duration_ms':0,'passed':False}
+            busy_diagnostics['retirement_confirmation']=confirmation
+            try:
+                state=metadata(busy_name,prepared[busy_name],confirmation_deadline,
+                               RETIREMENT_CONFIRMATION_BUDGET_SECONDS,'retirement confirmation')['State']
+                safe=safe_worker_state(state)
+                if (safe.get('Running') is not False or safe.get('ExitCode')!=137
+                        or safe.get('FinishedAt','0001-').startswith('0001-')):
+                    raise RuntimeError('daemon worker termination unconfirmed')
+                if time.monotonic()>=confirmation_deadline:
+                    raise RuntimeError('lifecycle retirement confirmation deadline expired')
+                confirmation['passed']=True
+            finally:
+                confirmation['duration_ms']=round(1000*(time.monotonic()-confirmation_started))
             stopped['terminated_exit'] = state['ExitCode']
             stopped['stop_confirmed_ms'] = round(1000*(time.monotonic()-started))
             try:
@@ -250,6 +271,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     or '[compat-lifecycle] cpu-loop' not in busy_diagnostics.get('stderr', '')):
                 raise RuntimeError('busy worker failed before application execution')
             repeats.append({'preparation':dict(preparation),
+                            'retirement_confirmation':dict(confirmation),
                             'healthy_completed_while_busy_running':True,
                             'deadline_seconds':timeout,
                             'cpu_loop_entered_ms':stopped['cpu_loop_entered_ms'],

@@ -532,3 +532,26 @@ sys.stdin.readline()
                 run_container([sys.executable,'-I','-S','-u','-c',source,str(trigger),str(written),json.dumps(startup)],
                               timeout=5,startup_audit=audit,diagnostics=diagnostics)
         self.assertEqual(len(diagnostics['stderr']),4096)
+
+    def test_inherited_stderr_writer_cannot_hold_rejected_client_cleanup(self):
+        import os,time
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        read_fd,write_fd=os.pipe()
+        worker=subprocess.Popen([sys.executable,'-I','-S','-u','-c',
+            'import sys;print(sys.argv[1],flush=True);sys.stdin.readline()',json.dumps(startup)],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=write_fd)
+        worker.stderr=os.fdopen(read_fd,'rb')
+        holder=subprocess.Popen(['/bin/sleep','30'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=write_fd)
+        os.close(write_fd)
+        try:
+            began=time.monotonic()
+            with patch('protocol.subprocess.Popen',return_value=worker),self.assertRaises(StartupAuditRejected):
+                run_container(['owned-pipe-fixture'],timeout=5,
+                    startup_audit=lambda inventory:{'passed':False,'category':'class-mismatch'})
+            self.assertLess(time.monotonic()-began,1)
+            self.assertIsNotNone(worker.poll())
+            self.assertIsNone(holder.poll())
+        finally:
+            if worker.poll() is None:worker.kill();worker.wait(timeout=2)
+            holder.kill();holder.wait(timeout=2)
+            for stream in (worker.stdin,worker.stdout,worker.stderr):stream.close()

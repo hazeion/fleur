@@ -109,6 +109,18 @@ class EngineBoundaryTests(unittest.TestCase):
             creator.create_worker('worker','owner','sha256:'+'a'*64,'render',timeout=.15)
         self.assertLess(time.monotonic()-began,.5)
 
+    def test_deadline_error_retains_safe_create_phase_without_response_contents(self):
+        constructor,environment,requests,thread,faults=self.engine(slow_body=True)
+        creator=constructor(environment);self.addCleanup(creator.close)
+        with self.assertRaises(RuntimeError) as caught:
+            creator.create_worker('worker','owner','sha256:'+'a'*64,'render',timeout=.15)
+        self.assertEqual(caught.exception.category,'vfs-engine-create-deadline')
+        facts=caught.exception.observations
+        self.assertEqual(facts['phase'],'create');self.assertTrue(facts['timed_out'])
+        self.assertEqual(facts['budget_ms'],150)
+        self.assertEqual(facts['http_status'],201)
+        self.assertNotIn('worker',str(facts));self.assertNotIn('sha256',str(facts))
+
     def test_socket_replacement_is_refused_before_create(self):
         import os,socket
         constructor,environment,requests,thread,faults=self.engine()

@@ -39,6 +39,12 @@ def worker_request(name, owner, image_id, mode):
     elif mode!='render':request['Cmd']=[mode]
     return request
 
+class EngineRequestUnverified(RuntimeError):
+    def __init__(self,phase,reason,observations):
+        self.category='vfs-engine-'+phase+'-'+reason
+        self.observations=dict(observations)
+        super().__init__(self.category)
+
 class _UnixConnection(http.client.HTTPConnection):
     def __init__(self,path,timeout):
         super().__init__('localhost',timeout=timeout);self.path=path;self.deadline_socket=None
@@ -99,9 +105,18 @@ class KernelPrivateDocker:
             raise ValueError('owned VFS endpoint changed')
     def _request(self,method,path,payload,timeout):
         self._verify_identity()
+        phase=('create' if method=='POST' else 'inspect' if '/containers/' in path else 'version' if path=='/version' else 'info')
         connection=_UnixConnection(str(self.path),timeout)
-        deadline=time.monotonic()+timeout
+        started=time.monotonic();deadline=started+timeout
+        expired=threading.Event();raw=b'';status=None;response=None
+        def failure(reason):
+            timed_out=expired.is_set() or time.monotonic()>=deadline
+            return EngineRequestUnverified(phase,'deadline' if timed_out else reason,
+                {'phase':phase,'timed_out':timed_out,'budget_ms':round(timeout*1000),
+                 'duration_ms':round((time.monotonic()-started)*1000),
+                 'response_bytes':len(raw),'http_status':status})
         def expire():
+            expired.set()
             sock=connection.deadline_socket or connection.sock
             if sock is not None:
                 try:sock.shutdown(socket.SHUT_RDWR)
@@ -110,17 +125,20 @@ class KernelPrivateDocker:
         try:
             connection.request(method,path,body=None if payload is None else json.dumps(payload).encode(),
                                headers={'Content-Type':'application/json'})
-            response=connection.getresponse();raw=response.read(65537)
-            if len(raw)>65536 or response.status not in (200,201):
-                raise RuntimeError('fixed VFS engine request failed')
+            response=connection.getresponse();status=response.status;raw=response.read(65537)
+            if len(raw)>65536:raise failure('output-bound')
+            if response.status not in (200,201):raise failure('http-status')
             result=json.loads(raw)
-            if type(result) is not dict:raise ValueError('fixed VFS engine response rejected')
-            if time.monotonic()>=deadline:raise TimeoutError('fixed VFS engine deadline')
+            if type(result) is not dict:raise failure('response-shape')
+            if expired.is_set() or time.monotonic()>=deadline:raise failure('deadline')
             self._verify_identity();return result
-        except (OSError,http.client.HTTPException,UnicodeError,json.JSONDecodeError):
-            raise RuntimeError('fixed VFS engine transport failed') from None
+        except (OSError,http.client.HTTPException,UnicodeError,json.JSONDecodeError) as error:
+            if isinstance(error,http.client.IncompleteRead) and type(error.partial) is bytes:raw=error.partial[:65537]
+            raise failure('transport') from None
         finally:
-            fence.cancel();fence.join();connection.close()
+            fence.cancel();fence.join()
+            if response is not None:response.close()
+            connection.close()
             if connection.deadline_socket is not None:connection.deadline_socket.close()
     def create_worker(self,name,owner,image_id,mode,timeout=5):
         if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0<timeout<=30:

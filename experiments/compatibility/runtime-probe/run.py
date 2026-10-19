@@ -207,7 +207,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['healthy_exit_evidence'] = 'containerd-init-exit' if control is not None else 'startup-bound-docker-wait'
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
                 REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,
-                create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None)
+                create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
+                aggregate_preparation_budget=creator is not None)
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
             negative_diagnostics = {}
@@ -242,6 +243,9 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
+        from kernel_docker import EngineRequestUnverified
+        if isinstance(error,EngineRequestUnverified):
+            REPORT['vfs_engine_failure']={'category':error.category,'observations':error.observations}
         if isinstance(error,ContainerdControlUnverified):
             REPORT['host_containerd_failure']={'category':error.category,'observations':error.observations}
         if isinstance(error,StartupAuditRejected):

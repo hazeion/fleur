@@ -141,7 +141,7 @@ class LifecycleTests(unittest.TestCase):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
   return {'configuration':{'container_id':data['Id'],'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self,timeout=2,containerd_control=None,create_worker=None):
+ def run_probe(self,timeout=2,containerd_control=None,create_worker=None,aggregate_preparation_budget=False):
   parent=self
   class FixtureDeadline:
    # Explicit host process boundary for fake Docker state. The separate guard
@@ -180,7 +180,7 @@ class LifecycleTests(unittest.TestCase):
    def close(self):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
-  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker)
+  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker,aggregate_preparation_budget=aggregate_preparation_budget)
  def test_owned_stopped_state_confirms_retirement_without_redundant_wait_rpc(self):
   self.env['LIFECYCLE_STALL_BUSY_WAIT']='1'
   result=self.run_probe()
@@ -437,5 +437,46 @@ class LifecycleTests(unittest.TestCase):
    self.run_probe(containerd_control=control)
   self.assertFalse(caught.exception.lifecycle_cleanup_verified)
   self.assertEqual(caught.exception.lifecycle_cleanup[0]['outcome'],'removal-unverified')
+
+ def test_vfs_stopped_creator_receives_remaining_aggregate_preparation_budget(self):
+  calls=[]
+  def create(name,busy,remaining):
+   self.assertGreater(remaining,5)
+   self.assertLessEqual(remaining,20)
+   calls.append(name)
+   raise RuntimeError('stopped storage boundary sampled')
+  with self.assertRaisesRegex(RuntimeError,'stopped storage boundary sampled'):
+   self.run_probe(create_worker=create,aggregate_preparation_budget=True)
+  self.assertEqual(calls,['owned-busy-0'])
+
+ def test_vfs_cold_stopped_create_can_exceed_five_seconds_within_original_twenty(self):
+  def create(name,busy,remaining):
+   delay='5.2' if name=='owned-busy-0' else '0'
+   environment=dict(self.env,LIFECYCLE_CREATE_DELAY=delay)
+   result=subprocess.run([str(self.cli),'create','--name',name,'--label','fleur.compatibility.runtime-owner=owned',IMAGE],env=environment,capture_output=True,text=True,check=True,timeout=remaining)
+   return result.stdout.strip()
+  result=self.run_probe(create_worker=create,aggregate_preparation_budget=True)
+  self.assertTrue(result['passed'])
+  self.assertGreaterEqual(result['repeats'][0]['preparation']['duration_ms'],5200)
+  for row in result['repeats']:
+   self.assertEqual(row['preparation']['budget_seconds'],20)
+   self.assertEqual(row['deadline_seconds'],2)
+   self.assertTrue(row['healthy_completed_while_busy_running'])
+
+ def test_vfs_aggregate_twenty_second_expiry_still_rejects_stopped_preparation(self):
+  clock=[time.monotonic()]
+  def create(name,busy,remaining):
+   cid='c'*64
+   (self.root/name).write_text(json.dumps({'Id':cid,'Name':'/'+name,'Image':IMAGE,
+    'State':{'Status':'created','Pid':0,'Running':False,'ExitCode':0,'FinishedAt':'0001-01-01T00:00:00Z'},
+    'Config':{'Labels':{'fleur.compatibility.runtime-owner':'owned'}}})+'\n')
+   clock[0]+=21
+   return cid
+  with patch('lifecycle.time.monotonic',side_effect=lambda:clock[0]),self.assertRaisesRegex(RuntimeError,'preparation deadline') as caught:
+   self.run_probe(create_worker=create,aggregate_preparation_budget=True)
+  self.assertEqual(caught.exception.worker_diagnostics['preparation']['budget_seconds'],20)
+  self.assertFalse(caught.exception.worker_diagnostics['preparation']['passed'])
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+  self.assertEqual(set(self.root.iterdir()),{self.cli})
 
 if __name__=='__main__':unittest.main()

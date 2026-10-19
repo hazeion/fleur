@@ -29,9 +29,11 @@ def safe_worker_state(state):
 
 
 def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
-                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None):
+                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False):
     if type(image_id) is not str or not re.fullmatch('sha256:[0-9a-f]{64}',image_id):
         raise ValueError('lifecycle immutable image invalid')
+    if type(aggregate_preparation_budget) is not bool or (aggregate_preparation_budget and create_worker is None):
+        raise ValueError('trusted preparation adapter required')
     repeats = []
     def command(args, deadline=None, maximum=5, phase='preparation'):
         allowance=maximum if deadline is None else min(maximum,deadline-time.monotonic())
@@ -131,7 +133,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     else:
                         # Trusted owned-host adapter only (the isolated VFS
                         # experiment); never an application-provided callback.
-                        create_deadline=min(preparation_deadline,time.monotonic()+5)
+                        create_deadline=preparation_deadline if aggregate_preparation_budget else min(preparation_deadline,time.monotonic()+5)
                         remaining_create=create_deadline-time.monotonic()
                         if remaining_create<=0: raise RuntimeError('lifecycle preparation deadline expired')
                         identifier=create_worker(name,busy,remaining_create)

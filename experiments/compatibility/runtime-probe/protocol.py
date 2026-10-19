@@ -59,14 +59,23 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
         error = subprocess.TimeoutExpired(args, timeout, output=bytes(output[:16384]), stderr=bytes(errors[:4096]))
         error.protocol_phase = phase
         return error
-    def read_error_chunk():
+    def read_error_chunk(notify=True):
         chunk = os.read(process.stderr.fileno(),4096)
         errors.extend(chunk)
         if len(errors) > 4096:
             raise RuntimeError('worker stderr exceeded bound')
-        if chunk and on_stderr is not None:
+        if chunk and notify and on_stderr is not None:
             on_stderr(bytes(errors))
         return chunk
+    def drain_error_available(check_deadline=True,notify=True):
+        # stdout inventory and stderr diagnostics are independent transport
+        # streams. A host audit can run while Docker delivers earlier stderr.
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stderr,selectors.EVENT_READ)
+            while selector.select(0):
+                if check_deadline and time.monotonic()-started>=timeout:
+                    raise deadline_error()
+                if not read_error_chunk(notify):break
     try:
         check_cancelled()
         if completion_prepare is not None:
@@ -142,6 +151,7 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
             inventory = startup_inventory(read_request(16384, startup_stall))
             phase = 'startup-audit'
             audited = startup_audit(inventory)
+            drain_error_available()
             if (type(audited) is not dict or audited.get('passed') is not True
                     or audited.get('category') != 'verified' or type(audited.get('descriptor_count')) is not int
                     or audited['descriptor_count'] != len(inventory)):
@@ -171,6 +181,8 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                 if type(bound) is not dict or bound.get('registered') is not True:
                     raise RuntimeError('init task start registration unverified')
                 if time.monotonic()-started >= timeout: raise deadline_error()
+            check_cancelled()
+            if time.monotonic()-started>=timeout:raise deadline_error()
             phase = 'startup-ack'
             process.stdin.write(b'startup:approved\n')
             process.stdin.flush()
@@ -332,19 +344,26 @@ def run_container(args, dispatch=fixture_dispatch, timeout=30, observer=None, di
                         except (OSError,RuntimeError,ValueError): diagnostics['observer_after_close'] = {'outcome':'unavailable'}
                 waiter_cleanup_error = cleanup_error
                 if original is not None: original.waiter_cleanup_verified = False
+        transport_cleanup_error=None
+        if process is not None:
+            try:
+                if process.poll() is None:process.kill()
+                process.wait(timeout=5)
+                # The owned client is now reaped. Drain only immediately
+                # available bounded stderr; inherited pipes cannot hold cleanup.
+                drain_error_available(check_deadline=False,notify=False)
+            except (OSError,RuntimeError,subprocess.TimeoutExpired) as cleanup_error:
+                transport_cleanup_error=cleanup_error
+            finally:
+                for stream in (process.stdin,process.stdout,process.stderr):
+                    if stream is not None:stream.close()
         if diagnostics is not None:
             diagnostics.update({'protocol_phase':phase,
                                 'duration_ms':round(1000*(time.monotonic()-started)),
                                 'timeout_seconds':timeout,
                                 'stdout':bytes(output[:16384]).decode('utf-8',errors='replace'),
                                 'stderr':bytes(errors[:4096]).decode('utf-8',errors='replace')})
-        if process is not None:
-            if process.poll() is None:
-                process.kill()
-                process.communicate(timeout=5)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+        if transport_cleanup_error is not None:raise transport_cleanup_error
         if waiter_cleanup_error is not None and original is None:
             raise waiter_cleanup_error
         if waiter is not None and original is None and time.monotonic()-started >= timeout:

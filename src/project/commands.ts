@@ -3,7 +3,7 @@ import type { CommandDefinition } from "../cli/catalog.ts";
 import { failure } from "../cli/result.ts";
 import { createProject } from "./create.ts";
 export const projectCommands: readonly CommandDefinition[] = ["new", "init"].map((name) => ({
-  name, summary: name === "new" ? "Create an exactly pinned Fleur project." : "Initialize a Fleur project without overwriting user files.",
+  name, usage: `${name}${name === "new" ? " <dir>" : ""} [--compiler microsoft|rust-experimental] [--no-git]`, summary: name === "new" ? "Create an exactly pinned Fleur project." : "Initialize a Fleur project without overwriting user files.",
   options: [{ name: "--no-git", value: false }, { name: "--compiler", value: true }],
   async run({ args, project, timeoutSeconds }) {
     const dirs: string[] = [];

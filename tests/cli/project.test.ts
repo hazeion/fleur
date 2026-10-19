@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile, readdir, mkdir, symlink, realpath } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, readdir, mkdir, symlink, realpath, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/main.ts";
@@ -178,4 +178,32 @@ test("a replaced project directory is left untouched and requires recovery", asy
   expect(await readdir(join(cwd, "project"))).toEqual(["package.json"]);
   expect(await readFile(join(cwd, "project", "package.json"), "utf8")).toBe("User replacement\n");
   expect(await Bun.file(join(cwd, "project.saved", "fleur.json")).exists()).toBe(true);
+});
+
+test("replacement of an existing guidance parent is detected without removing the moved user tree", async () => {
+  const cwd = await root(); const commands = join(cwd, "commands"); await mkdir(commands);
+  const target = join(cwd, "project"); await mkdir(join(target, ".agents", "skills"), { recursive: true });
+  await writeFile(join(target, ".agents", "user-notes"), "Preserve user notes\n");
+  await writeFile(join(commands, "git"), '#!/bin/sh\n/bin/mv "$6/.agents" "$6/../moved-agents"\n/bin/ln -s "$6/../moved-agents" "$6/.agents"\nexit 0\n', { mode: 0o755 });
+  const previous = process.env.PATH; process.env.PATH = commands; let outcome;
+  try { outcome = await runCli(["init"], { cwd: target, handlers: projectCommands }); }
+  finally { process.env.PATH = previous; }
+  expect(outcome.exitCode).toBe(5);
+  expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect((await lstat(join(target, ".agents"))).isSymbolicLink()).toBe(true);
+  expect(await readFile(join(cwd, "moved-agents", "user-notes"), "utf8")).toBe("Preserve user notes\n");
+  expect(await Bun.file(join(cwd, "moved-agents", "skills", "fleur-tdd", "SKILL.md")).exists()).toBe(true);
+});
+test("non-directory planned parents produce a zero-write collision result", async () => {
+  for (const parent of [".agents", ".agents/skills", ".fleur"]) {
+    const cwd = await root();
+    if (parent.includes("/")) await mkdir(join(cwd, ".agents"));
+    await writeFile(join(cwd, parent), "Preserve this file\n");
+    const before = await readdir(cwd);
+    const outcome = await runCli(["init", "--no-git"], { cwd, handlers: projectCommands });
+    expect(outcome.exitCode).toBe(5);
+    expect(outcome.result.error?.code).toBe("PROJECT_COLLISION");
+    expect(await readdir(cwd)).toEqual(before);
+    expect(await readFile(join(cwd, parent), "utf8")).toBe("Preserve this file\n");
+  }
 });

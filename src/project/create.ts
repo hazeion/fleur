@@ -7,7 +7,7 @@ const version = "0.1.0";
 const directories = ["client", "server", "shared", "assets", "tests", "migrations", "seeds", ".agents", ".agents/skills", ".agents/skills/fleur-tdd", ".fleur"];
 async function stat(path: string) {
   try { return await lstat(path); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return null; throw error; }
 }
 export async function createProject(command: string, target: string, git: boolean, timeoutSeconds: number) {
   const deadline = performance.now() + timeoutSeconds * 1000;
@@ -32,6 +32,7 @@ export async function createProject(command: string, target: string, git: boolea
   for (const name of [".agents", ".agents/skills", ".agents/skills/fleur-tdd", "AGENTS.md", "CLAUDE.md"]) {
     const item = await stat(resolve(target, name));
     if (item && (item.isSymbolicLink() || (name.endsWith(".md") ? !item.isFile() : !item.isDirectory()))) collisions.push(name);
+    if (item?.isDirectory() && !item.isSymbolicLink()) parents.set(resolve(target, name), { ino: item.ino, dev: item.dev });
     if (item?.isFile() && name.endsWith(".md") && (await readFile(resolve(target, name), "utf8")).includes("<!-- fleur:generated:")) collisions.push(name);
   }
   for (const name of [...directories.slice(0, 7), ".fleur", ...Object.keys(files)]) if (await stat(resolve(target, name))) collisions.push(name);
@@ -61,7 +62,14 @@ export async function createProject(command: string, target: string, git: boolea
   };
   const ensure = async (path: string): Promise<void> => {
     const item = await stat(path);
-    if (item) { if (!item.isDirectory() || item.isSymbolicLink()) throw new Error("Unsafe project path"); return; }
+    if (item) {
+      if (!item.isDirectory() || item.isSymbolicLink()) throw new Error("Unsafe project path");
+      const previous = parents.get(path);
+      if (previous && (previous.ino !== item.ino || previous.dev !== item.dev)) throw new Error("Project directory changed concurrently");
+      parents.set(path, { ino: item.ino, dev: item.dev });
+      await guard();
+      return;
+    }
     const parent = dirname(path);
     if (parent !== path) await ensure(parent);
     await guard();

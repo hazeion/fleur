@@ -20,7 +20,7 @@ export async function inspectAptPackageState(profile: AptInstallProfile, host: S
   const timeout = remaining();
   if (timeout <= 0) return refused("unavailable");
   const names = Object.keys(profile.packages).sort();
-  const result = await host.run(["dpkg-query", "--show", "--showformat=${binary:Package}\t${Version}\t${db:Status-Status}\t${db:Status-Eflag}\\n", ...names], timeout);
+  const result = await host.run(["dpkg-query", "--root=/", "--admindir=/var/lib/dpkg", "--show", "--showformat=${binary:Package}\t${Version}\t${db:Status-Status}\t${db:Status-Eflag}\\n", ...names], timeout);
   if (result.status !== "completed" || (result.exitCode !== 0 && result.exitCode !== 1)) return refused("unavailable");
   const present = new Set<string>();
   const lines = result.stdout === "" ? [] : result.stdout.replace(/\n$/, "").split("\n");

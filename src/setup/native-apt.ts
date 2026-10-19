@@ -29,7 +29,7 @@ function exactSimulation(stdout: string, packages: Readonly<Record<string, strin
   return installed.size === Object.keys(packages).length;
 }
 
-export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number): Promise<CliOutcome> {
+export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false): Promise<CliOutcome> {
   if (!validAptProfile(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
   const requiredAuthorities = ["install", "configuration", "docker-access", "service-start", "service-enable"] as const;
   const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify(profile), "hex");
@@ -39,6 +39,7 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       const actual = await inspectAptPackageState(profile, host, remaining);
       const diagnostic = { packageState: { state: actual.state, present: [...actual.present], missing: [...actual.missing] } };
       if (actual.state !== "compatible") return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Existing or indeterminate packages were preserved; native setup will not upgrade or repair them automatically.", actions: [] }, diagnostic);
+      if (existingCli && !actual.present.includes("docker-ce-cli")) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The existing Docker CLI is not accounted for by the exact configured package profile. It was preserved; native setup will not replace an unknown tool.", actions: [] }, { packageState: { state: "conflict", present: [...actual.present], missing: [...actual.missing] } });
       if (actual.missing.length === 0) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Exact packages are already configured. Run doctor to verify service access and disposable smoke readiness.", actions: [{ command: "fleur doctor", description: "Verify the installed native prerequisites." }] }, diagnostic);
       const specified = input.args[0] === "--grant" ? input.args[1] : undefined;
       if (specified && !(await readGrants(host)).some((grant) => grant.id === specified && !grant.revoked && grant.action === "install" && grant.method === profile.method && grant.target === target && grant.planChecksum === checksum && grant.machine === identity.machineId && grant.user === process.getuid?.())) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "The selected native installation grant does not cover this exact plan.", actions: [] });

@@ -24,8 +24,15 @@ Official method references: [macOS](https://docs.docker.com/desktop/setup/instal
 
 The compiled native profile catalog remains empty until release verification admits
 an exact platform row. Candidate metadata cannot authorize execution. The apt
-adapter currently handles an entirely missing exact package set against the exact official Docker repository. It never upgrades or repairs an
-existing or partially installed package set. Repository creation has a separate scoped adapter. Desktop and Arch installation
+adapter handles the compatible missing subset of an exact package set against
+the exact official Docker repository. Fully configured exact versions with a
+normal dpkg error flag are preserved. Wrong versions, half-configured packages,
+reinstallation-required flags and unknown package state stop without package
+changes. An existing usable CLI that is not accounted for by the exact configured
+`docker-ce-cli` package is preserved rather than replaced. A rejected remote or
+malformed Docker endpoint does not enter native package planning. Inventory queries explicitly target `/` and `/var/lib/dpkg`, so
+`DPKG_ROOT` and `DPKG_ADMINDIR` cannot redirect the inventory away from the host
+that the installation targets. Repository creation has a separate scoped adapter. Desktop and Arch installation
 remain unfinished.
 
 A verified apt plan requires separate installation, configuration, Docker access,
@@ -43,6 +50,10 @@ noninteractive OS authentication and the same restricted repository selection.
 A successful package command still requires exact installed-state verification;
 it does not claim daemon, access or smoke readiness. A later invocation probes
 actual package state rather than repeating an installation from a checkpoint.
+The public `packageState` diagnostic names configured and missing packages.
+Simulation and installation request only the missing names at their exact
+versions. Setup checks state again before installation and re-probes the complete
+set afterward; a retry does not repeat already completed package actions.
 
 Disposable command fixtures exercise this path without installing Docker or
 changing services on the developer machine. They are not native installation

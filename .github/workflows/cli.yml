@@ -26,3 +26,25 @@ jobs:
         run: bun scripts/verify-generated-project.ts
       - name: Fresh generated project tooling, second isolated run
         run: bun scripts/verify-generated-project.ts
+  desktop-placement-fixtures:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            architecture: x86_64
+          - runner: macos-15
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native Darwin identity and checksum-pinned Bun
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Darwin --architecture '${{ matrix.architecture }}' --out "$RUNNER_TEMP/fleur-desktop-fixture-bun" > "$RUNNER_TEMP/fleur-desktop-fixture-platform.json"
+          echo "$RUNNER_TEMP/fleur-desktop-fixture-bun" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Real atomic filesystem placement with simulated Desktop host commands
+        run: bun test tests/cli/setup-desktop.test.ts

@@ -381,3 +381,23 @@ test("doctor rejects control characters in a local endpoint before displaying or
   expect(outcome.result.error).toMatchObject({ code: "PREREQUISITE_UNAVAILABLE", actual: "malformed endpoint" });
   expect(JSON.stringify(outcome)).not.toContain("misleading-confirmation");
 });
+
+test("grant inspection rejects an owned FIFO promptly instead of blocking before file validation", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-fifo-grants-");
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let cutoff: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const fifo = Bun.spawn(["/usr/bin/mkfifo", "-m", "600", directory + "/grants.json"], { stdout: "pipe", stderr: "pipe" });
+    expect(await fifo.exited).toBe(0);
+    const program = `import {runCli} from ${JSON.stringify(new URL("../../src/cli/main.ts", import.meta.url).pathname)}; import {setupCommands} from ${JSON.stringify(new URL("../../src/setup/commands.ts", import.meta.url).pathname)}; const handlers=setupCommands({stateDirectory:${JSON.stringify(directory)},host:async()=>{throw Error("No host probe");},run:async()=>{throw Error("No Docker");}}); console.log(JSON.stringify(await runCli(["setup","grants","list","--json","--timeout","0.05"],{cwd:"/tmp",handlers})));`;
+    child = Bun.spawn([process.execPath, "-e", program], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    let terminated = false;
+    cutoff = setTimeout(() => { terminated = true; child!.kill("SIGKILL"); }, 2000);
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout as ReadableStream).text(), new Response(child.stderr as ReadableStream).text(), child.exited]);
+    expect(terminated).toBe(false);
+    expect(exit).toBe(0);
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toMatchObject({ exitCode: 5, result: { command: "setup grants list", error: { code: "RECOVERY_REQUIRED" } } });
+  } finally { if (cutoff) clearTimeout(cutoff); if (child) { child.kill("SIGKILL"); await child.exited; } await rm(directory, { recursive: true, force: true }); }
+});

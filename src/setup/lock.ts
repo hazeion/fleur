@@ -3,7 +3,7 @@ import { lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 export class SetupBusy extends Error {}
 export async function syncStateDirectory(directory: string): Promise<void> {
-  const file = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const file = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = await file.stat();
     if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0) throw new Error("Unsafe setup durability target");
@@ -34,7 +34,7 @@ export async function withSetupLock<T>(directory: string, operation: () => Promi
   }
   const state = await lstat(directory);
   if (!state.isDirectory() || state.isSymbolicLink() || state.uid !== process.getuid?.() || (state.mode & 0o077) !== 0) throw new Error("Unsafe setup state");
-  const file = await open(join(directory, "setup.lock"), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  const file = await open(join(directory, "setup.lock"), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     const info = await file.stat();
     if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new Error("Unsafe setup lock");

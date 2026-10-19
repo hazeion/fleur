@@ -29,11 +29,20 @@ export async function readGrants(host: SetupHost): Promise<readonly Grant[]> {
   try { info = await lstat(directory); } catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new Error("Unsafe setup state directory");
   let file;
-  try { file = await open(join(directory, "grants.json"), constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
+  try { file = await open(join(directory, "grants.json"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
   try {
     const metadata = await file.stat();
     if (!metadata.isFile() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o077) !== 0 || metadata.size > 65536) throw new Error("Unsafe setup grant file");
-    const value: unknown = JSON.parse(await file.readFile("utf8"));
+    // Bound bytes even if a regular file grows after its initial stat.
+    const bytes = Buffer.alloc(65537);
+    let used = 0;
+    while (used < bytes.length) {
+      const result = await file.read(bytes, used, bytes.length - used, used);
+      if (result.bytesRead === 0) break;
+      used += result.bytesRead;
+    }
+    if (used > 65536) throw new Error("Grant file exceeded the bounded read");
+    const value: unknown = JSON.parse(bytes.subarray(0, used).toString("utf8"));
     if (value === null || typeof value !== "object") throw new Error("Invalid grant store");
     const store = value as Record<string, unknown>;
     if (store.formatVersion !== 1 || !Array.isArray(store.grants) || store.grants.length > 100 || !store.grants.every(isGrant) || new Set(store.grants.map((grant) => grant.id)).size !== store.grants.length) throw new Error("Invalid grant store");

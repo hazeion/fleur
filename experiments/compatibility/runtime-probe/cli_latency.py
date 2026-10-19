@@ -62,6 +62,9 @@ def compare_host_cli(control):
             'host_startup_probes':control.get('host_startup_probes',{}),
             'first_version_preceded_by_startup_probes':control['first_version_preceded_by_startup_probes'],
             'host_startup_budget_seconds':control['host_startup_budget_seconds'],
+            'docker_preflight_duration_ms':control.get('docker_preflight_duration_ms'),
+            'docker_preflight_phases_ms':control.get('docker_preflight_phases_ms',{}),
+            'docker_preflight_budget_seconds':control.get('docker_preflight_budget_seconds'),
             'ctr_revision_verified':control['ctr_revision_verified'],
             'containerd_version':control['containerd_version'],'containerd_commit':control['containerd_commit'],
             'docker_version':control['docker_version'],'docker_commit':control['docker_commit'],
@@ -78,10 +81,10 @@ def safe_failure_observations(observations):
     def counts(value):
         if type(value) is not dict:return {}
         safe={}
-        for name in ('duration_ms','stdout_bytes','stderr_bytes','host_startup_budget_seconds','cli_returncode'):
+        for name in ('duration_ms','stdout_bytes','stderr_bytes','response_bytes','http_status','host_startup_budget_seconds','docker_preflight_budget_seconds','cli_returncode'):
             entry=value.get(name)
             if type(entry) is int and (-2147483648 if name=='cli_returncode' else 0)<=entry<=2147483647:safe[name]=entry
-            elif name=='cli_returncode' and name in value and entry is None:safe[name]=None
+            elif name in ('cli_returncode','http_status') and name in value and entry is None:safe[name]=None
         for name in ('passed','timed_out','launch_or_encoding_failed'):
             if type(value.get(name)) is bool:safe[name]=value[name]
         return safe
@@ -92,6 +95,11 @@ def safe_failure_observations(observations):
         result['host_startup_phases_ms']={name:phases[name] for name in
             ('privileged_noop','ctr_banner','authoritative_version','identity_audit','binary_sha256')
             if type(phases.get(name)) is int and 0<=phases[name]<=2147483647}
+    docker_phases=observations.get('docker_preflight_phases_ms')
+    if type(docker_phases) is dict:
+        result['docker_preflight_phases_ms']={name:docker_phases[name] for name in
+            ('docker-default-info','docker-default-version','docker-active-info')
+            if type(docker_phases.get(name)) is int and 0<=docker_phases[name]<=2147483647}
     probes=observations.get('host_startup_probes')
     if type(probes) is dict:
         result['host_startup_probes']={name:counts(probes[name]) for name in

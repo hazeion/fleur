@@ -144,6 +144,8 @@ class ActualWorkerConfiguration(unittest.TestCase):
             return b'owned-executable'
         def command(args,**kwargs):
             calls.append(args)
+            if args[0]=='docker' and '--host' in args and getattr(self,'reject_default_docker_cli',False):
+                raise AssertionError('fixed default metadata must not start plugin-discovering Docker CLI')
             if '--version' in args and not getattr(self,'probe_first_use',False):raise AssertionError('redundant cold banner must not run')
             if args[0]=='/usr/bin/sudo':
                 if getattr(self,'check_optional_rpc_environment',False):
@@ -169,9 +171,15 @@ class ActualWorkerConfiguration(unittest.TestCase):
                     self.assertLessEqual(kwargs['timeout'],15);self.assertGreater(kwargs['timeout'],0)
                 else:self.assertEqual(kwargs['timeout'],15);self.assertIn('14s',args)
             elif 'version' in args:output=json.dumps(server)
-            else:output='owned-server\n'
+            else:
+                output=getattr(self,'active_docker_id','owned-server')+'\n'
+                if getattr(self,'active_docker_delay',0):
+                    import sys
+                    actual=real_run([sys.executable,'-c','import time;time.sleep('+str(self.active_docker_delay)+');print("owned-server")'],capture_output=True,timeout=kwargs['timeout'])
+                    output=actual.stdout.decode()
+                if getattr(self,'docker_phase_step',0):self.host_phase_clock[0]+=self.docker_phase_step
             return SimpleNamespace(returncode=0,stdout=output.encode(),stderr=b'')
-        with patch('daemon_trace.eligible_host',return_value=True),patch.object(Path,'resolve',lambda self,**kwargs:self),patch.object(Path,'stat',metadata),patch.object(Path,'read_bytes',contents),patch.object(Path,'read_text',return_value='dockerd\n'),patch.object(Path,'exists',return_value=False),patch('configuration.subprocess.run',side_effect=command):
+        with patch('daemon_trace.eligible_host',return_value=True),patch.object(Path,'resolve',lambda self,**kwargs:self),patch.object(Path,'stat',metadata),patch.object(Path,'read_bytes',contents),patch.object(Path,'read_text',return_value='dockerd\n'),patch.object(Path,'exists',return_value=False),patch('configuration.subprocess.run',side_effect=command),patch('configuration.read_default_docker_control',return_value=({'ID':'owned-server'},server,{'docker-default-info':1,'docker-default-version':1})):
             result=inspect_containerd_control(probe_first_use=getattr(self,'probe_first_use',False))
         self.last_host_control=result
         self.assertTrue(result['ctr_revision_verified'])
@@ -282,6 +290,37 @@ class ActualWorkerConfiguration(unittest.TestCase):
         self.assertEqual(sample['cli_returncode'],124)
         self.assertEqual(sample['duration_ms'],3000)
         self.assertNotIn('private-host',json.dumps(result))
+
+    def test_default_engine_reads_do_not_launch_redundant_docker_cli_processes(self):
+        self.reject_default_docker_cli=True
+        self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        self.assertEqual(self.last_host_control['docker_preflight_budget_seconds'],15)
+        self.assertEqual(self.last_host_control['docker_preflight_source'],'verified-unix-api-and-active-cli')
+
+    def test_active_docker_context_cannot_substitute_another_daemon(self):
+        from configuration import ContainerdControlUnverified
+        self.active_docker_id='other-private-daemon'
+        with self.assertRaises(ContainerdControlUnverified) as caught:
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        self.assertEqual(caught.exception.category,'docker-association')
+        self.assertNotIn(self.active_docker_id,str(caught.exception.observations))
+
+    def test_cold_active_cli_above_five_seconds_can_use_remaining_shared_budget(self):
+        self.reject_default_docker_cli=True
+        self.active_docker_delay=5.2
+        self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        self.assertGreaterEqual(self.last_host_control['docker_preflight_duration_ms'],5200)
+        self.assertLess(self.last_host_control['docker_preflight_duration_ms'],15000)
+
+    def test_completed_active_cli_after_overall_preflight_deadline_is_rejected(self):
+        from unittest.mock import patch
+        from configuration import ContainerdControlUnverified
+        self.host_phase_clock=[0];self.docker_phase_step=16
+        with patch('time.monotonic',side_effect=lambda:self.host_phase_clock[0]),self.assertRaises(ContainerdControlUnverified) as caught:
+            self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
+        self.assertEqual(caught.exception.category,'docker-preflight-deadline')
+        self.assertEqual(caught.exception.observations['docker_preflight_budget_seconds'],15)
+        self.assertEqual(caught.exception.observations['docker_preflight_phases_ms']['docker-active-info'],16000)
 
 class KernelNetworkConfiguration(unittest.TestCase):
     def test_empty_engine_endpoints_require_explicit_mode_and_full_kernel_proof(self):

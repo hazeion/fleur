@@ -12,10 +12,8 @@ else {
   const { resolveProjectLauncher } = await import("../src/cli/project-pin.ts");
   const launcher = await resolveProjectLauncher(parsed.invocation, process.argv[1]!);
   if (launcher.kind === "delegate") {
-    const child = Bun.spawn([process.execPath, launcher.bin, ...argv], { cwd: process.cwd(), env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    const exit = await child.exited;
-    const signal = child.signalCode;
-    process.exitCode = signal ? 128 + (typeof signal === "number" ? signal : (await import("node:os")).constants.signals[signal]) : exit;
+    const { runDelegated } = await import("../src/cli/delegate.ts");
+    process.exitCode = await runDelegated(launcher.bin, argv);
   } else outcome = launcher.kind === "blocked" ? launcher.outcome : await runCli(argv, context);
 }
 if (outcome) {

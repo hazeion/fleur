@@ -48,9 +48,9 @@ export function invalidPin(command: string): CliOutcome {
 export function versionMismatch(command: string, expected: string): CliOutcome {
   return failure(command, 4, { code: "VERSION_MISMATCH", message: "The project's exact Fleur release is not available through this launcher.", expected, actual: releaseVersion, actions: [{ command: "fleur doctor", description: "Install the intended exact project-local Fleur release explicitly, then retry. No package was fetched automatically." }] });
 }
-export function isPinDiagnostic(command: string): boolean { return ["help", "doctor", "setup grants list"].includes(command); }
+export function isPinIndependent(command: string): boolean { return ["help", "doctor", "setup grants list", "setup grants revoke"].includes(command); }
 export async function guardProjectPin(command: string, project: string): Promise<CliOutcome | null> {
-  if (isPinDiagnostic(command)) return null;
+  if (isPinIndependent(command)) return null;
   const pin = await findProjectPin(project);
   if (pin.kind === "invalid" || (pin.kind === "unconfigured" && !["new", "init", "setup"].includes(command))) return invalidPin(command);
   if (pin.kind === "configured" && pin.version !== releaseVersion) return versionMismatch(command, pin.version);
@@ -66,7 +66,7 @@ export type LauncherDecision = { readonly kind: "current" } | { readonly kind: "
 function inside(parent: string, child: string): boolean { const path = relative(parent, child); return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path); }
 export async function resolveProjectLauncher(invocation: Invocation, executable: string): Promise<LauncherDecision> {
   const command = invocation.handler?.name;
-  if (invocation.help || !command || isPinDiagnostic(command)) return { kind: "current" };
+  if (invocation.help || !command || isPinIndependent(command)) return { kind: "current" };
   const pin = await findProjectPin(invocation.project);
   if (pin.kind !== "configured" || pin.version === releaseVersion) {
     const blocked = await guardProjectPin(command, invocation.project);

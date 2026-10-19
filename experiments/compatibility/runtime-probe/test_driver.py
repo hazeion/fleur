@@ -15,7 +15,7 @@ class DriverEvidence(unittest.TestCase):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
-        native = {"event_probe":0,"event_negatives":[-1]*12,"host_canary_absent":True,"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
+        native = {"runtime_gc_verified":True,"event_probe":0,"event_negatives":[-1]*12,"host_canary_absent":True,"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
                   "application_open":True,"descriptors_closed":True,"broker_reply":"registered:Squat",
                   "cgroups":{"cpu":"100000 100000","memory":"536870912","pids":"64"}}
         self.last_build_requests = []

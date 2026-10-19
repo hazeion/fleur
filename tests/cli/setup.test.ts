@@ -272,3 +272,112 @@ test("doctor rejects Arch ARM before any Docker operation", async () => {
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result.error).toMatchObject({ code: "PREREQUISITE_UNAVAILABLE", actual: "unsupported platform" });
 });
+
+test("production setup identifies this machine but piped execution still cannot authorize acquisition", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-production-authority-");
+  try {
+    await writeFile(directory + "/docker", '#!/bin/sh\ncase "$*" in\n"--version") printf "Docker version 28.0.4";;\n"context show") printf "default";;\n"context inspect default --format {{json .Endpoints.docker}}") printf \'{"Host":"unix:///tmp/fleur-fixture.sock"}\';;\n*"info --format {{json .}}") printf \'{"ServerVersion":"28.0.4","OSType":"linux","Architecture":"x86_64"}\';;\n*"compose version --short") printf "5.6.0";;\n*"image inspect"*) exit 1;;\n*) exit 90;;\nesac\n'.replace('\"Architecture\":\"x86_64\"', `\"Architecture\":\"${process.arch === "arm64" ? "aarch64" : "x86_64"}\"`), { mode: 0o755 });
+    const program = `import { runCli } from ${JSON.stringify(new URL("../../src/cli/main.ts", import.meta.url).pathname)}; import { setupCommands } from ${JSON.stringify(new URL("../../src/setup/commands.ts", import.meta.url).pathname)}; console.log(JSON.stringify(await runCli(["setup","--json"],{cwd:${JSON.stringify(directory)},handlers:setupCommands()})));`;
+    const child = Bun.spawn([process.execPath, "-e", program], { env: { PATH: directory, HOME: directory, FLEUR_GRANT: "yes" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(await child.exited).toBe(0);
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toMatchObject({ exitCode: 3, result: { error: { code: "AUTHORITY_REQUIRED" }, data: { grantsCreated: false } } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("doctor rejects malformed daemon identity instead of running a smoke container", async () => {
+  const base = localHost(async () => { throw new Error("No smoke may run without verified daemon identity"); });
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...base, run: async (args, timeout) => args.includes("info") ? { status: "completed", exitCode: 0, stdout: '{"ServerVersion":"28.0.4","OSType":"not-linux"}', stderr: "" } : base.run(args, timeout) }) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result.data).toMatchObject({ components: { daemon: { state: "incompatible" }, smoke: { state: "not-checked" } } });
+});
+
+test("production doctor deadline closes inherited output pipes instead of waiting for a plugin descendant", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-output-deadline-");
+  try {
+    await writeFile(directory + "/docker", '#!/bin/sh\n/bin/sleep 4 &\nprintf "Docker version 28.0.4"\nexit 0\n', { mode: 0o755 });
+    const program = `import { runCli } from ${JSON.stringify(new URL("../../src/cli/main.ts", import.meta.url).pathname)}; import { setupCommands } from ${JSON.stringify(new URL("../../src/setup/commands.ts", import.meta.url).pathname)}; console.log(JSON.stringify(await runCli(["doctor","--json","--timeout","0.1"],{cwd:"/tmp",handlers:setupCommands()})));`;
+    const start = performance.now();
+    const child = Bun.spawn([process.execPath, "-e", program], { env: { PATH: directory, HOME: directory }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(await child.exited).toBe(0);
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toMatchObject({ exitCode: 4, result: { error: { code: "READINESS_TIMEOUT" } } });
+    expect(performance.now() - start).toBeLessThan(3000);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("filesystem durability failure blocks authorized image acquisition instead of treating renamed grants as durable", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-grant-durability-");
+  let pulled = false;
+  try {
+    const host = localHost(async (args) => {
+      if (args.includes("image") && args.includes("inspect")) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such image" };
+      if (args.includes("pull")) { pulled = true; return { status: "completed", exitCode: 0, stdout: "", stderr: "" }; }
+      throw new Error("Unexpected external mutation");
+    });
+    const handlers = setupCommands({ ...host, stateDirectory: directory, interactive: true, host: async () => ({ ...(await host.host()), machineId: "a".repeat(64) }), confirmHuman: async () => "once", syncDirectory: async () => { throw Object.assign(new Error("Simulated filesystem durability error"), { code: "EIO" }); } });
+    const outcome = await runCli(["setup"], { cwd: "/tmp", handlers });
+    expect(outcome).toMatchObject({ exitCode: 5, result: { error: { code: "RECOVERY_REQUIRED" } } });
+    expect(pulled).toBe(false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("concurrent setup cannot race a confirmation and a released lock permits a fresh reprobe", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-setup-contention-");
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const ready = new Promise<void>((resolve) => { entered = resolve; });
+  const host = localHost(async (args) => {
+    if (args.includes("image") && args.includes("inspect")) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such image" };
+    throw new Error("No concurrent setup may acquire an image without permission");
+  });
+  const handlers = setupCommands({ ...host, stateDirectory: directory, interactive: true, host: async () => ({ ...(await host.host()), machineId: "e".repeat(64) }), confirmHuman: async () => { entered(); await gate; return "deny"; } });
+  const first = runCli(["setup"], { cwd: "/tmp", handlers });
+  try {
+    await Promise.race([ready, Bun.sleep(2000).then(() => { throw new Error("Setup confirmation was not reached"); })]);
+    const competing = await runCli(["setup", "--json"], { cwd: "/tmp", handlers });
+    expect(competing).toMatchObject({ exitCode: 5, result: { error: { code: "MAINTENANCE_BUSY" } } });
+    release();
+    expect(await first).toMatchObject({ exitCode: 3, result: { error: { code: "AUTHORITY_REQUIRED" } } });
+    const retry = await runCli(["setup", "--json"], { cwd: "/tmp", handlers });
+    expect(retry).toMatchObject({ exitCode: 3, result: { error: { code: "AUTHORITY_REQUIRED" } } });
+  } finally { release(); await first; await rm(directory, { recursive: true, force: true }); }
+});
+
+test("remembered acquisition authority cannot follow a different machine or endpoint and revocation blocks reuse", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-grant-scope-");
+  let initial = true;
+  try {
+    const fixture = localHost(async (args) => {
+      if (args.includes("image") && args.includes("inspect")) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such image" };
+      if (args.includes("pull") && initial) { initial = false; return { status: "completed", exitCode: 1, stdout: "", stderr: "fixture acquisition failure" }; }
+      throw new Error("Mismatched or revoked permission cannot acquire an image");
+    });
+    const base = { ...fixture, stateDirectory: directory, interactive: true, host: async () => ({ ...(await fixture.host()), machineId: "1".repeat(64) }), confirmHuman: async () => "remembered" as const };
+    expect((await runCli(["setup"], { cwd: "/tmp", handlers: setupCommands(base) })).exitCode).toBe(1);
+    const listed = await runCli(["setup", "grants", "list", "--json"], { cwd: "/tmp", handlers: setupCommands(base) });
+    const id = (listed.result.data as { grants: { id: string }[] }).grants[0]!.id;
+    const otherMachine = { ...base, host: async () => ({ ...(await fixture.host()), machineId: "2".repeat(64) }) };
+    expect((await runCli(["setup", "--grant", id, "--json"], { cwd: "/tmp", handlers: setupCommands(otherMachine) })).exitCode).toBe(3);
+    const otherEndpoint = { ...base, environment: { DOCKER_HOST: "unix:///tmp/other-fixture.sock" } };
+    expect((await runCli(["setup", "--grant", id, "--json"], { cwd: "/tmp", handlers: setupCommands(otherEndpoint) })).exitCode).toBe(3);
+    expect((await runCli(["setup", "grants", "revoke", id, "--json"], { cwd: "/tmp", handlers: setupCommands(base) })).exitCode).toBe(0);
+    expect((await runCli(["setup", "--grant", id, "--json"], { cwd: "/tmp", handlers: setupCommands(base) })).exitCode).toBe(3);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("doctor rejects control characters in a local endpoint before displaying or contacting it", async () => {
+  const fixture = localHost(async () => { throw new Error("Malformed local endpoints cannot reach image operations"); });
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...fixture, environment: { DOCKER_HOST: "unix:///tmp/socket\nmisleading-confirmation" } }) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result.error).toMatchObject({ code: "PREREQUISITE_UNAVAILABLE", actual: "malformed endpoint" });
+  expect(JSON.stringify(outcome)).not.toContain("misleading-confirmation");
+});

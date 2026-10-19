@@ -8,6 +8,7 @@ async function identity(): Promise<HostIdentity> {
     const library = dlopen("/usr/lib/libSystem.B.dylib", {
       sysctlbyname: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
       __error: { args: [], returns: FFIType.ptr },
+      gethostuuid: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
     });
     try {
       const value = new Int32Array(1);
@@ -27,12 +28,11 @@ async function identity(): Promise<HostIdentity> {
       const cpuSize = new BigUint64Array([4n]);
       const cpuStatus = library.symbols.sysctlbyname(ptr(cpuName), ptr(cpu), ptr(cpuSize), null, 0);
       const cpuVerified = cpuStatus === 0 && cpuSize[0] === 4n && (cpu[0]! & 0xffffff) === (process.arch === "x64" ? 7 : process.arch === "arm64" ? 12 : -1);
-      const machineName = Buffer.from("kern.hostuuid\0");
-      const machineValue = Buffer.alloc(128);
-      const machineSize = new BigUint64Array([128n]);
-      const machineStatus = library.symbols.sysctlbyname(ptr(machineName), ptr(machineValue), ptr(machineSize), null, 0);
-      const uuid = machineStatus === 0 && machineSize[0]! > 0n && machineSize[0]! <= 128n ? machineValue.toString("utf8").split("\0")[0]! : "";
-      const machineId = /^[a-f0-9-]{36}$/i.test(uuid) ? Bun.CryptoHasher.hash("sha256", `darwin:${uuid.toLowerCase()}`, "hex") : undefined;
+      // Apple's gethostuuid API supplies the machine identity; kern.hostuuid is not a portable macOS sysctl.
+      const uuid = Buffer.alloc(16);
+      const uuidTimeout = new BigInt64Array([0n, 100_000_000n]);
+      const uuidStatus = library.symbols.gethostuuid(ptr(uuid), ptr(uuidTimeout));
+      const machineId = uuidStatus === 0 && uuid.some((byte) => byte !== 0) ? Bun.CryptoHasher.hash("sha256", `darwin:${uuid.toString("hex")}`, "hex") : undefined;
       return { system: "darwin", architecture: process.arch, translated: cpuVerified ? translated : null, release: productVersion, ...(machineId ? { machineId } : {}) };
     } finally { library.close(); }
   }

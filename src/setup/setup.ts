@@ -48,7 +48,7 @@ export async function setup(input: CommandInput, host: SetupHost): Promise<CliOu
         const acquired = await host.run(["docker", "--host", endpoint, "pull", image], remaining());
         if (acquired.status !== "completed" || acquired.exitCode !== 0) return failure("setup", acquired.status === "timeout" ? 4 : 1, { code: acquired.status === "timeout" ? "READINESS_TIMEOUT" : "PREREQUISITE_UNAVAILABLE", message: "The explicit smoke image acquisition failed; existing installations were preserved.", actions: [{ command: "fleur setup", description: "Reprobe prerequisites and inspect any still-required acquisition permission." }] }, { setupAction: { action: scope.action, state: "failed" }, resumable: true });
         return reframe(await probe(), { setupAction: { action: scope.action, state: "completed" }, resumable: true });
-      });
+      }, host.syncDirectory);
     } catch (error) { return failure("setup", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Setup is blocked by concurrent work or unsafe private state.", actions: [] }); }
   }
   const cli = diagnostic(diagnostic(diagnostic(observed.result.data).components ?? null).cli ?? null);

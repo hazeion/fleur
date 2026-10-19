@@ -21,6 +21,8 @@ export interface SetupHost {
   readonly host: () => Promise<HostIdentity>;
   readonly stateDirectory?: string;
   readonly interactive?: boolean;
+  /** External filesystem durability boundary; production opens and fsyncs the directory. */
+  readonly syncDirectory?: (directory: string) => Promise<void>;
   readonly confirmHuman?: (plan: { readonly action: string; readonly method: string; readonly target: string; readonly checksum: string }, timeoutMs: number) => Promise<"once" | "remembered" | "deny">;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly run: (args: readonly string[], timeoutMs: number) => Promise<HostCommandResult>;

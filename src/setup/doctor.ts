@@ -26,11 +26,14 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
       const inspected = await run(["docker", "context", "inspect", selected, "--format", "{{json .Endpoints.docker}}"]);
       try { endpoint = JSON.parse(inspected.stdout).Host; } catch { endpoint = ""; }
     }
-    if (typeof endpoint !== "string" || !endpoint.startsWith("unix:///")) return failure("doctor", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "A local Unix Docker endpoint is required; global context was preserved.", actual: "remote endpoint", actions: [{ command: "fleur doctor", description: "Select an existing compatible local endpoint outside Fleur and retry." }] });
+    if (typeof endpoint !== "string" || !endpoint.startsWith("unix:///") || endpoint.length <= 8 || endpoint.length > 4096 || [...endpoint].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) || /[?#]/.test(endpoint) || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(endpoint)) return failure("doctor", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "A local Unix Docker endpoint is required; global context was preserved.", actual: typeof endpoint === "string" && endpoint && !endpoint.startsWith("unix:") ? "remote endpoint" : "malformed endpoint", actions: [{ command: "fleur doctor", description: "Select an existing compatible local endpoint outside Fleur and retry." }] });
     localEndpoint?.(endpoint);
     const daemon = await run(["docker", "--host", endpoint, "info", "--format", "{{json .}}"]);
     const compose = await run(["docker", "--host", endpoint, "compose", "version", "--short"]);
-    const daemonState = daemon.status === "timeout" ? "timeout" : daemon.status !== "completed" || daemon.exitCode !== 0 ? /permission denied|access denied/i.test(daemon.stderr) ? "denied" : "unavailable" : "ready";
+    let daemonIdentity: { ServerVersion?: unknown; OSType?: unknown; Architecture?: unknown } | null = null;
+    try { const value: unknown = JSON.parse(daemon.stdout); if (value !== null && typeof value === "object" && !Array.isArray(value)) daemonIdentity = value; } catch { /* Invalid daemon data is not readiness. */ }
+    const daemonCompatible = typeof daemonIdentity?.ServerVersion === "string" && /^\d+\.\d+\.\d+$/.test(daemonIdentity.ServerVersion) && daemonIdentity.OSType === "linux" && (identity.architecture === "x64" ? ["amd64", "x86_64"].includes(String(daemonIdentity.Architecture)) : ["arm64", "aarch64"].includes(String(daemonIdentity.Architecture)));
+    const daemonState = daemon.status === "timeout" ? "timeout" : daemon.status !== "completed" || daemon.exitCode !== 0 ? /permission denied|access denied/i.test(daemon.stderr) ? "denied" : "unavailable" : daemonCompatible ? "ready" : "incompatible";
     if (daemonState === "ready") {
       const image = smokeImages[identity.architecture];
       if (image) {

@@ -1,4 +1,4 @@
-import { withSetupLock, SetupBusy } from "./lock.ts";
+import { withSetupLock, SetupBusy, syncStateDirectory } from "./lock.ts";
 import { constants } from "node:fs";
 import { lstat, open, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -55,7 +55,7 @@ export async function revokeGrant(input: CommandInput, host: SetupHost): Promise
       if (!grants.some((grant) => grant.id === id)) return failure("setup grants revoke", 1, { code: "ARGUMENT_INVALID", message: "The setup grant does not exist.", actions: [{ command: "fleur setup grants list", description: "Inspect available grant IDs." }] });
       await writeGrants(host, grants.map((grant) => grant.id === id ? { ...grant, revoked: true } : grant));
       return success("setup grants revoke", { id, revoked: true });
-    });
+    }, host.syncDirectory);
   } catch (error) { return failure("setup grants revoke", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Grant revocation is blocked by concurrent setup or unsafe state; no machine action was performed.", actions: [] }); }
 }
 
@@ -67,5 +67,7 @@ export async function writeGrants(host: SetupHost, grants: readonly Grant[]): Pr
     try { await file.writeFile(JSON.stringify({ formatVersion: 1, grants }) + "\n"); await file.sync(); }
     finally { await file.close(); }
     await rename(temporary, join(stateDirectory(host), "grants.json"));
+    // A rename is not durable authority until its directory entry is flushed.
+    await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
   } finally { await unlink(temporary).catch(() => {}); }
 }

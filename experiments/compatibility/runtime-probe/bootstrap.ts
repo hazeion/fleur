@@ -2,6 +2,7 @@ import {dlopen, FFIType, ptr} from 'bun:ffi';
 import {h} from 'preact';
 import render from 'preact-render-to-string';
 import {createVerifiedBroker, verifyRetainedHeap} from './heap_probe';
+import type {HeapStage} from './heap_probe';
 
 console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
@@ -42,6 +43,8 @@ native.trace(3);
 // Warm Preact/JSC. The fixture itself has not been evaluated or compiled.
 native.trace(4);
 if (render(h('p', null, 'trusted warmup')) !== '<p>trusted warmup</p>') process.exit(11);
+// Candidate initialization only. Its return value cannot satisfy either later proof.
+verifyRetainedHeap();
 native.trace(5);
 native.trace(6);
 if (native.prepare() !== 0) process.exit(12);
@@ -72,12 +75,23 @@ console.error('[compat-event] result=' + event_probe + ' errno=' + native.event_
 if (event_probe !== 0) process.exit(17);
 const event_negatives = Array.from({length:12},(_,i)=>native.event_negative(i));
 if (event_negatives.some(result=>result !== -1)) process.exit(19);
-const initialRuntimeGc = verifyRetainedHeap();
+// Fixed trusted strings only. At most 36 lines / 2048 bytes of stage diagnostics
+// leave space within the existing 4096-byte worker stderr ceiling.
+let heapTraceBytes = 0;
+let heapTraceLines = 0;
+function traceHeapStage(proof: 'initial' | 'broker', stage: HeapStage) {
+  const line = '[compat-gc-stage] ' + proof + ' ' + stage;
+  if (heapTraceLines >= 36 || heapTraceBytes + line.length + 1 > 2048) return;
+  heapTraceLines++;
+  heapTraceBytes += line.length + 1;
+  console.error(line);
+}
+const initialRuntimeGc = verifyRetainedHeap(stage => traceHeapStage('initial', stage));
 if (initialRuntimeGc.passed !== true) process.exit(23);
 console.error('[compat-gc] retained-values-verified');
 const verifiedBroker = createVerifiedBroker(native.broker_exchange, () => {
   console.error('[compat-gc] post-broker-retained-values-verified');
-});
+}, stage => traceHeapStage('broker', stage));
 // Compilation and top-level fixture evaluation occur only after TSYNC success.
 native.trace(12);
 const application = new Function('h', 'render', 'negative', 'broker', 'trace', source);

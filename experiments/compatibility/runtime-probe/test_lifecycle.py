@@ -463,4 +463,20 @@ class LifecycleTests(unittest.TestCase):
    self.assertEqual(row['deadline_seconds'],2)
    self.assertTrue(row['healthy_completed_while_busy_running'])
 
+ def test_vfs_aggregate_twenty_second_expiry_still_rejects_stopped_preparation(self):
+  clock=[time.monotonic()]
+  def create(name,busy,remaining):
+   cid='c'*64
+   (self.root/name).write_text(json.dumps({'Id':cid,'Name':'/'+name,'Image':IMAGE,
+    'State':{'Status':'created','Pid':0,'Running':False,'ExitCode':0,'FinishedAt':'0001-01-01T00:00:00Z'},
+    'Config':{'Labels':{'fleur.compatibility.runtime-owner':'owned'}}})+'\n')
+   clock[0]+=21
+   return cid
+  with patch('lifecycle.time.monotonic',side_effect=lambda:clock[0]),self.assertRaisesRegex(RuntimeError,'preparation deadline') as caught:
+   self.run_probe(create_worker=create,aggregate_preparation_budget=True)
+  self.assertEqual(caught.exception.worker_diagnostics['preparation']['budget_seconds'],20)
+  self.assertFalse(caught.exception.worker_diagnostics['preparation']['passed'])
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+  self.assertEqual(set(self.root.iterdir()),{self.cli})
+
 if __name__=='__main__':unittest.main()

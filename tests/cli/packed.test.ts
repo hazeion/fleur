@@ -1,14 +1,15 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let scratch: string;
 let executable: string;
 let path: string;
+let archive: string;
 beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), "fleur-packed-"));
-  const archive = join(scratch, "fleur.tgz");
+  archive = join(scratch, "fleur.tgz");
   const packed = Bun.spawn([process.execPath, "pm", "pack", "--filename", archive], { cwd: import.meta.dir + "/../..", stdout: "pipe", stderr: "pipe" });
   if (await packed.exited !== 0) throw new Error(await new Response(packed.stderr).text());
   const extraction = Bun.spawn(["/usr/bin/tar", "-xzf", archive, "-C", scratch], { stdout: "pipe", stderr: "pipe" });
@@ -50,4 +51,20 @@ test("human help is readable, catalog-driven, and lists only implemented operati
   expect(response.stdout).toContain("--timeout <seconds>");
   expect(response.stdout).not.toContain("setup");
   expect(response.stderr).toBe("");
+});
+
+test("bunx launches the installed packed release without Node or registry fallback", async () => {
+  const project = join(scratch, "bunx-project");
+  await mkdir(project);
+  await writeFile(join(project, "package.json"), JSON.stringify({ name: "packed-cli-consumer", private: true, dependencies: { fleur: `file:${archive}` } }));
+  const install = Bun.spawn([process.execPath, "install", "--ignore-scripts", "--production"], { cwd: project, env: { PATH: path, HOME: scratch }, stdout: "pipe", stderr: "pipe" });
+  const installationError = await new Response(install.stderr).text();
+  expect(await install.exited, installationError).toBe(0);
+  await symlink(process.execPath, join(path, "bunx"));
+  await symlink(process.execPath, join(path, "bun"));
+  const child = Bun.spawn([join(path, "bunx"), "--no-install", "fleur", "--json", "--help"], { cwd: project, env: { PATH: path, HOME: scratch }, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit, stderr).toBe(0);
+  expect(stderr).toBe("");
+  expect(JSON.parse(stdout)).toMatchObject({ formatVersion: 1, command: "help", ok: true });
 });

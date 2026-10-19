@@ -6,7 +6,7 @@ Run `bun bin/fleur.ts --help` for the available command catalog. `--json` return
 
 Common options are `--project <dir>`, `--json`, `--timeout <seconds>` and `--help`. Paths resolve from the invocation directory. The default timeout is 60 seconds; an explicit timeout must be finite and positive. Duplicate, unknown and malformed options return exit 2. Commands are named operations; arbitrary shell arguments are rejected.
 
-Exit categories are 0 success, 1 failure, 2 invalid invocation, 3 human authority or action required, 4 environment unavailable or incompatible, and 5 contention, drift or recovery blocking. Future command handlers return the same result contract through `runCli`; the executable owns stdout serialization. Help is generated from the same catalog used by dispatch.
+Exit categories are 0 success, 1 failure, 2 invalid invocation, 3 human authority or action required, 4 environment unavailable or incompatible, and 5 contention, drift or recovery blocking. Future command handlers return the same result contract through `runCli`; the executable owns stdout serialization. Human and JSON help are generated from the same catalog used by dispatch, including each implemented command's admitted flags. Asking for command help does not run that command.
 
 Development checks are `bun test tests/cli`, `bun run types` and `bun run lint`. Packed tests create a real package archive, extract it outside the checkout and run its executable with a poisoned Node command and no package dependencies. The entry point is also exercised through actual `bunx --no-install fleur --help` after installing that owned archive into a temporary consumer project. Bun is on its isolated PATH and Node is poisoned. Nothing is published.
 

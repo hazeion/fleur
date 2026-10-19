@@ -8,6 +8,7 @@ export interface CommandInput {
 export interface CommandDefinition {
   readonly name: string;
   readonly summary: string;
+  readonly usage?: string;
   readonly options?: readonly { readonly name: string; readonly value: boolean }[];
   readonly run: (input: CommandInput) => Promise<CliOutcome>;
 }
@@ -23,7 +24,10 @@ export function renderHelp(handlers: readonly CommandDefinition[] = []): string 
     "Usage: fleur <command> [options]",
     "",
     "Commands:",
-    ...[helpCommand, ...handlers].map(({ name, summary }) => `  ${name}  ${summary}`),
+    ... [helpCommand, ...handlers].flatMap((command) => [
+      `  ${"usage" in command && command.usage ? command.usage : command.name}  ${command.summary}`,
+      ...("options" in command ? command.options ?? [] : []).map(({ name, value }) => `    ${name}${value ? " <value>" : ""}`),
+    ]),
     "",
     "Global options:",
     ...globalOptions.map(({ name, value, description }) => `  ${name}${value ? ` <${value}>` : ""}  ${description}`),

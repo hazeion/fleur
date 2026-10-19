@@ -22,10 +22,10 @@ def host_environment():
     return environment
 
 
-def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_LABEL):
+def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_LABEL, *, kernel_private=False, kernel_proof=None):
     def require(condition, label):
         if not condition: raise ValueError('owned worker configuration rejected: '+label)
-    require(owner_label in (OWNER_LABEL,NATIVE_DATABASE_OWNER_LABEL), 'owner-binding')
+    require(owner_label in (OWNER_LABEL,NATIVE_DATABASE_OWNER_LABEL,'fleur.compatibility.vfs-owner'), 'owner-binding')
     require(type(image_id) is str and len(image_id) == 71 and image_id.startswith('sha256:') and
             all(character in '0123456789abcdef' for character in image_id[7:]), 'immutable-image')
     require(type(metadata) is dict, 'object')
@@ -47,8 +47,17 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
             type(host.get('PidsLimit')) is int and host['PidsLimit'] == 64, 'memory-pid-profile')
     require(host.get('NetworkMode') == 'none', 'network-mode')
     networks = network.get('Networks')
-    require(type(networks) is dict and set(networks) == {'none'} and type(networks['none']) is dict, 'network-endpoints')
-    require(all(networks['none'].get(key) == '' for key in ('IPAddress','Gateway','GlobalIPv6Address','IPv6Gateway')), 'network-addresses')
+    if kernel_private:
+        from kernel_network import valid_kernel_profile
+        require(kernel_private is True and valid_kernel_profile(kernel_proof), 'kernel-network-proof')
+        require(config.get('NetworkDisabled') is True and networks == {} and type(networks) is dict,
+                'kernel-network-endpoints')
+        require(all(network.get(key) == '' for key in ('SandboxID','SandboxKey','IPAddress','Gateway','GlobalIPv6Address','IPv6Gateway'))
+                and type(network.get('Ports')) is dict and network['Ports'] == {}, 'kernel-network-addresses')
+    else:
+        require(config.get('NetworkDisabled') in (None,False), 'managed-network-mode')
+        require(type(networks) is dict and set(networks) == {'none'} and type(networks['none']) is dict, 'network-endpoints')
+        require(all(networks['none'].get(key) == '' for key in ('IPAddress','Gateway','GlobalIPv6Address','IPv6Gateway')), 'network-addresses')
     require(metadata.get('Mounts') == [] and all(host.get(key) in (None,[]) for key in
             ('Binds','Mounts','VolumesFrom','Devices','DeviceRequests')), 'mount-device-exclusion')
     require(host.get('PidMode') in ('','private') and host.get('IpcMode') in ('private','none'), 'private-namespaces')
@@ -70,20 +79,28 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
             'cap_drop':['ALL'],'cap_add':[],'no_new_privileges':True,'outer_seccomp':'unconfined',
             'cpu_nanocpus':host['NanoCpus'],'memory_bytes':host['Memory'],
             'memory_swap_bytes':host['MemorySwap'],'pids_limit':host['PidsLimit'],
-            'network_mode':'none','network_addresses_empty':True,'mount_count':0,'device_count':0,
+            'network_mode':'none','kernel_network_isolated':kernel_private,'network_addresses_empty':True,'mount_count':0,'device_count':0,
             'glibc_rseq_registration':'disabled','environment_keys':sorted(admitted),'host_canary_absent':True,'running':True}
 
 
-def inspect_worker_configuration(container, owner, image_id, owner_label=OWNER_LABEL):
+def inspect_worker_configuration(container, owner, image_id, owner_label=OWNER_LABEL, *, kernel_private=False, timeout=5):
+    import time
+    deadline=time.monotonic()+timeout
     result = subprocess.run(['docker','inspect','--format','{{json .}}',container],
-                             capture_output=True,text=True,timeout=5,check=False)
+                             capture_output=True,text=True,timeout=timeout,check=False)
     if result.returncode or len(result.stdout.encode('utf-8')) > 65536:
         raise RuntimeError('owned worker configuration inspection failed')
     try:
         metadata = json.loads(result.stdout)
     except ValueError:
         raise ValueError('owned worker configuration JSON invalid') from None
-    return audit_configuration(metadata,owner,container,image_id,owner_label)
+    proof=None
+    if kernel_private:
+        from kernel_network import inspect_kernel_profile
+        if type(metadata) is not dict:raise ValueError('owned worker configuration JSON invalid')
+        proof=inspect_kernel_profile(metadata.get('Id'),metadata.get('State',{}).get('Pid'),timeout=deadline-time.monotonic())
+    return audit_configuration(metadata,owner,container,image_id,owner_label,
+                               kernel_private=kernel_private,kernel_proof=proof)
 
 
 CONTAINERD_COMMIT = 'f2551031d7276a770f65f98c9b52e57e7dad07e8'

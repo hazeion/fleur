@@ -30,7 +30,13 @@ static void *busy(void *unused) {
     return NULL;
 }
 int main(int argc, char **argv) {
-    if (argc != 2) return 1;
+    if (argc == 3 && !strcmp(argv[2], "--host-audit")) {
+        char acknowledgment[32];
+        puts("[compat-resource] ready");
+        fflush(stdout);
+        if (!fgets(acknowledgment, sizeof acknowledgment, stdin) ||
+            strcmp(acknowledgment, "[compat-resource] approved\n")) return 12;
+    } else if (argc != 2) return 1;
     if (!strcmp(argv[1], "cpu")) {
         unsigned long long before = counter("/sys/fs/cgroup/cpu.stat", "nr_throttled");
         unsigned long long time_before = counter("/sys/fs/cgroup/cpu.stat", "throttled_usec");

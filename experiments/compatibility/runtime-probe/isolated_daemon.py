@@ -582,14 +582,19 @@ def privileged_self_test():
         if imported.returncode or re.fullmatch(rb'sha256:[0-9a-f]{64}\n',imported.stdout) is None:
             raise IsolatedDaemonError('trusted manager fixture import failed')
         image = imported.stdout.decode().strip()
-        launched = endpoint.command(['run','--detach','--name',endpoint.token+'-fixture',
-                                    '--label','fleur.compatibility.vfs-owner='+endpoint.token,
-                                    '--network=none','--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
-                                    '--cpus=1','--memory=512m','--memory-swap=512m','--pids-limit=64',
-                                    '--pull=never',image,'/busy'])
-        if launched.returncode or re.fullmatch(rb'[0-9a-f]{64}\n',launched.stdout) is None:
-            raise IsolatedDaemonError('trusted manager fixture launch failed')
-        container = launched.stdout.decode().strip()
+        from kernel_docker import KernelPrivateDocker
+        from configuration import audit_configuration
+        from kernel_network import inspect_kernel_profile
+        creator=KernelPrivateDocker(endpoint.environment)
+        try:
+            container=creator.create_worker(endpoint.token+'-fixture',endpoint.token,image,'manager')
+            peer=creator.create_worker(endpoint.token+'-peer',endpoint.token,image,'manager')
+            launched=endpoint.command(['start',container])
+            if launched.returncode:
+                raise IsolatedDaemonError('trusted manager fixture launch failed')
+            if endpoint.command(['start',peer]).returncode:
+                raise IsolatedDaemonError('trusted manager peer launch failed')
+        finally:creator.close()
         inspected = endpoint.command(['inspect',container,'--format','{{json .}}'])
         if inspected.returncode or len(inspected.stdout)>65536:
             raise IsolatedDaemonError('trusted manager fixture inspection failed')
@@ -602,6 +607,20 @@ def privileged_self_test():
                 or host.get('Memory') != 536870912 or host.get('MemorySwap') != 536870912
                 or host.get('NanoCpus') != 1000000000 or host.get('PidsLimit') != 64):
             raise IsolatedDaemonError('trusted manager fixture ownership/profile invalid')
+        peer_result=endpoint.command(['inspect',peer,'--format','{{json .}}'])
+        if peer_result.returncode or len(peer_result.stdout)>65536:
+            raise IsolatedDaemonError('trusted manager peer inspection failed')
+        peer_record=json.loads(peer_result.stdout)
+        peer_proof=inspect_kernel_profile(peer,peer_record.get('State',{}).get('Pid'),timeout=min(5,endpoint.remaining_seconds()-12))
+        audit_configuration(peer_record,endpoint.token,endpoint.token+'-peer',image,
+                            owner_label='fleur.compatibility.vfs-owner',kernel_private=True,kernel_proof=peer_proof)
+        proof=inspect_kernel_profile(container,state.get('Pid'),timeout=min(5,endpoint.remaining_seconds()-12),
+                                    peer={'container_id':peer,'pid':peer_record['State']['Pid']})
+        endpoint.facts['pairwise_network_isolation_verified']=True
+        audit_configuration(record,endpoint.token,endpoint.token+'-fixture',image,
+                            owner_label='fleur.compatibility.vfs-owner',kernel_private=True,kernel_proof=proof)
+        endpoint.facts['kernel_private_network_verified']=True
+        endpoint.facts['kernel_profile']=proof
         endpoint.facts['forced_live_task_verified'] = True
         endpoint.forced_probe_verified = _retire_supervisor(endpoint,min(10,endpoint.remaining_seconds()-3))
         if not endpoint.forced_probe_verified:

@@ -231,7 +231,7 @@ class OwnedCounterfactual(unittest.TestCase):
                        'done.write_text("retired") if cmd=="delete" else None')
             cli.write_text('#!'+sys.executable+'\n'+program+'\n');cli.chmod(0o700)
             body=RETIRE_BODY.replace(ROOT_REMOVE_COMMAND,'rm -rf -- "$base/data" "$base/exec"').replace(MOUNT_RETIRE_COMMAND,'printf \'0\\n\'').replace('ctr_owned --address',shlex.quote(str(cli))+' --address')
-            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,'10000','{}','2147483647','1'],
                                   text=True,capture_output=True,timeout=5)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(result.stdout,'retired\n')
@@ -250,7 +250,7 @@ class OwnedCounterfactual(unittest.TestCase):
             remove.write_text('#!/bin/sh\nprintf "private-path: Device or resource busy\\n" >&2\nexit 1\n')
             remove.chmod(0o700)
             failing=body.replace('rm -rf -- "$base/data" "$base/exec"',shlex.quote(str(remove)))
-            failed=subprocess.run(['/bin/sh','-c',failing,'fixture',str(root),token],
+            failed=subprocess.run(['/bin/sh','-c',failing,'fixture',str(root),token,'10000','{}','2147483647','1'],
                                   text=True,capture_output=True,timeout=5)
             self.assertNotEqual(failed.returncode,0)
             self.assertEqual(failed.stdout,'')
@@ -385,7 +385,7 @@ class OwnedCounterfactual(unittest.TestCase):
             thread=threading.Thread(target=clock_writer);thread.start()
             started=time.monotonic()
             try:
-                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,'10000','{}','2147483647','1'],
                                       text=True,capture_output=True,timeout=10)
             finally:
                 finished.set();thread.join(timeout=1)
@@ -431,7 +431,7 @@ class OwnedCounterfactual(unittest.TestCase):
             thread=threading.Thread(target=clock_writer);thread.start()
             started=time.monotonic()
             try:
-                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token],
+                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,'10000','{}','2147483647','1'],
                                       text=True,capture_output=True,timeout=10)
             finally:
                 finished.set();thread.join(timeout=1)
@@ -561,6 +561,7 @@ class OwnedCounterfactual(unittest.TestCase):
                 time.sleep(1.05)
                 return {'cli_returncode':0}
             endpoint=Endpoint(root,token,time.monotonic()+5)
+            endpoint.daemon_identity=(2147483647,1)
             with patch.dict(os.environ,{'PATH':temporary+os.pathsep+os.environ['PATH']}), \
                  patch.object(Path,'read_text',text),patch.object(Path,'read_bytes',binary), \
                  patch('isolated_daemon.retirement_observations',side_effect=delayed_observations):
@@ -577,3 +578,80 @@ class OwnedCounterfactual(unittest.TestCase):
         self.assertEqual(owned_mount_count(body,root),2)
         self.assertEqual(owned_mount_count(body.replace('fleur-vfs-owned','fleur-vfs-owned\\040space'),Path('/runner/fleur-vfs-owned space')),2)
         self.assertNotIn('/var/lib/docker',str(owned_mount_count(body,root)))
+
+class RetainedDaemonRetirement(unittest.TestCase):
+    def test_deleted_pidfile_does_not_block_verified_absent_daemon_retirement(self):
+        import subprocess
+        from isolated_daemon import RETIRE_BODY, MOUNT_RETIRE_COMMAND, ROOT_REMOVE_COMMAND
+        with tempfile.TemporaryDirectory(prefix='fleur-retained-daemon-') as temporary:
+            root=Path(temporary);token='fleur-vfs-'+'a'*32
+            (root/'owner').write_text(token);(root/'data').mkdir();(root/'exec').mkdir()
+            body=RETIRE_BODY.replace('retire_namespaces\n', ':\n')
+            body=body.replace(MOUNT_RETIRE_COMMAND, "printf '0\\n'")
+            body=body.replace(ROOT_REMOVE_COMMAND,'rmdir "$base/data" "$base/exec"')
+            body=body.replace('"/proc/$daemon/stat"','"$base/fixture-proc-stat"')
+            result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,'10000','{}','2147483647','12345'],capture_output=True,text=True,timeout=3)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,'retired\n')
+            self.assertFalse((root/'data').exists());self.assertFalse((root/'exec').exists())
+
+    def test_live_or_reused_daemon_identity_cannot_authorize_removal(self):
+        import subprocess
+        from isolated_daemon import RETIRE_BODY, MOUNT_RETIRE_COMMAND, ROOT_REMOVE_COMMAND
+        for state,start in (('S','12345'),('Z','54321')):
+            with self.subTest(state=state,start=start),tempfile.TemporaryDirectory(prefix='fleur-retained-reject-') as temporary:
+                root=Path(temporary);token='fleur-vfs-'+'a'*32
+                (root/'owner').write_text(token);(root/'data').mkdir();(root/'exec').mkdir()
+                fields=[state]+['0']*18+[start]
+                (root/'fixture-proc-stat').write_text('2147483647 (dockerd) '+' '.join(fields))
+                body=RETIRE_BODY.replace('retire_namespaces\n', ':\n')
+                body=body.replace(MOUNT_RETIRE_COMMAND, "printf '0\\n'")
+                body=body.replace(ROOT_REMOVE_COMMAND,'rmdir "$base/data" "$base/exec"')
+                body=body.replace('"/proc/$daemon/stat"','"$base/fixture-proc-stat"')
+                result=subprocess.run(['/bin/sh','-c',body,'fixture',str(root),token,'10000','{}','2147483647','12345'],capture_output=True,text=True,timeout=3)
+                self.assertNotEqual(result.returncode,0)
+                self.assertNotIn('retired',result.stdout)
+                self.assertTrue((root/'data').exists());self.assertTrue((root/'exec').exists())
+
+    def test_parent_timeout_accepts_only_independently_verified_retirement_and_reap(self):
+        import io,subprocess,shutil
+        from isolated_daemon import isolated_vfs_daemon
+        for verified in (True,False):
+            with self.subTest(verified=verified),tempfile.TemporaryDirectory(prefix='fleur-fallback-',dir='/tmp') as temporary:
+                class Process:
+                    def __init__(self,arguments,**kwargs):
+                        self.root=Path(arguments[-3]);self.returncode=None
+                        self.stdin=io.BytesIO();self.stdout=io.BytesIO()
+                        for name in ('data','exec'):(self.root/name).mkdir()
+                        (self.root/'docker.pid').write_text('2147483647')
+                        (self.root/'docker.sock').write_text('fixture')
+                    def poll(self):return self.returncode
+                    def communicate(self,**kwargs):raise subprocess.TimeoutExpired('owned-supervisor',1)
+                    def wait(self,**kwargs):self.returncode=-9;return -9
+                def verify(endpoint):
+                    endpoint.facts={'driver':'vfs'};endpoint.daemon_identity=(2147483647,12345)
+                def remove_root(endpoint):
+                    # The Linux unlink-count proof is tested natively in CI;
+                    # APFS retains a nonzero open-directory link count.
+                    endpoint.verify_root()
+                    for path in endpoint.root.iterdir():path.unlink()
+                    endpoint.root.rmdir()
+                def retire(endpoint,budget):
+                    self.assertGreater(budget,0);self.assertLessEqual(budget,15)
+                    if verified:
+                        endpoint.retirement_facts={'cli_returncode':0,'stdout_bytes':8,'last_stage':12}
+                        for name in ('data','exec'):shutil.rmtree(endpoint.root/name)
+                        for name in ('docker.pid','docker.sock'):(endpoint.root/name).unlink()
+                    return verified
+                with patch('isolated_daemon.eligible_host',return_value=True),patch.dict(os.environ,{'RUNNER_TEMP':temporary}),patch('isolated_daemon._default_identity',return_value={'ID':'unchanged'}),patch('isolated_daemon.subprocess.Popen',side_effect=Process),patch.object(Endpoint,'verify',verify),patch.object(Endpoint,'command',return_value=subprocess.CompletedProcess([],0,b'',b'')),patch('isolated_daemon._retire_supervisor',side_effect=retire),patch.object(Endpoint,'remove_root',remove_root):
+                    if verified:
+                        with isolated_vfs_daemon(lifetime=45) as endpoint:pass
+                        self.assertTrue(endpoint.cleanup_verified)
+                        self.assertEqual(endpoint.retirement_facts['cli_returncode'],0)
+                        self.assertEqual(endpoint.retirement_facts['last_stage'],12)
+                        self.assertFalse(endpoint.root.exists())
+                    else:
+                        with self.assertRaises(IsolatedDaemonError):
+                            with isolated_vfs_daemon(lifetime=45) as endpoint:pass
+                        self.assertFalse(endpoint.cleanup_verified)
+                        self.assertTrue((endpoint.root/'data').exists())

@@ -132,3 +132,37 @@ Run 38812419549's AMD64 benchmark failed at `ctr_banner`, but its old error
 report omitted status/count evidence, so the cause cannot be inferred from that
 artifact. The exact source-built 2.4.1 CLI accepts bare `--version` and exits
 successfully; the next native report must establish what failed on the runner.
+
+## Docker host preflight
+
+ARM run 39287256479 timed out before the ctr phases with zero CLI output. The
+old report called all three Docker commands `host-command`, so it cannot identify
+which command or initialization phase stalled. Run 39288543603 passed that same
+preflight on both architectures before this change; the failure is intermittent.
+
+Docker 28.0.4's [info command](https://github.com/docker/cli/blob/v28.0.4/cli/command/system/info.go#L77)
+lists CLI plugins before retrieving server information, even with a server-only
+format. [Plugin discovery](https://github.com/docker/cli/blob/v28.0.4/cli-plugins/manager/manager.go#L128)
+collects candidate metadata. This is avoidable work for fixed default-daemon
+metadata, but the failed run does not prove it caused the timeout.
+
+The preflight now reads only `GET /v1.48/info` and `GET /version` directly from
+the verified root-owned default Unix socket. The parent directory and socket
+identities are retained and rechecked around the reads. Responses must be HTTP
+200 JSON objects within 64 KiB. An absolute timer interrupts slow or trickled
+responses through a retained socket, including response/connection cleanup.
+All socket and directory descriptors are closed.
+
+One ambient `docker info --format '{{.ID}}'` remains mandatory. Its returned ID
+must exactly match the default API's ID; merely naming the same endpoint does
+not prove association. Docker, containerd and runc version/revision requirements
+are unchanged. No socket or host capability is passed into application workers.
+
+The three former independent five-second command bounds become one 15-second
+Docker preflight budget, retaining their previous aggregate maximum. Each step
+receives only the remaining time, and late final observations fail. The separate
+15-second ctr prerequisite budget and 30-second application deadline are
+unchanged. Reports identify `docker-default-info`, `docker-default-version`,
+`docker-active-info`, or association/deadline failure, with safe timings and
+counts. Native CI must establish the resulting latency; no measured speedup is
+claimed from this source-based removal of two CLI launches.

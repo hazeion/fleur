@@ -171,6 +171,77 @@ def audit_containerd_control(arguments, config, server, ctr_detail):
             'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}
 
 
+def read_default_docker_control(socket_path, *, timeout):
+    """Read two fixed Engine routes after the caller verifies root provenance."""
+    import http.client
+    import math
+    from pathlib import Path
+    import socket
+    import stat
+    import threading
+    import time
+    if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0<timeout<=15:
+        raise ValueError('Docker preflight budget rejected')
+    started=time.monotonic();deadline=started+timeout
+    endpoint=Path(socket_path);directory=endpoint.parent
+    phases={};category='docker-default-socket';root_fd=None
+    def identity(info):return info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode
+    try:
+        root_fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        directory_identity=identity(os.fstat(root_fd))
+        entry=os.stat(endpoint.name,dir_fd=root_fd,follow_symlinks=False)
+        if not stat.S_ISSOCK(entry.st_mode):raise ValueError('default Docker socket rejected')
+        socket_identity=identity(entry)
+        def verify_endpoint():
+            if (identity(os.stat(directory,follow_symlinks=False))!=directory_identity or
+                    identity(os.stat(endpoint.name,dir_fd=root_fd,follow_symlinks=False))!=socket_identity):
+                raise ValueError('default Docker socket changed')
+        results=[]
+        for route,category in (('/v1.48/info','docker-default-info'),('/version','docker-default-version')):
+            phase_started=time.monotonic();remaining=deadline-phase_started
+            if remaining<=0:raise TimeoutError('Docker preflight deadline')
+            verify_endpoint()
+            connection=http.client.HTTPConnection('localhost',timeout=remaining)
+            client=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+            retained=client.dup();connection.sock=client
+            def expire():
+                try:retained.shutdown(socket.SHUT_RDWR)
+                except OSError:pass
+            fence=threading.Timer(remaining,expire);fence.daemon=True
+            raw=b'';status=None;response=None
+            fence.start()
+            try:
+                client.settimeout(remaining);client.connect(str(endpoint));verify_endpoint()
+                connection.request('GET',route,headers={'Connection':'close'})
+                response=connection.getresponse();status=response.status;raw=response.read(65537)
+                if status!=200 or len(raw)>65536:raise ValueError('Docker metadata response rejected')
+                value=json.loads(raw.decode('utf-8'))
+                if type(value) is not dict:raise ValueError('Docker metadata object required')
+                verify_endpoint()
+            finally:
+                # The retained socket lets the deadline interrupt response/close
+                # even after HTTPConnection has cleared its public socket field.
+                try:
+                    if response is not None:response.close()
+                finally:
+                    try:connection.close()
+                    finally:fence.cancel();fence.join();retained.close()
+                phases[category]=round(1000*(time.monotonic()-phase_started))
+            verify_endpoint()
+            if time.monotonic()>=deadline:raise TimeoutError('Docker preflight deadline')
+            results.append(value)
+        return results[0],results[1],phases
+    except (OSError,ValueError,http.client.HTTPException) as error:
+        raise ContainerdControlUnverified(category,{
+            'duration_ms':round(1000*(time.monotonic()-started)),
+            'timed_out':isinstance(error,TimeoutError) or time.monotonic()>=deadline,
+            'response_bytes':len(raw) if 'raw' in locals() else 0,
+            'http_status':status if 'status' in locals() else None,
+            'docker_preflight_phases_ms':dict(phases)}) from None
+    finally:
+        if root_fd is not None:os.close(root_fd)
+
+
 def inspect_containerd_control(*, probe_first_use=False):
     """Linux CI host infrastructure only; no socket/privilege reaches a worker."""
     import hashlib
@@ -216,13 +287,32 @@ def inspect_containerd_control(*, probe_first_use=False):
         path=trusted(config_path,stat.S_ISREG)
         if path.stat().st_size>65536: raise RuntimeError('Docker host configuration exceeded bound')
         config=json.loads(path.read_text())
-    environment=dict(os.environ)
-    for key in ('DOCKER_CONTEXT','DOCKER_HOST','DOCKER_TLS','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','DOCKER_API_VERSION'):
-        environment.pop(key,None)
-    default_id=command(['docker','--host','unix:///var/run/docker.sock','info','--format','{{.ID}}'],environment)
-    active_id=command(['docker','info','--format','{{.ID}}'])
-    if not default_id.strip() or default_id!=active_id: raise RuntimeError('Docker host association unverified')
-    server=json.loads(command(['docker','--host','unix:///var/run/docker.sock','version','--format','{{json .Server}}'],environment))
+    docker_started=time.monotonic();docker_phases={}
+    default_socket=trusted('/var/run/docker.sock',stat.S_ISSOCK,socket=True)
+    try:
+        remaining=15-(time.monotonic()-docker_started)
+        if remaining<=0:raise ContainerdControlUnverified('docker-preflight-deadline',{'timed_out':True})
+        default_info,server,docker_phases=read_default_docker_control(str(default_socket),timeout=remaining)
+        default_id=default_info.get('ID')
+        if type(default_id) is not str or not 0<len(default_id)<=256 or any(c.isspace() for c in default_id):
+            raise ContainerdControlUnverified('docker-default-identity',{})
+        remaining=15-(time.monotonic()-docker_started)
+        if remaining<=0:raise ContainerdControlUnverified('docker-preflight-deadline',{'timed_out':True})
+        active_started=time.monotonic()
+        try:
+            # Preserve the actual ambient context/host selection. An endpoint
+            # string alone cannot prove this CLI reaches the default daemon.
+            active_id=command(['docker','info','--format','{{.ID}}'],
+                              category='docker-active-info',timeout=remaining)
+        finally:docker_phases['docker-active-info']=round(1000*(time.monotonic()-active_started))
+        if active_id!=default_id+'\n':raise ContainerdControlUnverified('docker-association',{})
+        docker_elapsed=time.monotonic()-docker_started
+        if docker_elapsed>=15:raise ContainerdControlUnverified('docker-preflight-deadline',{'timed_out':True})
+    except ContainerdControlUnverified as error:
+        prior=error.observations.get('docker_preflight_phases_ms',{})
+        error.observations.update(docker_preflight_phases_ms={**docker_phases,**prior},
+            docker_preflight_budget_seconds=15,duration_ms=round(1000*(time.monotonic()-docker_started)))
+        raise
     ctr=trusted('/usr/bin/ctr',stat.S_ISREG)
     if type(config) is not dict: raise ContainerdControlUnverified('configuration-shape',{})
     address=_option(arguments,'--containerd') or config.get('containerd')
@@ -288,6 +378,9 @@ def inspect_containerd_control(*, probe_first_use=False):
     hash_completed=time.monotonic()
     control.update({'ctr_binary_sha256':binary_sha256,
                     'ctr_root_owned':True,'socket_root_owned':True,'docker_association_verified':True,
+                    'docker_default_socket_verified':True,'docker_preflight_source':'verified-unix-api-and-active-cli',
+                    'docker_preflight_budget_seconds':15,'docker_preflight_duration_ms':round(1000*docker_elapsed),
+                    'docker_preflight_phases_ms':docker_phases,
                     'host_access':'privileged-owned-registration-and-events','worker_authority_changed':False})
     elapsed=time.monotonic()-startup_started
     if elapsed>=15:

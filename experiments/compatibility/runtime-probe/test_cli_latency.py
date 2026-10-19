@@ -93,7 +93,8 @@ class FailureEvidence(unittest.TestCase):
         from configuration import ContainerdControlUnverified
         error=ContainerdControlUnverified('ctr-version-command',{
             'duration_ms':4000,'cli_returncode':124,'stdout_bytes':22,'stderr_bytes':11,
-            'raw_error':'private-host-output',
+            'raw_error':'private-host-output','response_bytes':32,'http_status':200,
+            'docker_preflight_phases_ms':{'docker-default-info':3,'raw_error':'private-host-output'},
             'host_startup_phases_ms':{'privileged_noop':12,'ctr_banner':4000,'unknown':'private-host-output'},
             'host_startup_probes':{'ctr_banner':{'passed':False,'timed_out':True,'cli_returncode':124,
                 'duration_ms':4000,'raw_error':'private-host-output'}}})
@@ -106,6 +107,9 @@ class FailureEvidence(unittest.TestCase):
         facts=report['failure_observations']
         self.assertEqual(facts['duration_ms'],4000)
         self.assertEqual(facts['cli_returncode'],124)
+        self.assertEqual(facts['response_bytes'],32)
+        self.assertEqual(facts['http_status'],200)
+        self.assertEqual(facts['docker_preflight_phases_ms'],{'docker-default-info':3})
         self.assertEqual(facts['host_startup_phases_ms'],{'privileged_noop':12,'ctr_banner':4000})
         self.assertFalse(facts['host_startup_probes']['ctr_banner']['passed'])
         self.assertNotIn('private-host-output',output.getvalue())

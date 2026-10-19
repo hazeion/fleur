@@ -14,6 +14,7 @@ from daemon_trace import capture_daemon_trace
 from worker_deadline import HostDeadlineGuard
 
 OWNER_LABEL = 'fleur.compatibility.runtime-owner'
+PREPARATION_BUDGET_SECONDS = 20
 
 
 def safe_worker_state(state):
@@ -26,33 +27,55 @@ def safe_worker_state(state):
 
 
 def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
-                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None):
+                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None):
+    if type(image_id) is not str or not re.fullmatch('sha256:[0-9a-f]{64}',image_id):
+        raise ValueError('lifecycle immutable image invalid')
     repeats = []
-    def command(args):
+    def command(args, deadline=None):
+        allowance=5 if deadline is None else min(5,deadline-time.monotonic())
+        if allowance<=0: raise RuntimeError('lifecycle preparation deadline expired')
         result = subprocess.run([docker, *args], env=environment,
-                                capture_output=True, text=True, timeout=5)
+                                capture_output=True, text=True, timeout=allowance)
         if result.returncode or len(result.stdout) > 65536:
             raise RuntimeError('owned lifecycle Docker command failed')
+        if deadline is not None and time.monotonic()>=deadline:
+            raise RuntimeError('lifecycle preparation deadline expired')
         return result.stdout
+    def metadata(name, identifier=None, deadline=None):
+        value = json.loads(command(['inspect', identifier or name, '--format', '{{json .}}'],deadline))
+        if type(value) is not dict: raise RuntimeError('lifecycle container identity mismatch')
+        config=value.get('Config')
+        labels=config.get('Labels') if type(config) is dict else None
+        cid=value.get('Id')
+        if (type(labels) is not dict or labels.get(OWNER_LABEL)!=tag
+                or value.get('Name')!='/'+name or value.get('Image')!=image_id
+                or type(cid) is not str or not re.fullmatch('[0-9a-f]{64}',cid)
+                or identifier is not None and cid!=identifier
+                or type(value.get('State')) is not dict):
+            raise RuntimeError('lifecycle container identity mismatch')
+        return value
     def inspect(name):
-        value = json.loads(command(['inspect', name, '--format', '{{json .}}']))
-        if type(value) is not dict or value.get('Config', {}).get('Labels', {}).get(OWNER_LABEL) != tag:
-            raise RuntimeError('lifecycle container ownership mismatch')
-        return value['State']
-    def args(name, busy=False):
-        result = [docker, 'run', '-i', '--name', name, '--label', OWNER_LABEL+'='+tag,
+        return metadata(name,prepared.get(name))['State']
+    def create_args(name, busy=False):
+        result = ['create', '-i', '--name', name, '--label', OWNER_LABEL+'='+tag,
                   '--network=none', '--read-only', '--cap-drop=ALL',
                   '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                   '--cpus=1', '--memory=512m', '--memory-swap=512m',
                   '--pids-limit=64', '--ulimit=core=0', '--pull=never', image_id]
         return result + (['busy'] if busy else [])
+    def start_args(name):
+        return [docker,'start','-a','-i',prepared[name]]
     for repeat in range(2):
         busy_name = tag + '-busy-' + str(repeat)
         healthy_name = tag + '-healthy-' + str(repeat)
         created = []
+        prepared = {}
+        preparation={'budget_seconds':PREPARATION_BUDGET_SECONDS,'duration_ms':0,
+                     'stopped_workers_verified':0,'passed':False}
         ready = threading.Event()
         observed = {}
-        busy_diagnostics = {}
+        busy_diagnostics = {'preparation':preparation}
+        healthy_diagnostics = {'preparation':preparation}
         stopped = {}
         abort = threading.Event()
         active_role = 'busy'
@@ -70,9 +93,11 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             if (type(evidence) is not dict or evidence.get('configuration_verified') is not True
                     or not accept_threads(evidence.get('host_threads'))):
                 raise RuntimeError('lifecycle worker configuration or restrictions unverified')
+            configuration=evidence.get('configuration')
+            if type(configuration) is not dict or configuration.get('container_id')!=prepared.get(name):
+                raise RuntimeError('prepared worker identity changed before application approval')
             observed[name] = evidence
             if name == busy_name:
-                configuration = evidence.get('configuration', {})
                 guard = (deadline_factory or HostDeadlineGuard)(
                     configuration.get('container_id'), configuration.get('host_init_pid'), started+timeout)
             return evidence.get('descriptor_audit')
@@ -87,11 +112,43 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     stopped['cpu_loop_entered_ms'] = round(1000*(time.monotonic()-started))
                 ready.set()
         def busy_run():
-            return run_container(args(busy_name, True), dispatch=dispatch,
+            return run_container(start_args(busy_name), dispatch=dispatch,
                                  timeout=timeout, startup_audit=lambda inventory: observe(busy_name,inventory),
                                  environment=environment, diagnostics=busy_diagnostics, on_stderr=progress, cancel_event=abort)
         try:
-            created.append(busy_name)
+            preparation_started=time.monotonic()
+            preparation_deadline=preparation_started+PREPARATION_BUDGET_SECONDS
+            try:
+                # Storage preparation creates no worker process. Complete both
+                # cold writable layers before starting the timed CPU workload.
+                for name,busy in ((busy_name,True),(healthy_name,False)):
+                    active_role='busy' if busy else 'healthy'
+                    created.append(name)
+                    if create_worker is None:
+                        identifier=command(create_args(name,busy),preparation_deadline).strip()
+                    else:
+                        # Trusted owned-host adapter only (the isolated VFS
+                        # experiment); never an application-provided callback.
+                        create_deadline=min(preparation_deadline,time.monotonic()+5)
+                        remaining_create=create_deadline-time.monotonic()
+                        if remaining_create<=0: raise RuntimeError('lifecycle preparation deadline expired')
+                        identifier=create_worker(name,busy,remaining_create)
+                        if time.monotonic()>=create_deadline:
+                            raise RuntimeError('lifecycle preparation deadline expired')
+                    if type(identifier) is not str or not re.fullmatch('[0-9a-f]{64}',identifier):
+                        raise RuntimeError('prepared worker identity invalid')
+                    state=metadata(name,identifier,preparation_deadline)['State']
+                    if (state.get('Status')!='created' or state.get('Running') is not False
+                            or type(state.get('Pid')) is not int or state['Pid']!=0):
+                        raise RuntimeError('prepared worker already started')
+                    prepared[name]=identifier
+                    preparation['stopped_workers_verified']+=1
+                if time.monotonic()>=preparation_deadline:
+                    raise RuntimeError('lifecycle preparation deadline expired')
+                preparation['passed']=True
+            finally:
+                preparation['duration_ms']=round(1000*(time.monotonic()-preparation_started))
+            active_role='busy'
             started = time.monotonic()
             future = pool.submit(busy_run)
             while not ready.wait(min(.05, max(0, started+timeout-time.monotonic()))):
@@ -105,7 +162,6 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     raise RuntimeError('busy worker did not enter restricted CPU loop')
             if inspect(busy_name).get('Running') is not True:
                 raise RuntimeError('busy worker ended before healthy execution')
-            created.append(healthy_name)
             remaining = timeout - (time.monotonic()-started)
             if remaining <= 0:
                 raise RuntimeError('deadline consumed before healthy worker start')
@@ -138,9 +194,8 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     return {'outcome':'busy-worker-inactive'}
                 return capture_daemon_trace(min(remaining_budget,left))
             active_role = 'healthy'
-            healthy_diagnostics = {}
             try:
-                healthy = json.loads(run_container(args(healthy_name), timeout=remaining,
+                healthy = json.loads(run_container(start_args(healthy_name), timeout=remaining,
                     startup_audit=lambda inventory: observe(healthy_name,inventory),
                     environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter if containerd_control is None else None,
                     completion_prepare=prepare_healthy_observer if containerd_control is not None else None,
@@ -194,7 +249,8 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             if (busy_diagnostics.get('protocol_phase') != 'waiting-worker-completion'
                     or '[compat-lifecycle] cpu-loop' not in busy_diagnostics.get('stderr', '')):
                 raise RuntimeError('busy worker failed before application execution')
-            repeats.append({'healthy_completed_while_busy_running':True,
+            repeats.append({'preparation':dict(preparation),
+                            'healthy_completed_while_busy_running':True,
                             'deadline_seconds':timeout,
                             'cpu_loop_entered_ms':stopped['cpu_loop_entered_ms'],
                             'healthy_started_ms':healthy_started_ms, 'terminated_exit':stopped['terminated_exit'],
@@ -231,9 +287,9 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 # Unknown ownership is deliberately not treated as absence.
                 outcome = 'inspection-unverified'
                 try:
-                    inspect(name)
+                    owned=metadata(name,prepared.get(name))
                     outcome = 'removal-unverified'
-                    command(['rm', '-f', name])
+                    command(['rm', '-f', owned['Id']])
                     outcome = 'removed'
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
                     pass

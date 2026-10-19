@@ -6,6 +6,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from lifecycle import run_lifecycle
 # Shell avoids unrelated cold Python imports consuming the two-second fixture budget.
+IMAGE='sha256:'+'e'*64
 FAKE = r'''#!/bin/sh
 set -eu
 root=${LIFECYCLE_FAKE_ROOT:-${0%/*}}
@@ -14,24 +15,40 @@ shift
 name=
 mode=
 owner=owned
-case "$operation" in
-run)
- while [ "$#" -gt 0 ]; do
-  case "$1" in
-   --name) name=$2; shift ;;
-   --label) owner=${2#*=}; shift ;;
-  esac
-  mode=$1
-  shift
- done
- case "$name" in owned-busy-[01]|owned-healthy-[01]) ;; *) exit 2 ;; esac
+identify() {
+ case "$1" in
+  owned-healthy-0|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) name=owned-healthy-0;cid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;mode=healthy ;;
+  owned-healthy-1|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) name=owned-healthy-1;cid=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;mode=healthy ;;
+  owned-busy-0|cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc) name=owned-busy-0;cid=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;mode=busy ;;
+  owned-busy-1|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd) name=owned-busy-1;cid=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd;mode=busy ;;
+  *) exit 2 ;;
+ esac
+}
+record() {
+ if [ "${LIFECYCLE_RECORD_EVENTS:-}" ]; then printf '%s:%s\n' "$1" "$name" >> "$root/events"; fi
+}
+write_state() {
+ printf '{"Id":"%s","Name":"/%s","Image":"%s","State":{"Status":"%s","Pid":%s,"Running":%s,"ExitCode":0,"FinishedAt":"%s"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$cid" "$name" "$LIFECYCLE_IMAGE" "$1" "$2" "$3" "$4" "$owner" > "$root/$name"
+}
+provision() {
  if [ "${LIFECYCLE_FOREIGN:-}" ]; then owner=foreign; fi
  case "$owner" in owned|foreign) ;; *) exit 2 ;; esac
- printf '{"Name":"/%s","Image":"sha256:fixture","State":{"Running":true,"ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$name" "$owner" > "$root/$name"
+ if [ "${LIFECYCLE_REFUSE_CREATE_DURING_BUSY:-}" ] && [ "$mode" = healthy ] && [ -f "$root/owned-busy-${name##*-}-loop" ]; then exit 7; fi
+ if [ "${LIFECYCLE_CREATE_DELAY:-}" ]; then sleep "$LIFECYCLE_CREATE_DELAY"; fi
+ write_state created 0 false 0001-01-01T00:00:00Z
+ record create
+ if [ "${LIFECYCLE_FAIL_PREPARE_HEALTHY:-}" ] && [ "$mode" = healthy ]; then exit 7; fi
+ if [ "${LIFECYCLE_FAIL_PREPARE_BUSY:-}" ] && [ "$mode" = busy ]; then exit 7; fi
+}
+launch() {
+ record start
+ if [ "$mode" = healthy ] && [ ! -f "$root/owned-busy-${name##*-}-loop" ]; then printf '%s\n' "$name" > "$root/healthy-too-early"; fi
+ write_state running 47 true 0001-01-01T00:00:00Z
  if [ "$mode" != busy ] && [ "${LIFECYCLE_STALL_HEALTHY_STARTUP:-}" ]; then exec sleep 30; fi
  printf '%s\n' "$LIFECYCLE_STARTUP"
  IFS= read -r startup
  [ "$startup" = startup:approved ] || exit 3
+ record approved
  printf '%s\n' "$LIFECYCLE_REQUEST"
  IFS= read -r ack
  if [ "$mode" = busy ]; then
@@ -40,51 +57,56 @@ run)
   printf '[compat-lifecycle] cpu-loop\n' >&2
   exec sleep 30
  else
-  number=${name##*-}
-  if [ ! -f "$root/owned-busy-$number-loop" ]; then printf '%s\n' "$name" > "$root/healthy-too-early"; fi
   if [ ! "${LIFECYCLE_STALE_HEALTHY_STATE:-}" ]; then
-   printf '{"Name":"/%s","Image":"sha256:fixture","State":{"Running":false,"ExitCode":0,"FinishedAt":"2026-10-13T00:00:01Z"},"Config":{"Labels":{"fleur.compatibility.runtime-owner":"%s"}}}\n' "$name" "$owner" > "$root/$name"
+   write_state exited 0 false 2026-10-13T00:00:01Z
   fi
   printf '%s\n' "$LIFECYCLE_EVIDENCE"
-  if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
-   exec sleep 30
-  fi
+  if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then exec sleep 30; fi
  fi
+}
+case "$operation" in
+run|create)
+ while [ "$#" -gt 0 ]; do
+  case "$1" in
+   --name) name=$2; shift ;;
+   --label) owner=${2#*=}; shift ;;
+  esac
+  shift
+ done
+ identify "$name"
+ provision
+ if [ "$operation" = create ]; then printf '%s\n' "$cid"; else launch; fi
+ ;;
+start)
+ [ "$#" -eq 3 ] && [ "$1" = -a ] && [ "$2" = -i ] || exit 8
+ identify "$3"
+ [ "$3" = "$cid" ] || exit 8
+ launch
  ;;
 wait)
- case "$1" in
-  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) name=owned-healthy-0 ;;
-  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) name=owned-healthy-1 ;;
-  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc) name=owned-busy-0 ;;
-  dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd) name=owned-busy-1 ;;
-  *) exit 3 ;;
- esac
+ identify "$1"
  while :; do
   IFS= read -r state < "$root/$name"
   case "$state" in *'"Running":true'*) sleep .02 ;; *) break ;; esac
  done
  printf '0\n'
  ;;
-inspect) IFS= read -r state < "$root/$1"; printf '%s\n' "$state" ;;
+inspect) identify "$1"; IFS= read -r state < "$root/$name"; printf '%s\n' "$state" ;;
 kill)
  shift
- name=$1
+ identify "$1"
  printf '%s\n' "$name" > "$root/kill-attempt"
  sleep "${LIFECYCLE_KILL_DELAY:-0}"
  if [ ! "${LIFECYCLE_NO_KILL:-}" ]; then
   sed 's/"Running":true/"Running":false/;s/"ExitCode":0/"ExitCode":137/;s/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
   mv "$root/$name.tmp" "$root/$name"
-  if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then
-   sed 's/"FinishedAt":"0001-01-01T00:00:00Z"/"FinishedAt":"2026-10-13T00:00:01Z"/' "$root/$name" > "$root/$name.tmp"
-   mv "$root/$name.tmp" "$root/$name"
-   exec sleep 30
-  fi
+  if [ "${LIFECYCLE_KEEP_HEALTHY_OPEN:-}" ]; then exec sleep 30; fi
  fi
  printf '%s\n' "$name"
  ;;
 rm)
  shift
- name=$1
+ identify "$1"
  if [ "${LIFECYCLE_CLEANUP_FAILURE:-}" ] && [ "$name" = owned-healthy-0 ]; then exit 4; fi
  rm -f "$root/$name" "$root/$name-loop"
  printf '%s\n' "$name"
@@ -100,13 +122,13 @@ class LifecycleTests(unittest.TestCase):
   self.rows=[{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},{'pid':2,'no_new_privs':1,'seccomp':2,'seccomp_filters':1}]
   e={'kind':'runtime-evidence','architecture':'amd64','negative_controls':CONTROLS['amd64'],'install':0,'html':'<p>restricted render</p>','main':[-1]*24,'thread':-1,'application_open':True,'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},'descriptors_closed':True,'broker_reply':'registered:Squat','host_canary_absent':True,'event_probe':0,'event_negatives':[-1]*12}
   startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
-  self.env=dict(os.environ,LIFECYCLE_STARTUP=json.dumps(startup),LIFECYCLE_FAKE_ROOT=str(self.root),LIFECYCLE_REQUEST=json.dumps(REQUEST),LIFECYCLE_EVIDENCE=json.dumps(e))
+  self.env=dict(os.environ,LIFECYCLE_IMAGE=IMAGE,LIFECYCLE_STARTUP=json.dumps(startup),LIFECYCLE_FAKE_ROOT=str(self.root),LIFECYCLE_REQUEST=json.dumps(REQUEST),LIFECYCLE_EVIDENCE=json.dumps(e))
  def tearDown(self):self.tmp.cleanup()
  def observe(self,name,owner,inventory):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
-  return {'configuration':{'container_id':(('c' if name.endswith('-0') else 'd') if '-busy-' in name else ('a' if name.endswith('-0') else 'b'))*64,'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self,timeout=2,containerd_control=None):
+  return {'configuration':{'container_id':data['Id'],'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
+ def run_probe(self,timeout=2,containerd_control=None,create_worker=None):
   parent=self
   class FixtureDeadline:
    # Explicit host process boundary for fake Docker state. The separate guard
@@ -141,7 +163,97 @@ class LifecycleTests(unittest.TestCase):
    def close(self):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
-  return run_lifecycle('sha256:fixture','owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline)
+  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker)
+ def test_both_workers_are_prepared_without_processes_before_busy_execution(self):
+  self.env['LIFECYCLE_RECORD_EVENTS']='1'
+  original=self.observe
+  observations=[]
+  def inspect_preparation(name,owner,inventory):
+   if '-busy-' in name:
+    healthy=self.root/name.replace('-busy-','-healthy-')
+    self.assertTrue(healthy.exists(),'healthy storage was not prepared before busy execution')
+    state=json.loads(healthy.read_text())['State']
+    self.assertFalse(state['Running']);self.assertEqual(state['Pid'],0);self.assertEqual(state['Status'],'created')
+    self.assertFalse((self.root/'healthy-too-early').exists())
+    observations.append('stopped')
+   return original(name,owner,inventory)
+  self.observe=inspect_preparation
+  self.env['LIFECYCLE_REFUSE_CREATE_DURING_BUSY']='1'
+  result=self.run_probe()
+  self.assertTrue(result['passed']);self.assertEqual(observations,['stopped','stopped'])
+  self.assertTrue(all(row['preparation']['stopped_workers_verified']==2 for row in result['repeats']))
+  expected=[]
+  for index in range(2):
+   expected.extend([f'create:owned-busy-{index}',f'create:owned-healthy-{index}',f'start:owned-busy-{index}',f'approved:owned-busy-{index}',f'start:owned-healthy-{index}',f'approved:owned-healthy-{index}'])
+  self.assertEqual((self.root/'events').read_text().splitlines(),expected)
+
+ def test_preparation_failure_retires_each_owned_container_without_starting_workers(self):
+  self.env['LIFECYCLE_RECORD_EVENTS']='1'
+  for role in ('BUSY','HEALTHY'):
+   with self.subTest(role=role):
+    setting='LIFECYCLE_FAIL_PREPARE_'+role
+    self.env[setting]='1'
+    (self.root/'events').unlink(missing_ok=True)
+    try:
+     with self.assertRaises(RuntimeError) as caught:self.run_probe()
+     self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+     self.assertFalse(caught.exception.worker_diagnostics['preparation']['passed'])
+     self.assertFalse(any(line.startswith('start:') for line in (self.root/'events').read_text().splitlines()))
+     self.assertFalse((self.root/'kill-attempt').exists())
+     self.assertEqual(set(self.root.iterdir()),{self.cli,self.root/'events'})
+    finally:self.env.pop(setting)
+
+ def test_prepared_identity_replacement_cannot_receive_application_approval(self):
+  self.env['LIFECYCLE_RECORD_EVENTS']='1'
+  original=self.observe
+  def replace_identity(name,owner,inventory):
+   if '-healthy-' in name:
+    path=self.root/name;metadata=json.loads(path.read_text());metadata['Id']='f'*64
+    path.write_text(json.dumps(metadata,separators=(',',':'))+'\n')
+   return original(name,owner,inventory)
+  self.observe=replace_identity
+  with self.assertRaisesRegex(RuntimeError,'prepared worker identity changed') as caught:self.run_probe()
+  self.assertNotIn('approved:owned-healthy-0',(self.root/'events').read_text().splitlines())
+  self.assertFalse(caught.exception.lifecycle_cleanup_verified)
+  self.assertEqual(json.loads((self.root/'owned-healthy-0').read_text())['Id'],'f'*64)
+  self.assertFalse((self.root/'owned-busy-0').exists())
+
+ def test_stopped_creation_adapter_is_bounded_and_still_identity_checked(self):
+  calls=[]
+  def create(name,busy,remaining):
+   self.assertGreater(remaining,0);self.assertLessEqual(remaining,5)
+   calls.append(name)
+   result=subprocess.run([str(self.cli),'create','--name',name,'--label','fleur.compatibility.runtime-owner=owned',IMAGE],env=self.env,capture_output=True,text=True,check=True,timeout=remaining)
+   return result.stdout.strip()
+  result=self.run_probe(create_worker=create)
+  self.assertTrue(result['passed']);self.assertEqual(len(calls),4)
+  self.assertFalse((self.root/'healthy-too-early').exists())
+
+ def test_slow_stopped_preparation_is_reported_outside_unchanged_operation_deadline(self):
+  self.env['LIFECYCLE_CREATE_DELAY']='.3'
+  result=self.run_probe()
+  self.assertTrue(result['passed'])
+  for row in result['repeats']:
+   self.assertGreaterEqual(row['preparation']['duration_ms'],600)
+   self.assertEqual(row['preparation']['budget_seconds'],20)
+   self.assertTrue(row['preparation']['passed'])
+   self.assertEqual(row['deadline_seconds'],2)
+   self.assertLessEqual(row['termination']['physical_exit_lateness_ms'],250)
+
+ def test_late_preparation_adapter_cannot_start_workers_or_claim_success(self):
+  def create(name,busy,remaining):
+   cid=('c' if busy else 'a')*64
+   (self.root/name).write_text(json.dumps({'Id':cid,'Name':'/'+name,'Image':IMAGE,
+    'State':{'Status':'created','Pid':0,'Running':False,'ExitCode':0,'FinishedAt':'0001-01-01T00:00:00Z'},
+    'Config':{'Labels':{'fleur.compatibility.runtime-owner':'owned'}}})+'\n')
+   time.sleep(.06)
+   return cid
+  with patch('lifecycle.PREPARATION_BUDGET_SECONDS',.03),self.assertRaisesRegex(RuntimeError,'preparation deadline') as caught:
+   self.run_probe(create_worker=create)
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+  self.assertFalse(caught.exception.worker_diagnostics['preparation']['passed'])
+  self.assertEqual(set(self.root.iterdir()),{self.cli})
+
  def test_silent_healthy_startup_captures_once_before_busy_deadline(self):
   self.env['LIFECYCLE_STALL_HEALTHY_STARTUP']='1'
   captures=[]
@@ -218,7 +330,9 @@ class LifecycleTests(unittest.TestCase):
   class Observer:
    def __init__(self,ctr,address,namespace,timeout):
     self.index=len(instances);instances.append(self)
-    parent.assertFalse((parent.root/f'owned-healthy-{self.index}').exists())
+    state=json.loads((parent.root/f'owned-healthy-{self.index}').read_text())['State']
+    parent.assertFalse(state['Running']);parent.assertEqual(state['Pid'],0);parent.assertEqual(state['Status'],'created')
+    parent.assertTrue((parent.root/f'owned-busy-{self.index}-loop').exists())
     events.append('prepared')
    def ready(self,*args):return {'ready':True}
    def bind(self,cid,pid,remaining):

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -108,4 +108,49 @@ test("candidate provenance hashes actual copied source and unexpected entry shap
     expect(JSON.parse(built.stdout).provenance.sourceFiles).toContainEqual({ path: "bin/fleur.ts", sha256: digest(changed) });
     expect(await readFile(entryPath)).toEqual(changed);
   } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);
+
+test.each(["output", "parent"] as const)("replacing the %s directory during packaging cannot publish into source or report success", async (replaced) => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-output-race-"));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const archive = join(scratch, "source.tgz");
+    expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
+    const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
+    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
+    const parent = join(scratch, "outside"); await mkdir(parent);
+    const output = join(parent, "artifacts");
+    const sourceDirectory = join(source, "src");
+    if (replaced === "parent") await mkdir(join(sourceDirectory, "artifacts"));
+    const before = (await readdir(sourceDirectory)).sort();
+    const replacedPath = replaced === "output" ? output : parent;
+    const spawned = Bun.spawn([process.execPath, join(source, "scripts/build-native-candidate.ts"), "--out", output], { cwd: source, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000, killSignal: "SIGKILL" });
+    child = spawned;
+    const stdout = new Response(spawned.stdout).text(); const stderr = new Response(spawned.stderr).text();
+    let changed = false;
+    for (let attempt = 0; attempt < 2000; attempt++) {
+      const status = await lstat(output).catch(() => null);
+      if (status?.isDirectory()) {
+        await rename(replacedPath, replacedPath + "-saved");
+        await symlink(sourceDirectory, replacedPath);
+        changed = true; break;
+      }
+      if (child.exitCode !== null || child.signalCode !== null) break;
+      await Bun.sleep(1);
+    }
+    const [exit, out] = await Promise.all([child.exited, stdout, stderr]);
+    expect(changed).toBe(true);
+    expect(exit).toBe(1);
+    expect(out).toBe("");
+    expect((await readdir(sourceDirectory)).sort()).toEqual(before);
+    const target = replaced === "output" ? sourceDirectory : join(sourceDirectory, "artifacts");
+    for (const name of ["fleur-ordinary.tgz", "fleur-internal-native-candidate.tgz", "build-evidence.json"]) expect(await Bun.file(join(target, name)).exists()).toBe(false);
+    expect((await lstat(replacedPath)).isSymbolicLink()).toBe(true);
+    expect(await readlink(replacedPath)).toBe(sourceDirectory);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await child.exited; }
+    await rm(scratch, { recursive: true, force: true });
+  }
 }, 20000);

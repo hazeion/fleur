@@ -6,7 +6,7 @@ This developer-only builder prepares one separately identified installation cand
 bun scripts/build-native-candidate.ts --out "$FLEUR_INTERNAL_ARTIFACTS"
 ```
 
-The output directory must be new and outside the source repository; its existing parent is resolved before this check. The builder refuses existing paths and accepts no profile or catalog argument. It performs no download, package installation, grant creation, key import, service action or VM launch. Packing ignores package lifecycle scripts. The caller gets:
+The output directory must be new and outside the source repository; its existing parent is resolved before this check. The builder refuses existing paths and accepts no profile or catalog argument. It retains the newly created output directory descriptor and checks directory/ancestor identities before and after publication. Publication uses exclusive descriptor-relative hard links and no-follow descriptor readback; staging and output must share a filesystem. If needed, choose an owned `TMPDIR` on the output filesystem. Cross-filesystem publication fails instead of falling back to path-based writes. Changed output paths are left untouched; failed builds may retain files in their original owned directory for inspection and never report success for a replacement. It performs no download, package installation, grant creation, key import, service action or VM launch. Packing ignores package lifecycle scripts. The caller gets:
 
 - `fleur-ordinary.tgz`: the actual ordinary packed source, unchanged.
 - `fleur-internal-native-candidate.tgz`: a private package with an internal name and marker.

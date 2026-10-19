@@ -1,5 +1,5 @@
-import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { closeSync, constants, fstatSync, readFileSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type catalogShape from "./native-candidate-ubuntu24-amd64.json";
@@ -30,6 +30,66 @@ async function run(args: string[], cwd: string): Promise<void> {
     if (result.status !== "completed" || result.exitCode !== 0) throw new Error("Candidate packaging command failed.");
   } finally { process.chdir(previous); }
 }
+interface DirectoryIdentity { readonly dev: bigint; readonly ino: bigint }
+async function outputDirectory(path: string): Promise<{ directory: FileHandle; verify: () => Promise<void> }> {
+  const ancestors = new Map<string, DirectoryIdentity>();
+  for (let parent = dirname(path);;) {
+    const info = await lstat(parent, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe output ancestor.");
+    ancestors.set(parent, { dev: info.dev, ino: info.ino });
+    const next = dirname(parent); if (next === parent) break; parent = next;
+  }
+  await mkdir(path, { mode: 0o700 });
+  const created = await lstat(path, { bigint: true });
+  if (!created.isDirectory() || created.isSymbolicLink()) throw new Error("Output directory changed during creation.");
+  const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const verify = async () => {
+    for (const [parent, expected] of ancestors) {
+      const current = await lstat(parent, { bigint: true });
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== expected.dev || current.ino !== expected.ino) throw new Error("Output ancestor changed; refusing publication.");
+    }
+    const bound = await directory.stat({ bigint: true });
+    const current = await lstat(path, { bigint: true });
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== created.dev || current.ino !== created.ino
+      || !bound.isDirectory() || bound.dev !== created.dev || bound.ino !== created.ino || bound.uid !== BigInt(process.getuid?.() ?? -1) || (bound.mode & 0o077n) !== 0n) throw new Error("Output directory changed; refusing publication.");
+  };
+  try { await verify(); return { directory, verify }; }
+  catch (error) { await directory.close(); throw error; }
+}
+async function publish(scratch: string, output: Awaited<ReturnType<typeof outputDirectory>>, expected: readonly { filename: string; sha256: string }[]) {
+  if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Descriptor-relative artifact publication is unavailable on this platform.");
+  const { dlopen, FFIType, ptr } = await import("bun:ffi");
+  const library = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+    linkat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+    // No O_CREAT here: the three fixed arguments avoid variadic mode ABI differences.
+    openat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+  });
+  let sourceDirectory: FileHandle | undefined;
+  try {
+    sourceDirectory = await open(scratch, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    if ((await sourceDirectory.stat({ bigint: true })).dev !== (await output.directory.stat({ bigint: true })).dev) throw new Error("Staging and output must share a filesystem; choose an owned TMPDIR on the output filesystem.");
+    for (const artifact of expected) {
+      await output.verify();
+      const source = await open(join(scratch, artifact.filename), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const identity = await source.stat({ bigint: true });
+        if (!identity.isFile() || identity.uid !== BigInt(process.getuid?.() ?? -1) || identity.nlink !== 1n) throw new Error("Unsafe staged artifact identity.");
+        await source.sync();
+        const name = Buffer.from(artifact.filename + "\0");
+        if (library.symbols.linkat(sourceDirectory.fd, ptr(name), output.directory.fd, ptr(name), 0) !== 0) throw new Error("Exclusive descriptor-relative artifact publication failed.");
+        const published = library.symbols.openat(output.directory.fd, ptr(name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        if (published < 0) throw new Error("Published artifact could not be inspected without following links.");
+        try {
+          const actual = fstatSync(published, { bigint: true });
+          if (!actual.isFile() || actual.dev !== identity.dev || actual.ino !== identity.ino || actual.size !== identity.size || hash(readFileSync(published)) !== artifact.sha256) throw new Error("Published artifact identity or bytes changed.");
+        } finally { closeSync(published); }
+        await output.verify();
+      } finally { await source.close(); }
+    }
+    await output.directory.sync();
+    await output.verify();
+  } finally { try { await sourceDirectory?.close(); } finally { library.close(); } }
+}
 async function build(output: string) {
   const catalogBytes = await readFile(new URL("./native-candidate-ubuntu24-amd64.json", import.meta.url));
   if (hash(catalogBytes) !== catalogSha256) throw new Error("The source-owned candidate catalog changed; review and pin it explicitly.");
@@ -38,9 +98,10 @@ async function build(output: string) {
   const fromSource = relative(await realpath(repository), output);
   if (fromSource === "" || (fromSource !== ".." && !fromSource.startsWith(`..${sep}`) && !isAbsolute(fromSource))) throw new Error("Candidate output must be outside the source repository.");
   const scratch = await mkdtemp(join(tmpdir(), "fleur-native-candidate-build-"));
+  let ownedOutput: Awaited<ReturnType<typeof outputDirectory>> | undefined;
   try {
     // A caller must choose a new directory. Existing archives or directories are never replaced.
-    await mkdir(output, { mode: 0o700 });
+    ownedOutput = await outputDirectory(output);
     const ordinary = join(scratch, "fleur-ordinary.tgz");
     await run([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", ordinary], repository);
     await run(["/usr/bin/tar", "-xzf", ordinary, "-C", scratch], repository);
@@ -77,11 +138,12 @@ async function build(output: string) {
       ordinary: { filename: "fleur-ordinary.tgz", sha256: ordinarySha256 },
       candidate: { filename: "fleur-internal-native-candidate.tgz", sha256: hash(await readFile(candidate)) },
     };
-    await copyFile(ordinary, join(output, report.ordinary.filename), constants.COPYFILE_EXCL);
-    await copyFile(candidate, join(output, report.candidate.filename), constants.COPYFILE_EXCL);
-    await writeFile(join(output, "build-evidence.json"), JSON.stringify(report, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    const evidence = Buffer.from(JSON.stringify(report, null, 2) + "\n");
+    await writeFile(join(scratch, "build-evidence.json"), evidence, { flag: "wx", mode: 0o600 });
+    await publish(scratch, ownedOutput, [report.ordinary, report.candidate, { filename: "build-evidence.json", sha256: hash(evidence) }]);
+    await ownedOutput.verify();
     process.stdout.write(JSON.stringify(report) + "\n");
-  } finally { await rm(scratch, { recursive: true, force: true }); }
+  } finally { try { await ownedOutput?.directory.close(); } finally { await rm(scratch, { recursive: true, force: true }); } }
 }
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== "--out" || !args[1]) {

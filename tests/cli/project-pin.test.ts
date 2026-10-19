@@ -92,3 +92,18 @@ test("an exact installed package cannot delegate to a bin outside its package", 
   expect(response.stderr).toBe("");
   expect(response.result.error.code).toBe("VERSION_MISMATCH");
 });
+test("current release rejects incompatible or incomplete project contracts before writes", async () => {
+  const valid = { formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" };
+  const configs = [{ ...valid, formatVersion: 999 }, { ...valid, contractVersion: 999 }, { ...valid, compiler: "rust-experimental" }, { fleurVersion: "0.1.0" }];
+  for (const [index, config] of configs.entries()) {
+    const project = join(scratch, `incompatible-${index}`);
+    await mkdir(project);
+    await writeFile(join(project, "fleur.json"), JSON.stringify(config));
+    const response = await invoke(project, "new", "child", "--no-git");
+    expect(response.exit).toBe(4);
+    expect(response.result.error.code).toBe("VERSION_MISMATCH");
+    expect(response.result.error.actions.length).toBeGreaterThan(0);
+    expect(await readdir(project)).toEqual(["fleur.json"]);
+    expect((await invoke(project, "--help")).exit).toBe(0);
+  }
+});

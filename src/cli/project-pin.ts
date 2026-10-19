@@ -5,7 +5,7 @@ import release from "../../package.json" with { type: "json" };
 import type { Invocation } from "./main.ts";
 import { failure, type CliOutcome } from "./result.ts";
 export const releaseVersion = release.version;
-export type ProjectPin = { readonly kind: "unconfigured" } | { readonly kind: "invalid" } | { readonly kind: "configured"; readonly root: string; readonly version: string };
+export type ProjectPin = { readonly kind: "unconfigured" } | { readonly kind: "invalid" } | { readonly kind: "configured"; readonly root: string; readonly version: string; readonly currentCompatible: boolean };
 const exactVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 export async function readMetadata(path: string): Promise<unknown> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -29,7 +29,11 @@ export async function findProjectPin(project: string): Promise<ProjectPin> {
     try {
       const metadata = await readMetadata(join(root, "fleur.json"));
       const version = metadata && typeof metadata === "object" && "fleurVersion" in metadata ? metadata.fleurVersion : undefined;
-      return typeof version === "string" && version.length <= 128 && exactVersion.test(version) ? { kind: "configured", root, version } : { kind: "invalid" };
+      const currentCompatible = metadata !== null && typeof metadata === "object"
+        && "formatVersion" in metadata && metadata.formatVersion === 1
+        && "contractVersion" in metadata && metadata.contractVersion === 1
+        && "compiler" in metadata && metadata.compiler === "microsoft";
+      return typeof version === "string" && version.length <= 128 && exactVersion.test(version) ? { kind: "configured", root, version, currentCompatible } : { kind: "invalid" };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { kind: "invalid" };
     }
@@ -50,6 +54,11 @@ export async function guardProjectPin(command: string, project: string): Promise
   const pin = await findProjectPin(project);
   if (pin.kind === "invalid" || (pin.kind === "unconfigured" && !["new", "init", "setup"].includes(command))) return invalidPin(command);
   if (pin.kind === "configured" && pin.version !== releaseVersion) return versionMismatch(command, pin.version);
+  if (pin.kind === "configured" && !pin.currentCompatible) return failure(command, 4, {
+    code: "VERSION_MISMATCH", message: "The project contract or compiler is incompatible with this Fleur release.",
+    expected: { formatVersion: 1, contractVersion: 1, compiler: "microsoft" }, actual: "incompatible or missing project contract",
+    actions: [{ command: "fleur doctor", description: "Inspect and explicitly restore the metadata for the project's intended release and supported compiler." }],
+  });
   return null;
 }
 

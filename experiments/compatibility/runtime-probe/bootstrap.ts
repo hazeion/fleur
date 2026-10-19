@@ -88,7 +88,7 @@ native.trace(17);
 const thread = native.check_thread();
 native.trace(18);
 native.trace(19);
-const frame = new TextEncoder().encode(JSON.stringify({kind: 'runtime-evidence', runtime_gc_verified: runtime_gc.passed, runtime_gc, architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}) + '\n');
+const frame = new TextEncoder().encode(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, runtime_gc_verified: runtime_gc.passed, runtime_gc, thread}) + '\n');
 // This trusted strong root remains live while FFI holds only its raw pointer.
 Object.defineProperty(globalThis,'__fleurCompatFixtureFrame',{value:frame,writable:false,configurable:false});
 native.trace(20);

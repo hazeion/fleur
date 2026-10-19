@@ -11,7 +11,7 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False, control_error=None):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False, control_error=None, idle_runtime_stress=False, idle_mode='valid'):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
@@ -20,7 +20,10 @@ class DriverEvidence(unittest.TestCase):
                   "cgroups":{"cpu":"100000 100000","memory":"536870912","pids":"64"}}
         self.last_build_requests = []
         def command(args, **kwargs):
-            if args[:2] == ['docker','build']: self.last_build_requests.append(args)
+            if args[:2] == ['docker','build']:
+                self.last_build_requests.append(args)
+                self.last_dockerfile=(Path(args[-1])/'Dockerfile').read_bytes().decode()
+                self.last_context_files={path.name for path in Path(args[-1]).iterdir()}
             if '-dumpfullversion' in args: return '13.3.0'
             if '-dumpmachine' in args: return compiler_target or PROFILES[architecture]['compiler_target']
             if '--version' in args: return 'GCC 13.3.0'
@@ -41,7 +44,8 @@ class DriverEvidence(unittest.TestCase):
                 metadata = {'Id':'a'*64,'Name':'/'+owner.get('container',''), 'Image':'sha256:'+'a'*64,
                             'Config':{'Image':'sha256:'+'a'*64,'User':'65534:65534','Labels':{'fleur.compatibility.runtime-owner':owner.get('value','')},
                             'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
-                                   'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0']},
+                                   'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0',
+                                   'BUN_JSC_useConcurrentJIT=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0']},
                             'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
                             'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
                             'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
@@ -74,6 +78,18 @@ class DriverEvidence(unittest.TestCase):
             waiter.completion(30)
             waiter.close()
             return json.dumps(native)
+        def lifecycle_boundary(*args,**kwargs):
+            if lifecycle_error is not None:raise lifecycle_error
+            if kwargs.get('broker_ack_delay')==11:
+                row={'deadline_seconds':30,'retained_heap_verified_before_cpu_loop':True,
+                     'broker_ack_pause':{'requested_ms':11000,'duration_ms':11000,'completed':True,
+                                         'after_restriction_audit':True,'registered_request_verified':True}}
+                if idle_mode=='short':row['broker_ack_pause']['duration_ms']=10000
+                if idle_mode=='missing':row.pop('broker_ack_pause')
+                if idle_mode=='heap':row['retained_heap_verified_before_cpu_loop']=False
+                if idle_mode=='audit':row['broker_ack_pause']['after_restriction_audit']=False
+                return {'passed':True,'repeats':[row,row]}
+            return {'passed':True,'repeats':[{},{}]}
         captured = io.StringIO()
         run.REPORT = {'scope':'fixture','v1_gate_passed':False,'expected_gcc':'13.3.0',
                       'expected_gcc_binary_sha256':PROFILES['amd64']['compiler_sha256']}
@@ -85,7 +101,7 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
-             patch.object(run,'run_lifecycle',return_value={'passed':True,'repeats':[{},{}]},side_effect=lifecycle_error) as lifecycle_call, \
+             patch.object(run,'run_lifecycle',side_effect=lifecycle_boundary) as lifecycle_call, \
              patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby','_docker_state_endpoint':{'path':'/private-fixture-engine'}},side_effect=control_error), \
              patch.object(run,'OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':True,'exit_code':0},close=lambda:None)), \
              patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
@@ -93,7 +109,8 @@ class DriverEvidence(unittest.TestCase):
                  {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
-            code = run.main(trusted_build_network=trusted_build_network,healthy_containerd_exit=healthy_containerd_exit)
+            code = run.main(trusted_build_network=trusted_build_network,healthy_containerd_exit=healthy_containerd_exit,idle_runtime_stress=idle_runtime_stress)
+        self.last_lifecycle_calls=lifecycle_call.call_args_list
         self.last_lifecycle_call=lifecycle_call.call_args
         return code, json.loads(captured.getvalue())
 
@@ -267,6 +284,40 @@ class DriverEvidence(unittest.TestCase):
         self.assertEqual(code,0)
         self.assertIsNone(self.last_lifecycle_call.kwargs['containerd_control'])
         self.assertNotIn('host_containerd_control',report)
+
+    def test_built_worker_contains_and_verifies_heap_probe_under_exact_candidate_profile(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code,report=self.execute(json.dumps(monitor),container_exit=0)
+        self.assertEqual(code,0)
+        self.assertIn('heap_probe.ts',self.last_context_files);self.assertIn('heap_probe.test.ts',self.last_context_files)
+        self.assertIn('COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./',self.last_dockerfile)
+        self.assertIn('bun test heap_probe.test.ts',self.last_dockerfile)
+        for setting in ('BUN_JSC_useConcurrentJIT=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0'):
+            self.assertEqual(self.last_dockerfile.count(setting),2)
+        self.assertIn('heap_probe.ts',report['source_sha256']);self.assertIn('heap_probe.test.ts',report['source_sha256'])
+
+    def test_explicit_idle_stress_adds_two_lifecycle_runs_without_replacing_original(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code,report=self.execute(json.dumps(monitor),container_exit=0,idle_runtime_stress=True)
+        self.assertEqual(code,0);self.assertTrue(report['bounded_probe_passed'])
+        self.assertEqual(len(self.last_lifecycle_calls),2)
+        original,idle=self.last_lifecycle_calls
+        self.assertNotIn('broker_ack_delay',original.kwargs)
+        self.assertEqual(original.kwargs['timeout'],30)
+        self.assertEqual(idle.kwargs['timeout'],30);self.assertEqual(idle.kwargs['broker_ack_delay'],11)
+        self.assertEqual(idle.args[1],original.args[1]+'-idle')
+        self.assertEqual(len(report['restricted_worker_lifecycle']['repeats']),2)
+        self.assertEqual(len(report['restricted_worker_idle_lifecycle']['repeats']),2)
+        code,report=self.execute(json.dumps(monitor),container_exit=0)
+        self.assertEqual(code,0);self.assertEqual(len(self.last_lifecycle_calls),1)
+        self.assertNotIn('restricted_worker_idle_lifecycle',report)
+
+    def test_idle_stress_cannot_pass_with_configured_but_unobserved_pause_or_heap_proof(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        for mode in ('short','missing','heap','audit'):
+            with self.subTest(mode=mode):
+                code,report=self.execute(json.dumps(monitor),container_exit=0,idle_runtime_stress=True,idle_mode=mode)
+                self.assertEqual(code,1);self.assertFalse(report['bounded_probe_passed'])
 
     def test_failed_host_prerequisite_reports_safe_category_before_lifecycle(self):
         from configuration import ContainerdControlUnverified

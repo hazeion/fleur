@@ -59,6 +59,7 @@ launch() {
   if [ "${LIFECYCLE_DELAY_LOOP:-}" ]; then sleep "$LIFECYCLE_DELAY_LOOP"; fi
   printf 'entered\n' > "$root/$name-loop"
   if [ ! "${LIFECYCLE_NO_HEAP_MARKER:-}" ]; then printf '[compat-gc] retained-values-verified\n' >&2; fi
+  if [ ! "${LIFECYCLE_NO_POST_BROKER_HEAP_MARKER:-}" ]; then printf '[compat-gc] post-broker-retained-values-verified\n' >&2; fi
   printf '[compat-lifecycle] cpu-loop\n' >&2
   exec sleep 30
  else
@@ -220,6 +221,13 @@ class LifecycleTests(unittest.TestCase):
  def test_missing_retained_heap_proof_cannot_launch_healthy_work(self):
   self.env['LIFECYCLE_RECORD_EVENTS']='1';self.env['LIFECYCLE_NO_HEAP_MARKER']='1'
   with self.assertRaisesRegex(RuntimeError,'retained heap verification') as caught:self.run_probe()
+  self.assertNotIn('start:owned-healthy-0',(self.root/'events').read_text())
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_pre_idle_heap_proof_cannot_substitute_post_broker_collection(self):
+  self.env['LIFECYCLE_RECORD_EVENTS']='1';self.env['LIFECYCLE_NO_POST_BROKER_HEAP_MARKER']='1'
+  with self.assertRaisesRegex(RuntimeError,'post-broker retained heap verification') as caught:
+   self.run_probe(timeout=4,broker_ack_delay=.15)
   self.assertNotIn('start:owned-healthy-0',(self.root/'events').read_text())
   self.assertTrue(caught.exception.lifecycle_cleanup_verified)
 

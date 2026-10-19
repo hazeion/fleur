@@ -108,7 +108,7 @@ WORKDIR /probe
 COPY package.json bun.lock ./
 RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
 COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./
-RUN bun test heap_probe.test.ts
+RUN bun test heap_probe.test.ts && BUN_JSC_useConcurrentJIT=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0 bun test heap_probe.test.ts
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {base}
 WORKDIR /probe

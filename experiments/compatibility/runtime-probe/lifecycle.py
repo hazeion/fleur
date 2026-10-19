@@ -142,8 +142,14 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 heap_at=stderr.find(b'[compat-gc] retained-values-verified')
                 if heap_at<0 or heap_at>stderr.find(b'[compat-lifecycle] cpu-loop'):
                     raise RuntimeError('CPU loop observed before retained heap verification')
+                post_broker_heap_at=stderr.find(b'[compat-gc] post-broker-retained-values-verified')
+                if (post_broker_heap_at<0 or post_broker_heap_at<heap_at
+                        or post_broker_heap_at>stderr.find(b'[compat-lifecycle] cpu-loop')):
+                    raise RuntimeError('CPU loop observed before post-broker retained heap verification')
                 if pause['completed'] is not True:
                     raise RuntimeError('CPU loop observed before registered broker acknowledgment')
+                if broker_ack_delay>10 and pause['duration_ms']<=10000:
+                    raise RuntimeError('idle broker pause did not exceed ten seconds')
                 stopped['retained_heap_verified_before_cpu_loop']=True
                 if not ready.is_set():
                     stopped['cpu_loop_entered_ms'] = round(1000*(time.monotonic()-started))

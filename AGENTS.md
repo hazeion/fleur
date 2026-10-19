@@ -24,6 +24,12 @@ Never weaken tests merely to get a passing result. Resolve intended behavior cha
 
 Keep secrets, generated artifacts, runtime files, personal data, and machine-local paths out of tracked documents and issues.
 
+## Project skills
+
+For pull-request descriptions, read `.agents/skills/pr/SKILL.md` and use its Summary, Evidence, and Merge Danger format. Use Fleur terminology from CONTEXT.md. Report only verification actually performed; documentation changes can use file and diff checks as evidence.
+
+Keep additional skill installations project-scoped under `.agents/skills/`.
+
 ## Planning tracker
 
 Use docs/agents/issue-tracker.md. Keep decision detail in its issue and only a linked gist in the map. Research tickets may resolve independently; human decision tickets require live discussion. Do not resolve more than one human decision ticket per Wayfinder session.

@@ -166,3 +166,49 @@ unchanged. Reports identify `docker-default-info`, `docker-default-version`,
 `docker-active-info`, or association/deadline failure, with safe timings and
 counts. Native CI must establish the resulting latency; no measured speedup is
 claimed from this source-based removal of two CLI launches.
+
+
+## Exact containerd profiles on October 19, 2026
+
+[CI run 39300072317](https://github.com/hazeion/fleur/actions/runs/39300072317)
+observed mixed hosted images. The native ARM64 host reports containerd 2.4.2
+commit `b7a25261e029d68978bbf290df0a62fc819b3c51` and kernel
+`7.0.0-1017-azure`; its exact 2.4.1 gate correctly rejected the changed build
+before executing workers. The VFS ARM64 host still reports 2.4.1 commit
+`f2551031d7276a770f65f98c9b52e57e7dad07e8` and kernel
+`6.17.0-1022-azure`. Both retain Docker 28.0.4 commit `6430e49` and runc
+1.5.2 commit `v1.5.2-0-g29dd3dc2`.
+
+The candidate admits these two reviewed version/revision pairs. Docker's
+containerd component and both ctr client/server sections must select the same
+pair. A known version paired with another revision, independently valid but
+mixed client/server builds, and unreviewed versions all fail. This preserves
+2.4.1 evidence and allows the rolling-image candidate without using a version
+range, installing a runtime, or suppressing mandatory identity checks.
+
+The [exact upstream delta](https://github.com/containerd/containerd/compare/f2551031d7276a770f65f98c9b52e57e7dad07e8...b7a25261e029d68978bbf290df0a62fc819b3c51)
+contains 26 commits and 33 changed files. An exact byte comparison found all 81
+reviewed contract files unchanged: filter parser/scanner; event exchange and
+subscription service; task and namespace services; event/task/namespace schemas
+and generated JSON structures; runc shim task lifecycle; ctr events, tasks,
+namespaces, version, client constructor and app entry point; and go.mod/go.sum.
+The [2.4.2 release](https://github.com/containerd/containerd/releases/tag/v2.4.2)
+changes image/content download bounds, reference validation, CRI log handling,
+the default seccomp socket-domain allowlist and build/release tooling. Fleur's
+outer worker profile explicitly remains seccomp-unconfined before installing
+its own unchanged irreversible filter; no worker permission follows from the
+upstream default-profile change.
+
+An offline executable oracle compiled from the exact new commit accepted all
+three quoted observer filters and matched task start, task exit and the owned
+namespace update; it rejected another namespace, another topic and the old
+unquoted topic syntax. Actual generated events retained `container_id`, `id`,
+`pid`, namespace `name`/`labels`, and numeric `exited_at.seconds`/`nanos` fields;
+zero exit status remains omitted. This confirms the source parser/JSON contract.
+
+This is a source-reviewed exact-profile candidate. Native positive/negative
+execution, matching init PID/events, deadline termination, namespace/task/shim
+retirement and mount/root cleanup still must pass on the measured host. The
+new kernel and containerd tuple do not explain away the separate post-idle GC
+failure observed on the older VFS host in the same run. Earlier timing and
+compatibility results remain attributed to their recorded builds.

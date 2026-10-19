@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { access, lstat, mkdtemp, open, realpath, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failure, type CliOutcome } from "../cli/result.ts";
@@ -16,6 +16,11 @@ function valid(profile: DesktopInstallProfile): boolean {
     && Number.isSafeInteger(profile.bytes) && profile.bytes > 0 && profile.bytes <= 2 ** 31
     && profile.teamId === "9BNSXJN65R"
     && profile.url === `https://desktop.docker.com/mac/main/${arch}/${profile.build}/Docker.dmg`;
+}
+class DesktopRecoveryRequired extends Error {}
+class DesktopHumanActionRequired extends Error {}
+function osPermissionRequired(error: unknown): boolean {
+  return ["EACCES", "EPERM", "ENOENT"].includes((error as { code?: string }).code ?? "");
 }
 function completed(result: HostCommandResult): boolean { return result.status === "completed" && result.exitCode === 0; }
 function object(value: unknown): Record<string, unknown> {
@@ -71,6 +76,8 @@ async function publish(stageFd: number, parentFd: number): Promise<void> {
 
 export async function setupNativeDesktop(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: DesktopInstallProfile, remaining: () => number): Promise<CliOutcome> {
   if (!valid(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Desktop requires an authenticated exact source-owned artifact profile.", actions: [] });
+  const readAuthority = async () => { try { return await readGrants(host); } catch { throw new DesktopRecoveryRequired("Unsafe private authority state"); } };
+  const writeAuthority = async (grants: readonly Grant[]) => { try { await writeGrants(host, grants); } catch { throw new DesktopRecoveryRequired("Authority publication was not durable"); } };
   const applications = resolve(host.desktopApplicationsDirectory ?? "/Applications");
   const destination = join(applications, "Docker.app");
   const requiredAuthorities = ["image-acquire", "install"] as const;
@@ -80,23 +87,23 @@ export async function setupNativeDesktop(input: CommandInput, host: SetupHost, i
   const authority = () => failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Desktop acquisition and placement need separate scoped authority. Agreement, launch and configuration remain human actions.", actions: [] }, { plan, resumable: true });
   try {
     try { await lstat(destination); return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "An existing Docker application was preserved. Setup never replaces or repairs it automatically.", actions: [] }); }
-    catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+    catch (error) { if ((error as { code?: string }).code !== "ENOENT") { if (osPermissionRequired(error)) throw new DesktopHumanActionRequired("Application inspection requires OS access"); throw error; } }
     return await withSetupLock(stateDirectory(host), async () => {
       const specified = input.args[0] === "--grant" ? input.args[1] : undefined;
       const matching = (grant: Grant, action: string) => !grant.revoked && grant.action === action && grant.method === profile.method && grant.target === target && grant.planChecksum === checksum && grant.machine === identity.machineId && grant.user === process.getuid?.() && (action !== "install" || !specified || specified === grant.id);
-      if (specified && !(await readGrants(host)).some((grant) => matching(grant, "install"))) return authority();
+      if (specified && !(await readAuthority()).some((grant) => matching(grant, "install"))) return authority();
       for (const action of requiredAuthorities) {
-        const grants = [...await readGrants(host)];
+        const grants = [...await readAuthority()];
         if (!grants.some((grant) => matching(grant, action))) {
           if (specified || input.json || !host.interactive || !host.confirmHuman) return authority();
           const decision = await host.confirmHuman({ action, method: profile.method, target, checksum }, remaining());
           if (decision !== "once" && decision !== "remembered") return authority();
           grants.push({ id: crypto.randomUUID(), action, method: profile.method, target, planChecksum: checksum, machine: identity.machineId!, user: process.getuid!(), mode: decision, revoked: false });
-          await writeGrants(host, grants);
+          await writeAuthority(grants);
         }
       }
       // Placement uses the invoking user's existing filesystem authority. No sudo/helper/configuration is implicit.
-      const parent = await open(applications, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      const parent = await open(applications, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch((error: unknown) => { if (osPermissionRequired(error)) throw new DesktopHumanActionRequired("Application directory requires OS access"); throw error; });
       let temporary: string | undefined;
       let stage: string | undefined;
       let stageIdentity: { dev: number; ino: number } | undefined;
@@ -105,19 +112,38 @@ export async function setupNativeDesktop(input: CommandInput, host: SetupHost, i
       let attachedDisk: string | undefined;
       let cleanup = true;
       let installed = false;
+      let published = false;
+      let publicationUncertain = false;
+      let preserveStage = false;
+      let copiedAppIdentity: { dev: number; ino: number } | undefined;
+      const installationState = () => publicationUncertain ? "uncertain" : installed ? "completed" : "incomplete";
+      const sameApp = async () => {
+        try {
+          const current = await lstat(join(stage!, "Docker.app"));
+          return current.isDirectory() && !current.isSymbolicLink() && current.dev === copiedAppIdentity?.dev && current.ino === copiedAppIdentity?.ino;
+        } catch { return false; }
+      };
+      const stageContentsOwned = async () => {
+        try {
+          const entries = await readdir(stage!);
+          if (published) return entries.length === 0;
+          if (entries.some((entry) => entry !== "Docker.app")) return false;
+          return !copiedAppIdentity || await sameApp();
+        } catch { return false; }
+      };
       let authenticating = false;
       let outcome: CliOutcome | undefined;
       try {
         const parentInfo = await parent.stat();
         const parentMatches = async () => { const current = await lstat(applications); return current.isDirectory() && !current.isSymbolicLink() && current.dev === parentInfo.dev && current.ino === parentInfo.ino; };
         if (!await parentMatches()) throw new Error("Application directory changed");
-        await access(applications, constants.W_OK);
-        let grants = [...await readGrants(host)];
+        try { await access(applications, constants.W_OK); } catch (error) { if (osPermissionRequired(error)) throw new DesktopHumanActionRequired("Application placement requires OS access"); throw error; }
+        let grants = [...await readAuthority()];
         const covered = requiredAuthorities.map((action) => grants.find((grant) => matching(grant, action)));
         if (covered.some((grant) => !grant)) return authority();
         const once = new Set(covered.filter((grant) => grant?.mode === "once").map((grant) => grant!.id));
         grants = grants.map((grant) => once.has(grant.id) ? { ...grant, revoked: true } : grant);
-        await writeGrants(host, grants);
+        await writeAuthority(grants);
         const run = async (args: readonly string[], reserve = 5000) => {
           const budget = Math.max(0, remaining() - reserve);
           if (!budget) throw new Error("Desktop operation deadline");
@@ -179,30 +205,38 @@ export async function setupNativeDesktop(input: CommandInput, host: SetupHost, i
           stageIdentity = await lstat(stage);
           const stageHandle = await open(stage, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
           try {
+            const openedStage = await stageHandle.stat();
+            if (!openedStage.isDirectory() || openedStage.dev !== stageIdentity.dev || openedStage.ino !== stageIdentity.ino) { preserveStage = true; throw new Error("Stage descriptor identity changed"); }
             await run(["ditto", app, join(stage, "Docker.app")]);
             const copied = await lstat(join(stage, "Docker.app"));
+            copiedAppIdentity = copied;
             if (!copied.isDirectory() || copied.isSymbolicLink() || !await parentMatches()) throw new Error("Application staging changed");
             await run(["codesign", "--verify", "--deep", "--strict", "--test-requirement", `${requirement} and identifier "com.docker.docker"`, join(stage, "Docker.app")]);
             const currentStage = await lstat(stage);
             if (!currentStage.isDirectory() || currentStage.isSymbolicLink() || currentStage.dev !== stageIdentity.dev || currentStage.ino !== stageIdentity.ino || !await parentMatches()) throw new Error("Application staging identity changed");
+            if (!await sameApp() || !await stageContentsOwned()) { preserveStage = true; throw new Error("Staged application identity changed"); }
             await publish(stageHandle.fd, parent.fd);
-            installed = true;
+            published = true;
+            publicationUncertain = true;
             const placed = await lstat(destination);
             if (!await parentMatches() || placed.dev !== copied.dev || placed.ino !== copied.ino) throw new Error("Application publication identity changed");
             await parent.sync();
+            installed = true;
+            publicationUncertain = false;
           } finally { await stageHandle.close(); }
         } finally {
           if (attached) { cleanup = await detachOwnedImage(); attached = !cleanup; }
         }
-      } catch {
-        outcome = failure("setup", authenticating ? 4 : 3, { code: authenticating ? "PREREQUISITE_UNAVAILABLE" : "HUMAN_ACTION_REQUIRED", message: "Desktop authentication or placement did not finish. Existing applications were preserved; inspect prerequisites before retrying.", actions: [] }, { setupAction: { action: "install", state: installed ? "completed" : "incomplete" }, nativeSupport: "unverified", resumable: true });
+      } catch (error) {
+        const recovery = publicationUncertain || error instanceof DesktopRecoveryRequired;
+        outcome = failure("setup", recovery ? 5 : authenticating ? 4 : 3, { code: recovery ? "RECOVERY_REQUIRED" : authenticating ? "PREREQUISITE_UNAVAILABLE" : "HUMAN_ACTION_REQUIRED", message: "Desktop authentication or placement did not finish. Existing applications were preserved; inspect prerequisites before retrying.", actions: [] }, { setupAction: { action: "install", state: installationState() }, nativeSupport: "unverified", resumable: true });
       } finally {
         await parent.close();
-        if (stage && !await removeOwnedDirectory(stage, stageIdentity)) cleanup = false;
+        if (stage && (preserveStage || !await stageContentsOwned() || !await removeOwnedDirectory(stage, stageIdentity))) cleanup = false;
         if (temporary && !attached && !await removeOwnedDirectory(temporary, temporaryIdentity)) cleanup = false;
       }
-      if (!cleanup) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The owned Desktop image or staging directory could not be cleaned up safely. No force or unrelated cleanup was attempted.", actions: [] }, { cleanup: false, setupAction: { action: "install", state: installed ? "completed" : "incomplete" }, nativeSupport: "unverified", resumable: true });
-      return outcome ? { ...outcome, result: { ...outcome.result, data: { cleanup: true, setupAction: { action: "install", state: installed ? "completed" : "incomplete" }, nativeSupport: "unverified", resumable: true } } } : failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "Docker Desktop was placed without launching it. Complete its agreement and any separately authorized configuration/start actions, then rerun doctor.", actions: [{ command: "fleur doctor", description: "Verify actual local daemon and smoke readiness after completing human setup." }] }, { setupAction: { action: "install", state: "completed" }, cleanup: true, nativeSupport: "unverified", resumable: true });
+      if (!cleanup) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The owned Desktop image or staging directory could not be cleaned up safely. No force or unrelated cleanup was attempted.", actions: [] }, { cleanup: false, setupAction: { action: "install", state: installationState() }, nativeSupport: "unverified", resumable: true });
+      return outcome ? { ...outcome, result: { ...outcome.result, data: { cleanup: true, setupAction: { action: "install", state: installationState() }, nativeSupport: "unverified", resumable: true } } } : failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "Docker Desktop was placed without launching it. Complete its agreement and any separately authorized configuration/start actions, then rerun doctor.", actions: [{ command: "fleur doctor", description: "Verify actual local daemon and smoke readiness after completing human setup." }] }, { setupAction: { action: "install", state: "completed" }, cleanup: true, nativeSupport: "unverified", resumable: true });
     }, host.syncDirectory);
-  } catch (error) { return failure("setup", error instanceof SetupBusy ? 5 : 3, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "HUMAN_ACTION_REQUIRED", message: "Desktop setup requires safe private authority state and an existing writable application directory; no privileged copy was attempted.", actions: [] }); }
+  } catch (error) { return failure("setup", error instanceof DesktopHumanActionRequired ? 3 : 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : error instanceof DesktopHumanActionRequired ? "HUMAN_ACTION_REQUIRED" : "RECOVERY_REQUIRED", message: "Desktop setup requires safe private authority state and an existing writable application directory; no privileged copy was attempted.", actions: [] }); }
 }

@@ -9,7 +9,7 @@ import { doctor } from "./doctor.ts";
 import { readGrants, stateDirectory, writeGrants, type Grant } from "./grants.ts";
 import { withSetupLock, SetupBusy } from "./lock.ts";
 function diagnostic(data: Json): Readonly<Record<string, Json>> { return data !== null && typeof data === "object" && !Array.isArray(data) ? data as Readonly<Record<string, Json>> : {}; }
-function reframe(outcome: CliOutcome, extra: Readonly<Record<string, Json>> = {}): CliOutcome { return { ...outcome, result: { ...outcome.result, command: "setup", data: { ...diagnostic(outcome.result.data), ...extra } } }; }
+function reframe(outcome: CliOutcome, extra: Readonly<Record<string, Json>> = {}): CliOutcome { return { ...outcome, result: { ...outcome.result, command: "setup", data: outcome.result.data === null && Object.keys(extra).length === 0 ? null : { ...diagnostic(outcome.result.data), ...extra } } }; }
 export async function setup(input: CommandInput, host: SetupHost, profiles: readonly NativeInstallProfile[] = []): Promise<CliOutcome> {
   if (input.args.some((arg, index) => arg !== "--grant" && input.args[index - 1] !== "--grant")) return failure("setup", 2, { code: "ARGUMENT_INVALID", message: "Setup accepts only --grant <id>.", actions: [] });
   const deadline = performance.now() + input.timeoutSeconds * 1000;
@@ -20,6 +20,7 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
   let endpoint: string | undefined;
   const probe = () => doctor({ ...input, args: [], timeoutSeconds: remaining() / 1000 }, host, (local) => { endpoint = local; });
   const observed = await probe();
+  if (observed.result.ok) return reframe(observed);
   const imageNeeded = (outcome: CliOutcome) => outcome.result.error?.code === "AUTHORITY_REQUIRED";
   if (imageNeeded(observed) && endpoint) {
     try {
@@ -54,9 +55,14 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
       }, host.syncDirectory);
     } catch (error) { return failure("setup", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Setup is blocked by concurrent work or unsafe private state.", actions: [] }); }
   }
-  const cli = diagnostic(diagnostic(diagnostic(observed.result.data).components ?? null).cli ?? null);
+  const components = diagnostic(diagnostic(observed.result.data).components ?? null);
+  const cli = diagnostic(components.cli ?? null);
+  const daemon = diagnostic(components.daemon ?? null);
+  const localUnready = endpoint !== undefined && cli.state === "ready" && (daemon.state === "ready" || daemon.state === "unavailable" || daemon.state === "denied");
+  const packageInspectionAllowed = observed.exitCode === 4 && observed.result.error?.code === "PREREQUISITE_UNAVAILABLE" && (cli.state === "missing" || localUnready);
+  const profile = packageInspectionAllowed ? selectNativeProfile(identity, profiles) : undefined;
+  if (profile?.method === "docker-official-apt") return setupNativeApt(input, host, identity, profile, remaining, cli.state === "ready");
   if (cli.state !== "missing") return reframe(observed);
-  const profile = selectNativeProfile(identity, profiles);
-  if (profile) return profile.method === "docker-desktop-official-dmg" ? setupNativeDesktop(input, host, identity, profile, remaining) : setupNativeApt(input, host, identity, profile, remaining);
+  if (profile?.method === "docker-desktop-official-dmg") return setupNativeDesktop(input, host, identity, profile, remaining);
   return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The official installation method requires a verified release profile and separately authorized machine changes. Existing software was preserved.", actions: [{ command: "fleur doctor", description: "Inspect current prerequisites; complete the documented official setup manually and rerun setup." }] }, { plan: { method, verified: false, actions: ["install", "repository-configuration", "service-start", "service-enable", "docker-access", "profile-configuration", "legal-acceptance"], steps: method === "docker-official-apt" ? [{ action: "repository-configuration", method, state: "unverified" }, { action: "install", method, state: "unverified", requires: ["service-start", "service-enable"] }] : [{ action: "install", method, state: "unverified", requires: method === "docker-desktop-official-dmg" ? ["profile-configuration", "legal-acceptance"] : [] }], reason: "Native installer and side-effect verification is incomplete." }, grantsCreated: false, resumable: true });
 }

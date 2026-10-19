@@ -39,7 +39,7 @@ async function desktopFixture() {
   const candidate = { ...profile, bytes: Buffer.byteLength(payload), sha256: "fd699df0a81f46a3e423008aac859fcf6a661a066cd57aa09d5727e021f99e07" };
   const host = {
     stateDirectory: join(root, "state"), desktopApplicationsDirectory: applications, interactive: true,
-    confirmHuman: async ({ action }: { action: string }) => { prompts.push(action); return "once" as const; },
+    confirmHuman: async ({ action }: { action: string }): Promise<"once" | "remembered" | "deny"> => { prompts.push(action); return "once"; },
     host: async () => ({ system: "darwin", architecture: "x64", translated: false, release: "15.7.7", machineId: "a".repeat(64) }),
     run: async (args: readonly string[]) => {
       calls.push([...args]);
@@ -270,4 +270,76 @@ test("busy owned image cleanup reports recovery without forced detachment or fal
     if (image) { const { dirname } = await import("node:path"); await rm(dirname(image[image.indexOf("--output") + 1]!), { recursive: true, force: true }); }
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("a replaced inner staged application is preserved for recovery and never published", async () => {
+  const fixture = await desktopFixture();
+  const run = fixture.host.run;
+  let replacement = "";
+  try {
+    fixture.host.run = async (args) => {
+      const result = await run(args);
+      const app = args.at(-1)!;
+      if (args[0] === "codesign" && app.includes("/.fleur-desktop-") && app.endsWith("/Docker.app")) {
+        const { rename } = await import("node:fs/promises");
+        replacement = app;
+        await rename(app, `${app}.verified-original`);
+        await mkdir(app);
+        await Bun.write(join(app, "unexpected"), "unsigned replacement");
+      }
+      return result;
+    };
+    const outcome = await runCli(["setup"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    expect(outcome.exitCode).toBe(5);
+    expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+    expect(outcome.result.data).toMatchObject({ cleanup: false, setupAction: { state: "incomplete" } });
+    expect(await Bun.file(join(fixture.applications, "Docker.app", "unexpected")).exists()).toBe(false);
+    expect(await Bun.file(join(replacement, "unexpected")).text()).toBe("unsigned replacement");
+    expect(await Bun.file(join(`${replacement}.verified-original`, "Contents", "MacOS", "com.docker.backend")).text()).toBe("owned app");
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("malformed private Desktop authority state remains recovery-required without prompts or acquisition", async () => {
+  const fixture = await desktopFixture();
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await mkdir(fixture.host.stateDirectory, { mode: 0o700 });
+    await writeFile(join(fixture.host.stateDirectory, "grants.json"), "invalid JSON", { mode: 0o600 });
+    const listed = await runCli(["setup", "grants", "list", "--json"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    const outcome = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    expect(listed.exitCode).toBe(5);
+    expect(outcome.exitCode).toBe(5);
+    expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls).toEqual([["docker", "--version"]]);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("an unwritable Desktop application directory still requests human OS action rather than recovery", async () => {
+  const fixture = await desktopFixture();
+  const { chmod } = await import("node:fs/promises");
+  try {
+    await chmod(fixture.applications, 0o500);
+    const outcome = await runCli(["setup"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    expect(outcome.exitCode).toBe(3);
+    expect(outcome.result.error?.code).toBe("HUMAN_ACTION_REQUIRED");
+    expect(fixture.calls).toEqual([["docker", "--version"]]);
+  } finally { await chmod(fixture.applications, 0o700); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("concurrent Desktop setup reports maintenance busy without requesting or using additional authority", async () => {
+  const fixture = await desktopFixture();
+  let entered!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  fixture.host.confirmHuman = async ({ action }) => { fixture.prompts.push(action); entered(); await blocked; return "deny"; };
+  const first = runCli(["setup"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+  try {
+    await waiting;
+    const second = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: setupCommands(fixture.host, [fixture.candidate]) });
+    expect(second.exitCode).toBe(5);
+    expect(second.result.error?.code).toBe("MAINTENANCE_BUSY");
+    expect(fixture.prompts).toEqual(["image-acquire"]);
+  } finally { release(); await first; await rm(fixture.root, { recursive: true, force: true }); }
 });

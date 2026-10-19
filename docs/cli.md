@@ -8,4 +8,4 @@ Common options are `--project <dir>`, `--json`, `--timeout <seconds>` and `--hel
 
 Exit categories are 0 success, 1 failure, 2 invalid invocation, 3 human authority or action required, 4 environment unavailable or incompatible, and 5 contention, drift or recovery blocking. Future command handlers return the same result contract through `runCli`; the executable owns stdout serialization. Help is generated from the same catalog used by dispatch.
 
-Development checks are `bun test tests/cli`, `bun run types` and `bun run lint`. Packed tests create a real package archive, extract it outside the checkout and run its executable with a poisoned Node command and no package dependencies. Nothing is published.
+Development checks are `bun test tests/cli`, `bun run types` and `bun run lint`. Packed tests create a real package archive, extract it outside the checkout and run its executable with a poisoned Node command and no package dependencies. The entry point is also exercised through actual `bunx --no-install fleur --help` after installing that owned archive into a temporary consumer project. Bun is on its isolated PATH and Node is poisoned. Nothing is published.

@@ -22,6 +22,23 @@ async function invoke(cwd: string, ...args: string[]) {
     return { exit, stderr, result: JSON.parse(stdout) };
   } finally { clearTimeout(timer); }
 }
+async function readOwnedPid(project: string): Promise<number | undefined> {
+  try {
+    const value = await Bun.file(join(project, "delegated.pid")).text();
+    const pid = Number(value);
+    return /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(pid) ? pid : undefined;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+async function cleanupOwnedDelegate(parent: ReturnType<typeof Bun.spawn>, project: string, delegated: number | undefined): Promise<void> {
+  const running = parent.exitCode === null && parent.signalCode === null;
+  if (!running && parent.signalCode === null) return; // A normally completed launcher already reaped its child.
+  const pid = delegated ?? (running ? await readOwnedPid(project) : undefined);
+  if (pid) { try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } }
+  if (!running) return;
+  parent.kill("SIGTERM");
+  const safety = setTimeout(() => parent.kill("SIGKILL"), 35_000);
+  try { await parent.exited; } finally { clearTimeout(safety); }
+}
 test("configured projects with missing, malformed or nonexact Fleur pins stop before creation writes", async () => {
   const configs = [{}, { fleurVersion: "^0.1.0" }, { fleurVersion: "latest" }, { fleurVersion: 1 }, "invalid JSON"];
   for (const [index, config] of configs.entries()) {
@@ -113,13 +130,14 @@ test.each(["SIGTERM", "SIGINT", "SIGHUP"] as const)("interrupting the packed lau
   await mkdir(join(local, "bin"), { recursive: true });
   await writeFile(join(project, "fleur.json"), JSON.stringify({ fleurVersion: "0.0.9" }));
   await writeFile(join(local, "package.json"), JSON.stringify({ name: "fleur", version: "0.0.9", bin: "bin/fleur.ts" }));
-  await writeFile(join(local, "bin/fleur.ts"), 'for(const signal of ["SIGINT","SIGTERM","SIGHUP"])process.on(signal,async()=>{await Bun.write("cleanup",signal);process.exit(0);});await Bun.write("delegated.pid",String(process.pid));setInterval(()=>{},1000);');
+  await writeFile(join(local, "bin/fleur.ts"), 'for(const signal of ["SIGINT","SIGTERM","SIGHUP"])process.on(signal,async()=>{await Bun.write("cleanup",signal);process.exit(0);});await Bun.write("delegated.pid.tmp",String(process.pid));await (await import("node:fs/promises")).rename("delegated.pid.tmp","delegated.pid");setInterval(()=>{},1000);');
   const parent = Bun.spawn([process.execPath, executable, "--json", "new", "child", "--no-git"], { cwd: project, env: { PATH: "", HOME: scratch }, stdout: "pipe", stderr: "pipe" });
   let delegated: number | undefined;
   const deadline = setTimeout(() => parent.kill("SIGKILL"), 5000);
   try {
     for (let attempt = 0; attempt < 200; attempt++) {
-      if (await Bun.file(join(project, "delegated.pid")).exists()) { delegated = Number(await Bun.file(join(project, "delegated.pid")).text()); break; }
+      const value = await readOwnedPid(project);
+      if (value !== undefined) { delegated = value; break; }
       await Bun.sleep(10);
     }
     expect(delegated).toBeGreaterThan(0);
@@ -132,8 +150,7 @@ test.each(["SIGTERM", "SIGINT", "SIGHUP"] as const)("interrupting the packed lau
     delegated = undefined;
   } finally {
     clearTimeout(deadline);
-    parent.kill("SIGKILL");
-    if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Already reaped by its launcher. */ } }
+    await cleanupOwnedDelegate(parent, project, delegated);
   }
 });
 test("an unresponsive delegate receives the full interruption grace then is reaped", async () => {
@@ -142,13 +159,14 @@ test("an unresponsive delegate receives the full interruption grace then is reap
   await mkdir(join(local, "bin"), { recursive: true });
   await writeFile(join(project, "fleur.json"), JSON.stringify({ fleurVersion: "0.0.9" }));
   await writeFile(join(local, "package.json"), JSON.stringify({ name: "fleur", version: "0.0.9", bin: "bin/fleur.ts" }));
-  await writeFile(join(local, "bin/fleur.ts"), 'process.on("SIGTERM",()=>{});await Bun.write("delegated.pid",String(process.pid));setInterval(()=>{},1000);');
+  await writeFile(join(local, "bin/fleur.ts"), 'process.on("SIGTERM",()=>{});await Bun.write("delegated.pid.tmp",String(process.pid));await (await import("node:fs/promises")).rename("delegated.pid.tmp","delegated.pid");setInterval(()=>{},1000);');
   const parent = Bun.spawn([process.execPath, executable, "--json", "init"], { cwd: project, env: { PATH: "", HOME: scratch }, stdout: "pipe", stderr: "pipe" });
   let delegated: number | undefined;
   const safety = setTimeout(() => parent.kill("SIGKILL"), 38_000);
   try {
     for (let attempt = 0; attempt < 200; attempt++) {
-      if (await Bun.file(join(project, "delegated.pid")).exists()) { delegated = Number(await Bun.file(join(project, "delegated.pid")).text()); break; }
+      const value = await readOwnedPid(project);
+      if (value !== undefined) { delegated = value; break; }
       await Bun.sleep(10);
     }
     expect(delegated).toBeGreaterThan(0);
@@ -163,8 +181,7 @@ test("an unresponsive delegate receives the full interruption grace then is reap
     delegated = undefined;
   } finally {
     clearTimeout(safety);
-    parent.kill("SIGKILL");
-    if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Owned fixture already exited. */ } }
+    await cleanupOwnedDelegate(parent, project, delegated);
   }
 }, 40_000);
 test("a delegate terminated by the forwarded signal retains the actual signal-derived status", async () => {
@@ -173,13 +190,14 @@ test("a delegate terminated by the forwarded signal retains the actual signal-de
   await mkdir(join(local, "bin"), { recursive: true });
   await writeFile(join(project, "fleur.json"), JSON.stringify({ fleurVersion: "0.0.9" }));
   await writeFile(join(local, "package.json"), JSON.stringify({ name: "fleur", version: "0.0.9", bin: "bin/fleur.ts" }));
-  await writeFile(join(local, "bin/fleur.ts"), 'await Bun.write("delegated.pid",String(process.pid));setInterval(()=>{},1000);');
+  await writeFile(join(local, "bin/fleur.ts"), 'await Bun.write("delegated.pid.tmp",String(process.pid));await (await import("node:fs/promises")).rename("delegated.pid.tmp","delegated.pid");setInterval(()=>{},1000);');
   const parent = Bun.spawn([process.execPath, executable, "--json", "init"], { cwd: project, env: { PATH: "", HOME: scratch }, stdout: "pipe", stderr: "pipe" });
   let delegated: number | undefined;
   const safety = setTimeout(() => parent.kill("SIGKILL"), 5000);
   try {
     for (let attempt = 0; attempt < 200; attempt++) {
-      if (await Bun.file(join(project, "delegated.pid")).exists()) { delegated = Number(await Bun.file(join(project, "delegated.pid")).text()); break; }
+      const value = await readOwnedPid(project);
+      if (value !== undefined) { delegated = value; break; }
       await Bun.sleep(10);
     }
     expect(delegated).toBeGreaterThan(0);
@@ -190,7 +208,6 @@ test("a delegate terminated by the forwarded signal retains the actual signal-de
     delegated = undefined;
   } finally {
     clearTimeout(safety);
-    parent.kill("SIGKILL");
-    if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Owned fixture already exited. */ } }
+    await cleanupOwnedDelegate(parent, project, delegated);
   }
 });

@@ -1,0 +1,41 @@
+name: Native prerequisite setup
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  existing-docker:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: x86_64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture '${{ matrix.architecture }}' --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-native-bun" > "$RUNNER_TEMP/fleur-native-platform.json"
+          echo "$RUNNER_TEMP/fleur-native-bun" >> "$GITHUB_PATH"
+      - name: Packed doctor and owned Docker smoke twice
+        env:
+          FLEUR_OWNED_DISPOSABLE_HOST: "yes"
+          FLEUR_NATIVE_REPORT: ${{ runner.temp }}/fleur-native-setup.json
+        run: bun scripts/verify-native-setup.ts
+      - name: Preserve native observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-setup-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/fleur-native-platform.json
+            ${{ runner.temp }}/fleur-native-setup.json
+          if-no-files-found: error

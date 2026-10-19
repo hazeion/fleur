@@ -1,0 +1,111 @@
+import { expect, test } from "bun:test";
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+const repository = resolve(import.meta.dir, "../..");
+const digest = (bytes: Uint8Array) => Bun.CryptoHasher.hash("sha256", bytes, "hex");
+async function command(args: string[], cwd: string, environment: Record<string, string>) {
+  const child = Bun.spawn(args, { cwd, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000, killSignal: "SIGKILL" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { stdout, stderr, exit };
+}
+
+test("internal native candidate archive preserves the ordinary release and executes the real Bun entry with pending-proof disclosure", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-internal-candidate-"));
+  try {
+    const bin = join(scratch, "bin"); await mkdir(bin); await symlink(process.execPath, join(bin, "bun"));
+    const environment = { PATH: bin, HOME: scratch, TMPDIR: scratch };
+    const productPaths = ["bin/fleur.ts", "src/setup/native.ts", "package.json"];
+    const before = await Promise.all(productPaths.map((path) => readFile(join(repository, path))));
+    const output = join(scratch, "artifacts");
+    const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
+    expect(built.exit, built.stderr).toBe(0);
+    const report = JSON.parse(built.stdout);
+    expect(report).toMatchObject({ formatVersion: 1, internalArtifact: true, catalogId: "ubuntu-24.04-amd64-docker-2026-10-19", artifactAuthentication: "authenticated", installationEvidence: "pending", runtimeSupport: "unverified" });
+    for (const [index, path] of productPaths.entries()) expect(await readFile(join(repository, path))).toEqual(before[index]!);
+    const ordinaryArchive = join(output, "fleur-ordinary.tgz");
+    const internalArchive = join(output, "fleur-internal-native-candidate.tgz");
+    expect(report.ordinary.sha256).toBe(digest(await readFile(ordinaryArchive)));
+    expect(report.candidate.sha256).toBe(digest(await readFile(internalArchive)));
+    const ordinary = join(scratch, "ordinary"); const internal = join(scratch, "internal");
+    await mkdir(ordinary); await mkdir(internal);
+    expect((await command(["/usr/bin/tar", "-xzf", ordinaryArchive, "-C", ordinary], scratch, environment)).exit).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", internalArchive, "-C", internal], scratch, environment)).exit).toBe(0);
+    const ordinaryPackage = join(ordinary, "package"); const internalPackage = join(internal, "package");
+    expect(await readFile(join(ordinaryPackage, "bin/fleur.ts"))).toEqual(before[0]!);
+    expect(await readFile(join(ordinaryPackage, "src/setup/native.ts"))).toEqual(before[1]!);
+    expect(await Bun.file(join(ordinaryPackage, "internal-native-candidate.json")).exists()).toBe(false);
+    expect(await Bun.file(join(ordinaryPackage, "bin/native-candidate-catalog.ts")).exists()).toBe(false);
+    expect(await Bun.file(join(ordinaryPackage, "scripts/build-native-candidate.ts")).exists()).toBe(false);
+    expect(await Bun.file(join(ordinaryPackage, "package.json")).json()).toMatchObject({ name: "fleur" });
+    expect(await readFile(join(internalPackage, "src/setup/native.ts"))).toEqual(before[1]!);
+    for (const source of report.provenance.sourceFiles as { path: string; sha256: string }[]) {
+      const ordinaryBytes = await readFile(join(ordinaryPackage, source.path));
+      expect(digest(ordinaryBytes)).toBe(source.sha256);
+      if (source.path.startsWith("src/")) expect(await readFile(join(internalPackage, source.path))).toEqual(ordinaryBytes);
+    }
+    expect(await Bun.file(join(internalPackage, "package.json")).json()).toMatchObject({ name: "fleur-internal-native-candidate", private: true });
+    const metadata = await Bun.file(join(internalPackage, "internal-native-candidate.json")).json();
+    expect(metadata).toMatchObject({ internalArtifact: true, installationEvidence: "pending", runtimeSupport: "unverified", artifactAuthentication: "authenticated", legacyProfileAdmission: { verified: true, meaning: "internal-catalog-admission-only" } });
+    expect(metadata.provenance.ordinaryArchiveSha256).toBe(report.ordinary.sha256);
+    expect(report.provenance.sourceFiles).toContainEqual({ path: "src/setup/native.ts", sha256: digest(before[1]!) });
+    const normalHelp = await command([process.execPath, join(ordinaryPackage, "bin/fleur.ts"), "--json", "--help"], scratch, environment);
+    expect(normalHelp.exit).toBe(0); expect(normalHelp.stderr).toBe("");
+    const internalHelp = await command([process.execPath, join(internalPackage, "bin/fleur.ts"), "--json", "--help"], scratch, environment);
+    expect(internalHelp.exit).toBe(0);
+    expect(JSON.parse(internalHelp.stdout)).toEqual(JSON.parse(normalHelp.stdout));
+    expect(internalHelp.stdout.trim().split("\n")).toHaveLength(1);
+    expect(internalHelp.stderr).toContain("INTERNAL NATIVE CANDIDATE");
+    expect(internalHelp.stderr).toContain("installation evidence pending; runtime support unverified");
+    const doctor = await command([process.execPath, join(internalPackage, "bin/fleur.ts"), "doctor", "--json"], scratch, environment);
+    expect(doctor.exit).toBe(4);
+    expect(JSON.parse(doctor.stdout)).toMatchObject({ formatVersion: 1, command: "doctor", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, truncated: false });
+    expect(doctor.stderr).toContain("INTERNAL NATIVE CANDIDATE");
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);
+
+test("the candidate builder refuses dynamic catalogs and preserves an existing output directory", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-guards-"));
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const script = join(repository, "scripts/build-native-candidate.ts");
+    const rejected = await command([process.execPath, script, "--out", join(scratch, "dynamic"), "--catalog", "untrusted.json"], repository, environment);
+    expect(rejected.exit).toBe(2);
+    expect(await Bun.file(join(scratch, "dynamic", "fleur-internal-native-candidate.tgz")).exists()).toBe(false);
+    const output = join(scratch, "existing"); await mkdir(output);
+    await writeFile(join(output, "caller-owned.txt"), "Preserve this exact content\n");
+    const collision = await command([process.execPath, script, "--out", output], repository, environment);
+    expect(collision.exit).toBe(1);
+    expect(await readdir(output)).toEqual(["caller-owned.txt"]);
+    expect(await readFile(join(output, "caller-owned.txt"), "utf8")).toBe("Preserve this exact content\n");
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+test("candidate provenance hashes actual copied source and unexpected entry shapes fail closed", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-source-"));
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const archive = join(scratch, "source.tgz");
+    expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
+    const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
+    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
+    const script = join(source, "scripts/build-native-candidate.ts");
+    const entryPath = join(source, "bin/fleur.ts"); const entry = await readFile(entryPath, "utf8");
+    const inSource = await command([process.execPath, script, "--out", join(source, "src", "internal-artifacts")], source, environment);
+    expect(inSource.exit).toBe(1);
+    expect(await readdir(join(source, "src"))).not.toContain("internal-artifacts");
+    await writeFile(entryPath, entry.replace("const handlers = [...projectCommands, ...setupCommands()];", "const handlers = [...projectCommands];"));
+    const rejected = await command([process.execPath, script, "--out", join(scratch, "unexpected")], source, environment);
+    expect(rejected.exit).toBe(1);
+    expect(rejected.stderr).toContain("Unexpected release entry shape");
+    expect(await Bun.file(join(scratch, "unexpected/fleur-internal-native-candidate.tgz")).exists()).toBe(false);
+    const changed = Buffer.from(entry + "\n// Owned source snapshot differs from the original archive.\n");
+    await writeFile(entryPath, changed);
+    const built = await command([process.execPath, script, "--out", join(scratch, "changed")], source, environment);
+    expect(built.exit, built.stderr).toBe(0);
+    expect(JSON.parse(built.stdout).provenance.sourceFiles).toContainEqual({ path: "bin/fleur.ts", sha256: digest(changed) });
+    expect(await readFile(entryPath)).toEqual(changed);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);

@@ -108,7 +108,7 @@ class KernelPrivateDocker:
         phase=('create' if method=='POST' else 'inspect' if '/containers/' in path else 'version' if path=='/version' else 'info')
         connection=_UnixConnection(str(self.path),timeout)
         started=time.monotonic();deadline=started+timeout
-        expired=threading.Event();raw=b'';status=None
+        expired=threading.Event();raw=b'';status=None;response=None
         def failure(reason):
             timed_out=expired.is_set() or time.monotonic()>=deadline
             return EngineRequestUnverified(phase,'deadline' if timed_out else reason,
@@ -136,7 +136,9 @@ class KernelPrivateDocker:
             if isinstance(error,http.client.IncompleteRead) and type(error.partial) is bytes:raw=error.partial[:65537]
             raise failure('transport') from None
         finally:
-            fence.cancel();fence.join();connection.close()
+            fence.cancel();fence.join()
+            if response is not None:response.close()
+            connection.close()
             if connection.deadline_socket is not None:connection.deadline_socket.close()
     def create_worker(self,name,owner,image_id,mode,timeout=5):
         if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0<timeout<=30:

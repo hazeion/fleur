@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { runCli } from "../../src/cli/main.ts";
+import { dockerRepositoryKey } from "../../src/setup/docker-key.ts";
 import { setupCommands } from "../../src/setup/commands.ts";
 
 test("missing Docker exposes repository configuration separately from package installation", async () => {
@@ -53,9 +54,12 @@ test("authorized apt setup installs exact missing packages only after repository
         calls.push([...args]);
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}=${version}`).join("\n")) : done("", 1);
+        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n")) : done("", 1);
+        if (args[0] === "stat") return done(args.at(-1)?.endsWith("docker.asc") || args.at(-1)?.endsWith("docker.sources") ? "regular file|0|644|1\n" : "directory|0|755|2\n");
+        if (args[0] === "cat" && args.at(-1)?.endsWith("docker.asc")) return done(dockerRepositoryKey);
         if (args[0] === "cat") return done("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
         if (args[0] === "gpg") return done("pub:-:4096:1:PRIMARY:0:0::-:::scSC:\nfpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:\n");
+        if (args[0] === "apt-cache") return done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
         if (args[0] === "apt-get") return done(Object.entries(packages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n"));
         if (args[0] === "sudo") { expect(authorized).toEqual(["install", "configuration", "docker-access", "service-start", "service-enable"]); installed = true; return done(); }
         throw new Error("Unexpected native operation");
@@ -79,7 +83,7 @@ test("native setup preserves an existing conflicting package without requesting 
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args) => {
         calls.push([...args]);
-        return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 0, stdout: "containerd.io=1.0.0\n", stderr: "" };
+        return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 0, stdout: "containerd.io\t1.0.0\tinstalled\tok\n", stderr: "" };
       },
     }, [{ method: "docker-official-apt", verified: true, distribution: "ubuntu", release: "24.04", architecture: "x64", repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages: { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" } }]) });
     expect(outcome.exitCode).toBe(4);
@@ -106,7 +110,7 @@ test("an explicit unknown native grant never opens a new human permission prompt
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-async function nativeReviewScenario(mode: "extra-key" | "extra-configuration" | "selected-once") {
+async function nativeReviewScenario(mode: "extra-key" | "extra-configuration" | "selected-once" | "repo-missing" | "repo-create" | "repo-conflict" | "repo-race" | "repo-update-failure") {
   const { mkdtemp, rm, writeFile, readFile } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const directory = await mkdtemp("/tmp/fleur-native-review-");
@@ -119,24 +123,45 @@ async function nativeReviewScenario(mode: "extra-key" | "extra-configuration" | 
   if (mode === "selected-once") grants.unshift({ ...grants[0]!, id: crypto.randomUUID(), mode: "remembered" });
   let installs = 0;
   let installed = false;
+  const protectedFiles = new Map<string, string>();
+  if (mode === "repo-conflict") protectedFiles.set("/etc/apt/sources.list.d/docker.sources", "unrelated preexisting source\n");
+  let indexUpdates = 0;
   try {
     await writeFile(join(directory, "grants.json"), JSON.stringify({ formatVersion: 1, grants }), { mode: 0o600 });
-    const outcome = await runCli(mode === "selected-once" ? ["setup", "--grant", selected, "--json"] : ["setup", "--json"], { cwd: "/tmp", handlers: setupCommands({
+    const outcome = await runCli(mode === "selected-once" ? ["setup", "--grant", selected, "--json"] : ["repo-create", "repo-race", "repo-update-failure"].includes(mode) ? ["setup"] : ["setup", "--json"], { cwd: "/tmp", handlers: setupCommands({
       stateDirectory: directory,
+      interactive: ["repo-create", "repo-race", "repo-update-failure"].includes(mode),
+      confirmHuman: async ({ action }) => { expect(action).toBe("repository-configuration"); return "once"; },
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}=${version}`).join("\n")) : done("", 1);
+        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n")) : done("", 1);
+        if (args[0] === "stat") return args.at(-1) === "/etc" || args.at(-1) === "/etc/apt" || args.at(-1) === "/etc/apt/keyrings" || args.at(-1) === "/etc/apt/sources.list.d" ? done("directory|0|755|2\n") : (protectedFiles.has(args.at(-1)!) || !["repo-missing", "repo-create", "repo-race", "repo-update-failure", "repo-conflict"].includes(mode)) ? done("regular file|0|644|1\n") : { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
+        if (args[0] === "cat" && protectedFiles.has(args.at(-1)!)) return done(protectedFiles.get(args.at(-1)!));
+        if (args[0] === "cat" && ["repo-missing", "repo-create", "repo-race", "repo-update-failure", "repo-conflict"].includes(mode)) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
+        if (args[0] === "cat" && args.at(-1)?.endsWith("docker.asc")) return done(dockerRepositoryKey + (mode === "extra-key" ? "\nunreviewed key bytes\n" : ""));
         if (args[0] === "cat") return done("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
+        if (args[0] === "apt-cache") return indexUpdates > 0 || !["repo-missing", "repo-create", "repo-race", "repo-update-failure", "repo-conflict"].includes(mode)
+          ? done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n")) : done("", 100);
         if (args[0] === "gpg") return done("pub:-:4096:1:PRIMARY:0:0::-:::scSC:\nfpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:\nsub:-:4096:1:BOUND:0:0:::::s:\nfpr:::::::::D3306A018370199E527AE7997EA0A9C3F273FCD8:\n" + (mode === "extra-key" ? "pub:-:4096:1:OTHER:0:0::-:::scSC:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n" : ""));
         if (args[0] === "apt-get") return done(Object.entries(packages).flatMap(([name, version]) => [`Inst ${name} (${version} Docker:stable [amd64])`, `Conf ${name} (${version} Docker:stable [amd64])`]).join("\n") + (mode === "extra-configuration" ? "\nConf unrelated-existing-service (1 vendor [amd64])\n" : ""));
+        if (args[0] === "sudo" && args[2] === "cp") {
+          expect(args.slice(3, 7)).toEqual(["--no-clobber", "--no-target-directory", "--no-dereference", "--"]);
+          if (mode === "repo-race" && args.at(-1)?.endsWith("docker.asc")) protectedFiles.set(args.at(-1)!, "racing existing bytes\n");
+          if (!protectedFiles.has(args.at(-1)!)) protectedFiles.set(args.at(-1)!, await Bun.file(args.at(-2)!).text());
+          return done();
+        }
+        if (args[0] === "sudo" && args.at(-1) === "update") {
+          expect(args).toEqual(["sudo", "-n", "apt-get", "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-", "update"]);
+          indexUpdates++; return done("", mode === "repo-update-failure" ? 1 : 0);
+        }
         if (args[0] === "sudo") { installs++; installed = true; return done(); }
         throw new Error("Unexpected native operation");
       },
     }, [profile]) });
     const after = JSON.parse(await readFile(join(directory, "grants.json"), "utf8")) as { grants: { id: string; revoked: boolean }[] };
-    return { outcome, installs, selectedRevoked: after.grants.find((grant) => grant.id === selected)?.revoked };
+    return { outcome, installs, indexUpdates, protectedFiles, selectedRevoked: after.grants.find((grant) => grant.id === selected)?.revoked };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
@@ -154,4 +179,47 @@ test("the explicitly selected once installation grant is consumed even when reme
   const result = await nativeReviewScenario("selected-once");
   expect(result.installs).toBe(1);
   expect(result.selectedRevoked).toBe(true);
+});
+
+
+test("missing apt repository requires its own authority even when every package side effect is authorized", async () => {
+  const result = await nativeReviewScenario("repo-missing");
+  expect(result.installs).toBe(0);
+  expect(result.selectedRevoked).toBe(false);
+  expect(result.outcome.result.error?.code).toBe("AUTHORITY_REQUIRED");
+  expect(result.outcome.result.data).toMatchObject({ plan: { action: "repository-configuration", method: "docker-official-apt" } });
+});
+
+
+test("authorized native setup creates only exact repository files and refreshes only that repository before installation", async () => {
+  const result = await nativeReviewScenario("repo-create");
+  expect(result.installs).toBe(1);
+  expect(result.indexUpdates).toBe(1);
+  expect(Bun.CryptoHasher.hash("sha256", result.protectedFiles.get("/etc/apt/keyrings/docker.asc")!, "hex")).toBe("1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570");
+  expect(result.protectedFiles.get("/etc/apt/sources.list.d/docker.sources")).toBe("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
+});
+
+
+test("a differing existing repository source is preserved before any new file or package mutation", async () => {
+  const result = await nativeReviewScenario("repo-conflict");
+  expect(result.installs).toBe(0);
+  expect(result.indexUpdates).toBe(0);
+  expect([...result.protectedFiles]).toEqual([["/etc/apt/sources.list.d/docker.sources", "unrelated preexisting source\n"]]);
+  expect(result.selectedRevoked).toBe(false);
+});
+test("a no-clobber repository copy that loses a race fails readback and preserves the winner", async () => {
+  const result = await nativeReviewScenario("repo-race");
+  expect(result.installs).toBe(0);
+  expect(result.indexUpdates).toBe(0);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.protectedFiles.get("/etc/apt/keyrings/docker.asc")).toBe("racing existing bytes\n");
+  expect(result.selectedRevoked).toBe(false);
+});
+test("a failed scoped repository refresh preserves completed files and does not consume package authority", async () => {
+  const result = await nativeReviewScenario("repo-update-failure");
+  expect(result.installs).toBe(0);
+  expect(result.indexUpdates).toBe(1);
+  expect(result.protectedFiles.size).toBe(2);
+  expect(result.selectedRevoked).toBe(false);
+  expect(result.outcome.result.data).toMatchObject({ resumable: true, setupAction: { action: "repository-configuration", state: "incomplete" } });
 });

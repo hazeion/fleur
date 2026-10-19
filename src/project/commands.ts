@@ -15,7 +15,7 @@ export const projectCommands: readonly CommandDefinition[] = ["new", "init"].map
     }
     if (!["microsoft", "rust-experimental"].includes(compiler)) return failure(name, 2, { code: "ARGUMENT_INVALID", message: "Choose microsoft or rust-experimental.", actions: [] });
     if (compiler === "rust-experimental") return failure(name, 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The experimental Rust compiler equivalence gate has not passed.", expected: "verified exact compiler package and upstream revision", actual: "unavailable", actions: [{ command: "fleur new <dir> --compiler microsoft", description: "Use the verified default compiler." }] });
-    if (dirs.length !== (name === "new" ? 1 : 0)) return failure(name, 2, { code: "ARGUMENT_INVALID", message: "Supply one directory for new, or no directory for init.", actions: [] });
+    if (dirs.length !== (name === "new" ? 1 : 0) || dirs.some((dir) => dir.length === 0)) return failure(name, 2, { code: "ARGUMENT_INVALID", message: "Supply one directory for new, or no directory for init.", actions: [] });
     return await createProject(name, name === "new" ? resolve(project, dirs[0]!) : project, !args.includes("--no-git"), timeoutSeconds);
   },
 }));

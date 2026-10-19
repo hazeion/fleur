@@ -2,9 +2,6 @@
   "name": "fleur-application",
   "private": true,
   "type": "module",
-  "fleur": {
-    "version": "0.1.0"
-  },
   "dependencies": {
     "preact": "11.0.1"
   },
@@ -15,5 +12,10 @@
     "vite": "8.3.4",
     "tailwindcss": "4.3.3",
     "@tailwindcss/vite": "4.3.3"
+  },
+  "scripts": {
+    "test": "bun test tests",
+    "types": "bun ./node_modules/typescript/bin/tsc --noEmit",
+    "lint": "bun ./node_modules/oxlint/bin/oxlint client server shared tests && bun ./lint/node_modules/eslint/bin/eslint.js --no-error-on-unmatched-pattern --config lint/eslint.config.mjs client server shared tests"
   }
 }

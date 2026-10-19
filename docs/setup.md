@@ -19,3 +19,32 @@ Assisted package installation remains blocked. Its permitted methods are verifie
 Installation, repository changes, service starting/enabling, Docker access privileges, PATH/configuration and agreement acceptance require separate authority. Package post-install scripts and Desktop installation can have these side effects; an install grant cannot silently cover them. Fleur never removes conflicts, upgrades or replaces existing installations, edits profiles/context, changes Docker permissions or accepts legal terms automatically.
 
 Official method references: [macOS](https://docs.docker.com/desktop/setup/install/mac-install/), [Ubuntu](https://docs.docker.com/engine/install/ubuntu/), [Debian](https://docs.docker.com/engine/install/debian/), [Docker contexts](https://docs.docker.com/engine/manage-resources/contexts/), and [Arch packages](https://archlinux.org/packages/extra/x86_64/docker/). Mutable upstream documentation and package availability do not replace native release verification.
+
+### Native apt adapter checkpoint
+
+The compiled native profile catalog remains empty until release verification admits
+an exact platform row. Candidate metadata cannot authorize execution. The apt
+adapter currently handles an entirely missing exact package set against an
+already configured official Docker repository. It never upgrades or repairs an
+existing or partially installed package set. Repository creation, Desktop and
+Arch installation remain unfinished.
+
+A verified apt plan requires separate installation, configuration, Docker access,
+service start and service enable grants because authenticated maintainer scripts
+can perform these actions during package installation. All permissions bind the
+same immutable profile checksum, OS user and machine. Once permissions are
+consumed durably together before the single package-manager mutation. The setup
+lock serializes that bounded mutation; grant revocation can report busy while it
+is running. No automatic license acceptance or interactive sudo prompt occurs.
+
+Before installation the adapter checks exact Docker repository configuration and
+key identity, then simulates exact pinned packages with upgrades and removals
+forbidden. Unexpected dependency changes fail closed. Actual installation uses
+noninteractive OS authentication and the same restricted repository selection.
+A successful package command still requires exact installed-state verification;
+it does not claim daemon, access or smoke readiness. A later invocation probes
+actual package state rather than repeating an installation from a checkpoint.
+
+Disposable command fixtures exercise this path without installing Docker or
+changing services on the developer machine. They are not native installation
+proof.

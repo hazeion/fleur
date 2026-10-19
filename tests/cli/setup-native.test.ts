@@ -54,11 +54,12 @@ test("authorized apt setup installs exact missing packages only after repository
         calls.push([...args]);
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}=${version}`).join("\n")) : done("", 1);
+        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n")) : done("", 1);
         if (args[0] === "stat") return done(args.at(-1)?.endsWith("docker.asc") || args.at(-1)?.endsWith("docker.sources") ? "regular file|0|644|1\n" : "directory|0|755|2\n");
         if (args[0] === "cat" && args.at(-1)?.endsWith("docker.asc")) return done(dockerRepositoryKey);
         if (args[0] === "cat") return done("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
         if (args[0] === "gpg") return done("pub:-:4096:1:PRIMARY:0:0::-:::scSC:\nfpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:\n");
+        if (args[0] === "apt-cache") return done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
         if (args[0] === "apt-get") return done(Object.entries(packages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n"));
         if (args[0] === "sudo") { expect(authorized).toEqual(["install", "configuration", "docker-access", "service-start", "service-enable"]); installed = true; return done(); }
         throw new Error("Unexpected native operation");
@@ -82,7 +83,7 @@ test("native setup preserves an existing conflicting package without requesting 
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args) => {
         calls.push([...args]);
-        return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 0, stdout: "containerd.io=1.0.0\n", stderr: "" };
+        return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 0, stdout: "containerd.io\t1.0.0\tinstalled\tok\n", stderr: "" };
       },
     }, [{ method: "docker-official-apt", verified: true, distribution: "ubuntu", release: "24.04", architecture: "x64", repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages: { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" } }]) });
     expect(outcome.exitCode).toBe(4);
@@ -135,12 +136,14 @@ async function nativeReviewScenario(mode: "extra-key" | "extra-configuration" | 
       run: async (args) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}=${version}`).join("\n")) : done("", 1);
+        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n")) : done("", 1);
         if (args[0] === "stat") return args.at(-1) === "/etc" || args.at(-1) === "/etc/apt" || args.at(-1) === "/etc/apt/keyrings" || args.at(-1) === "/etc/apt/sources.list.d" ? done("directory|0|755|2\n") : (protectedFiles.has(args.at(-1)!) || !["repo-missing", "repo-create", "repo-race", "repo-update-failure", "repo-conflict"].includes(mode)) ? done("regular file|0|644|1\n") : { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
         if (args[0] === "cat" && protectedFiles.has(args.at(-1)!)) return done(protectedFiles.get(args.at(-1)!));
         if (args[0] === "cat" && ["repo-missing", "repo-create", "repo-race", "repo-update-failure", "repo-conflict"].includes(mode)) return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
         if (args[0] === "cat" && args.at(-1)?.endsWith("docker.asc")) return done(dockerRepositoryKey + (mode === "extra-key" ? "\nunreviewed key bytes\n" : ""));
         if (args[0] === "cat") return done("Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
+        if (args[0] === "apt-cache") return indexUpdates > 0 || !["repo-missing", "repo-create", "repo-race", "repo-update-failure", "repo-conflict"].includes(mode)
+          ? done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n")) : done("", 100);
         if (args[0] === "gpg") return done("pub:-:4096:1:PRIMARY:0:0::-:::scSC:\nfpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:\nsub:-:4096:1:BOUND:0:0:::::s:\nfpr:::::::::D3306A018370199E527AE7997EA0A9C3F273FCD8:\n" + (mode === "extra-key" ? "pub:-:4096:1:OTHER:0:0::-:::scSC:\nfpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:\n" : ""));
         if (args[0] === "apt-get") return done(Object.entries(packages).flatMap(([name, version]) => [`Inst ${name} (${version} Docker:stable [amd64])`, `Conf ${name} (${version} Docker:stable [amd64])`]).join("\n") + (mode === "extra-configuration" ? "\nConf unrelated-existing-service (1 vendor [amd64])\n" : ""));
         if (args[0] === "sudo" && args[2] === "cp") {

@@ -24,7 +24,7 @@ test("setup resumes a failed repository refresh with fresh authority without cop
       run: async (args) => {
         const path = args.at(-1)!;
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => args.some((arg) => arg.includes("db:Status-Status")) ? `${name}\t${version}\tinstalled` : `${name}=${version}`).join("\n")) : done("", 1);
+        if (args[0] === "dpkg-query") return installed ? done(Object.entries(packages).map(([name, version]) => args.some((arg) => arg.includes("db:Status-Status")) ? `${name}\t${version}\tinstalled${args.some((arg) => arg.includes("db:Status-Eflag")) ? "\tok" : ""}` : `${name}=${version}`).join("\n")) : done("", 1);
         if (args[0] === "stat") return ["/etc", "/etc/apt", "/etc/apt/keyrings", "/etc/apt/sources.list.d"].includes(path) ? done("directory|0|755|2\n") : files.has(path) ? done("regular file|0|644|1\n") : done("", 1, "No such file or directory");
         if (args[0] === "cat") return files.has(path) ? done(files.get(path)!) : done("", 1, "No such file or directory");
         if (args[0] === "apt-cache") return indexReady ? done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n")) : done("", 100);

@@ -20,15 +20,15 @@ export async function inspectAptPackageState(profile: AptInstallProfile, host: S
   const timeout = remaining();
   if (timeout <= 0) return refused("unavailable");
   const names = Object.keys(profile.packages).sort();
-  const result = await host.run(["dpkg-query", "--show", "--showformat=${binary:Package}\t${Version}\t${db:Status-Status}\\n", ...names], timeout);
+  const result = await host.run(["dpkg-query", "--show", "--showformat=${binary:Package}\t${Version}\t${db:Status-Status}\t${db:Status-Eflag}\\n", ...names], timeout);
   if (result.status !== "completed" || (result.exitCode !== 0 && result.exitCode !== 1)) return refused("unavailable");
   const present = new Set<string>();
   const lines = result.stdout === "" ? [] : result.stdout.replace(/\n$/, "").split("\n");
   for (const line of lines) {
     const fields = line.split("\t");
-    const [name, version, status] = fields;
-    if (fields.length !== 3 || !name || !Object.hasOwn(profile.packages, name) || present.has(name)
-      || profile.packages[name as keyof typeof profile.packages] !== version || status !== "installed") return refused("conflict");
+    const [name, version, status, errorFlag] = fields;
+    if (fields.length !== 4 || !name || !Object.hasOwn(profile.packages, name) || present.has(name)
+      || profile.packages[name as keyof typeof profile.packages] !== version || status !== "installed" || errorFlag !== "ok") return refused("conflict");
     present.add(name);
   }
   if (result.exitCode === 0 && present.size !== names.length) return refused("conflict");

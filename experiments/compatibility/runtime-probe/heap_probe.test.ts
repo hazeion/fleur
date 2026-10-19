@@ -58,7 +58,8 @@ test('post-broker verification uses the collector captured during trusted module
   }
 });
 
-test('a broker that has not verified a reply has no post-broker attestation', () => {
+test('trusted warmup cannot supply a broker that has not verified a reply with an attestation', () => {
+  expect(verifyRetainedHeap().passed).toBe(true);
   const broker = createVerifiedBroker(() => 0, () => {});
   expect(broker.getEvidence()).toBeNull();
 });
@@ -101,4 +102,19 @@ test('a rejected repeat clears a prior successful broker attestation', () => {
   status = -1;
   expect(broker.call()).toBe(-1);
   expect(broker.getEvidence()).toBeNull();
+});
+
+
+test('heap diagnostics delimit allocation and every synchronous collection with fixed bounded stages', () => {
+  const stages: string[] = [];
+  const proof = verifyRetainedHeap(stage => stages.push(stage));
+  expect(proof.collections).toBe(6);
+  expect(stages).toEqual([
+    'entry', 'retained-allocated',
+    'pressure-allocated-0', 'before-collection-0', 'after-collection-0', 'before-collection-1', 'after-collection-1',
+    'pressure-allocated-1', 'before-collection-2', 'after-collection-2', 'before-collection-3', 'after-collection-3',
+    'pressure-allocated-2', 'before-collection-4', 'after-collection-4', 'before-collection-5', 'after-collection-5',
+    'complete',
+  ]);
+  expect(stages.join('\n').length).toBeLessThan(512);
 });

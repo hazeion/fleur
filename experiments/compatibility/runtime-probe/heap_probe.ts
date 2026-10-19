@@ -2,13 +2,23 @@
 // evaluation cannot substitute a later Bun.gc property value for this proof.
 const collectGarbage = Bun.gc.bind(Bun);
 
-/** Trusted compatibility evidence, executed after the worker restriction audit. */
-export function verifyRetainedHeap() {
+const pressureStages = ['pressure-allocated-0', 'pressure-allocated-1', 'pressure-allocated-2'] as const;
+const beforeStages = ['before-collection-0', 'before-collection-1', 'before-collection-2',
+  'before-collection-3', 'before-collection-4', 'before-collection-5'] as const;
+const afterStages = ['after-collection-0', 'after-collection-1', 'after-collection-2',
+  'after-collection-3', 'after-collection-4', 'after-collection-5'] as const;
+export type HeapStage = 'entry' | 'retained-allocated' | 'complete'
+  | typeof pressureStages[number] | typeof beforeStages[number] | typeof afterStages[number];
+
+/** Trusted compatibility evidence; warmup does not supply a broker attestation. */
+export function verifyRetainedHeap(onStage?: (stage: HeapStage) => void) {
+  onStage?.('entry');
   const retained = Array.from({length: 128}, (_, index) => ({
     index,
     label: `retained-${index}`,
     bytes: new Uint8Array(128).fill(index + 17),
   }));
+  onStage?.('retained-allocated');
   let collections = 0;
   function inspectRetained() {
     let checksum = 0;
@@ -33,7 +43,10 @@ export function verifyRetainedHeap() {
       index,
       bytes: new Uint8Array(64).fill(index & 255),
     }));
+    onStage?.(pressureStages[round]);
+    onStage?.(beforeStages[collections]);
     collectGarbage(true);
+    onStage?.(afterStages[collections]);
     collections++;
     if (pressure.length !== 16384 || pressure[0].index !== 0 || pressure[0].bytes[0] !== 0
         || pressure[16383].index !== 16383 || pressure[16383].bytes[63] !== 255) {
@@ -41,25 +54,30 @@ export function verifyRetainedHeap() {
     }
     inspectRetained();
     pressure = null;
+    onStage?.(beforeStages[collections]);
     collectGarbage(true);
+    onStage?.(afterStages[collections]);
     collections++;
     inspectRetained();
   }
+  const checksum = inspectRetained();
+  onStage?.('complete');
   return {passed: true, collections, retained_objects: retained.length,
     retained_bytes: retained.reduce((total, row) => total + row.bytes.byteLength, 0),
-    checksum: inspectRetained()};
+    checksum};
 }
 
 /** Recheck the heap after the admitted host exchange, before application resumes. */
 export function createVerifiedBroker(exchange: () => number,
-  onVerified: (evidence: ReturnType<typeof verifyRetainedHeap>) => void) {
+  onVerified: (evidence: ReturnType<typeof verifyRetainedHeap>) => void,
+  onStage?: (stage: HeapStage) => void) {
   let evidence: ReturnType<typeof verifyRetainedHeap> | null = null;
   return {
     call: () => {
       evidence = null;
       const status = exchange();
       if (status === 0) {
-        const verified = verifyRetainedHeap();
+        const verified = verifyRetainedHeap(onStage);
         onVerified(verified);
         evidence = verified;
       }

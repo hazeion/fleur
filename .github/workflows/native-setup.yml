@@ -27,6 +27,7 @@ jobs:
           echo "$RUNNER_TEMP/fleur-native-bun" >> "$GITHUB_PATH"
       - name: Packed doctor and owned Docker smoke twice
         env:
+          FLEUR_OWNED_DISPOSABLE_HOST: "yes"
           FLEUR_NATIVE_REPORT: ${{ runner.temp }}/fleur-native-setup.json
         run: bun scripts/verify-native-setup.ts
       - name: Preserve native observations

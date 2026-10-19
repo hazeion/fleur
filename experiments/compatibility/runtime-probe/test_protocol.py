@@ -481,3 +481,54 @@ class Protocol(unittest.TestCase):
         self.assertEqual(events,['diagnostic','closed'])
         self.assertEqual(diagnostics['protocol_phase'],'binding-init-task-start')
         self.assertEqual(diagnostics['observer_after_close']['registration_diagnostic']['stdout_bytes'],0)
+
+class RejectedAuditStreamEvidence(unittest.TestCase):
+    def test_stderr_delivered_during_audit_is_retained_before_rejection(self):
+        import tempfile,time
+        from pathlib import Path
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        diagnostics={}
+        with tempfile.TemporaryDirectory() as directory:
+            trigger=Path(directory)/'release';written=Path(directory)/'written'
+            source="""import pathlib,sys,time
+print(sys.argv[3],flush=True)
+while not pathlib.Path(sys.argv[1]).exists():time.sleep(.001)
+sys.stderr.write('[compat-event] replacement-fd=3\\n');sys.stderr.flush()
+pathlib.Path(sys.argv[2]).touch()
+sys.stdin.readline()
+"""
+            def audit(inventory):
+                trigger.touch();deadline=time.monotonic()+2
+                while not written.exists() and time.monotonic()<deadline:time.sleep(.001)
+                self.assertTrue(written.exists())
+                return {'passed':False,'category':'class-mismatch'}
+            with self.assertRaises(StartupAuditRejected) as caught:
+                run_container([sys.executable,'-I','-S','-u','-c',source,str(trigger),str(written),json.dumps(startup)],
+                              timeout=5,startup_audit=audit,diagnostics=diagnostics)
+        self.assertEqual(caught.exception.category,'class-mismatch')
+        self.assertIn('[compat-event] replacement-fd=3',diagnostics['stderr'])
+        self.assertNotIn('startup-approved',diagnostics['stderr'])
+
+    def test_stderr_overflow_during_audit_fails_without_truncation_acceptance(self):
+        import tempfile,time
+        from pathlib import Path
+        startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
+        diagnostics={}
+        with tempfile.TemporaryDirectory() as directory:
+            trigger=Path(directory)/'release';written=Path(directory)/'written'
+            source="""import pathlib,sys,time
+print(sys.argv[3],flush=True)
+while not pathlib.Path(sys.argv[1]).exists():time.sleep(.001)
+sys.stderr.write('x'*4097);sys.stderr.flush()
+pathlib.Path(sys.argv[2]).touch()
+sys.stdin.readline()
+"""
+            def audit(inventory):
+                trigger.touch();deadline=time.monotonic()+2
+                while not written.exists() and time.monotonic()<deadline:time.sleep(.001)
+                self.assertTrue(written.exists())
+                return {'passed':False,'category':'class-mismatch'}
+            with self.assertRaisesRegex(RuntimeError,'stderr exceeded bound'):
+                run_container([sys.executable,'-I','-S','-u','-c',source,str(trigger),str(written),json.dumps(startup)],
+                              timeout=5,startup_audit=audit,diagnostics=diagnostics)
+        self.assertEqual(len(diagnostics['stderr']),4096)

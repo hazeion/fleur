@@ -102,3 +102,29 @@ class Counterfactual(unittest.TestCase):
         self.assertEqual(code,1);self.assertFalse(result['passed'])
         execute.assert_not_called()
         self.assertNotIn('daemon',result)
+
+class CleanupDiagnostics(unittest.TestCase):
+    def test_cleanup_failure_retains_only_bounded_safe_observations(self):
+        from contextlib import contextmanager
+        import json,tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from vfs import run_counterfactual
+        endpoint=SimpleNamespace(facts=facts(),environment={},remaining_seconds=lambda:60,cleanup_verified=False,
+            cleanup_observations={'empty_inspection':'timeout','empty_inspection_ms':1000,
+                'daemon_returncode':0,'daemon_stdout_bytes':8,'owned_process_reaped':True,
+                'private_path':'SECRET'},
+            retirement_facts={'cli_returncode':1,'stages':[[5,1,1,0]],'journal_missing':False,'unknown':'SECRET'})
+        @contextmanager
+        def failed_context(**kwargs):
+            try:yield endpoint
+            finally:
+                endpoint.facts['default_daemon_unchanged']=True
+                raise RuntimeError('SECRET')
+        with tempfile.TemporaryDirectory() as directory,patch('isolated_daemon.isolated_vfs_daemon',side_effect=failed_context),patch('vfs.execute_probe',return_value=(0,json.dumps(probe()).encode(),{'stderr_bytes':0})):
+            self.assertEqual(run_counterfactual('amd64',directory),1)
+            result=json.loads((Path(directory)/'vfs-counterfactual.json').read_text())
+        self.assertEqual(result['daemon_cleanup_observations']['empty_inspection'],'timeout')
+        self.assertEqual(result['daemon_retirement_observations']['stages'],[[5,1,1,0]])
+        self.assertNotIn('SECRET',json.dumps(result))

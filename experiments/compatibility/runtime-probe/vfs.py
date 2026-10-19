@@ -69,6 +69,50 @@ def execute_probe(architecture, environment, timeout):
         process.stdout.close();process.stderr.close()
 
 
+def cleanup_diagnostics(endpoint):
+    """Project only fixed typed host-manager facts, never arbitrary exception text."""
+    import owned_mounts
+    result={}
+    cleanup=getattr(endpoint,'cleanup_observations',{})
+    if type(cleanup) is dict:
+        safe={}
+        for key in ('empty_inspection_ms','empty_inspection_stdout_bytes','daemon_stdout_bytes'):
+            value=cleanup.get(key)
+            if type(value) is int and 0<=value<=1048576:safe[key]=value
+        for key in ('empty_inspection_returncode','daemon_returncode'):
+            value=cleanup.get(key)
+            if type(value) is int and -255<=value<=255:safe[key]=value
+        for key in ('owned_process_reaped','data_root_removed','exec_root_removed','daemon_pidfile_removed','daemon_socket_removed','cleanup_deadline_exceeded'):
+            if type(cleanup.get(key)) is bool:safe[key]=cleanup[key]
+        if cleanup.get('empty_inspection') in ('unavailable','empty','nonempty','failed','timeout'):safe['empty_inspection']=cleanup['empty_inspection']
+        if cleanup.get('cleanup_exception') in ('timeout','unverified'):safe['cleanup_exception']=cleanup['cleanup_exception']
+        result['daemon_cleanup_observations']=safe
+    for attribute,label in [('retirement_facts','daemon_retirement_observations'),('capture_facts','daemon_capture_observations')]:
+        facts=getattr(endpoint,attribute,None)
+        if type(facts) is not dict:continue
+        safe={}
+        for key in ('cli_returncode','last_command_returncode'):
+            if type(facts.get(key)) is int and -255<=facts[key]<=255:safe[key]=facts[key]
+        for key in ('stdout_bytes','stderr_bytes','elapsed_ms','journal_bytes','journal_rows','last_stage','last_namespace','last_count'):
+            if type(facts.get(key)) is int and 0<=facts[key]<=1048576:safe[key]=facts[key]
+        for key in ('journal_invalid','journal_missing','timings_missing','timings_invalid','diagnostic_invalid','parent_timeout'):
+            if type(facts.get(key)) is bool:safe[key]=facts[key]
+        for key,width in [('stages',4),('command_elapsed_ms',3)]:
+            rows=facts.get(key)
+            if type(rows) is list and len(rows)<=192 and all(type(row) is list and len(row)==width and all(type(v) is int and -255<=v<=10000 for v in row) for row in rows):safe[key]=rows
+        error=facts.get('capture_error')
+        if (type(error) is dict and error.get('phase') in owned_mounts.CAPTURE_PHASES
+                and error.get('category') in owned_mounts.CAPTURE_CATEGORIES):
+            clean={'phase':error['phase'],'category':error['category']}
+            if type(error.get('errno')) is int and 0<=error['errno']<=4095:clean['errno']=error['errno']
+            if type(error.get('layout_invalid')) is bool:clean['layout_invalid']=error['layout_invalid']
+            layout=error.get('layout')
+            if type(layout) is dict and set(layout)==set(owned_mounts.LAYOUT_COUNTS) and all(type(v) is int and 0<=v<=65 for v in layout.values()):clean['layout']=layout
+            safe['capture_error']=clean
+        result[label]=safe
+    return result
+
+
 def run_counterfactual(architecture, directory):
     from isolated_daemon import isolated_vfs_daemon
     target=Path(directory);target.mkdir(parents=True,exist_ok=True)
@@ -91,6 +135,7 @@ def run_counterfactual(architecture, directory):
         result['failure_category']=type(failure).__name__
     finally:
         if endpoint is not None:
+            result.update(cleanup_diagnostics(endpoint))
             result['daemon_cleanup_verified']=endpoint.cleanup_verified
             result['default_daemon_unchanged']=endpoint.facts.get('default_daemon_unchanged') is True
         result['passed']=(validate_result(result.get('daemon'),exit_code,probe,result['daemon_cleanup_verified'])

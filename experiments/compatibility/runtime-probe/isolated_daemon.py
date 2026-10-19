@@ -240,6 +240,7 @@ class Endpoint:
         record=os.fstat(self._root_fd)
         self.root_identity=(record.st_dev,record.st_ino,record.st_uid)
         self.cleanup_verified = False
+        self.cleanup_observations = {}
         self.forced_probe_verified = False
         self.facts = {}
         self.environment = dict(os.environ)
@@ -420,9 +421,11 @@ def _retire_supervisor(endpoint, budget):
         failed=subprocess.CompletedProcess([],124,error.stdout or b'',error.stderr or b'')
         observations=capture_observations(failed,int((time.monotonic()-capture_started)*1000))
         observations['parent_timeout']=True
+        endpoint.capture_facts=observations
         raise IsolatedDaemonError('owned mount capture timeout',observations) from None
     if captured.returncode or len(captured.stdout)>65536:
         observations=capture_observations(captured,int((time.monotonic()-capture_started)*1000))
+        endpoint.capture_facts=observations
         raise IsolatedDaemonError('owned mount capture failed',observations)
     try:
         mount_snapshot=json.loads(captured.stdout)
@@ -431,6 +434,7 @@ def _retire_supervisor(endpoint, budget):
             raise ValueError('capture shape')
     except (ValueError,UnicodeError):
         observations=capture_observations(captured,int((time.monotonic()-capture_started)*1000))
+        endpoint.capture_facts=observations
         raise IsolatedDaemonError('owned mount capture invalid',observations) from None
     endpoint.verify_root()
     result = subprocess.run(['sudo','-n','/bin/kill','-KILL','--','-'+str(pid)],
@@ -511,13 +515,19 @@ def isolated_vfs_daemon(lifetime=540):
         cleanup_deadline = min(endpoint.deadline, time.monotonic()+15)
         empty = False
         output = b''
+        observations=endpoint.cleanup_observations
+        observations['empty_inspection']='unavailable'
         try:
             if endpoint.facts:
                 try:
+                    inspection_started=time.monotonic()
                     result = endpoint.command(['ps', '--all', '--quiet'], timeout=1)
                     empty = result.returncode == 0 and result.stdout == b''
-                except (OSError, ValueError, subprocess.SubprocessError, IsolatedDaemonError):
-                    pass
+                    observations.update(empty_inspection='empty' if empty else 'nonempty' if result.returncode==0 else 'failed',
+                        empty_inspection_returncode=result.returncode,empty_inspection_stdout_bytes=len(result.stdout))
+                except (OSError, ValueError, subprocess.SubprocessError, IsolatedDaemonError) as inspection_error:
+                    observations['empty_inspection']='timeout' if isinstance(inspection_error,subprocess.TimeoutExpired) else 'failed'
+                finally:observations['empty_inspection_ms']=round(1000*(time.monotonic()-inspection_started))
             # Inspection can never skip the independently owned stop/reap path.
             if process is not None:
                 if process.poll() is None:
@@ -532,11 +542,15 @@ def isolated_vfs_daemon(lifetime=540):
                     process.wait(timeout=max(.1,min(2,cleanup_deadline-time.monotonic()-2)))
                     # Forced group retirement never proves detached task cleanup.
                     raise IsolatedDaemonError('owned daemon forced retirement')
+                observations.update(daemon_returncode=process.returncode,daemon_stdout_bytes=len(output),
+                    owned_process_reaped=process.poll() is not None)
+                endpoint.retirement_facts=retirement_observations(root,process.returncode,output)
                 retired = endpoint.forced_probe_verified or (empty and process.returncode == 0 and output == b'stopped\n')
                 endpoint.cleanup_verified = (retired and process.poll() is not None
                                               and not (root/'data').exists() and not (root/'exec').exists()
                                               and not (root/'docker.pid').exists() and not (root/'docker.sock').exists())
-        except (OSError, subprocess.SubprocessError, ValueError, IsolatedDaemonError):
+        except (OSError, subprocess.SubprocessError, ValueError, IsolatedDaemonError) as retirement_error:
+            observations['cleanup_exception']='timeout' if isinstance(retirement_error,subprocess.TimeoutExpired) else 'unverified'
             endpoint.cleanup_verified = False
         finally:
             try:
@@ -544,6 +558,9 @@ def isolated_vfs_daemon(lifetime=540):
                 unchanged = budget > 0 and _default_identity(timeout=min(2,budget)) == baseline
             except (OSError, ValueError, subprocess.SubprocessError, IsolatedDaemonError):
                 unchanged = False
+            observations.update(data_root_removed=not (root/'data').exists(),exec_root_removed=not (root/'exec').exists(),
+                daemon_pidfile_removed=not (root/'docker.pid').exists(),daemon_socket_removed=not (root/'docker.sock').exists(),
+                cleanup_deadline_exceeded=time.monotonic()>=cleanup_deadline)
             endpoint.facts['default_daemon_unchanged'] = unchanged
             endpoint.cleanup_verified = endpoint.cleanup_verified and unchanged and time.monotonic() < cleanup_deadline
             if process is not None:

@@ -211,6 +211,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
             negative_diagnostics = {}
+            REPORT['event_replacement_diagnostics'] = negative_diagnostics
             def replacement_audit(inventory):
                 audited = audited_worker(negative_name,tag,inventory)
                 REPORT['event_replacement_audit'] = audited['descriptor_audit']
@@ -226,6 +227,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 run_container(negative_command,
                     startup_audit=replacement_audit,environment=worker_environment,diagnostics=negative_diagnostics,timeout=30)
             except StartupAuditRejected as rejected:
+                REPORT['event_replacement_rejection_category'] = rejected.category
                 stderr = negative_diagnostics.get('stderr','')
                 if (rejected.category != 'class-mismatch' or '[compat-event] replacement-fd=' not in stderr
                         or '[compat-event] startup-approved' in stderr or '[compat-event] result=' in stderr

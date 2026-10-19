@@ -84,4 +84,32 @@ class NativeComparisonPolicy(unittest.TestCase):
         self.assertFalse(report['samples'][2]['passed'])
 
 
+class FailureEvidence(unittest.TestCase):
+    def test_failure_json_preserves_only_safe_counts_and_completed_startup_phases(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        from cli_latency import main
+        from configuration import ContainerdControlUnverified
+        error=ContainerdControlUnverified('ctr-version-command',{
+            'duration_ms':4000,'cli_returncode':124,'stdout_bytes':22,'stderr_bytes':11,
+            'raw_error':'private-host-output',
+            'host_startup_phases_ms':{'privileged_noop':12,'ctr_banner':4000,'unknown':'private-host-output'},
+            'host_startup_probes':{'ctr_banner':{'passed':False,'timed_out':True,'cli_returncode':124,
+                'duration_ms':4000,'raw_error':'private-host-output'}}})
+        output=io.StringIO()
+        with patch('configuration.inspect_containerd_control',side_effect=error),contextlib.redirect_stdout(output):
+            status=main()
+        report=json.loads(output.getvalue())
+        self.assertEqual(status,1)
+        self.assertFalse(report['passed'])
+        facts=report['failure_observations']
+        self.assertEqual(facts['duration_ms'],4000)
+        self.assertEqual(facts['cli_returncode'],124)
+        self.assertEqual(facts['host_startup_phases_ms'],{'privileged_noop':12,'ctr_banner':4000})
+        self.assertFalse(facts['host_startup_probes']['ctr_banner']['passed'])
+        self.assertNotIn('private-host-output',output.getvalue())
+        self.assertNotIn('raw_error',output.getvalue())
+
+
 if __name__=='__main__':unittest.main()

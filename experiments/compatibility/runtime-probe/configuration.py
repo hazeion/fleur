@@ -232,6 +232,7 @@ def inspect_containerd_control(*, probe_first_use=False):
     trusted(address,stat.S_ISSOCK,socket=True)
     startup_started=time.monotonic()
     phases={}
+    probes={}
     prefix=['/usr/bin/sudo','-n','/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin',
             'CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true','/usr/bin/timeout',
             '--signal=TERM','--kill-after=0.2s']
@@ -241,7 +242,8 @@ def inspect_containerd_control(*, probe_first_use=False):
         if remaining<=1:
             raise ContainerdControlUnverified('ctr-startup-deadline',
                 {'duration_ms':round(1000*(time.monotonic()-startup_started)),
-                 'host_startup_budget_seconds':15})
+                 'host_startup_budget_seconds':15,'host_startup_phases_ms':dict(phases),
+                 'host_startup_probes':dict(probes)})
         return remaining
     if probe_first_use:
         # Diagnostic benchmark only: isolate sudo/session startup, then cold ctr
@@ -251,16 +253,36 @@ def inspect_containerd_control(*, probe_first_use=False):
                                        ('ctr_banner',[str(ctr),'--version'])]:
             remaining=min(5,remaining_budget())
             started=time.monotonic()
-            command(prefix+[str(remaining-1)+'s']+arguments_to_run,environment,
-                    category=phase,timeout=remaining)
+            try:
+                output=command(prefix+[str(remaining-1)+'s']+arguments_to_run,environment,
+                               category=phase,timeout=remaining)
+                probes[phase]={'passed':True,'timed_out':False,'cli_returncode':0,
+                               'stdout_bytes':len(output.encode('utf-8'))}
+            except ContainerdControlUnverified as error:
+                probes[phase]={'passed':False,**error.observations,
+                               'timed_out':error.observations.get('timed_out') is True or
+                                           error.observations.get('cli_returncode')==124}
+            except (OSError,UnicodeError):
+                probes[phase]={'passed':False,'timed_out':False,'cli_returncode':None,
+                               'launch_or_encoding_failed':True}
             phases[phase]=round(1000*(time.monotonic()-started))
+            probes[phase]['duration_ms']=phases[phase]
     version_started=time.monotonic()
     remaining=remaining_budget() if probe_first_use else 15
     inner_timeout=str(remaining-1)+'s' if probe_first_use else '14s'
-    detail=command(prefix+[inner_timeout,str(ctr),'--address',address,'--namespace',namespace,'version'],
-                   environment,category='ctr-version-command',timeout=remaining)
-    version_completed=time.monotonic()
-    control=audit_containerd_control(arguments,config,server,detail)
+    version_completed=None
+    try:
+        detail=command(prefix+[inner_timeout,str(ctr),'--address',address,'--namespace',namespace,'version'],
+                       environment,category='ctr-version-command',timeout=remaining)
+        version_completed=time.monotonic()
+        control=audit_containerd_control(arguments,config,server,detail)
+    except ContainerdControlUnverified as error:
+        failure_observed=time.monotonic()
+        completed=version_completed if version_completed is not None else failure_observed
+        failed_phases={**phases,'authoritative_version':round(1000*(completed-version_started))}
+        if version_completed is not None:failed_phases['identity_audit']=round(1000*(failure_observed-version_completed))
+        error.observations.update(host_startup_phases_ms=failed_phases,host_startup_probes=dict(probes))
+        raise
     audit_completed=time.monotonic()
     binary_sha256=hashlib.sha256(ctr.read_bytes()).hexdigest()
     hash_completed=time.monotonic()
@@ -269,10 +291,14 @@ def inspect_containerd_control(*, probe_first_use=False):
                     'host_access':'privileged-owned-registration-and-events','worker_authority_changed':False})
     elapsed=time.monotonic()-startup_started
     if elapsed>=15:
-        raise ContainerdControlUnverified('ctr-startup-deadline',{'duration_ms':round(1000*elapsed),'host_startup_budget_seconds':15})
+        raise ContainerdControlUnverified('ctr-startup-deadline',{'duration_ms':round(1000*elapsed),'host_startup_budget_seconds':15,
+            'host_startup_phases_ms':{**phases,'authoritative_version':round(1000*(version_completed-version_started)),
+                                      'identity_audit':round(1000*(audit_completed-version_completed)),
+                                      'binary_sha256':round(1000*(hash_completed-audit_completed))},
+            'host_startup_probes':dict(probes)})
     control.update(host_startup_budget_seconds=15,host_startup_duration_ms=round(1000*elapsed),
                    host_version_duration_ms=round(1000*(version_completed-version_started)),
-                   first_version_preceded_by_startup_probes=probe_first_use,
+                   first_version_preceded_by_startup_probes=probe_first_use,host_startup_probes=probes,
                    host_startup_phases_ms={**phases,'authoritative_version':round(1000*(version_completed-version_started)),
                                           'identity_audit':round(1000*(audit_completed-version_completed)),
                                           'binary_sha256':round(1000*(hash_completed-audit_completed))},

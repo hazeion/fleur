@@ -244,3 +244,86 @@ test("deadline rollback preserves original guidance through each observed creati
     }
   }
 });
+test("creation supplies strict TypeScript and independent pinned lint tooling without fake application build commands", async () => {
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  const manifest = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+  expect(manifest.scripts.types).toBe("bun ./node_modules/typescript/bin/tsc --noEmit");
+  expect(manifest.scripts.lint).toContain("./lint/node_modules/eslint/bin/eslint.js");
+  expect(manifest.scripts.build).toBeUndefined();
+  const config = JSON.parse(await readFile(join(cwd, "tsconfig.json"), "utf8"));
+  expect(config.compilerOptions).toMatchObject({ strict: true, noEmit: true, jsx: "react-jsx", jsxImportSource: "preact" });
+  expect(await readFile(join(cwd, "shared", "placeholder.ts"), "utf8")).toContain("export {}");
+  expect(JSON.parse(await readFile(join(cwd, "lint", "package.json"), "utf8")).dependencies).toEqual({ eslint: "10.12.0", "typescript-eslint": "8.71.2", typescript: "6.0.3" });
+  expect(await Bun.file(join(cwd, "lint", "bun.lock")).exists()).toBe(true);
+});
+test("generated pin and guidance use the packed release metadata as their one version authority", async () => {
+  const cwd = await root(); const archive = join(cwd, "release.tgz");
+  const packed = Bun.spawn([process.execPath, "pm", "pack", "--filename", archive], { cwd: import.meta.dir + "/../..", stdout: "pipe", stderr: "pipe" });
+  const [packExit] = await Promise.all([packed.exited, new Response(packed.stdout).text(), new Response(packed.stderr).text()]);
+  expect(packExit).toBe(0);
+  const extracted = Bun.spawnSync(["/usr/bin/tar", "-xzf", archive, "-C", cwd], { stdout: "pipe", stderr: "pipe" });
+  expect(extracted.exitCode).toBe(0);
+  const metadataPath = join(cwd, "package", "package.json");
+  const metadata = JSON.parse(await readFile(metadataPath, "utf8")); metadata.version = "0.2.0";
+  await writeFile(metadataPath, JSON.stringify(metadata));
+  const invocation = 'import {runCli} from "./package/src/cli/main.ts"; import {projectCommands} from "./package/src/project/commands.ts"; const value=await runCli(["new","app","--no-git"],{cwd:process.cwd(),handlers:projectCommands}); console.log(JSON.stringify(value));';
+  const child = Bun.spawn([process.execPath, "-e", invocation], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit).toBe(0); expect(stderr).toBe(""); expect(JSON.parse(stdout).exitCode).toBe(0);
+  expect(JSON.parse(await readFile(join(cwd, "app", "fleur.json"), "utf8")).fleurVersion).toBe("0.2.0");
+  expect(JSON.parse(await readFile(join(cwd, "app", "package.json"), "utf8")).fleur.version).toBe("0.2.0");
+  expect(await readFile(join(cwd, "app", "AGENTS.md"), "utf8")).toContain("fleur:generated:start version=0.2.0");
+  expect(await readFile(join(cwd, "app", "docs", "fleur.md"), "utf8")).toContain("Fleur 0.2.0");
+  expect(await readFile(join(cwd, "app", ".agents", "skills", "fleur-tdd", "SKILL.md"), "utf8")).toContain("fleur-version: 0.2.0");
+});
+test("new rejects an empty directory argument while accepting explicit dot and Unicode names", async () => {
+  const cwd = await root();
+  const invalid = await runCli(["new", "", "--no-git"], { cwd, handlers: projectCommands });
+  expect(invalid.exitCode).toBe(2); expect(invalid.result.error?.code).toBe("ARGUMENT_INVALID");
+  expect(await readdir(cwd)).toEqual([]);
+  const named = await runCli(["new", "日本語 project", "--no-git"], { cwd, handlers: projectCommands });
+  expect(named.exitCode).toBe(0);
+  const dot = await root(); expect((await runCli(["new", ".", "--no-git"], { cwd: dot, handlers: projectCommands })).exitCode).toBe(0);
+});
+test("both instruction files reference offline pinned guidance and the approved imports without inventing working APIs", async () => {
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    const text = await readFile(join(cwd, name), "utf8");
+    expect(text).toContain("docs/fleur.md");
+    for (const allowed of ["fleur/schema", "fleur/database", "fleur/server", "fleur/client", "fleur/routing", "preact/hooks"]) expect(text).toContain(allowed);
+  }
+  const offline = await readFile(join(cwd, "docs", "fleur.md"), "utf8");
+  expect(offline).toContain("Fleur 0.1.0");
+  expect(offline).toContain("Application runtime APIs and lifecycle commands are unavailable");
+  expect(offline).toContain("bun run types");
+  expect(offline).toContain("TypeScript 6.0.3");
+});
+test("new protected tooling files collide before writes and existing unrelated docs remain intact", async () => {
+  for (const name of ["tsconfig.json", ".oxlintrc.json", "lint", "docs/fleur.md"]) {
+    const cwd = await root();
+    if (name.includes("/")) await mkdir(join(cwd, "docs"));
+    await writeFile(join(cwd, name), "Keep user configuration\n");
+    const before = await readdir(cwd);
+    const outcome = await runCli(["init", "--no-git"], { cwd, handlers: projectCommands });
+    expect(outcome.exitCode).toBe(5); expect(outcome.result.error?.code).toBe("PROJECT_COLLISION");
+    expect(await readdir(cwd)).toEqual(before);
+    expect(await readFile(join(cwd, name), "utf8")).toBe("Keep user configuration\n");
+  }
+  const cwd = await root(); await mkdir(join(cwd, "docs")); await writeFile(join(cwd, "docs", "user.md"), "Keep user documentation\n");
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  expect(await readFile(join(cwd, "docs", "user.md"), "utf8")).toBe("Keep user documentation\n");
+});
+test("generated compiler accepts ordinary explicit TypeScript and TSX module imports", async () => {
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  await symlink(join(import.meta.dir, "../../node_modules"), join(cwd, "node_modules"));
+  await writeFile(join(cwd, "shared", "local.ts"), "export const value = 1;\n");
+  await writeFile(join(cwd, "client", "local.tsx"), 'export const label = "fixture";\n');
+  await writeFile(join(cwd, "server", "consumer.ts"), 'import { value } from "../shared/local.ts";\nexport const result: number = value;\n');
+  await writeFile(join(cwd, "client", "consumer.ts"), 'import { label } from "./local.tsx";\nexport const result: string = label;\n');
+  const child = Bun.spawn([process.execPath, "run", "types"], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect({ exit, stdout, stderr }).toMatchObject({ exit: 0 });
+});

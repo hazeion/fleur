@@ -2,19 +2,28 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rmdir, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { failure, success } from "../cli/result.ts";
-import { generatedGuidance, tddGuidance } from "./guidance.ts";
-const version = "0.1.0";
-const directories = ["client", "server", "shared", "assets", "tests", "migrations", "seeds", ".agents", ".agents/skills", ".agents/skills/fleur-tdd", ".fleur"];
+import { generatedGuidance, tddGuidance, offlineGuidance } from "./guidance.ts";
+import { releaseVersion as version } from "./release.ts";
+const directories = ["client", "server", "shared", "assets", "tests", "migrations", "seeds", ".agents", ".agents/skills", ".agents/skills/fleur-tdd", ".fleur", "lint", "docs"];
 async function stat(path: string) {
   try { return await lstat(path); }
   catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return null; throw error; }
 }
 export async function createProject(command: string, target: string, git: boolean, timeoutSeconds: number) {
   const deadline = performance.now() + timeoutSeconds * 1000;
+  const manifest = JSON.parse(await readFile(new URL("./template/package.json.txt", import.meta.url), "utf8"));
+  manifest.fleur = { version };
   const files: Record<string, string> = {
     ".fleur/.gitignore": "*\n",
+    "docs/fleur.md": offlineGuidance,
+    "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", types: ["bun"], strict: true, noUncheckedIndexedAccess: true, allowImportingTsExtensions: true, jsx: "react-jsx", jsxImportSource: "preact", noEmit: true, skipLibCheck: false }, include: ["client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "server/**/*.tsx", "shared/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"] }, null, 2) + "\n",
+    ".oxlintrc.json": JSON.stringify({ plugins: ["typescript"], categories: { correctness: "error" } }, null, 2) + "\n",
+    "lint/package.json": await readFile(new URL("./template/lint-package.json.txt", import.meta.url), "utf8"),
+    "lint/bun.lock": await readFile(new URL("./template/lint-bun.lock.txt", import.meta.url), "utf8"),
+    "lint/eslint.config.mjs": 'import tseslint from "typescript-eslint";\nexport default [...tseslint.configs.recommended];\n',
+    "shared/placeholder.ts": "// This source-only placeholder has no application runtime behavior.\nexport {};\n",
     "fleur.json": JSON.stringify({ formatVersion: 1, fleurVersion: version, contractVersion: 1, compiler: "microsoft" }, null, 2) + "\n",
-    "package.json": await readFile(new URL("./template/package.json.txt", import.meta.url), "utf8"),
+    "package.json": JSON.stringify(manifest, null, 2) + "\n",
     "bun.lock": await readFile(new URL("./template/bun.lock.txt", import.meta.url), "utf8"),
     ".agents/skills/fleur-tdd/SKILL.md": tddGuidance,
   };
@@ -29,13 +38,13 @@ export async function createProject(command: string, target: string, git: boolea
     }
     const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent;
   }
-  for (const name of [".agents", ".agents/skills", ".agents/skills/fleur-tdd", "AGENTS.md", "CLAUDE.md"]) {
+  for (const name of [...directories, "AGENTS.md", "CLAUDE.md"]) {
     const item = await stat(resolve(target, name));
     if (item && (item.isSymbolicLink() || (name.endsWith(".md") ? !item.isFile() : !item.isDirectory()))) collisions.push(name);
     if (item?.isDirectory() && !item.isSymbolicLink()) parents.set(resolve(target, name), { ino: item.ino, dev: item.dev });
     if (item?.isFile() && name.endsWith(".md") && (await readFile(resolve(target, name), "utf8")).includes("<!-- fleur:generated:")) collisions.push(name);
   }
-  for (const name of [...directories.slice(0, 7), ".fleur", ...Object.keys(files)]) if (await stat(resolve(target, name))) collisions.push(name);
+  for (const name of [...directories.slice(0, 7), ".fleur", "lint", ...Object.keys(files)]) if (await stat(resolve(target, name))) collisions.push(name);
   if (collisions.length) return failure(command, 5, { code: "PROJECT_COLLISION", message: "Project files already exist; no files were changed.", actual: collisions, actions: [{ command: "fleur new <empty-directory>", description: "Choose a directory without application or protected file collisions." }] });
   const created: { path: string; ino: number; dev: number; directory: boolean; bytes?: Buffer }[] = [];
   let attemptedGit = false;

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { constants, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 let scratch: string;
 let executable: string;
@@ -127,7 +127,7 @@ test.each(["SIGTERM", "SIGINT", "SIGHUP"] as const)("interrupting the packed lau
     await parent.exited;
     expect(await Bun.file(join(project, "cleanup")).exists()).toBe(true);
     expect(await Bun.file(join(project, "cleanup")).text()).toBe(signal);
-    expect(parent.exitCode).toBe(128 + constants.signals[signal]);
+    expect(parent.exitCode).toBe(0);
     expect(() => process.kill(delegated!, 0)).toThrow();
     delegated = undefined;
   } finally {
@@ -158,7 +158,7 @@ test("an unresponsive delegate receives the full interruption grace then is reap
     expect(() => process.kill(delegated!, 0)).not.toThrow();
     await parent.exited;
     expect(performance.now() - interruptedAt).toBeGreaterThanOrEqual(29_900);
-    expect(parent.exitCode).toBe(143);
+    expect(parent.exitCode).toBe(137);
     expect(() => process.kill(delegated!, 0)).toThrow();
     delegated = undefined;
   } finally {
@@ -167,3 +167,30 @@ test("an unresponsive delegate receives the full interruption grace then is reap
     if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Owned fixture already exited. */ } }
   }
 }, 40_000);
+test("a delegate terminated by the forwarded signal retains the actual signal-derived status", async () => {
+  const project = join(scratch, "default-termination");
+  const local = join(project, "node_modules/fleur");
+  await mkdir(join(local, "bin"), { recursive: true });
+  await writeFile(join(project, "fleur.json"), JSON.stringify({ fleurVersion: "0.0.9" }));
+  await writeFile(join(local, "package.json"), JSON.stringify({ name: "fleur", version: "0.0.9", bin: "bin/fleur.ts" }));
+  await writeFile(join(local, "bin/fleur.ts"), 'await Bun.write("delegated.pid",String(process.pid));setInterval(()=>{},1000);');
+  const parent = Bun.spawn([process.execPath, executable, "--json", "init"], { cwd: project, env: { PATH: "", HOME: scratch }, stdout: "pipe", stderr: "pipe" });
+  let delegated: number | undefined;
+  const safety = setTimeout(() => parent.kill("SIGKILL"), 5000);
+  try {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (await Bun.file(join(project, "delegated.pid")).exists()) { delegated = Number(await Bun.file(join(project, "delegated.pid")).text()); break; }
+      await Bun.sleep(10);
+    }
+    expect(delegated).toBeGreaterThan(0);
+    parent.kill("SIGTERM");
+    await parent.exited;
+    expect(parent.exitCode).toBe(143);
+    expect(() => process.kill(delegated!, 0)).toThrow();
+    delegated = undefined;
+  } finally {
+    clearTimeout(safety);
+    parent.kill("SIGKILL");
+    if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Owned fixture already exited. */ } }
+  }
+});

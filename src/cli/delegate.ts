@@ -19,7 +19,7 @@ export async function runDelegated(bin: string, argv: readonly string[]): Promis
     child = Bun.spawn([process.execPath, bin, ...argv], { cwd: process.cwd(), env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     if (interrupted) child.kill(interrupted);
     const exit = await child.exited;
-    const signal = interrupted ?? child.signalCode;
+    const signal = child.signalCode;
     return signal ? 128 + (typeof signal === "number" ? signal : constants.signals[signal]) : exit;
   } finally {
     if (grace) clearTimeout(grace);

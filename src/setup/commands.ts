@@ -21,6 +21,8 @@ export interface HostCommandResult {
 export interface SetupHost {
   readonly host: () => Promise<HostIdentity>;
   readonly stateDirectory?: string;
+  /** Private host filesystem boundary; production always uses /Applications. */
+  readonly desktopApplicationsDirectory?: string;
   readonly interactive?: boolean;
   /** External filesystem durability boundary; production opens and fsyncs the directory. */
   readonly syncDirectory?: (directory: string) => Promise<void>;

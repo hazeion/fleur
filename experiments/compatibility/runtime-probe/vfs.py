@@ -28,9 +28,13 @@ def validate_result(facts, exit_code, probe, cleanup):
     if (type(probe) is not dict or probe.get('bounded_probe_passed') is not True
             or probe.get('v1_gate_passed') is not False or probe.get('cleanup_complete') is not True):
         return False
-    lifecycle, replacement = probe.get('restricted_worker_lifecycle'), probe.get('event_replacement_negative')
+    lifecycle, idle, replacement = (probe.get('restricted_worker_lifecycle'),
+                                   probe.get('restricted_worker_idle_lifecycle'),
+                                   probe.get('event_replacement_negative'))
     return (type(lifecycle) is dict and lifecycle.get('passed') is True
             and type(lifecycle.get('repeats')) is list and len(lifecycle['repeats']) == 2
+            and type(idle) is dict and idle.get('passed') is True
+            and type(idle.get('repeats')) is list and len(idle['repeats']) == 2
             and type(replacement) is dict and replacement.get('passed') is True)
 
 
@@ -40,7 +44,7 @@ def execute_probe(architecture, environment, timeout):
         raise ValueError('counterfactual probe arguments invalid')
     started = time.monotonic()
     process = subprocess.Popen([sys.executable,str(HERE/'run.py'),'--architecture',architecture,
-        '--trusted-build-network','host','--kernel-private-network'],env=environment,stdin=subprocess.DEVNULL,
+        '--trusted-build-network','host','--kernel-private-network','--idle-runtime-stress'],env=environment,stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
     output, errors = bytearray(),bytearray()
     try:

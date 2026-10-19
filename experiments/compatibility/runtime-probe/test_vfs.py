@@ -12,10 +12,20 @@ def facts():
 def probe():
     return {'bounded_probe_passed':True,'v1_gate_passed':False,'cleanup_complete':True,
             'restricted_worker_lifecycle':{'passed':True,'repeats':[{},{}]},
+            'restricted_worker_idle_lifecycle':{'passed':True,'repeats':[{},{}]},
             'event_replacement_negative':{'passed':True}}
 
 
 class Counterfactual(unittest.TestCase):
+    def test_idle_runtime_proof_is_required_alongside_original_repetitions(self):
+        for idle in (None, {'passed':False,'repeats':[{},{}]},
+                     {'passed':True,'repeats':[{}]}):
+            changed=probe()
+            if idle is None:changed.pop('restricted_worker_idle_lifecycle')
+            else:changed['restricted_worker_idle_lifecycle']=idle
+            with self.subTest(idle=idle):
+                self.assertFalse(validate_result(facts(),0,changed,True))
+
     def test_only_actual_owned_vfs_and_full_successful_probe_can_pass(self):
         self.assertTrue(validate_result(facts(),0,probe(),True))
         for key,value in [('driver','overlay2'),('server_version','29.0.0'),('owned',False),
@@ -39,7 +49,7 @@ class Counterfactual(unittest.TestCase):
         environment=dict(os.environ,DOCKER_HOST='unix:///owned/socket')
         def launch(args,**kwargs):
             self.assertTrue(args[1].endswith('/run.py'))
-            self.assertEqual(args[2:],['--architecture','amd64','--trusted-build-network','host','--kernel-private-network'])
+            self.assertEqual(args[2:],['--architecture','amd64','--trusted-build-network','host','--kernel-private-network','--idle-runtime-stress'])
             self.assertEqual(kwargs['env']['DOCKER_HOST'],'unix:///owned/socket')
             self.assertTrue(kwargs['start_new_session'])
             child=factory(['/bin/sh','-c',"printf '{\"bounded_probe_passed\":true}\\n'; printf 'private' >&2"],**kwargs)

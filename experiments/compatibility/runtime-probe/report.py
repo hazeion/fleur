@@ -48,6 +48,7 @@ def accept(report, expected_architecture=None):
             and type(main) is list and len(main) == 24
             and all(type(item) is int and item == -1 for item in main)
             and type(thread) is int and thread == -1
+            and report.get('runtime_gc_verified') is True
             and report.get('application_open') is True
             and report.get('cgroups') == {'cpu':'100000 100000', 'memory':'536870912', 'pids':'64'}
             and report.get('descriptors_closed') is True

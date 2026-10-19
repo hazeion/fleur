@@ -1,6 +1,7 @@
 import {dlopen, FFIType, ptr} from 'bun:ffi';
 import {h} from 'preact';
 import render from 'preact-render-to-string';
+import {verifyRetainedHeap} from './heap_probe';
 
 console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
@@ -71,6 +72,9 @@ console.error('[compat-event] result=' + event_probe + ' errno=' + native.event_
 if (event_probe !== 0) process.exit(17);
 const event_negatives = Array.from({length:12},(_,i)=>native.event_negative(i));
 if (event_negatives.some(result=>result !== -1)) process.exit(19);
+const runtime_gc = verifyRetainedHeap();
+if (runtime_gc.passed !== true) process.exit(23);
+console.error('[compat-gc] retained-values-verified');
 // Compilation and top-level fixture evaluation occur only after TSYNC success.
 native.trace(12);
 const application = new Function('h', 'render', 'negative', 'broker', 'trace', source);
@@ -84,7 +88,7 @@ native.trace(17);
 const thread = native.check_thread();
 native.trace(18);
 native.trace(19);
-const frame = new TextEncoder().encode(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, thread}) + '\n');
+const frame = new TextEncoder().encode(JSON.stringify({kind: 'runtime-evidence', architecture, negative_controls, cgroups, event_probe, event_negatives, install: installed, descriptors_closed: descriptorsClosed, ...result, runtime_gc_verified: runtime_gc.passed, runtime_gc, thread}) + '\n');
 // This trusted strong root remains live while FFI holds only its raw pointer.
 Object.defineProperty(globalThis,'__fleurCompatFixtureFrame',{value:frame,writable:false,configurable:false});
 native.trace(20);

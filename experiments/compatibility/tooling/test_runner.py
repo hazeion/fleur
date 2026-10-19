@@ -49,6 +49,23 @@ elif 'invalid.ts' in args:
 
 
 class RunnerEvidenceTests(unittest.TestCase):
+    def test_positive_operation_source_lint_failure_fails_verification(self):
+        runner = Path(__file__).with_name('run.py')
+        with tempfile.TemporaryDirectory(prefix='fleur-source-lint-test-') as directory:
+            bun = Path(directory) / 'explicit fake bun'
+            for engine in ('oxlint', 'eslint'):
+                with self.subTest(engine=engine):
+                    failure = ("\nif " + repr(engine) + " in args[0] and any(Path(value).name == 'operations.ts' for value in args):\n"
+                               "    print('operation source violates the selected lint rule')\n    sys.exit(1)\n")
+                    bun.write_text(FAKE_BUN + failure)
+                    bun.chmod(0o700)
+                    result = subprocess.run(
+                        [sys.executable, str(runner), '--bun', str(bun)],
+                        env=dict(os.environ, FLEUR_TEST_LINT_CASE='intended'),
+                        capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertFalse(json.loads(result.stdout)['passed'])
+
     def test_negative_lint_requires_only_the_intended_file_and_rule(self):
         runner = Path(__file__).with_name('run.py')
         with tempfile.TemporaryDirectory(prefix='fleur-runner-test-') as directory:

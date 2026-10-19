@@ -36,8 +36,22 @@ The public CLI prerequisite regression must reject a wrong native architecture b
 python3 experiments/compatibility/distro-fixtures/test_cli.py
 ```
 
-The first run failed because the driver did not yet exist. After implementation, the regression passed on the local macOS machine. Syntax checks also passed. Docker and actual distribution fixture execution are unavailable locally; only CI execution can establish those results. No platform pass is claimed from the local control checks.
+The first run failed because the driver did not yet exist. After implementation, the regression passed on the local macOS machine. Syntax checks also passed. Docker was unavailable on the local host, so those initial controls established reporting only. All three actual hosted fixtures later passed in [run 38455482128](https://github.com/hazeion/fleur/actions/runs/38455482128). The exact Debian 13.7 and Arch base/package snapshot identities, browser version/digest and built image IDs are retained in the [durable evidence record](../evidence.md). Both tooling and browser runs passed twice for each userspace. The tested direct Arch browser path uses package-pinned Chromium 156.0.8078.4, revision 1248, with snapshot libraries and Bun-launched workers; it needs no separate Node runtime or fallback wrapper. These remain userspace results on Ubuntu, not native distribution kernel/Docker installation evidence.
 
 ## Cleanup launch regression
 
 A simulated fixture timeout followed by an unavailable Docker executable during container ownership inspection originally aborted cleanup and suppressed the final JSON report. The public CLI regression reproduced that failure before the fix. The process wrapper now records the launch error class, continues ownership-checked cleanup of the other resource and writes the final failed report. It excludes private exception text from launch-error evidence. Both prerequisite and cleanup regressions passed after the fix. The synthetic process boundary establishes reporting behavior only, without claiming any actual Docker execution.
+
+## Bounded Arch archive transport
+
+Run 38489592848 failed while pacman fetched `extra.db` from the unchanged October 12 archive. Its built-in downloader reported less than one byte per second over its ten-second low-speed window. The pinned OCI image had downloaded successfully. The failure occurred before package installation or fixture execution.
+
+Provisioning now uses pacman's documented [XferCommand](https://man.archlinux.org/man/pacman.conf.5.en) with the adjacent `arch-download.sh`. The downloader uses [curl's transient retry policy](https://curl.se/docs/manpage.html#--retry), with at most three attempts on the same URL, a 15-second connection timeout, a 120-second maximum per attempt, two-second retry delays and a 300-second window for starting retries. The three attempts can take at most 364 seconds including both delays. The existing 1,200-second Docker build timeout also bounds the overall provisioning operation. Permanent missing files fail immediately. Failed partial output is removed. Pacman still validates package checksums and signatures and performs the `.part` rename. Package transactions never retry, and the date, image digest, repositories and signature settings stay fixed.
+
+The public downloader regression first failed before the downloader existed. The completed suite exercises a real local HTTP service: a transient 503 followed by exact successful bytes, a 404 with one attempt, and persistent 503s that stop after three attempts. All three cases and both driver regressions passed locally. The local curl version was 8.7.1; native container execution will establish behavior with its actual curl version.
+
+Three bounded downloads of the exact archive database returned the same 8,893,798 bytes with SHA-256 `6257fcc963adfd914f299884eae839f3ef139daf7c9c4248257d9c959029e849`. Independent observations took 9.525 and 5.691 seconds; the implemented downloader took 8.316 seconds. These measurements establish current resource availability and transfer identity. They do not prove native Docker provisioning or replace the pending CI fixture run.
+
+```sh
+python3 -m unittest discover -s experiments/compatibility/distro-fixtures -p 'test_*.py'
+```

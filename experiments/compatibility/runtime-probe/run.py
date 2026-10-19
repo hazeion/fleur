@@ -11,9 +11,17 @@ import tempfile
 import time
 from report import accept, accept_threads, CONTROLS
 from runtime_profile import select_profile, native_elf_identity
-from protocol import run_container
+from protocol import run_container, StartupAuditRejected
 from resources import accept_resources
 from diagnostics import snapshot_worker
+from configuration import inspect_worker_configuration, host_environment, OWNER_LABEL, inspect_containerd_control, ContainerdControlUnverified
+from lifecycle import run_lifecycle
+from engine_state import read_owned_container_state
+from descriptor_audit import inspect_event_inventory
+from completion import CompletionUnverified
+from waiter import OwnedWaiter, WaitUnverified
+from containerd_observer import ObserverUnverified
+from daemon_trace import capture_daemon_trace
 
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
@@ -29,7 +37,7 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None):
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False):
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -37,7 +45,17 @@ def main(architecture=None):
     build_finished = False
     run_started = False
     resource_containers = []
+    worker_environment = host_environment()
+    creator = None
     try:
+        if type(idle_runtime_stress) is not bool:raise ValueError('idle runtime stress flag invalid')
+        REPORT['idle_runtime_stress']=idle_runtime_stress
+        if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
+        if kernel_private_network:
+            from kernel_docker import KernelPrivateDocker
+            creator=KernelPrivateDocker(worker_environment)
+        REPORT['kernel_private_network'] = kernel_private_network
+        REPORT['trusted_build_network'] = trusted_build_network or 'default'
         architecture, selected = select_profile(architecture, platform.system(), platform.machine())
         base = selected['base']
         expected_compiler = selected['compiler_sha256']
@@ -62,14 +80,15 @@ def main(architecture=None):
             raise RuntimeError(f'compiler candidate mismatch: {version}')
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
-                                  for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
-                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py')}
+                                  for name in ('filter.c','abuse.c','bootstrap.ts','heap_probe.ts','heap_probe.test.ts','application.js',
+                                               'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
+                                               'registration_canary.py','worker_deadline.py','kernel_network.py','kernel_docker.py','engine_state.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
         with tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-') as directory:
             context = Path(directory)
-            for name in ('bootstrap.ts', 'application.js'):
+            for name in ('bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js', 'busy-application.js'):
                 shutil.copyfile(HERE / name, context / name)
             (context / 'profile.json').write_text(json.dumps({'architecture':architecture,
                                                              'negative_controls':CONTROLS[architecture]}))
@@ -88,36 +107,63 @@ def main(architecture=None):
 WORKDIR /probe
 COPY package.json bun.lock ./
 RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
-COPY bootstrap.ts ./
+COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./
+RUN bun test heap_probe.test.ts && BUN_JSC_useConcurrentJIT=0 BUN_JSC_useConcurrentGC=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0 bun test heap_probe.test.ts
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {base}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
-COPY filter.so application.js abuse profile.json ./
+COPY filter.so application.js busy-application.js abuse profile.json ./
+ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 \
+    BUN_JSC_useConcurrentJIT=0 \
+    BUN_JSC_useConcurrentGC=0 \
+    BUN_JSC_numberOfGCMarkers=1 \
+    BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
             build_started = True
-            command(['docker', 'build', '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
+            command(['docker', 'build', *(['--network=host'] if trusted_build_network == 'host' else []), '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
             build_finished = True
             REPORT['image_architecture'] = command(['docker','image','inspect',tag,'--format','{{.Architecture}}'])
             if REPORT['image_architecture'] != architecture:
                 raise RuntimeError('built Docker image architecture differs from native runner')
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
-            def observe_worker(_request):
-                snapshot = snapshot_worker(container)
-                REPORT['host_pause_diagnostics'] = snapshot
+            def audited_worker(name,owner,inventory):
+                configuration = inspect_worker_configuration(name,owner,REPORT['image_id'],kernel_private=kernel_private_network)
+                snapshot = snapshot_worker(name)
                 rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
                         for row in snapshot['tasks']]
                 if not accept_threads(rows):
                     raise RuntimeError('existing thread lacks the sole native restriction filter')
-                REPORT['host_threads'] = rows
+                descriptors = inspect_event_inventory(name,inventory)
+                return {'host_threads':rows,'configuration_verified':True,'configuration':configuration,
+                        'snapshot':snapshot,'descriptor_audit':descriptors}
+            def startup_worker(inventory):
+                audited = audited_worker(container,tag,inventory)
+                REPORT['worker_configuration'] = audited['configuration']
+                REPORT['host_pause_diagnostics'] = audited['snapshot']
+                REPORT['host_threads'] = audited['host_threads']
+                REPORT['worker_descriptors'] = audited['descriptor_audit']
+                return audited['descriptor_audit']
+            def completed_worker(frame,remaining):
+                if ('host_threads' in frame or 'cleanup_complete' in frame
+                        or not accept(dict(frame,host_threads=REPORT.get('host_threads'),cleanup_complete=True),architecture)
+                        or frame.get('host_canary_absent') is not True):
+                    raise RuntimeError('completed worker evidence invalid')
+                return {'completed':True,'exit_code':0}
+            def start_waiter(remaining):
+                return OwnedWaiter(REPORT['worker_configuration']['container_id'],timeout=remaining)
             REPORT['worker_protocol'] = {}
-            output = run_container(['docker', 'run', '-i', '--name', container, '--network=none',
+            primary_command = ['docker', 'run', '-i', '--name', container, '--label', OWNER_LABEL+'='+tag, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, observer=observe_worker, diagnostics=REPORT['worker_protocol'])
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']]
+            if creator is not None:
+                primary_id=creator.create_worker(container,tag,REPORT['image_id'],'render')
+                primary_command=['docker','start','--attach','--interactive',primary_id]
+            output = run_container(primary_command, timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter,completion_stall=capture_daemon_trace)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -125,6 +171,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             evidence = REPORT['evidence']
             if isinstance(evidence, dict):
                 evidence['host_threads'] = REPORT.get('host_threads')
+                if evidence.get('host_canary_absent') is not True:
+                    raise RuntimeError('restricted worker host canary exclusion failed')
             if not isinstance(evidence, dict) or not accept(dict(evidence, cleanup_complete=True), architecture):
                 raise RuntimeError('incomplete, malformed or failed bounded runtime evidence')
             resources = {}
@@ -132,12 +180,16 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             for mode in ('cpu', 'memory', 'pids'):
                 resource_name = tag + '-' + mode
                 resource_containers.append(resource_name)
-                abuse = subprocess.run(['docker', 'run', '--name', resource_name,
-                    '--network=none', '--read-only', '--cap-drop=ALL',
-                    '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
-                    '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', '--entrypoint=/probe/abuse',
-                    REPORT['image_id'], mode], capture_output=True, text=True, timeout=15)
+                if creator is not None:
+                    from kernel_docker import run_resource
+                    abuse=run_resource(creator,resource_name,tag,REPORT['image_id'],mode,worker_environment)
+                else:
+                    abuse = subprocess.run(['docker', 'run', '--name', resource_name,
+                        '--network=none', '--read-only', '--cap-drop=ALL',
+                        '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
+                        '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
+                        '--ulimit=core=0', '--pull=never', '--entrypoint=/probe/abuse',
+                        REPORT['image_id'], mode], capture_output=True, text=True, timeout=15)
                 if mode == 'memory':
                     state = json.loads(command(['docker', 'inspect', resource_name,
                                                 '--format', '{{json .State}}']))
@@ -158,22 +210,100 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['trusted_cgroup_abuse'] = resources
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
+            control = inspect_containerd_control() if healthy_containerd_exit else None
+            state_endpoint=None
+            if control is not None:
+                state_endpoint=control.pop('_docker_state_endpoint',None)
+                if creator is None and type(state_endpoint) is not dict:
+                    raise RuntimeError('verified default Engine endpoint missing')
+                REPORT['host_containerd_control'] = control
+            REPORT['healthy_exit_evidence'] = 'containerd-init-exit' if control is not None else 'startup-bound-docker-wait'
+            REPORT['restricted_worker_lifecycle'] = run_lifecycle(
+                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,
+                create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
+                aggregate_preparation_budget=creator is not None,
+                inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
+            if idle_runtime_stress:
+                idle_tag=tag+'-idle'
+                REPORT['restricted_worker_idle_lifecycle'] = run_lifecycle(
+                    REPORT['image_id'],idle_tag,architecture,worker_environment,audited_worker,timeout=30,
+                    containerd_control=control,broker_ack_delay=11,
+                    create_worker=(lambda name,busy,remaining:creator.create_worker(name,idle_tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
+                    aggregate_preparation_budget=creator is not None,
+                    inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
+            negative_name = tag+'-event-replacement'
+            resource_containers.append(negative_name)
+            negative_diagnostics = {}
+            REPORT['event_replacement_diagnostics'] = negative_diagnostics
+            def replacement_audit(inventory):
+                audited = audited_worker(negative_name,tag,inventory)
+                REPORT['event_replacement_audit'] = audited['descriptor_audit']
+                return audited['descriptor_audit']
+            try:
+                negative_command = ['docker','run','-i','--name',negative_name,'--label',OWNER_LABEL+'='+tag,
+                    '--network=none','--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
+                    '--security-opt=seccomp=unconfined','--cpus=1','--memory=512m','--memory-swap=512m',
+                    '--pids-limit=64','--ulimit=core=0','--pull=never',REPORT['image_id'],'event-replacement']
+                if creator is not None:
+                    negative_id=creator.create_worker(negative_name,tag,REPORT['image_id'],'event-replacement')
+                    negative_command=['docker','start','--attach','--interactive',negative_id]
+                run_container(negative_command,
+                    startup_audit=replacement_audit,environment=worker_environment,diagnostics=negative_diagnostics,timeout=30)
+            except StartupAuditRejected as rejected:
+                REPORT['event_replacement_rejection_category'] = rejected.category
+                stderr = negative_diagnostics.get('stderr','')
+                if (rejected.category != 'class-mismatch' or '[compat-event] replacement-fd=' not in stderr
+                        or '[compat-event] startup-approved' in stderr or '[compat-event] result=' in stderr
+                        or '[DEBUG-runtime] eval-compile-start' in stderr):
+                    raise RuntimeError('controlled descriptor replacement failed the expected pre-application rejection')
+                REPORT['event_replacement_negative'] = {'passed':True,'category':'class-mismatch',
+                    'application_evaluated':False,'event_probe_executed':False,'startup_acknowledged':False}
+            else:
+                raise RuntimeError('controlled descriptor replacement was admitted')
+            REPORT['event_replacement_diagnostics'] = negative_diagnostics
         result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as error:
         REPORT['bounded_probe_passed'] = False
         REPORT['failure'] = str(error)[:4000]
+        from kernel_docker import EngineRequestUnverified
+        if isinstance(error,EngineRequestUnverified):
+            REPORT['vfs_engine_failure']={'category':error.category,'observations':error.observations}
+        if isinstance(error,ContainerdControlUnverified):
+            REPORT['host_containerd_failure']={'category':error.category,'observations':error.observations}
+        if isinstance(error,StartupAuditRejected):
+            REPORT['startup_failure'] = {'category':error.category}
+        if isinstance(error,(CompletionUnverified,WaitUnverified,ObserverUnverified)):
+            REPORT['completion_failure'] = {'category':error.category,'observations':error.observations}
+        if hasattr(error,'worker_role') or hasattr(error,'lifecycle_cleanup'):
+            REPORT['lifecycle_failure'] = {
+                'error_type':type(error).__name__,
+                'category':getattr(error,'category','lifecycle-error'),
+                'observations':getattr(error,'observations',{}),
+                'worker_role':getattr(error,'worker_role','unknown'),
+                'state':getattr(error,'worker_state',{'outcome':'unavailable'}),
+                'protocol':getattr(error,'worker_diagnostics',{}),
+                'cleanup':getattr(error,'lifecycle_cleanup',[]),
+                'cleanup_verified':getattr(error,'lifecycle_cleanup_verified',False),
+            }
+            if hasattr(error,'deadline_guard_cleanup_verified'):
+                REPORT['lifecycle_failure']['deadline_guard_cleanup_verified'] = error.deadline_guard_cleanup_verified is True
         if isinstance(error, subprocess.TimeoutExpired) and run_started and hasattr(error,'protocol_phase'):
             REPORT['worker_timeout'] = {
                 'protocol_phase':getattr(error,'protocol_phase','unknown'),
                 'stdout':(error.output or b'')[:16384].decode('utf-8',errors='replace'),
                 'stderr':(error.stderr or b'')[:4096].decode('utf-8',errors='replace'),
             }
-            try:
-                REPORT['host_timeout_diagnostics'] = snapshot_worker(container)
-            except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired) as diagnostic_error:
-                REPORT['host_timeout_diagnostics'] = {'outcome':'timed-out' if isinstance(diagnostic_error,subprocess.TimeoutExpired) else 'unavailable'}
+            if getattr(error,'worker_role',None) == 'healthy':
+                REPORT['lifecycle_timeout'] = {'worker_role':'healthy','state':error.worker_state,
+                                               'protocol':error.worker_diagnostics}
+            else:
+                try:
+                    REPORT['host_timeout_diagnostics'] = snapshot_worker(container)
+                except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired) as diagnostic_error:
+                    REPORT['host_timeout_diagnostics'] = {'outcome':'timed-out' if isinstance(diagnostic_error,subprocess.TimeoutExpired) else 'unavailable'}
         result_code = 1
     finally:
+        if creator is not None:creator.close()
         cleanup = []
         cleanup_resources = [
             ('container', run_started, ['docker', 'rm', '-f', container]),
@@ -199,11 +329,40 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         # its CLI has died. Removing a current tag does not cancel that work.
         REPORT['daemon_build_may_be_pending'] = build_started and not build_finished
         REPORT['cleanup_complete'] = (all(item['outcome'] != 'failed' for item in cleanup)
-                                      and not REPORT['daemon_build_may_be_pending'])
+                                      and not REPORT['daemon_build_may_be_pending']
+                                      and ('lifecycle_failure' not in REPORT or
+                                           REPORT['lifecycle_failure'].get('cleanup_verified') is True)
+                                      and all(protocol.get('waiter_cleanup_verified',True) is True
+                                              for protocol in (REPORT.get('worker_protocol',{}),
+                                                  REPORT.get('lifecycle_failure',{}).get('protocol',{}))))
         evidence = REPORT.get('evidence')
         REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
             and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']), architecture)
-            and accept_resources(REPORT.get('trusted_cgroup_abuse')))
+            and accept_resources(REPORT.get('trusted_cgroup_abuse'))
+            and type(REPORT.get('worker_configuration')) is dict
+            and evidence.get('host_canary_absent') is True
+            and type(REPORT.get('restricted_worker_lifecycle')) is dict
+            and REPORT['restricted_worker_lifecycle'].get('passed') is True
+            and type(REPORT['restricted_worker_lifecycle'].get('repeats')) is list
+            and len(REPORT['restricted_worker_lifecycle']['repeats']) == 2
+            and (not idle_runtime_stress or (
+                type(REPORT.get('restricted_worker_idle_lifecycle')) is dict
+                and REPORT['restricted_worker_idle_lifecycle'].get('passed') is True
+                and type(REPORT['restricted_worker_idle_lifecycle'].get('repeats')) is list
+                and len(REPORT['restricted_worker_idle_lifecycle']['repeats'])==2
+                and all(type(row) is dict and row.get('deadline_seconds')==30
+                        and row.get('retained_heap_verified_before_cpu_loop') is True
+                        and type(row.get('broker_ack_pause')) is dict
+                        and row['broker_ack_pause'].get('requested_ms')==11000
+                        and type(row['broker_ack_pause'].get('duration_ms')) is int
+                        and row['broker_ack_pause']['duration_ms']>10000
+                        and row['broker_ack_pause'].get('completed') is True
+                        and row['broker_ack_pause'].get('after_restriction_audit') is True
+                        and row['broker_ack_pause'].get('registered_request_verified') is True
+                        for row in REPORT['restricted_worker_idle_lifecycle']['repeats'])))
+            and type(REPORT.get('worker_descriptors')) is dict and REPORT['worker_descriptors'].get('passed') is True
+            and type(REPORT.get('event_replacement_negative')) is dict
+            and REPORT['event_replacement_negative'].get('passed') is True)
         if not REPORT['cleanup_complete']:
             REPORT['cleanup_failure'] = 'owned resource cleanup incomplete or daemon build state unresolved'
             result_code = 1
@@ -217,4 +376,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--architecture', choices=('amd64','arm64'),
                         help='require this native Linux architecture; default detects supported native host')
-    raise SystemExit(main(parser.parse_args().architecture))
+    parser.add_argument('--trusted-build-network',choices=('host',),help='explicit trusted dependency build networking; worker networking remains none')
+    parser.add_argument('--healthy-containerd-exit',action='store_true',help='Linux-host-only matching init exit evidence for concurrent healthy workers; removal still required')
+    parser.add_argument('--kernel-private-network',action='store_true',help='owned VFS only: explicit NetworkDisabled plus measured kernel isolation')
+    parser.add_argument('--idle-runtime-stress',action='store_true',help='add two unchanged 30-second lifecycle proofs with an audited 11-second broker pause')
+    arguments = parser.parse_args()
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network,arguments.idle_runtime_stress))

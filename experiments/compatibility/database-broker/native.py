@@ -30,6 +30,15 @@ def attach_host_threads(worker_evidence, observed_threads):
     return dict(worker_evidence, host_threads=observed_threads)
 
 
+def stage_worker_sources(runtime,context):
+    """Stage the same bootstrap and real heap probe used by every native worker."""
+    facts={}
+    for filename in ('bootstrap.ts','application.js','heap_probe.ts'):
+        shutil.copyfile(runtime/filename,context/filename)
+        facts[filename]=hashlib.sha256((context/filename).read_bytes()).hexdigest()
+    return facts
+
+
 def run_native(bun, root, environment, source_root):
     row = {'name': 'restricted-worker-real-postgresql', 'required': True, 'passed': False}
     owner = secrets.token_hex(16)
@@ -39,6 +48,7 @@ def run_native(bun, root, environment, source_root):
     finished_build = False
     attempted_run = False
     cleanup = True
+    waiter = None
 
     def command(arguments, timeout=30):
         result = subprocess.run(arguments, text=True, capture_output=True, timeout=timeout)
@@ -55,11 +65,14 @@ def run_native(bun, root, environment, source_root):
         runtime = source_root / 'runtime-probe'
         protocol = load(runtime / 'protocol.py', 'fleur_native_database_protocol')
         acceptance = load(runtime / 'report.py', 'fleur_native_database_acceptance')
+        configuration = load(runtime / 'configuration.py', 'fleur_native_database_configuration')
+        descriptors = load(runtime / 'descriptor_audit.py', 'fleur_native_database_descriptors')
+        waiter = load(runtime / 'waiter.py', 'fleur_native_database_waiter')
+        worker_environment = configuration.host_environment()
         threads = load(runtime / 'threads.py', 'fleur_native_database_thread_inspector')
         with tempfile.TemporaryDirectory(prefix='fleur-native-database-') as temporary:
             context = Path(temporary)
-            for filename in ('bootstrap.ts', 'application.js'):
-                shutil.copyfile(runtime / filename, context / filename)
+            row['worker_source_sha256']=stage_worker_sources(runtime,context)
             for filename in ('package.json', 'bun.lock'):
                 shutil.copyfile(source_root / 'rendering' / filename, context / filename)
             command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', str(runtime / 'filter.c'), '-o', str(context / 'filter.so')])
@@ -69,13 +82,18 @@ def run_native(bun, root, environment, source_root):
 WORKDIR /probe
 COPY package.json bun.lock ./
 RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
-COPY bootstrap.ts ./
+COPY bootstrap.ts heap_probe.ts ./
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {BASE}
 LABEL {LABEL}={owner}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
 COPY filter.so application.js profile.json ./
+ENV GLIBC_TUNABLES=glibc.pthread.rseq=0
+ENV BUN_JSC_useConcurrentJIT=0
+ENV BUN_JSC_useConcurrentGC=0
+ENV BUN_JSC_numberOfGCMarkers=1
+ENV BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
@@ -87,30 +105,47 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 raise RuntimeError('Native image identity mismatch')
             row['image_id'] = metadata['Id']
             observed_threads = None
-            def observe_threads(_request):
+            def startup_audit(inventory):
                 nonlocal observed_threads
-                identity = json.loads(command(['docker','inspect',container],timeout=5))[0]
-                if identity['Name'] != '/'+container or identity['Image'] != metadata['Id'] or identity['Config']['Labels'].get(LABEL) != owner:
-                    raise RuntimeError('Native container identity differs before inspection')
+                row['worker_configuration'] = configuration.inspect_worker_configuration(
+                    container,owner,metadata['Id'],owner_label=LABEL)
                 observed_threads = threads.inspect_threads(container)
+                row['descriptor_audit'] = descriptors.inspect_event_inventory(container,inventory)
+                return row['descriptor_audit']
+            def completed_worker(frame,remaining):
+                accepted = attach_host_threads(frame,observed_threads)
+                if not acceptance.accept(dict(accepted,cleanup_complete=True),expected_architecture='amd64') or frame.get('host_canary_absent') is not True:
+                    raise RuntimeError('Restricted completed worker evidence invalid')
+                return {'completed':True,'exit_code':0}
+            def start_waiter(remaining):
+                return waiter.OwnedWaiter(row['worker_configuration']['container_id'],timeout=remaining)
             with_broker = TrustedBroker([bun, 'ipc.ts'], root, environment, timeout=8)
             try:
                 attempted_run = True
                 # No host env, DB credential, host mount, network or socket enters this worker.
+                row['protocol_diagnostics'] = {}
                 output = protocol.run_container(['docker', 'run', '-i', '--name', container,
                     '--label', LABEL + '=' + owner, '--network=none', '--read-only', '--cap-drop=ALL',
                     '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                     '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, observer=observe_threads)
+                    '--ulimit=core=0', '--pull=never', metadata['Id']], dispatch=with_broker.dispatch, timeout=30, startup_audit=startup_audit, diagnostics=row['protocol_diagnostics'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter)
             finally:
                 with_broker.close()
             evidence = attach_host_threads(json.loads(output), observed_threads)
             if not acceptance.accept(dict(evidence, cleanup_complete=True),expected_architecture='amd64'):
                 raise RuntimeError('Restricted worker evidence incomplete')
+            if evidence.get('host_canary_absent') is not True:
+                raise RuntimeError('Restricted worker host canary exclusion failed')
             row['native_evidence'] = evidence
             row['passed'] = True
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError, KeyError) as error:
         row['failure'] = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+        if waiter is not None and isinstance(error,waiter.WaitUnverified):
+            row['completion_failure'] = {'category':error.category,'observations':error.observations}
+        if isinstance(error,subprocess.TimeoutExpired) and hasattr(error,'protocol_phase'):
+            row['worker_timeout'] = {'protocol_phase':error.protocol_phase,
+                'stdout':(error.output or b'')[:16384].decode('utf-8',errors='replace'),
+                'stderr':(error.stderr or b'')[:4096].decode('utf-8',errors='replace')}
     finally:
         for resource, attempted in [('container', attempted_run), ('image', attempted_build)]:
             if not attempted:

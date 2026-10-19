@@ -1,36 +1,37 @@
 # Fleur compatibility experiments
 
-These disposable experiments begin [Prove compatibility and runtime isolation](https://github.com/hazeion/fleur/issues/23). They are not Fleur's application runtime or CLI. The [approved specification](../../docs/planning/V1-SPEC.md) defines the acceptance gate. A successful experiment proves only the behavior it actually exercises.
+These disposable experiments establish the initial mechanism evidence required by [issue #23](https://github.com/hazeion/fleur/issues/23) and the [approved specification](../../docs/planning/V1-SPEC.md). They are not an installable Fleur CLI or the completed application runtime.
 
-The gate remains open. No dependent implementation ticket may start until its rendering, isolation, broker, database, tooling and platform evidence is complete. In particular, a Docker inventory or an upstream image digest does not prove restrictions apply before application evaluation.
+[PR #39](https://github.com/hazeion/fleur/pull/39) merged after all fifteen checks passed at `ba3769df6debc468c6ff7a8ccacad52fdf30f2ee`. The [durable evidence record](evidence.md) records the actual tested platforms, exact pins, results and limitations. Earlier failed experiments remain documented as historical evidence; they are not the current check results.
+
+Five of issue #23's seven acceptance criteria have executed evidence: rendering/browser boundaries, pre-evaluation restrictions, effective container authority/resource limits, internal tooling, and the recorded platform matrix. [Run 38478108428](https://github.com/hazeion/fleur/actions/runs/38478108428) passed fourteen of fifteen checks at `683dc3855b9d9394a173e27d5ca4c12c049ee4c3`. AMD64 completed both restricted busy/healthy lifecycle repetitions; ARM64 emitted the healthy worker report but did not establish its exit before the deadline. The broker/lifecycle criterion and final consolidated verification remain open. Dependent implementation stays blocked until both architectures satisfy the required mechanism, applicable checks and independent review pass. Resource limits and the 30-second operation deadline remain unchanged.
 
 ## Experiments
 
-- [Tooling](tooling/README.md) checks exact candidate availability, internal library execution, inference and independent lint engines.
-- [Rendering](rendering/README.md) exercises server rendering and validated interactive islands in a pinned browser fixture.
-- [Isolation](isolation/README.md) inventories prerequisites without evaluating application code and records the unexecuted Linux security probes.
-- [Native runtime probe](runtime-probe/README.md) tests a bounded Bun/Preact fixture after synchronized syscall restrictions, with explicit evidence and cleanup checks.
+| Experiment | Executed scope |
+| --- | --- |
+| [Tooling](tooling/README.md) | Frozen Zod/tRPC/Drizzle inference, strict Microsoft compiler, declaration provenance and independent lint engines |
+| [Rendering](rendering/README.md) | Bun/Preact SSR, validated islands, draft/focus-preserving refresh and browser artifact exclusions |
+| [Native platforms](platforms/README.md) | Native Intel/Apple Silicon macOS and Ubuntu 24.04/26.04 on both architectures |
+| [Distribution fixtures](distro-fixtures/README.md) | Debian 13 on both architectures and exact Arch x86_64 package snapshot, in matching-native-architecture containers |
+| [Native runtime](runtime-probe/README.md) | Pre-evaluation all-thread restrictions, negative syscall/descriptor controls, admitted rendering/IPC and measured CPU/memory/PID limits |
+| [Database and broker](database-broker/README.md) | Owned disposable PostgreSQL, registered authority, transactions, cancellation, rollback and unknown commit outcomes |
+| [Isolation inventory](isolation/README.md) | Read-only prerequisite diagnostic; deliberately reports blocked rather than claiming an isolation pass |
 
-Follow each experiment's instructions. Dependencies and binaries belong to disposable experiment directories. Python is a diagnostic/test tool for these experiments, not a Fleur runtime prerequisite. No script may use development or production PostgreSQL data.
+Python is a diagnostic/test tool for these experiments. Runtime and browser fixture commands use Bun; there is no separate Node browser prerequisite. Experimental Rust remains unavailable until its exact package/upstream equivalence checks execute successfully. Microsoft TypeScript is the verified default; no fallback compiler is selected.
+
+## Local and CI verification
+
+Use the [command catalog](evidence.md#verification-commands), then each experiment's detailed instructions. Binaries, dependencies, generated builds and database data belong to disposable owned resources. Never supply development or production PostgreSQL data to an experiment.
+
+[Compatibility CI](../../.github/workflows/compatibility.yml) runs on pull requests, with read-only repository permission, immutable checkout/artifact action pins, no persisted checkout credentials and no supplied secrets. It uses checksum-verified Bun archives, frozen lockfiles and explicit browser/library provisioning on disposable runners. Browser cases run twice; database cases and distribution tooling also run twice. Failures remain failures. Artifacts retain bounded diagnostics for seven days; the committed evidence record preserves sanitized identities and results beyond that retention window.
+
+GitHub runner images change. Their recorded OS/kernel/image identity is executed evidence, not an immutable release image. Debian/Arch results concern container userspace on the recorded Ubuntu host kernel. Native Debian/Arch Docker installation and macOS Docker readiness are not proved here. Packed CLI, self-contained production artifacts and full application admission are later implementation/release gates.
+
+## Historical red evidence
+
+The [first PR run](https://github.com/hazeion/fleur/actions/runs/38427572433) passed rendering but failed full strict Drizzle declarations. The exact source-backed declaration repair subsequently passed without `skipLibCheck` or runtime changes. The [early native run](https://github.com/hazeion/fleur/actions/runs/38428505562) established a smaller restriction probe; later runs added descriptor, all-thread, real broker and cgroup evidence. The original ambiguous memory exit failed its attribution requirement; direct kernel OOM counters and child signal now establish the cause. An ARM64 repeat timed out under the unchanged 30-second bound; the final PR #39 run passed both native architectures with diagnostic instrumentation and the frozen compiler pins. It does not establish the cause or absence of all future stalls.
 
 ## Implementation graph
 
-The GitHub issues' native blocking relationships govern scheduling. The current frontier begins with the compatibility gate. Once it passes, the first slices are project setup, exercise reads and exercise writes. Backup and maintenance then enable migration/recovery and seed/reset work; committed-data refresh enables templates and external retrieval. Session snapshots follow templates. Import enforcement follows retrieval, lifecycle combines those prerequisites, and production packaging precedes upgrades and final release evidence.
-
-Keep unfinished tickets open. Test results from these experiments cannot close the complete compatibility gate, establish platform support, or authorize a release.
-
-## Scoped pull-request CI
-
-[Compatibility experiments](../../.github/workflows/compatibility.yml) runs the existing diagnostic, tooling and rendering subsets on disposable GitHub-hosted Ubuntu 24.04 amd64 runners. It also runs on pushes to `implement/fleur-v1`. Jobs use read-only repository permission, disable persisted checkout credentials and receive no configured secrets. Checkout and artifact actions are pinned to immutable commits.
-
-The tooling and rendering jobs obtain exact Bun 1.4.3 from the official `bun-v1.4.3` release's `bun-linux-x64.zip`. The downloaded bytes were independently checked on October 13, 2026 against SHA256 `3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18`, matching the official release asset metadata. CI checks that digest and the reported version again. It does not choose another runtime or invoke Node to run experiment commands. Both dependency graphs install with frozen lockfiles. Rendering explicitly provisions the pinned Playwright package's Chromium revision and required Linux system libraries with `install --with-deps chromium`; apt changes happen only on the disposable runner. Hosted runner images and distribution library updates are not immutable toolchain artifacts, so their OS label alone cannot establish release support.
-
-The workflow runs isolation diagnostic tests, the complete tooling runner, rendering's production browser build, strict types, both lint engines, unit tests and two consecutive Chromium runs. Isolation preflight must report its documented blocked exit 2. That job can pass its diagnostic expectations while the isolation gate remains blocked. The tooling runner's known strict Drizzle declaration failure remains a failing job. It has no `continue-on-error`, compiler substitution or `skipLibCheck` exemption. All jobs finishing successfully would prove only these scoped checks, not the aggregate compatibility gate.
-
-Diagnostic JSON and browser command logs are retained for seven days as CI artifacts even after failures. They contain fixture diagnostics and platform/runtime identifiers, not credentials or development database data. Tooling's report truncates individual output excerpts and includes their hashes. CI logs and artifacts must be read with that limit in mind.
-
-The [first PR run](https://github.com/hazeion/fleur/actions/runs/38427572433) executed on October 13, 2026 at integration commit `eaa756c`. The Ubuntu 24.04 x86_64 runner reported kernel `6.17.0-1022-azure`, Python 3.12.3 and Bun `1.4.3+c6da4a4d3`. Rendering's build, strict types, both lint engines, four unit tests and three Chromium tests on each of two runs passed. Isolation diagnostic expectations passed while actual isolation remained blocked. Tooling frozen installs, runtime tests, scoped positive/negative inference and both lint engines passed. Full strict Drizzle declarations failed, and the complete workflow correctly concluded failure. These results do not establish the whole supported platform or compiler matrix.
-
-At commit `6b74e2a`, the [PR run](https://github.com/hazeion/fleur/actions/runs/38428505562) and [push run](https://github.com/hazeion/fleur/actions/runs/38428497621) both passed the bounded native runtime probe. Preact rendering succeeded after exactly-zero TSYNC installation; ten native syscall controls, Bun file access and the pre-existing thread's file-open attempt were denied. Both reports retained `v1_gate_passed: false`. Rendering and diagnostic jobs passed again; tooling kept the full workflow failed on strict Drizzle declarations.
-
-The complete runtime boundary remains unproved. Broker/database-proxy authorization, real disposable PostgreSQL integration, inherited-descriptor closure, hostile FFI, long-running workload and measured resource/cancellation behavior are still required. There is no packed CLI or production artifact. Remaining macOS, Ubuntu/Debian architectures and Arch matrix checks are separate obligations. A green bounded probe cannot close the gate or enable dependent implementation.
+Issue #23 is the initial compatibility gate. Once it closes, native GitHub blocking relationships enable project setup, exercise reads and exercise writes. Subsequent tickets implement maintenance, reactive delivery, templates, retrieval, session snapshots, import enforcement, lifecycle, packaging and release verification. A passing experiment proves its observed mechanism; it does not complete those product features.

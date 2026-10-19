@@ -11,14 +11,19 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False, control_error=None, idle_runtime_stress=False, idle_mode='valid'):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
-        native = {"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
+        native = {"runtime_gc_verified":True,"event_probe":0,"event_negatives":[-1]*12,"host_canary_absent":True,"architecture":architecture,"negative_controls":CONTROLS[architecture],"install":0,"main":[-1]*24,"thread":-1,"html":"<p>restricted render</p>",
                   "application_open":True,"descriptors_closed":True,"broker_reply":"registered:Squat",
                   "cgroups":{"cpu":"100000 100000","memory":"536870912","pids":"64"}}
+        self.last_build_requests = []
         def command(args, **kwargs):
+            if args[:2] == ['docker','build']:
+                self.last_build_requests.append(args)
+                self.last_dockerfile=(Path(args[-1])/'Dockerfile').read_bytes().decode()
+                self.last_context_files={path.name for path in Path(args[-1]).iterdir()}
             if '-dumpfullversion' in args: return '13.3.0'
             if '-dumpmachine' in args: return compiler_target or PROFILES[architecture]['compiler_target']
             if '--version' in args: return 'GCC 13.3.0'
@@ -30,10 +35,26 @@ class DriverEvidence(unittest.TestCase):
                 Path(args[-1]).write_bytes(header)
                 return ''
             if args[:2] == ['docker','image']:
-                return architecture if args[-1] == '{{.Architecture}}' else 'sha256:fixture'
+                return architecture if args[-1] == '{{.Architecture}}' else 'sha256:'+'a'*64
             if args[:2] == ['docker','inspect']: return json.dumps({'OOMKilled':docker_oom_killed})
             return '{}'
+        owner = {}
         def subprocess_run(args, **kwargs):
+            if args[:2] == ['docker','inspect'] and '{{json .}}' in args:
+                metadata = {'Id':'a'*64,'Name':'/'+owner.get('container',''), 'Image':'sha256:'+'a'*64,
+                            'Config':{'Image':'sha256:'+'a'*64,'User':'65534:65534','Labels':{'fleur.compatibility.runtime-owner':owner.get('value','')},
+                            'Env':['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin',
+                                   'BUN_RUNTIME_TRANSPILER_CACHE_PATH=0','BUN_INSTALL_BIN=/usr/local/bin','GLIBC_TUNABLES=glibc.pthread.rseq=0',
+                                   'BUN_JSC_useConcurrentJIT=0','BUN_JSC_useConcurrentGC=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0']},
+                            'HostConfig':{'ReadonlyRootfs':True,'Privileged':False,'CapDrop':['ALL'],'CapAdd':None,
+                            'SecurityOpt':['no-new-privileges','seccomp=unconfined'],'NanoCpus':1000000000,
+                            'Memory':536870912,'MemorySwap':536870912,'PidsLimit':64,'NetworkMode':'none',
+                            'Binds':None,'Mounts':None,'VolumesFrom':None,'Devices':[],'DeviceRequests':None,
+                            'PidMode':'','IpcMode':'private','RestartPolicy':{'Name':'no'}},
+                            'Mounts':[],'State':{'Running':True,'Pid':47},
+                            'NetworkSettings':{'Networks':{'none':{'IPAddress':'','Gateway':'','GlobalIPv6Address':'','IPv6Gateway':''}}}}
+                if unsafe_environment: metadata['Config']['Env'].append('DATABASE_URL=must-be-redacted')
+                return SimpleNamespace(returncode=0,stdout=json.dumps(metadata),stderr='')
             if args[:2] == ['docker','run']:
                 mode = args[-1]
                 output = json.dumps(cpu if mode == 'cpu' else pids) if mode != 'memory' else memory_output
@@ -43,8 +64,32 @@ class DriverEvidence(unittest.TestCase):
         threads = [{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},
                    {'pid':7,'no_new_privs':1,'seccomp':2,'seccomp_filters':1}]
         def run_container(args, **kwargs):
-            kwargs['observer']({})
+            owner['container'] = args[args.index('--name')+1]
+            if '--label' in args:
+                owner['value'] = args[args.index('--label')+1].split('=',1)[1]
+            inventory = [{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]
+            audited = kwargs['startup_audit'](inventory)
+            if args[-1] == 'event-replacement':
+                kwargs['diagnostics']['stderr'] = '[compat-event] replacement-fd=3\n'
+                raise run.StartupAuditRejected(audited['category'])
+            if primary_error is not None: raise primary_error
+            waiter = kwargs['completion_start'](30)
+            kwargs['completion_observer'](native,30)
+            waiter.completion(30)
+            waiter.close()
             return json.dumps(native)
+        def lifecycle_boundary(*args,**kwargs):
+            if lifecycle_error is not None:raise lifecycle_error
+            if kwargs.get('broker_ack_delay')==11:
+                row={'deadline_seconds':30,'retained_heap_verified_before_cpu_loop':True,
+                     'broker_ack_pause':{'requested_ms':11000,'duration_ms':11000,'completed':True,
+                                         'after_restriction_audit':True,'registered_request_verified':True}}
+                if idle_mode=='short':row['broker_ack_pause']['duration_ms']=10000
+                if idle_mode=='missing':row.pop('broker_ack_pause')
+                if idle_mode=='heap':row['retained_heap_verified_before_cpu_loop']=False
+                if idle_mode=='audit':row['broker_ack_pause']['after_restriction_audit']=False
+                return {'passed':True,'repeats':[row,row]}
+            return {'passed':True,'repeats':[{},{}]}
         captured = io.StringIO()
         run.REPORT = {'scope':'fixture','v1_gate_passed':False,'expected_gcc':'13.3.0',
                       'expected_gcc_binary_sha256':PROFILES['amd64']['compiler_sha256']}
@@ -56,9 +101,17 @@ class DriverEvidence(unittest.TestCase):
              patch.object(run,'command',side_effect=command), \
              patch.object(run,'run_container',side_effect=run_container), \
              patch.object(run,'snapshot_worker',return_value={'tasks':threads}), \
+             patch.object(run,'run_lifecycle',side_effect=lifecycle_boundary) as lifecycle_call, \
+             patch.object(run,'inspect_containerd_control',return_value={'ctr':'/usr/bin/ctr','address':'/run/containerd/containerd.sock','namespace':'moby','_docker_state_endpoint':{'path':'/private-fixture-engine'}},side_effect=control_error), \
+             patch.object(run,'OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':True,'exit_code':0},close=lambda:None)), \
+             patch.object(run,'inspect_event_inventory',side_effect=lambda name,inventory:
+                 {'passed':False,'category':'class-mismatch'} if name.endswith('-event-replacement') else
+                 {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
-            code = run.main()
+            code = run.main(trusted_build_network=trusted_build_network,healthy_containerd_exit=healthy_containerd_exit,idle_runtime_stress=idle_runtime_stress)
+        self.last_lifecycle_calls=lifecycle_call.call_args_list
+        self.last_lifecycle_call=lifecycle_call.call_args
         return code, json.loads(captured.getvalue())
 
     def test_native_monitor_cannot_overwrite_measured_process_status(self):
@@ -146,3 +199,133 @@ class DriverEvidence(unittest.TestCase):
                 host_machine='aarch64',compiler_sha='a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d')
         self.assertEqual(code,1)
         self.assertFalse(report['bounded_probe_passed'])
+
+    def test_actual_unsafe_worker_environment_is_rejected_without_value_disclosure(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,unsafe_environment=True)
+        self.assertEqual(code,1)
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertFalse('must-be-redacted' in json.dumps(report))
+
+    def test_generic_healthy_completion_failure_retains_category_and_cleanup(self):
+        from completion import CompletionUnverified
+        error = CompletionUnverified('state-invalid',{'stdout_bytes':120,'stderr_bytes':0,'cli_returncode':0,'state_running':False})
+        error.worker_role = 'healthy'
+        error.worker_state = {'Running':False,'ExitCode':0,'FinishedAt':'2026-10-13T00:00:01Z'}
+        error.worker_diagnostics = {'protocol_phase':'waiting-worker-completion'}
+        error.lifecycle_cleanup_verified = False
+        error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'removal-unverified'}]
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,lifecycle_error=error)
+        self.assertEqual(code,1)
+        self.assertEqual(report['completion_failure']['category'],'state-invalid')
+        self.assertEqual(report['lifecycle_failure']['category'],'state-invalid')
+        self.assertEqual(report['lifecycle_failure']['observations']['stdout_bytes'],120)
+        self.assertFalse(report['lifecycle_failure']['cleanup_verified'])
+        self.assertEqual(report['lifecycle_failure']['state']['ExitCode'],0)
+
+    def test_primary_startup_rejection_retains_category_and_cleanup(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,
+                                    primary_error=run.StartupAuditRejected('class-mismatch'))
+        self.assertEqual(code,1)
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertEqual(report['startup_failure']['category'],'class-mismatch')
+        self.assertNotIn('observations',report['startup_failure'])
+        self.assertNotIn('completion_failure',report)
+        self.assertTrue(report['cleanup_complete'])
+
+    def test_unverified_lifecycle_removal_prevents_aggregate_cleanup_success(self):
+        error = RuntimeError('owned lifecycle cleanup incomplete')
+        error.lifecycle_cleanup_verified = False
+        error.deadline_guard_cleanup_verified = False
+        error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'inspection-unverified'}]
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,lifecycle_error=error)
+        self.assertEqual(code,1)
+        self.assertFalse(report['cleanup_complete'])
+        self.assertFalse(report['bounded_probe_passed'])
+        self.assertEqual(report['lifecycle_failure']['cleanup'],error.lifecycle_cleanup)
+        self.assertFalse(report['lifecycle_failure']['deadline_guard_cleanup_verified'])
+
+    def test_removed_containers_do_not_hide_an_unreaped_lifecycle_observer(self):
+        error = RuntimeError('observer cleanup unverified')
+        error.lifecycle_cleanup_verified = True
+        error.lifecycle_cleanup = [{'worker_role':'healthy','outcome':'removed'}]
+        error.worker_diagnostics = {'waiter_cleanup_verified':False}
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,
+                   'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,lifecycle_error=error)
+        self.assertEqual(code,1)
+        self.assertTrue(report['lifecycle_failure']['cleanup_verified'])
+        self.assertFalse(report['cleanup_complete'])
+
+    def test_host_network_is_explicit_for_trusted_build_only(self):
+        monitor = {'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report = self.execute(json.dumps(monitor),container_exit=0,trusted_build_network='host')
+        self.assertEqual(code,0)
+        self.assertEqual(report['trusted_build_network'],'host')
+        self.assertIn('--network=host',self.last_build_requests[0])
+        self.assertEqual(report['worker_configuration']['network_mode'],'none')
+
+    def test_containerd_evidence_is_explicit_and_only_for_concurrent_healthy_path(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report=self.execute(json.dumps(monitor),container_exit=0,healthy_containerd_exit=True)
+        self.assertEqual(code,0)
+        self.assertEqual(report['healthy_exit_evidence'],'containerd-init-exit')
+        self.assertEqual(self.last_lifecycle_call.kwargs['containerd_control']['namespace'],'moby')
+        self.assertEqual(self.last_lifecycle_call.kwargs['timeout'],30)
+        self.assertTrue(callable(self.last_lifecycle_call.kwargs['inspect_worker_state']))
+        self.assertNotIn('_docker_state_endpoint',report['host_containerd_control'])
+        self.assertNotIn('/private-fixture-engine',json.dumps(report))
+        code, report=self.execute(json.dumps(monitor),container_exit=0)
+        self.assertEqual(code,0)
+        self.assertIsNone(self.last_lifecycle_call.kwargs['containerd_control'])
+        self.assertNotIn('host_containerd_control',report)
+
+    def test_built_worker_contains_and_verifies_heap_probe_under_exact_candidate_profile(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code,report=self.execute(json.dumps(monitor),container_exit=0)
+        self.assertEqual(code,0)
+        self.assertIn('heap_probe.ts',self.last_context_files);self.assertIn('heap_probe.test.ts',self.last_context_files)
+        self.assertIn('COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./',self.last_dockerfile)
+        self.assertIn('bun test heap_probe.test.ts',self.last_dockerfile)
+        for setting in ('BUN_JSC_useConcurrentJIT=0','BUN_JSC_useConcurrentGC=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0'):
+            self.assertEqual(self.last_dockerfile.count(setting),2)
+        self.assertIn('heap_probe.ts',report['source_sha256']);self.assertIn('heap_probe.test.ts',report['source_sha256'])
+
+    def test_explicit_idle_stress_adds_two_lifecycle_runs_without_replacing_original(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code,report=self.execute(json.dumps(monitor),container_exit=0,idle_runtime_stress=True)
+        self.assertEqual(code,0);self.assertTrue(report['bounded_probe_passed'])
+        self.assertEqual(len(self.last_lifecycle_calls),2)
+        original,idle=self.last_lifecycle_calls
+        self.assertNotIn('broker_ack_delay',original.kwargs)
+        self.assertEqual(original.kwargs['timeout'],30)
+        self.assertEqual(idle.kwargs['timeout'],30);self.assertEqual(idle.kwargs['broker_ack_delay'],11)
+        self.assertEqual(idle.args[1],original.args[1]+'-idle')
+        self.assertEqual(len(report['restricted_worker_lifecycle']['repeats']),2)
+        self.assertEqual(len(report['restricted_worker_idle_lifecycle']['repeats']),2)
+        code,report=self.execute(json.dumps(monitor),container_exit=0)
+        self.assertEqual(code,0);self.assertEqual(len(self.last_lifecycle_calls),1)
+        self.assertNotIn('restricted_worker_idle_lifecycle',report)
+
+    def test_idle_stress_cannot_pass_with_configured_but_unobserved_pause_or_heap_proof(self):
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        for mode in ('short','missing','heap','audit'):
+            with self.subTest(mode=mode):
+                code,report=self.execute(json.dumps(monitor),container_exit=0,idle_runtime_stress=True,idle_mode=mode)
+                self.assertEqual(code,1);self.assertFalse(report['bounded_probe_passed'])
+
+    def test_failed_host_prerequisite_reports_safe_category_before_lifecycle(self):
+        from configuration import ContainerdControlUnverified
+        error=ContainerdControlUnverified('ctr-client-revision',{'ctr_banner_fields':3,'ctr-client_revision_match':False})
+        monitor={'child_signal':9,'oom_events_delta':1,'oom_kill_delta':1,'memory_max':536870912,'swap_max':0}
+        code, report=self.execute(json.dumps(monitor),container_exit=0,healthy_containerd_exit=True,control_error=error)
+        self.assertEqual(code,1)
+        self.assertEqual(report['host_containerd_failure']['category'],'ctr-client-revision')
+        self.assertEqual(report['host_containerd_failure']['observations']['ctr_banner_fields'],3)
+        self.assertIsNone(self.last_lifecycle_call)
+        self.assertTrue(report['cleanup_complete'])

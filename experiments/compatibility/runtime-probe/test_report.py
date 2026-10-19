@@ -8,11 +8,11 @@ THREADS = [{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},
 
 class ReportAcceptance(unittest.TestCase):
     def test_unrestricted_fixture_cannot_pass(self):
-        self.assertFalse(accept({'host_threads':THREADS, 'architecture':'amd64', 'negative_controls':CONTROLS['amd64'], 'install': 0, 'html': '<p>restricted render</p>',
+        self.assertFalse(accept({'host_threads':THREADS, 'architecture':'amd64', 'negative_controls':CONTROLS['amd64'], 'runtime_gc_verified':True,'event_probe':0,'event_negatives':[-1]*12,'install': 0, 'html': '<p>restricted render</p>',
                                  'main': [0] * 10, 'thread': 0}))
 
     def test_only_complete_negative_and_render_evidence_passes(self):
-        complete = {'host_threads':THREADS, 'architecture':'amd64', 'negative_controls':CONTROLS['amd64'], 'install': 0, 'html': '<p>restricted render</p>',
+        complete = {'host_threads':THREADS, 'architecture':'amd64', 'negative_controls':CONTROLS['amd64'], 'runtime_gc_verified':True,'event_probe':0,'event_negatives':[-1]*12,'install': 0, 'html': '<p>restricted render</p>',
                     'main': [-1] * 24, 'thread': -1, 'application_open': True, 'cleanup_complete': True, 'descriptors_closed': True, 'broker_reply': 'registered:Squat', 'cgroups': {'cpu':'100000 100000','memory':'536870912','pids':'64'}}
         self.assertTrue(accept(complete))
         for field in complete:
@@ -22,8 +22,19 @@ class ReportAcceptance(unittest.TestCase):
         for result in (1, 42, -1):
             self.assertFalse(accept(dict(complete, install=result)))
 
+    def test_missing_false_or_untyped_gc_attestation_cannot_pass(self):
+        complete={'host_threads':THREADS,'architecture':'amd64','negative_controls':CONTROLS['amd64'],
+                  'event_probe':0,'event_negatives':[-1]*12,'install':0,'html':'<p>restricted render</p>',
+                  'main':[-1]*24,'thread':-1,'application_open':True,'cleanup_complete':True,
+                  'descriptors_closed':True,'broker_reply':'registered:Squat',
+                  'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'}}
+        self.assertFalse(accept(complete))
+        for value in (False,1,'true',None,{}):
+            with self.subTest(value=value):self.assertFalse(accept(dict(complete,runtime_gc_verified=value)))
+        self.assertTrue(accept(dict(complete,runtime_gc_verified=True)))
+
     def test_cleanup_and_malformed_reports_cannot_pass(self):
-        complete = {'host_threads':THREADS, 'architecture':'amd64', 'negative_controls':CONTROLS['amd64'], 'install': 0, 'html': '<p>restricted render</p>',
+        complete = {'host_threads':THREADS, 'architecture':'amd64', 'negative_controls':CONTROLS['amd64'], 'runtime_gc_verified':True,'event_probe':0,'event_negatives':[-1]*12,'install': 0, 'html': '<p>restricted render</p>',
                     'main': [-1] * 24, 'thread': -1, 'application_open': True,
                     'cleanup_complete': True, 'descriptors_closed': True, 'broker_reply': 'registered:Squat', 'cgroups': {'cpu':'100000 100000','memory':'536870912','pids':'64'}}
         for invalid in (dict(complete, cleanup_complete=False),
@@ -41,7 +52,7 @@ if __name__ == '__main__':
 
 class ArchitectureEvidence(unittest.TestCase):
     def test_claimed_arm64_controls_cannot_reuse_amd64_x32_label(self):
-        complete = {'install':0,'html':'<p>restricted render</p>','main':[-1]*24,
+        complete = {'runtime_gc_verified':True,'event_probe':0,'event_negatives':[-1]*12,'install':0,'html':'<p>restricted render</p>','main':[-1]*24,
                     'thread':-1,'application_open':True,'cleanup_complete':True,
                     'descriptors_closed':True,'broker_reply':'registered:Squat',
                     'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},
@@ -49,7 +60,7 @@ class ArchitectureEvidence(unittest.TestCase):
         self.assertFalse(accept(complete))
 
     def test_native_evidence_requires_matching_requested_architecture(self):
-        complete = {'install':0,'html':'<p>restricted render</p>','main':[-1]*24,
+        complete = {'runtime_gc_verified':True,'event_probe':0,'event_negatives':[-1]*12,'install':0,'html':'<p>restricted render</p>','main':[-1]*24,
                     'thread':-1,'application_open':True,'cleanup_complete':True,
                     'descriptors_closed':True,'broker_reply':'registered:Squat',
                     'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},
@@ -61,7 +72,7 @@ class ArchitectureEvidence(unittest.TestCase):
         self.assertFalse(accept(dict(complete,negative_controls=CONTROLS['amd64'])))
 
     def test_one_thread_without_native_filter_prevents_all_thread_claim(self):
-        complete = {'install':0,'html':'<p>restricted render</p>','main':[-1]*24,
+        complete = {'runtime_gc_verified':True,'event_probe':0,'event_negatives':[-1]*12,'install':0,'html':'<p>restricted render</p>','main':[-1]*24,
                     'thread':-1,'application_open':True,'cleanup_complete':True,
                     'descriptors_closed':True,'broker_reply':'registered:Squat',
                     'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},

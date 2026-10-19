@@ -8,7 +8,7 @@ permissions:
 jobs:
   packed-cli:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -22,3 +22,7 @@ jobs:
       - run: bun test tests/cli
       - run: bun run types
       - run: bun run lint
+      - name: Fresh generated project tooling, first isolated run
+        run: bun scripts/verify-generated-project.ts
+      - name: Fresh generated project tooling, second isolated run
+        run: bun scripts/verify-generated-project.ts

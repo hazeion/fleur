@@ -31,7 +31,15 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
   expect(response.stderr).toBe("");
   const value = JSON.parse(response.stdout);
   expect(value).toMatchObject({ formatVersion: 1, command: "help", ok: true, error: null, truncated: false });
-  expect(value.data.commands).toEqual([{ name: "help", summary: "Show available commands and global options." }, { name: "new", summary: "Create an exactly pinned Fleur project.", options: [{ name: "--no-git", value: false }, { name: "--compiler", value: true }] }, { name: "init", summary: "Initialize a Fleur project without overwriting user files.", options: [{ name: "--no-git", value: false }, { name: "--compiler", value: true }] }]);
+  expect(value.data.commands).toEqual([
+    { name: "help", summary: "Show available commands and global options." },
+    { name: "new", usage: "new <dir> [--compiler microsoft|rust-experimental] [--no-git]", summary: "Create an exactly pinned Fleur project.", options: [{ name: "--no-git", value: false }, { name: "--compiler", value: true }] },
+    { name: "init", usage: "init [--compiler microsoft|rust-experimental] [--no-git]", summary: "Initialize a Fleur project without overwriting user files.", options: [{ name: "--no-git", value: false }, { name: "--compiler", value: true }] },
+    { name: "setup grants revoke", usage: "setup grants revoke <id>", summary: "Revoke a setup grant without changing installed software." },
+    { name: "setup grants list", usage: "setup grants list", summary: "Inspect this OS user's setup grants." },
+    { name: "setup", usage: "setup [--grant <id>]", summary: "Inspect authorized resumable prerequisite setup actions.", options: [{ name: "--grant", value: true }] },
+    { name: "doctor", usage: "doctor", summary: "Inspect local prerequisites without installing software." },
+  ]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });
 test("invalid invocations return category 2 JSON without interpreting shell arguments", async () => {
@@ -49,7 +57,8 @@ test("human help is readable, catalog-driven, and lists only implemented operati
   expect(response.stdout).toContain("Usage: fleur <command> [options]");
   expect(response.stdout).toContain("help  Show available commands and global options.");
   expect(response.stdout).toContain("--timeout <seconds>");
-  expect(response.stdout).not.toContain("setup");
+  expect(response.stdout).toContain("setup grants revoke <id>");
+  expect(response.stdout).toContain("setup [--grant <id>]");
   expect(response.stderr).toBe("");
 });
 
@@ -83,4 +92,30 @@ test("command help exposes admitted creation flags in human and JSON catalogs wi
   expect(machine.exit).toBe(0);
   expect(JSON.parse(machine.stdout).data.commands.find((command: { name: string }) => command.name === "new").options).toEqual([{ name: "--no-git", value: false }, { name: "--compiler", value: true }]);
   expect(await Bun.file(join(scratch, "help-must-not-create/fleur.json")).exists()).toBe(false);
+});
+test("packed prerequisite commands use the real executable and isolated user state without installing software", async () => {
+  const listed = await cli("--json", "setup", "grants", "list");
+  expect(listed.exit).toBe(0);
+  expect(JSON.parse(listed.stdout)).toMatchObject({ command: "setup grants list", ok: true, data: { grants: [] } });
+  const diagnosed = await cli("--json", "doctor");
+  expect(diagnosed.exit).toBe(4);
+  expect(JSON.parse(diagnosed.stdout)).toMatchObject({ command: "doctor", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { components: { cli: { state: "missing" } } } });
+  const setup = await cli("--json", "setup");
+  expect(setup.exit).toBe(3);
+  expect(JSON.parse(setup.stdout)).toMatchObject({ command: "setup", ok: false, error: { code: "HUMAN_ACTION_REQUIRED" }, data: { grantsCreated: false, resumable: true } });
+  await writeFile(join(scratch, "fleur.json"), "broken project metadata");
+  try {
+    const revoked = await cli("--json", "setup", "grants", "revoke", "00000000-0000-0000-0000-000000000000");
+    expect(revoked.exit).toBe(1);
+    expect(JSON.parse(revoked.stdout)).toMatchObject({ command: "setup grants revoke", error: { code: "ARGUMENT_INVALID" } });
+    const after = await cli("--json", "setup", "grants", "list");
+    expect(after.exit).toBe(0);
+    expect(JSON.parse(after.stdout).data.grants).toEqual([]);
+  } finally { await rm(join(scratch, "fleur.json")); }
+  for (const response of [listed, diagnosed, setup]) expect(response.stderr).toBe("");
+});
+test("packed release carries its offline creation and prerequisite documentation", async () => {
+  expect(await Bun.file(join(scratch, "package/docs/project-creation.md")).exists()).toBe(true);
+  expect(await Bun.file(join(scratch, "package/docs/setup.md")).exists()).toBe(true);
+  expect(await Bun.file(join(scratch, "package/docs/setup.md")).text()).toContain("Assisted package installation remains blocked.");
 });

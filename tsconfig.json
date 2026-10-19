@@ -3,7 +3,9 @@
     "target": "ESNext",
     "module": "Preserve",
     "moduleResolution": "bundler",
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "allowImportingTsExtensions": true,
@@ -11,5 +13,10 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["bin/**/*.ts", "src/**/*.ts", "tests/cli/**/*.ts"]
+  "include": [
+    "bin/**/*.ts",
+    "src/**/*.ts",
+    "tests/cli/**/*.ts",
+    "scripts/**/*.ts"
+  ]
 }

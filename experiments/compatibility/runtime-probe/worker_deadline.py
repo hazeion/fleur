@@ -105,10 +105,22 @@ ROOT_GUARD = ('import json,math,os,re,select,signal,time\nfrom pathlib import Pa
               +inspect.getsource(root_main)+'\nroot_main()\n')
 
 
+class DeadlineGuardUnverified(RuntimeError):
+    """Rejected evidence with only bounded host facts, never raw helper output."""
+    def __init__(self, message, category, observations):
+        super().__init__(message)
+        self.category=category
+        self.observations=observations
+
+
 class HostDeadlineGuard:
     """Arm before application ACK; success requires observed kernel termination."""
     def __init__(self, container_id, pid, deadline, launcher=None):
         self.deadline = deadline
+        self.started = time.monotonic()
+        self.stdout_bytes = 0
+        self.control_closed = False
+        self.failure_observations = None
         self.process = None
         self.buffer = bytearray()
         self.result = None
@@ -140,6 +152,7 @@ class HostDeadlineGuard:
                 raise RuntimeError('worker deadline guard timed out')
             chunk = os.read(self.process.stdout.fileno(), 1024)
             if not chunk: raise RuntimeError('worker deadline guard ended without evidence')
+            self.stdout_bytes += len(chunk)
             self.buffer.extend(chunk)
         line, _, rest = self.buffer.partition(b'\n')
         self.buffer = bytearray(rest)
@@ -147,22 +160,64 @@ class HostDeadlineGuard:
         try: return json.loads(line)
         except (ValueError, UnicodeError): raise RuntimeError('worker deadline output invalid') from None
 
+    def _failure(self, record, message, category, received=True):
+        def integer(value, low=0):
+            return value if type(value) is int and low<=value<=2**31-1 else None
+        data=record if type(record) is dict else {}
+        kind=data.get('kind')
+        kind=kind if type(kind) is str and kind in ('result','error','armed') else 'unknown'
+        outcome=data.get('outcome')
+        outcome=outcome if type(outcome) is str and outcome in ('deadline','premature-exit','cancelled','late-termination') else 'unknown'
+        physical=data.get('physical_exit_confirmed')
+        physical=physical if type(physical) is bool else None
+        fields={'kind','outcome','physical_exit_confirmed','kill_lateness_ms','physical_exit_lateness_ms'}
+        error_category=data.get('category')
+        error_category='deadline-guard-failed' if error_category=='deadline-guard-failed' else 'unknown'
+        now=time.monotonic()
+        observations={
+            'record_received':received,'record_kind':kind,'record_outcome':outcome,
+            'record_shape_valid':set(data)==fields and kind=='result' and outcome!='unknown'
+                and physical is not None and all(integer(data.get(key)) is not None
+                    for key in ('kill_lateness_ms','physical_exit_lateness_ms')),
+            'record_physical_exit_confirmed':physical,
+            'record_kill_lateness_ms':integer(data.get('kill_lateness_ms')),
+            'record_physical_exit_lateness_ms':integer(data.get('physical_exit_lateness_ms')),
+            'helper_error_category':error_category,
+            # This is parent receipt time; a helper record may have waited in
+            # the pipe while the independent healthy operation completed.
+            'guard_elapsed_at_failure_ms':integer(round(1000*(now-self.started))),
+            'deadline_remaining_ms':integer(round(1000*(self.deadline-now)),-2**31),
+            'stdout_bytes':integer(self.stdout_bytes),'buffered_bytes':integer(len(self.buffer)),
+            'parent_control_closed_before_failure':self.control_closed,
+            'launcher_returncode_at_failure':self.process.poll(),
+            'launcher_returncode_after_cleanup':self.process.returncode if self.closed else None,
+            'helper_reaped':self.closed}
+        self.failure_observations=observations
+        return DeadlineGuardUnverified(message,category,observations)
+
     def completion(self):
-        record = self._read(self.deadline + TERMINATION_TOLERANCE + .5)
+        try:
+            record = self._read(self.deadline + TERMINATION_TOLERANCE + .5)
+        except (OSError,RuntimeError,subprocess.SubprocessError):
+            raise self._failure(None,'worker deadline guard response unverified','guard-response-unverified',False) from None
         fields = {'kind','outcome','physical_exit_confirmed','kill_lateness_ms','physical_exit_lateness_ms'}
         if (type(record) is not dict or set(record) != fields or record['kind'] != 'result'
                 or record['outcome'] != 'deadline' or record['physical_exit_confirmed'] is not True
                 or any(type(record[key]) is not int or not 0 <= record[key] <= 250
                        for key in ('kill_lateness_ms','physical_exit_lateness_ms'))):
-            raise RuntimeError('worker termination missed deadline or was unverified')
+            raise self._failure(record,'worker termination missed deadline or was unverified','guard-result-unverified')
         self.result = record
-        self.close()
+        try:
+            self.close()
+        except (OSError,RuntimeError,subprocess.SubprocessError):
+            raise self._failure(record,'worker deadline guard failed after termination','guard-cleanup-unverified') from None
         return dict(record, source='linux-pidfd', guard_reaped=True)
 
     def close(self):
         if self.closed or self.process is None: return
         # EOF belongs to the root helper, which cancels only its retained pidfd.
         if self.process.stdin is not None:
+            self.control_closed = True
             self.process.stdin.close(); self.process.stdin = None
         try:
             self.process.wait(timeout=1)
@@ -171,4 +226,7 @@ class HostDeadlineGuard:
         finally:
             self.process.stdout.close()
             self.closed = self.process.poll() is not None
+            if self.failure_observations is not None:
+                self.failure_observations.update(helper_reaped=self.closed,
+                    launcher_returncode_after_cleanup=self.process.returncode)
         if not self.closed: raise RuntimeError('worker deadline guard reap unverified')

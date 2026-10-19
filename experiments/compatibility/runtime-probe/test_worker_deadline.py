@@ -112,6 +112,48 @@ class GuardProtocolTests(unittest.TestCase):
     def record(self):
         return {'kind':'result','outcome':'deadline','physical_exit_confirmed':True,
                 'kill_lateness_ms':0,'physical_exit_lateness_ms':20}
+    def test_rejected_kernel_outcomes_retain_safe_facts_after_helper_cleanup(self):
+        for outcome in ('premature-exit','cancelled','late-termination'):
+            with self.subTest(outcome=outcome):
+                record=dict(self.record(),outcome=outcome)
+                guard=HostDeadlineGuard(CID,73,time.monotonic()+3,launcher=self.launcher(record))
+                try:
+                    with self.assertRaisesRegex(RuntimeError,'termination') as caught:guard.completion()
+                    facts=caught.exception.observations
+                    self.assertEqual(facts['record_kind'],'result')
+                    self.assertEqual(facts['record_outcome'],outcome)
+                    self.assertTrue(facts['record_physical_exit_confirmed'])
+                    self.assertGreater(facts['deadline_remaining_ms'],0)
+                    self.assertFalse(facts['parent_control_closed_before_failure'])
+                finally:guard.close()
+                self.assertTrue(facts['helper_reaped'])
+                self.assertEqual(facts['launcher_returncode_after_cleanup'],0)
+
+    def test_unknown_result_payload_is_not_copied_to_failure_observations(self):
+        record=dict(self.record(),outcome='private-secret',private_payload={'token':'private-secret'},kill_lateness_ms=True)
+        guard=HostDeadlineGuard(CID,73,time.monotonic()+3,launcher=self.launcher(record))
+        try:
+            with self.assertRaisesRegex(RuntimeError,'termination') as caught:guard.completion()
+            facts=caught.exception.observations
+            self.assertEqual(facts['record_outcome'],'unknown')
+            self.assertIsNone(facts['record_kill_lateness_ms'])
+            self.assertFalse(facts['record_shape_valid'])
+            self.assertNotIn('private-secret',json.dumps(facts))
+            self.assertNotIn('private_payload',json.dumps(facts))
+        finally:guard.close()
+
+    def test_helper_error_record_retains_only_fixed_category_and_exit_status(self):
+        guard=HostDeadlineGuard(CID,73,time.monotonic()+3,launcher=self.launcher(
+            {'kind':'error','category':'deadline-guard-failed','private':'secret-value'},1))
+        try:
+            with self.assertRaisesRegex(RuntimeError,'termination') as caught:guard.completion()
+        finally:guard.close()
+        facts=caught.exception.observations
+        self.assertEqual(facts['record_kind'],'error')
+        self.assertEqual(facts['helper_error_category'],'deadline-guard-failed')
+        self.assertEqual(facts['launcher_returncode_after_cleanup'],1)
+        self.assertNotIn('secret-value',json.dumps(facts))
+
     def test_bounded_kernel_result_requires_helper_reap(self):
         guard=HostDeadlineGuard(CID,73,time.monotonic()+1,launcher=self.launcher(self.record()))
         evidence=guard.completion()

@@ -25,6 +25,20 @@ export async function ensureAptRepository(input: CommandInput, host: SetupHost, 
     return missing;
   };
   const missingParents = await parentsSafe(true);
+  const sourceOptions = ["-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-"];
+  const indexReady = async () => {
+    const available = await run(["apt-cache", ...sourceOptions, "--no-all-versions", "show", ...Object.entries(profile.packages).map(([name, version]) => `${name}=${version}`)]);
+    if (available.status !== "completed" || available.exitCode !== 0 || !available.stdout.trim()) return false;
+    const seen = new Set<string>();
+    for (const paragraph of available.stdout.trim().split(/\n\s*\n/)) {
+      const names = paragraph.split("\n").filter((line) => line.startsWith("Package: ")).map((line) => line.slice(9));
+      const versions = paragraph.split("\n").filter((line) => line.startsWith("Version: ")).map((line) => line.slice(9));
+      const name = names[0];
+      if (names.length !== 1 || versions.length !== 1 || !name || !Object.hasOwn(profile.packages, name) || profile.packages[name as keyof typeof profile.packages] !== versions[0] || seen.has(name)) return false;
+      seen.add(name);
+    }
+    return seen.size === Object.keys(profile.packages).length;
+  };
   const states: ("ready" | "missing")[] = [];
   for (const [path, expected] of [[keyPath, dockerRepositoryKey], [sourcePath, source + "\n"]] as const) {
     const metadata = await run(["stat", "--format=%F|%u|%a|%h", "--", path]);
@@ -33,7 +47,7 @@ export async function ensureAptRepository(input: CommandInput, host: SetupHost, 
     if (metadata.status !== "completed" || metadata.exitCode !== 0 || !/^regular file\|0\|(?:644|444)\|1\s*$/.test(metadata.stdout) || bytes.status !== "completed" || bytes.exitCode !== 0 || bytes.stdout !== expected) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "An existing repository path is unsafe or differs from the release-owned bytes. It was preserved.", actions: [] }, { resumable: true });
     states.push("ready");
   }
-  if (states.every((state) => state === "ready")) { await parentsSafe(false); return null; }
+  if (states.every((state) => state === "ready")) { await parentsSafe(false); if (await indexReady()) return null; }
   const action = "repository-configuration";
   const repositoryChecksum = Bun.CryptoHasher.hash("sha256", JSON.stringify({ profileChecksum: checksum, keySha256: dockerRepositoryKeySha256, source, paths: [keyPath, sourcePath] }), "hex");
   const repositoryTarget = `${target} repository ${repositoryChecksum}`;
@@ -74,8 +88,9 @@ export async function ensureAptRepository(input: CommandInput, host: SetupHost, 
       if (copied.status !== "completed" || copied.exitCode !== 0 || metadata.status !== "completed" || metadata.exitCode !== 0 || !/^regular file\|0\|(?:644|444)\|1\s*$/.test(metadata.stdout) || bytes.status !== "completed" || bytes.exitCode !== 0 || bytes.stdout !== expected) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "Create-only repository publication could not be verified. Existing files were preserved; inspect partial configuration before resuming.", actions: [] }, { resumable: true });
       await parentsSafe(false);
     }
-    const updated = await run(["sudo", "-n", "apt-get", "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-", "update"]);
+    const updated = await run(["sudo", "-n", "apt-get", ...sourceOptions, "update"]);
     if (updated.status !== "completed" || updated.exitCode !== 0) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "Repository files were verified but refreshing the scoped index did not complete. Reprobe before resuming.", actions: [] }, { resumable: true, setupAction: { action, state: "incomplete" } });
+    if (!(await indexReady())) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The scoped repository refresh completed but the exact pinned package records are still unavailable.", actions: [] }, { resumable: true, setupAction: { action, state: "completed" } });
     return null;
   } finally { await rm(staging, { recursive: true, force: true }); }
 }

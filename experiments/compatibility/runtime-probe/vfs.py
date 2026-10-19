@@ -72,7 +72,7 @@ def execute_probe(architecture, environment, timeout):
 def run_counterfactual(architecture, directory):
     from isolated_daemon import isolated_vfs_daemon
     target=Path(directory);target.mkdir(parents=True,exist_ok=True)
-    result={'scope':'vfs-storage-counterfactual','v1_gate_passed':False,'replaces_overlay_requirement':False,
+    result={'scope':'vfs-and-kernel-network-counterfactual','v1_gate_passed':False,'replaces_overlay_requirement':False,
             'passed':False,'architecture':architecture,'daemon_cleanup_verified':False,
             'source_sha256':{name:hashlib.sha256((HERE/name).read_bytes()).hexdigest()
                              for name in ('vfs.py','isolated_daemon.py','owned_mounts.py','run.py','kernel_network.py','kernel_docker.py')}}

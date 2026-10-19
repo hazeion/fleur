@@ -211,3 +211,11 @@ os.open=change_limits_on_status
 
 if __name__ == "__main__":
     unittest.main()
+
+class PeerRequestValidation(unittest.TestCase):
+    def test_malformed_peer_is_refused_before_privileged_execution(self):
+        for peer in ('unbounded',{'container_id':'b'*64,'pid':True},
+                     {'container_id':'b'*64,'pid':43,'unbounded':'x'*100000},
+                     {'container_id':CID,'pid':43}):
+            with self.subTest(peer_type=type(peer).__name__),patch('kernel_network.subprocess.Popen',side_effect=AssertionError('privileged helper started')):
+                with self.assertRaises(KernelProfileUnverified):inspect_kernel_profile(CID,42,peer=peer)

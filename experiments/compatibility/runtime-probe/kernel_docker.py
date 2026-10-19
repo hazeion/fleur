@@ -72,9 +72,13 @@ class KernelPrivateDocker:
             self.owner=owner
             self._verify_identity()
             version=self._request('GET','/version',None,5)
-            runtimes=[row for row in version.get('Components',[]) if row.get('Name')=='runc']
+            components=version.get('Components')
+            if type(components) is not list or any(type(row) is not dict for row in components):
+                raise ValueError('owned VFS pinned engine rejected')
+            runtimes=[row for row in components if row.get('Name')=='runc']
             if (version.get('Version')!='28.0.4' or version.get('GitCommit')!='6430e49'
                     or len(runtimes)!=1 or runtimes[0].get('Version')!='1.5.2'
+                    or type(runtimes[0].get('Details')) is not dict
                     or runtimes[0].get('Details',{}).get('GitCommit')!='v1.5.2-0-g29dd3dc2'):
                 self.close();raise ValueError('owned VFS pinned engine rejected')
             info=self._request('GET','/v1.48/info',None,5)
@@ -131,6 +135,9 @@ class KernelPrivateDocker:
         if remaining<=0:raise TimeoutError('fixed VFS create deadline')
         metadata=self._request('GET','/v1.48/containers/'+cid+'/json',None,remaining)
         label=VFS_LABEL if mode=='manager' else OWNER_LABEL
+        if (type(metadata.get('Config')) is not dict or type(metadata['Config'].get('Labels')) is not dict
+                or type(metadata.get('State')) is not dict):
+            raise ValueError('fixed VFS stopped identity rejected')
         if (metadata.get('Id')!=cid or metadata.get('Name')!='/'+name or metadata.get('Image')!=image_id
                 or metadata.get('Config',{}).get('Labels',{}).get(label)!=owner
                 or metadata.get('State',{}).get('Status')!='created'

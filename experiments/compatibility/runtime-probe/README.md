@@ -195,6 +195,14 @@ The now-reachable fresh-file regression also exposed an unmatched-glob defect: e
 
 ## Separate VFS counterfactual experiment
 
+The current candidate also explicitly bypasses libnetwork sandbox staging while
+retaining a fresh kernel network namespace. Both architectures rejected the former
+nsfs handle under a shared parent; the ordinary-unmount guard remains unchanged.
+The [kernel network setup](kernel-network.md) describes the fixed Engine API
+constructor, required independent kernel/profile checks, two live namespace proof,
+and unchanged cleanup gate. This now compares VFS plus network setup, so a later
+passing result cannot isolate the storage driver's effect. Native acceptance is pending.
+
 [Run 38481777057](https://github.com/hazeion/fleur/actions/runs/38481777057) finally captured useful stacks on both architectures. An exit-monitor goroutine was blocked in a kernel syscall inside `overlay2.Driver.Put`, through layer unmount, daemon cleanup and `handleContainerExit`, before stopped-state notification. ARM also showed a waiter blocked acquiring the state mutex. The trace deliberately lacks arguments, syscall number, source line and container ID, so it does not distinguish unmount from directory removal or correlate that goroutine to a specific worker. It establishes the current cleanup path, not a verified kernel defect. Docker 28's automatic removal option does not bypass this earlier cleanup.
 
 A separate CI matrix now evaluates Docker 28.0.4's built-in [VFS testing backend](https://docs.docker.com/engine/storage/drivers/vfs-driver/). Its source-backed directory return and no-op `Put` avoid that runtime overlay cleanup path. VFS deep-copies layers and costs more disk and CPU. This is a counterfactual, not a replacement for the existing overlay native jobs or a claim of default Docker support. The aggregate v1 gate remains false.

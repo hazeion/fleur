@@ -161,7 +161,7 @@ try:
         require(peer_net!=worker_net and peer_net!=host_net)
         require(cgroup(peerproc,peer_id)==peer_group and identity(peerproc,peer_pid)==peer_started
                 and net_identity(peerproc)==peer_net and not select.select([peerfd],[],[],0)[0])
-    stage='identity-fence' 
+    stage='identity-fence'
     require(cgroup(proc)==parts and identity(proc)==started and net_identity(proc)==worker_net and net_identity(own)==host_net)
     status(proc);root_readonly(proc);limits(cg);network(proc)
     require(not select.select([pidfd],[],[],0)[0] and time.monotonic()<deadline)
@@ -193,6 +193,11 @@ def inspect_kernel_profile(container_id: str, pid: int, timeout: float = 5, *, p
         raise KernelProfileUnverified('kernel-profile-identity')
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0.5 <= timeout <= 30:
         raise KernelProfileUnverified('kernel-profile-budget')
+    if peer is not None and (type(peer) is not dict or set(peer)!={'container_id','pid'}
+            or type(peer.get('container_id')) is not str or re.fullmatch(r'[0-9a-f]{64}',peer['container_id']) is None
+            or peer['container_id']==container_id or type(peer.get('pid')) is not int
+            or not 1<peer['pid']<2**31 or peer['pid']==pid):
+        raise KernelProfileUnverified('kernel-profile-peer')
     deadline=time.monotonic()+timeout
     # Root timeout owns termination and reaping. Its escalation finishes before
     # the parent deadline, including when the caller cannot signal root itself.

@@ -1,7 +1,7 @@
 import {dlopen, FFIType, ptr} from 'bun:ffi';
 import {h} from 'preact';
 import render from 'preact-render-to-string';
-import {verifyRetainedHeap} from './heap_probe';
+import {createVerifiedBroker, verifyRetainedHeap} from './heap_probe';
 
 console.error('[DEBUG-runtime] loader-start');
 // Trusted phase: all module loading and application source reads precede install.
@@ -72,17 +72,22 @@ console.error('[compat-event] result=' + event_probe + ' errno=' + native.event_
 if (event_probe !== 0) process.exit(17);
 const event_negatives = Array.from({length:12},(_,i)=>native.event_negative(i));
 if (event_negatives.some(result=>result !== -1)) process.exit(19);
-const runtime_gc = verifyRetainedHeap();
-if (runtime_gc.passed !== true) process.exit(23);
+const initialRuntimeGc = verifyRetainedHeap();
+if (initialRuntimeGc.passed !== true) process.exit(23);
 console.error('[compat-gc] retained-values-verified');
+const verifiedBroker = createVerifiedBroker(native.broker_exchange, () => {
+  console.error('[compat-gc] post-broker-retained-values-verified');
+});
 // Compilation and top-level fixture evaluation occur only after TSYNC success.
 native.trace(12);
 const application = new Function('h', 'render', 'negative', 'broker', 'trace', source);
 native.trace(13);
 native.trace(14);
-const pending = application(h, render, native.negative, native.broker_exchange, native.trace);
+const pending = application(h, render, native.negative, verifiedBroker.call, native.trace);
 native.trace(15);
 const result = await pending;
+const runtime_gc = verifiedBroker.getEvidence();
+if (runtime_gc === null || runtime_gc.passed !== true) process.exit(24);
 native.trace(16);
 native.trace(17);
 const thread = native.check_thread();

@@ -1,3 +1,7 @@
+// Capture the native collector during trusted module loading. Application
+// evaluation cannot substitute a later Bun.gc property value for this proof.
+const collectGarbage = Bun.gc.bind(Bun);
+
 /** Trusted compatibility evidence, executed after the worker restriction audit. */
 export function verifyRetainedHeap() {
   const retained = Array.from({length: 128}, (_, index) => ({
@@ -29,7 +33,7 @@ export function verifyRetainedHeap() {
       index,
       bytes: new Uint8Array(64).fill(index & 255),
     }));
-    Bun.gc(true);
+    collectGarbage(true);
     collections++;
     if (pressure.length !== 16384 || pressure[0].index !== 0 || pressure[0].bytes[0] !== 0
         || pressure[16383].index !== 16383 || pressure[16383].bytes[63] !== 255) {
@@ -37,11 +41,30 @@ export function verifyRetainedHeap() {
     }
     inspectRetained();
     pressure = null;
-    Bun.gc(true);
+    collectGarbage(true);
     collections++;
     inspectRetained();
   }
   return {passed: true, collections, retained_objects: retained.length,
     retained_bytes: retained.reduce((total, row) => total + row.bytes.byteLength, 0),
     checksum: inspectRetained()};
+}
+
+/** Recheck the heap after the admitted host exchange, before application resumes. */
+export function createVerifiedBroker(exchange: () => number,
+  onVerified: (evidence: ReturnType<typeof verifyRetainedHeap>) => void) {
+  let evidence: ReturnType<typeof verifyRetainedHeap> | null = null;
+  return {
+    call: () => {
+      evidence = null;
+      const status = exchange();
+      if (status === 0) {
+        const verified = verifyRetainedHeap();
+        onVerified(verified);
+        evidence = verified;
+      }
+      return status;
+    },
+    getEvidence: () => evidence,
+  };
 }

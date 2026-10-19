@@ -36,7 +36,7 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False):
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False):
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -45,8 +45,13 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
     run_started = False
     resource_containers = []
     worker_environment = host_environment()
+    creator = None
     try:
         if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
+        if kernel_private_network:
+            from kernel_docker import KernelPrivateDocker
+            creator=KernelPrivateDocker(worker_environment)
+        REPORT['kernel_private_network'] = kernel_private_network
         REPORT['trusted_build_network'] = trusted_build_network or 'default'
         architecture, selected = select_profile(architecture, platform.system(), platform.machine())
         base = selected['base']
@@ -74,7 +79,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
                                                'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
-                                               'registration_canary.py','worker_deadline.py')}
+                                               'registration_canary.py','worker_deadline.py','kernel_network.py','kernel_docker.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -118,7 +123,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
             run_started = True
             def audited_worker(name,owner,inventory):
-                configuration = inspect_worker_configuration(name,owner,REPORT['image_id'])
+                configuration = inspect_worker_configuration(name,owner,REPORT['image_id'],kernel_private=kernel_private_network)
                 snapshot = snapshot_worker(name)
                 rows = [{key:row[key] for key in ('pid','no_new_privs','seccomp','seccomp_filters')}
                         for row in snapshot['tasks']]
@@ -143,10 +148,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             def start_waiter(remaining):
                 return OwnedWaiter(REPORT['worker_configuration']['container_id'],timeout=remaining)
             REPORT['worker_protocol'] = {}
-            output = run_container(['docker', 'run', '-i', '--name', container, '--label', OWNER_LABEL+'='+tag, '--network=none',
+            primary_command = ['docker', 'run', '-i', '--name', container, '--label', OWNER_LABEL+'='+tag, '--network=none',
                               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                               '--security-opt=seccomp=unconfined', '--cpus=1', '--memory=512m',
-                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']], timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter,completion_stall=capture_daemon_trace)
+                              '--memory-swap=512m', '--pids-limit=64', '--ulimit=core=0', '--pull=never', REPORT['image_id']]
+            if creator is not None:
+                primary_id=creator.create_worker(container,tag,REPORT['image_id'],'render')
+                primary_command=['docker','start','--attach','--interactive',primary_id]
+            output = run_container(primary_command, timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter,completion_stall=capture_daemon_trace)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -163,12 +172,16 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             for mode in ('cpu', 'memory', 'pids'):
                 resource_name = tag + '-' + mode
                 resource_containers.append(resource_name)
-                abuse = subprocess.run(['docker', 'run', '--name', resource_name,
-                    '--network=none', '--read-only', '--cap-drop=ALL',
-                    '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
-                    '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
-                    '--ulimit=core=0', '--pull=never', '--entrypoint=/probe/abuse',
-                    REPORT['image_id'], mode], capture_output=True, text=True, timeout=15)
+                if creator is not None:
+                    from kernel_docker import run_resource
+                    abuse=run_resource(creator,resource_name,tag,REPORT['image_id'],mode,worker_environment)
+                else:
+                    abuse = subprocess.run(['docker', 'run', '--name', resource_name,
+                        '--network=none', '--read-only', '--cap-drop=ALL',
+                        '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
+                        '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
+                        '--ulimit=core=0', '--pull=never', '--entrypoint=/probe/abuse',
+                        REPORT['image_id'], mode], capture_output=True, text=True, timeout=15)
                 if mode == 'memory':
                     state = json.loads(command(['docker', 'inspect', resource_name,
                                                 '--format', '{{json .State}}']))
@@ -193,7 +206,8 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             if control is not None: REPORT['host_containerd_control'] = control
             REPORT['healthy_exit_evidence'] = 'containerd-init-exit' if control is not None else 'startup-bound-docker-wait'
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
-                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control)
+                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,
+                create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None)
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
             negative_diagnostics = {}
@@ -202,10 +216,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 REPORT['event_replacement_audit'] = audited['descriptor_audit']
                 return audited['descriptor_audit']
             try:
-                run_container(['docker','run','-i','--name',negative_name,'--label',OWNER_LABEL+'='+tag,
+                negative_command = ['docker','run','-i','--name',negative_name,'--label',OWNER_LABEL+'='+tag,
                     '--network=none','--read-only','--cap-drop=ALL','--security-opt=no-new-privileges',
                     '--security-opt=seccomp=unconfined','--cpus=1','--memory=512m','--memory-swap=512m',
-                    '--pids-limit=64','--ulimit=core=0','--pull=never',REPORT['image_id'],'event-replacement'],
+                    '--pids-limit=64','--ulimit=core=0','--pull=never',REPORT['image_id'],'event-replacement']
+                if creator is not None:
+                    negative_id=creator.create_worker(negative_name,tag,REPORT['image_id'],'event-replacement')
+                    negative_command=['docker','start','--attach','--interactive',negative_id]
+                run_container(negative_command,
                     startup_audit=replacement_audit,environment=worker_environment,diagnostics=negative_diagnostics,timeout=30)
             except StartupAuditRejected as rejected:
                 stderr = negative_diagnostics.get('stderr','')
@@ -257,6 +275,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     REPORT['host_timeout_diagnostics'] = {'outcome':'timed-out' if isinstance(diagnostic_error,subprocess.TimeoutExpired) else 'unavailable'}
         result_code = 1
     finally:
+        if creator is not None:creator.close()
         cleanup = []
         cleanup_resources = [
             ('container', run_started, ['docker', 'rm', '-f', container]),
@@ -316,5 +335,6 @@ if __name__ == '__main__':
                         help='require this native Linux architecture; default detects supported native host')
     parser.add_argument('--trusted-build-network',choices=('host',),help='explicit trusted dependency build networking; worker networking remains none')
     parser.add_argument('--healthy-containerd-exit',action='store_true',help='Linux-host-only matching init exit evidence for concurrent healthy workers; removal still required')
+    parser.add_argument('--kernel-private-network',action='store_true',help='owned VFS only: explicit NetworkDisabled plus measured kernel isolation')
     arguments = parser.parse_args()
-    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit))
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network))

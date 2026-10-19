@@ -39,7 +39,7 @@ class Counterfactual(unittest.TestCase):
         environment=dict(os.environ,DOCKER_HOST='unix:///owned/socket')
         def launch(args,**kwargs):
             self.assertTrue(args[1].endswith('/run.py'))
-            self.assertEqual(args[2:],['--architecture','amd64','--trusted-build-network','host'])
+            self.assertEqual(args[2:],['--architecture','amd64','--trusted-build-network','host','--kernel-private-network'])
             self.assertEqual(kwargs['env']['DOCKER_HOST'],'unix:///owned/socket')
             self.assertTrue(kwargs['start_new_session'])
             child=factory(['/bin/sh','-c',"printf '{\"bounded_probe_passed\":true}\\n'; printf 'private' >&2"],**kwargs)

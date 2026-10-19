@@ -40,7 +40,7 @@ def execute_probe(architecture, environment, timeout):
         raise ValueError('counterfactual probe arguments invalid')
     started = time.monotonic()
     process = subprocess.Popen([sys.executable,str(HERE/'run.py'),'--architecture',architecture,
-        '--trusted-build-network','host'],env=environment,stdin=subprocess.DEVNULL,
+        '--trusted-build-network','host','--kernel-private-network'],env=environment,stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
     output, errors = bytearray(),bytearray()
     try:
@@ -75,7 +75,7 @@ def run_counterfactual(architecture, directory):
     result={'scope':'vfs-storage-counterfactual','v1_gate_passed':False,'replaces_overlay_requirement':False,
             'passed':False,'architecture':architecture,'daemon_cleanup_verified':False,
             'source_sha256':{name:hashlib.sha256((HERE/name).read_bytes()).hexdigest()
-                             for name in ('vfs.py','isolated_daemon.py','owned_mounts.py','run.py')}}
+                             for name in ('vfs.py','isolated_daemon.py','owned_mounts.py','run.py','kernel_network.py','kernel_docker.py')}}
     endpoint=None;probe=None;exit_code=None
     try:
         with isolated_vfs_daemon(lifetime=540) as endpoint:

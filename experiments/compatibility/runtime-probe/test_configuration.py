@@ -263,3 +263,19 @@ class ActualWorkerConfiguration(unittest.TestCase):
             self.test_host_inspection_invokes_one_pinned_version_query_without_banner_startup()
         self.assertEqual(caught.exception.category,'ctr-startup-deadline')
         self.assertEqual(caught.exception.observations['host_startup_budget_seconds'],15)
+
+class KernelNetworkConfiguration(unittest.TestCase):
+    def test_empty_engine_endpoints_require_explicit_mode_and_full_kernel_proof(self):
+        from kernel_network import PROOF
+        good=metadata();good['Config']['NetworkDisabled']=True
+        good['NetworkSettings']={'Networks':{},'SandboxID':'','SandboxKey':'','Ports':{},
+            'IPAddress':'','Gateway':'','GlobalIPv6Address':'','IPv6Gateway':''}
+        with self.assertRaises(ValueError):audit_configuration(good,'owner','worker',IMAGE)
+        with self.assertRaises(ValueError):
+            audit_configuration(good,'owner','worker',IMAGE,kernel_private=True)
+        result=audit_configuration(good,'owner','worker',IMAGE,kernel_private=True,kernel_proof=PROOF)
+        self.assertTrue(result['kernel_network_isolated'])
+        for field,value in [('SandboxKey','unexpected'),('Networks',{'none':{}}),('Ports',{'80/tcp':[]})]:
+            changed=copy.deepcopy(good);changed['NetworkSettings'][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                audit_configuration(changed,'owner','worker',IMAGE,kernel_private=True,kernel_proof=PROOF)

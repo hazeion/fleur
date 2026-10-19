@@ -1,3 +1,4 @@
+import type { ArchInstallProfile } from "./native-arch.ts";
 import { inspectAptPackageState } from "./native-state.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
 
@@ -24,11 +25,11 @@ export interface DesktopInstallProfile {
   readonly bytes: number;
   readonly teamId: string;
 }
-export type NativeInstallProfile = AptInstallProfile | DesktopInstallProfile;
+export type NativeInstallProfile = AptInstallProfile | ArchInstallProfile | DesktopInstallProfile;
 /** No native profile is admitted until release artifact/native verification is recorded. */
 export const nativeInstallProfiles: readonly NativeInstallProfile[] = [];
 export function selectNativeProfile(identity: HostIdentity, profiles: readonly NativeInstallProfile[]): NativeInstallProfile | undefined {
-  return profiles.find((profile) => (profile.method === "docker-official-apt" ? profile.verified === true && profile.distribution === identity.distribution : identity.system === "darwin" && profile.artifactAuthentication === "authenticated") && profile.release === identity.release && profile.architecture === identity.architecture);
+  return profiles.find((profile) => (profile.method === "docker-desktop-official-dmg" ? identity.system === "darwin" && profile.artifactAuthentication === "authenticated" : identity.system === "linux" && profile.verified === true && profile.distribution === identity.distribution) && profile.release === identity.release && profile.architecture === identity.architecture);
 }
 export { validAptProfile, inspectAptPackageState } from "./native-state.ts";
 export async function inspectAptInstallation(profile: AptInstallProfile, host: SetupHost, remaining: () => number): Promise<"installed" | "absent" | "conflict" | "unavailable"> {

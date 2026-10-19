@@ -58,6 +58,7 @@ launch() {
  if [ "$mode" = busy ]; then
   if [ "${LIFECYCLE_DELAY_LOOP:-}" ]; then sleep "$LIFECYCLE_DELAY_LOOP"; fi
   printf 'entered\n' > "$root/$name-loop"
+  if [ ! "${LIFECYCLE_NO_HEAP_MARKER:-}" ]; then printf '[compat-gc] retained-values-verified\n' >&2; fi
   printf '[compat-lifecycle] cpu-loop\n' >&2
   exec sleep 30
  else
@@ -133,7 +134,7 @@ class LifecycleTests(unittest.TestCase):
   from report import CONTROLS
   from protocol import REQUEST
   self.rows=[{'pid':1,'no_new_privs':1,'seccomp':2,'seccomp_filters':1},{'pid':2,'no_new_privs':1,'seccomp':2,'seccomp_filters':1}]
-  e={'kind':'runtime-evidence','architecture':'amd64','negative_controls':CONTROLS['amd64'],'install':0,'html':'<p>restricted render</p>','main':[-1]*24,'thread':-1,'application_open':True,'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},'descriptors_closed':True,'broker_reply':'registered:Squat','host_canary_absent':True,'event_probe':0,'event_negatives':[-1]*12}
+  e={'kind':'runtime-evidence','architecture':'amd64','runtime_gc_verified':True,'negative_controls':CONTROLS['amd64'],'install':0,'html':'<p>restricted render</p>','main':[-1]*24,'thread':-1,'application_open':True,'cgroups':{'cpu':'100000 100000','memory':'536870912','pids':'64'},'descriptors_closed':True,'broker_reply':'registered:Squat','host_canary_absent':True,'event_probe':0,'event_negatives':[-1]*12}
   startup={'kind':'startup-audit','inventory':[{'fd':3,'kind':'eventfd'},{'fd':4,'kind':'eventpoll'}]}
   self.env=dict(os.environ,LIFECYCLE_IMAGE=IMAGE,LIFECYCLE_STARTUP=json.dumps(startup),LIFECYCLE_FAKE_ROOT=str(self.root),LIFECYCLE_REQUEST=json.dumps(REQUEST),LIFECYCLE_EVIDENCE=json.dumps(e))
  def tearDown(self):self.tmp.cleanup()
@@ -141,7 +142,7 @@ class LifecycleTests(unittest.TestCase):
   data=json.loads((self.root/name).read_text())
   if data['Config']['Labels']['fleur.compatibility.runtime-owner']!=owner:raise RuntimeError('unowned worker')
   return {'configuration':{'container_id':data['Id'],'host_init_pid':47},'host_threads':self.rows,'configuration_verified':True,'descriptor_audit':{'passed':True,'category':'verified','descriptor_count':len(inventory)}}
- def run_probe(self,timeout=2,containerd_control=None,create_worker=None,aggregate_preparation_budget=False,inspect_worker_state=None):
+ def run_probe(self,timeout=2,containerd_control=None,create_worker=None,aggregate_preparation_budget=False,inspect_worker_state=None,broker_ack_delay=0):
   parent=self
   class FixtureDeadline:
    # Explicit host process boundary for fake Docker state. The separate guard
@@ -180,7 +181,54 @@ class LifecycleTests(unittest.TestCase):
    def close(self):
     self.cancel.set();self.thread.join(6)
     if not self.done:raise RuntimeError('worker deadline guard reap unverified')
-  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker,aggregate_preparation_budget=aggregate_preparation_budget,inspect_worker_state=inspect_worker_state)
+  return run_lifecycle(IMAGE,'owned','amd64',self.env,self.observe,timeout=timeout,docker=str(self.cli),containerd_control=containerd_control,deadline_factory=FixtureDeadline,create_worker=create_worker,aggregate_preparation_budget=aggregate_preparation_budget,inspect_worker_state=inspect_worker_state,broker_ack_delay=broker_ack_delay)
+ def test_idle_broker_pause_is_after_audit_and_inside_original_worker_deadline(self):
+  result=self.run_probe(broker_ack_delay=.15)
+  self.assertTrue(result['passed'])
+  for row in result['repeats']:
+   pause=row['broker_ack_pause']
+   self.assertEqual(pause['requested_ms'],150)
+   self.assertGreaterEqual(pause['duration_ms'],150)
+   self.assertTrue(pause['after_restriction_audit']);self.assertTrue(pause['registered_request_verified'])
+   self.assertTrue(pause['completed'])
+   self.assertTrue(row['retained_heap_verified_before_cpu_loop'])
+   self.assertGreaterEqual(row['cpu_loop_entered_ms'],pause['duration_ms'])
+   self.assertLessEqual(row['cpu_loop_entered_ms'],row['healthy_started_ms'])
+   self.assertEqual(row['deadline_seconds'],2)
+   self.assertLessEqual(row['termination']['physical_exit_lateness_ms'],250)
+
+ def test_idle_pause_never_acknowledges_before_restriction_approval(self):
+  self.env['LIFECYCLE_RECORD_EVENTS']='1'
+  self.observe=lambda *args:{'configuration_verified':False,'host_threads':self.rows}
+  with self.assertRaisesRegex(RuntimeError,'configuration or restrictions') as caught:
+   self.run_probe(broker_ack_delay=.15)
+  pause=caught.exception.worker_diagnostics['broker_ack_pause']
+  self.assertFalse(pause['after_restriction_audit']);self.assertFalse(pause['registered_request_verified'])
+  self.assertFalse(pause['completed']);self.assertEqual(pause['duration_ms'],0)
+  self.assertNotIn('approved:owned-busy-0',(self.root/'events').read_text())
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_idle_pause_consumes_same_deadline_when_healthy_completion_stalls(self):
+  self.env['LIFECYCLE_KEEP_HEALTHY_OPEN']='1'
+  with patch('lifecycle.OwnedWaiter',return_value=SimpleNamespace(completion=lambda r:{'completed':False},close=lambda:None)),self.assertRaises(subprocess.TimeoutExpired) as caught:
+   self.run_probe(broker_ack_delay=.25)
+  self.assertLessEqual(caught.exception.worker_diagnostics['timeout_seconds'],1.75)
+  self.assertGreaterEqual(caught.exception.worker_diagnostics['broker_ack_pause']['duration_ms'],250)
+  self.assertTrue(caught.exception.worker_diagnostics['broker_ack_pause']['completed'])
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_missing_retained_heap_proof_cannot_launch_healthy_work(self):
+  self.env['LIFECYCLE_RECORD_EVENTS']='1';self.env['LIFECYCLE_NO_HEAP_MARKER']='1'
+  with self.assertRaisesRegex(RuntimeError,'retained heap verification') as caught:self.run_probe()
+  self.assertNotIn('start:owned-healthy-0',(self.root/'events').read_text())
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_invalid_host_pause_cannot_create_containers(self):
+  for delay in (-1,True,float('nan'),12,2):
+   with self.subTest(delay=delay),self.assertRaisesRegex(ValueError,'broker pause invalid'):
+    self.run_probe(broker_ack_delay=delay)
+  self.assertEqual(set(self.root.iterdir()),{self.cli})
+
  def test_trusted_state_reader_keeps_full_identity_status_and_physical_deadline_checks(self):
   calls=[]
   def reader(cid,remaining):

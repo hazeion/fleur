@@ -37,7 +37,7 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False):
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False):
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -48,6 +48,8 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
     worker_environment = host_environment()
     creator = None
     try:
+        if type(idle_runtime_stress) is not bool:raise ValueError('idle runtime stress flag invalid')
+        REPORT['idle_runtime_stress']=idle_runtime_stress
         if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
         if kernel_private_network:
             from kernel_docker import KernelPrivateDocker
@@ -78,7 +80,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
             raise RuntimeError(f'compiler candidate mismatch: {version}')
         REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
-                                  for name in ('filter.c','abuse.c','bootstrap.ts','application.js',
+                                  for name in ('filter.c','abuse.c','bootstrap.ts','heap_probe.ts','heap_probe.test.ts','application.js',
                                                'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
                                                'registration_canary.py','worker_deadline.py','kernel_network.py','kernel_docker.py','engine_state.py')}
         REPORT['host'] = {'kernel': platform.release(),
@@ -86,7 +88,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
         with tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-') as directory:
             context = Path(directory)
-            for name in ('bootstrap.ts', 'application.js', 'busy-application.js'):
+            for name in ('bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js', 'busy-application.js'):
                 shutil.copyfile(HERE / name, context / name)
             (context / 'profile.json').write_text(json.dumps({'architecture':architecture,
                                                              'negative_controls':CONTROLS[architecture]}))
@@ -105,13 +107,17 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
 WORKDIR /probe
 COPY package.json bun.lock ./
 RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
-COPY bootstrap.ts ./
+COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./
+RUN bun test heap_probe.test.ts
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {base}
 WORKDIR /probe
 COPY --from=prepare /probe/bootstrap.js ./
 COPY filter.so application.js busy-application.js abuse profile.json ./
-ENV GLIBC_TUNABLES=glibc.pthread.rseq=0
+ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 \
+    BUN_JSC_useConcurrentJIT=0 \
+    BUN_JSC_numberOfGCMarkers=1 \
+    BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
@@ -216,6 +222,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
                 aggregate_preparation_budget=creator is not None,
                 inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
+            if idle_runtime_stress:
+                idle_tag=tag+'-idle'
+                REPORT['restricted_worker_idle_lifecycle'] = run_lifecycle(
+                    REPORT['image_id'],idle_tag,architecture,worker_environment,audited_worker,timeout=30,
+                    containerd_control=control,broker_ack_delay=11,
+                    create_worker=(lambda name,busy,remaining:creator.create_worker(name,idle_tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
+                    aggregate_preparation_budget=creator is not None,
+                    inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
             negative_diagnostics = {}
@@ -330,6 +344,21 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             and REPORT['restricted_worker_lifecycle'].get('passed') is True
             and type(REPORT['restricted_worker_lifecycle'].get('repeats')) is list
             and len(REPORT['restricted_worker_lifecycle']['repeats']) == 2
+            and (not idle_runtime_stress or (
+                type(REPORT.get('restricted_worker_idle_lifecycle')) is dict
+                and REPORT['restricted_worker_idle_lifecycle'].get('passed') is True
+                and type(REPORT['restricted_worker_idle_lifecycle'].get('repeats')) is list
+                and len(REPORT['restricted_worker_idle_lifecycle']['repeats'])==2
+                and all(type(row) is dict and row.get('deadline_seconds')==30
+                        and row.get('retained_heap_verified_before_cpu_loop') is True
+                        and type(row.get('broker_ack_pause')) is dict
+                        and row['broker_ack_pause'].get('requested_ms')==11000
+                        and type(row['broker_ack_pause'].get('duration_ms')) is int
+                        and row['broker_ack_pause']['duration_ms']>10000
+                        and row['broker_ack_pause'].get('completed') is True
+                        and row['broker_ack_pause'].get('after_restriction_audit') is True
+                        and row['broker_ack_pause'].get('registered_request_verified') is True
+                        for row in REPORT['restricted_worker_idle_lifecycle']['repeats'])))
             and type(REPORT.get('worker_descriptors')) is dict and REPORT['worker_descriptors'].get('passed') is True
             and type(REPORT.get('event_replacement_negative')) is dict
             and REPORT['event_replacement_negative'].get('passed') is True)
@@ -349,5 +378,6 @@ if __name__ == '__main__':
     parser.add_argument('--trusted-build-network',choices=('host',),help='explicit trusted dependency build networking; worker networking remains none')
     parser.add_argument('--healthy-containerd-exit',action='store_true',help='Linux-host-only matching init exit evidence for concurrent healthy workers; removal still required')
     parser.add_argument('--kernel-private-network',action='store_true',help='owned VFS only: explicit NetworkDisabled plus measured kernel isolation')
+    parser.add_argument('--idle-runtime-stress',action='store_true',help='add two unchanged 30-second lifecycle proofs with an audited 11-second broker pause')
     arguments = parser.parse_args()
-    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network))
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network,arguments.idle_runtime_stress))

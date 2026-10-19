@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 let scratch: string;
 let executable: string;
@@ -107,3 +107,63 @@ test("current release rejects incompatible or incomplete project contracts befor
     expect((await invoke(project, "--help")).exit).toBe(0);
   }
 });
+test.each(["SIGTERM", "SIGINT", "SIGHUP"] as const)("interrupting the packed launcher with %s forwards termination and reaps its delegated exact release", async (signal) => {
+  const project = join(scratch, `interrupted-local-${signal}`);
+  const local = join(project, "node_modules/fleur");
+  await mkdir(join(local, "bin"), { recursive: true });
+  await writeFile(join(project, "fleur.json"), JSON.stringify({ fleurVersion: "0.0.9" }));
+  await writeFile(join(local, "package.json"), JSON.stringify({ name: "fleur", version: "0.0.9", bin: "bin/fleur.ts" }));
+  await writeFile(join(local, "bin/fleur.ts"), 'for(const signal of ["SIGINT","SIGTERM","SIGHUP"])process.on(signal,async()=>{await Bun.write("cleanup",signal);process.exit(0);});await Bun.write("delegated.pid",String(process.pid));setInterval(()=>{},1000);');
+  const parent = Bun.spawn([process.execPath, executable, "--json", "new", "child", "--no-git"], { cwd: project, env: { PATH: "", HOME: scratch }, stdout: "pipe", stderr: "pipe" });
+  let delegated: number | undefined;
+  const deadline = setTimeout(() => parent.kill("SIGKILL"), 5000);
+  try {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (await Bun.file(join(project, "delegated.pid")).exists()) { delegated = Number(await Bun.file(join(project, "delegated.pid")).text()); break; }
+      await Bun.sleep(10);
+    }
+    expect(delegated).toBeGreaterThan(0);
+    parent.kill(signal);
+    await parent.exited;
+    expect(await Bun.file(join(project, "cleanup")).exists()).toBe(true);
+    expect(await Bun.file(join(project, "cleanup")).text()).toBe(signal);
+    expect(parent.exitCode).toBe(128 + constants.signals[signal]);
+    expect(() => process.kill(delegated!, 0)).toThrow();
+    delegated = undefined;
+  } finally {
+    clearTimeout(deadline);
+    parent.kill("SIGKILL");
+    if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Already reaped by its launcher. */ } }
+  }
+});
+test("an unresponsive delegate receives the full interruption grace then is reaped", async () => {
+  const project = join(scratch, "ignored-interruption");
+  const local = join(project, "node_modules/fleur");
+  await mkdir(join(local, "bin"), { recursive: true });
+  await writeFile(join(project, "fleur.json"), JSON.stringify({ fleurVersion: "0.0.9" }));
+  await writeFile(join(local, "package.json"), JSON.stringify({ name: "fleur", version: "0.0.9", bin: "bin/fleur.ts" }));
+  await writeFile(join(local, "bin/fleur.ts"), 'process.on("SIGTERM",()=>{});await Bun.write("delegated.pid",String(process.pid));setInterval(()=>{},1000);');
+  const parent = Bun.spawn([process.execPath, executable, "--json", "init"], { cwd: project, env: { PATH: "", HOME: scratch }, stdout: "pipe", stderr: "pipe" });
+  let delegated: number | undefined;
+  const safety = setTimeout(() => parent.kill("SIGKILL"), 38_000);
+  try {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (await Bun.file(join(project, "delegated.pid")).exists()) { delegated = Number(await Bun.file(join(project, "delegated.pid")).text()); break; }
+      await Bun.sleep(10);
+    }
+    expect(delegated).toBeGreaterThan(0);
+    const interruptedAt = performance.now();
+    parent.kill("SIGTERM");
+    await Bun.sleep(100);
+    expect(() => process.kill(delegated!, 0)).not.toThrow();
+    await parent.exited;
+    expect(performance.now() - interruptedAt).toBeGreaterThanOrEqual(29_900);
+    expect(parent.exitCode).toBe(143);
+    expect(() => process.kill(delegated!, 0)).toThrow();
+    delegated = undefined;
+  } finally {
+    clearTimeout(safety);
+    parent.kill("SIGKILL");
+    if (delegated) { try { process.kill(delegated, "SIGKILL"); } catch { /* Owned fixture already exited. */ } }
+  }
+}, 40_000);

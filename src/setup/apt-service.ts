@@ -1,4 +1,4 @@
-import { serviceObservation, setupLinuxService } from "./linux-service.ts";
+import { serviceObservation, setupLinuxService, type LinuxServicePolicy } from "./linux-service.ts";
 import { aptServicePendingPath } from "./service-pending.ts";
 import { hasAptServiceBinding } from "./apt-service-bindings.ts";
 import { aptHealthArgs, healthyDpkgSnapshot } from "./apt-health.ts";
@@ -34,5 +34,10 @@ async function provenance(host: SetupHost, remaining: () => number, profile: Apt
 /** Called only under the existing setup lock after exact installed-state inspection. */
 export async function setupAptService(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, endpoint?: string): Promise<CliOutcome> {
   if (!hasAptServiceBinding(profile)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The exact installed artifacts have no authenticated service policy.", actions: [] });
-  return setupLinuxService(input, host, identity, { method: profile.method, label: "APT", targetDescription: "Start docker.service, docker.socket and containerd.service; vendor pre-start -/sbin/modprobe overlay may load the overlay kernel module. No boot enablement or membership changes.", binding: profile, hashes, pendingPath: aptServicePendingPath, fragmentPaths: (unit) => unit === "containerd.service" ? [`/usr/lib/systemd/system/${unit}`, `/lib/systemd/system/${unit}`] : [`/usr/lib/systemd/system/${unit}`], provenance: (target, budget) => provenance(target, budget, profile), prestartEffects: { unit: "containerd.service", command: "-/sbin/modprobe overlay", effect: "Vendor pre-start may load the overlay kernel module; OS policy is unchanged." } }, remaining, endpoint);
+  return setupLinuxService(input, host, identity, aptServicePolicy(profile), remaining, endpoint);
+}
+/** Private policy is constructed only from a compiled, authenticated APT profile. */
+export function aptServicePolicy(profile: AptInstallProfile): LinuxServicePolicy {
+  if (!hasAptServiceBinding(profile)) throw new Error("No authenticated service binding");
+  return { method: profile.method, label: "APT", targetDescription: "Start docker.service, docker.socket and containerd.service; vendor pre-start -/sbin/modprobe overlay may load the overlay kernel module. No boot enablement or membership changes.", binding: profile, hashes, pendingPath: aptServicePendingPath, fragmentPaths: (unit) => unit === "containerd.service" ? [`/usr/lib/systemd/system/${unit}`, `/lib/systemd/system/${unit}`] : [`/usr/lib/systemd/system/${unit}`], provenance: (target, budget) => provenance(target, budget, profile), prestartEffects: { unit: "containerd.service", command: "-/sbin/modprobe overlay", effect: "Vendor pre-start may load the overlay kernel module; OS policy is unchanged." } };
 }

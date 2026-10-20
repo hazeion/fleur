@@ -79,7 +79,9 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       const sourceOptions = ["-o", "RootDir=/", "-o", "Dir::State::status=/var/lib/dpkg/status", "-o", "Debug::NoLocking=false", "-o", "APT::Get::AllowUnauthenticated=false", "-o", "Acquire::AllowInsecureRepositories=false", "-o", "DPkg::Options::=--root=/", "-o", "DPkg::Options::=--admindir=/var/lib/dpkg", "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-"];
       const missingPackages = Object.fromEntries(Object.entries(profile.packages).filter(([name]) => actual.missing.includes(name)));
       const packages = Object.entries(missingPackages).map(([name, version]) => `${name}=${version}`);
-      const simulated = await run(["apt-get", ...sourceOptions, "--simulate", "--no-remove", "--no-upgrade", "install", ...packages]);
+      const dependencyPolicy = ["--no-install-recommends", "--no-install-suggests"];
+      const simulationOutput = ["--quiet=2", "-o", "APT::Get::Show-User-Simulation-Note=false"];
+      const simulated = await run(["apt-get", ...sourceOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-remove", "--no-upgrade", "install", ...packages]);
       if (simulated.status !== "completed" || simulated.exitCode !== 0 || !exactSimulation(simulated.stdout, missingPackages)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The package plan requires changes outside the exact verified missing package set; existing software was preserved.", actions: [] });
       const beforeInstall = await inspectAptPackageState(profile, host, remaining);
       if (beforeInstall.state !== "compatible" || JSON.stringify(beforeInstall) !== JSON.stringify(actual)) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "Package state changed during planning. Reprobe before resuming; no packages were installed by this action.", actions: [] }, { packageState: { state: beforeInstall.state, present: [...beforeInstall.present], missing: [...beforeInstall.missing] }, resumable: true });
@@ -132,7 +134,7 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         try { await fence.writeFile(JSON.stringify({ formatVersion: 1, checksum })); await fence.sync(); } finally { await fence.close(); }
         await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
         const clearFence = async () => { await unlink(pendingPath); await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host)); retain = false; };
-        const localPlan = await run(["sudo", "-n", "apt-get", ...sourceOptions, ...guardOptions, "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.paths]);
+        const localPlan = await run(["sudo", "-n", "apt-get", ...sourceOptions, ...guardOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.paths]);
         if (localPlan.status === "timeout" || localPlan.terminationUnconfirmed) throw new AptPayloadRecovery("The privileged local-archive simulation has no confirmed terminal result");
         if (localPlan.status !== "completed" || localPlan.exitCode !== 0 || !exactSimulation(localPlan.stdout, missingPackages)) {
           const state = await inspectAptPackageState(profile, host, remaining);
@@ -145,7 +147,7 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         const stable = await inspectAptPackageState(profile, host, remaining);
         if (JSON.stringify(stable) !== JSON.stringify(actual)) throw new AptPayloadRecovery("Package state changed before local archive installation");
         for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name as AptPackageName, remaining);
-        const installed = await run(["sudo", "-n", "apt-get", ...sourceOptions, ...guardOptions, "--assume-yes", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.paths]);
+        const installed = await run(["sudo", "-n", "apt-get", ...sourceOptions, ...guardOptions, ...dependencyPolicy, "--assume-yes", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.paths]);
         if (installed.status === "timeout" || installed.terminationUnconfirmed) throw new AptPayloadRecovery("The privileged transaction has no confirmed terminal result");
         if (installed.status === "completed" && installed.exitCode === 0 && installed.stdout.split("\n").filter((line) => line === `[fleur-apt-guard] ${guardChecksum}`).length !== 1) throw new AptPayloadRecovery("The completed package command did not confirm the actual archive guard");
         const final = await inspectAptPackageState(profile, host, remaining);

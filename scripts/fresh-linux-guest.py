@@ -393,6 +393,65 @@ def resume_guest(nonce, expected_digest):
     finish_ready_guest(state)
 
 
+def capture_signed_indexes():
+    # APT's lock and acquisition directories are metadata, never signed indexes.
+    root = "/var/lib/apt/lists"
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    REPORT["signedIndexes"] = []
+    REPORT["aptListMetadata"] = []
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    try:
+        initial = os.fstat(directory)
+        names = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if len(names) >= 1024:
+                    raise RuntimeError("APT index entry bound exceeded")
+                names.append(entry.name)
+        total = 0
+        for name in sorted(names):
+            budget_seconds(1)
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if name == "lock" or name in ("partial", "auxfiles"):
+                expected = stat.S_ISREG if name == "lock" else stat.S_ISDIR
+                if not expected(before.st_mode):
+                    raise RuntimeError("APT metadata has an unexpected type: " + name)
+                REPORT["aptListMetadata"].append({"name": name, "type": "lock" if name == "lock" else "directory",
+                                                  "uid": before.st_uid, "gid": before.st_gid, "mode": stat.S_IMODE(before.st_mode)})
+                continue
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 64 * 1024 * 1024:
+                raise RuntimeError("APT index type or size is unsafe: " + name)
+            total += before.st_size
+            if total > 512 * 1024 * 1024:
+                raise RuntimeError("APT index total byte bound exceeded")
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                if identity(os.fstat(fd)) != identity(before):
+                    raise RuntimeError("APT index identity changed: " + name)
+                digest = hashlib.sha256()
+                size = 0
+                while True:
+                    budget_seconds(1)
+                    chunk = os.read(fd, min(1024 * 1024, before.st_size - size + 1))
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > before.st_size:
+                        raise RuntimeError("APT index grew during capture: " + name)
+                    digest.update(chunk)
+                if size != before.st_size or identity(os.fstat(fd)) != identity(before) or identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) != identity(before):
+                    raise RuntimeError("APT index changed during capture: " + name)
+                REPORT["signedIndexes"].append({"name": name, "sha256": digest.hexdigest(), "size": size})
+            finally:
+                os.close(fd)
+        if identity(os.fstat(directory)) != identity(initial) or identity(os.stat(root, follow_symlinks=False)) != identity(initial):
+            raise RuntimeError("APT index directory changed during capture")
+    finally:
+        os.close(directory)
+
+
 def main():
     global GUEST_DEADLINE
     GUEST_DEADLINE = time.monotonic() + 900
@@ -435,11 +494,7 @@ def main():
     packages = [item["name"] + "=" + item["version"] for item in metadata["artifacts"]]
     simulation = run(["apt-get", "--simulate", "--no-install-recommends", "--no-remove", "--no-upgrade", "install"] + packages, allowed=(0, 100))
     REPORT["actualDependencySimulation"] = {"exitCode": simulation[0], "stdout": simulation[1], "stderr": simulation[2]}
-    REPORT["signedIndexes"] = []
-    for path in sorted(Path("/var/lib/apt/lists").glob("*")):
-        if path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 * 1024 * 1024:
-            data = path.read_bytes()
-            REPORT["signedIndexes"].append({"name": path.name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+    capture_signed_indexes()
     REPORT["reprobe"] = command_json("setup")
     REPORT["ordinaryUserDoctor"] = command_json("doctor")
     state = REPORT["ordinaryUserDoctor"]["result"].get("data", {}).get("components", {})

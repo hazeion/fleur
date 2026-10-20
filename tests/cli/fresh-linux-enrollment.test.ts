@@ -114,6 +114,74 @@ test("the actual handoff bounds every candidate entry during enumeration before 
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
 
+
+test("the actual guest command records signed index bytes without opening APT's root-owned lock", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-apt-index-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "apt-index-lock"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const report = JSON.parse(stdout);
+    expect(exit, stderr + "\n" + stdout).toBe(3);
+    expect(report).toMatchObject({ ok: false, phase: "new-login-required", installationEvidence: "pending", runtimeSupport: "unverified" });
+    expect(report.signedIndexes).toEqual([
+      { name: "archive.ubuntu.com_ubuntu_dists_noble_InRelease", sha256: "32051496fff708ff4a32b4c5bcfde4fcd7f37f56ebf4f19aeebfde2981b1fd47", size: 38 },
+      { name: "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages", sha256: "6c6ecae325bfc2f835f55dec58c97f8e1d804aa3b6a27e98c6d36d7cca91ac1d", size: 28 },
+    ]);
+    expect(report.aptListMetadata).toEqual([
+      { name: "auxfiles", type: "directory", uid: expect.any(Number), gid: expect.any(Number), mode: 0o755 },
+      { name: "lock", type: "lock", uid: 0, gid: 0, mode: 0o640 },
+      { name: "partial", type: "directory", uid: expect.any(Number), gid: expect.any(Number), mode: 0o700 },
+    ]);
+    const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(state.aptReads).not.toContain("lock");
+    expect(state.unexpected).toEqual([]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);
+
+
+for (const scenario of ["unreadable", "symlink", "nonregular", "oversize", "race", "entry-bound"] as const) {
+  test(`the actual guest command fails closed on unsafe APT index evidence: ${scenario}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleur-apt-unsafe-"));
+    try {
+      const python = Bun.which("python3"); expect(python).not.toBeNull();
+      const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "apt-index-" + scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const report = JSON.parse(stdout);
+      expect(exit, stderr + "\n" + stdout).toBe(4);
+      expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", error: { code: "GUEST_VERIFICATION_FAILED" } });
+      const expected = scenario === "unreadable" ? "Permission denied" : scenario === "entry-bound" ? "APT index entry bound exceeded" : scenario === "race" ? "APT index identity changed" : "APT index type or size is unsafe";
+      expect(report.error.message).toContain(expected);
+      expect(report.phase).toBeUndefined(); expect(report.checkpoint).toBeUndefined();
+      expect(report.authorizedFixtureSetup.promptsAnswered).toBe(6);
+      expect(report.actualDependencySimulation.exitCode).toBe(0);
+      expect(report.signedIndexes.some((index: { name: string }) => index.name.endsWith("_Packages"))).toBe(false);
+      const state = await Bun.file(join(root, "protocol-state.json")).json();
+      expect(state.aptReads ?? []).not.toContain("lock");
+      expect(state.enrollmentPrompts).toEqual([]);
+      if (scenario === "entry-bound") expect(state.aptReads ?? []).toEqual([]);
+      if (scenario === "symlink") expect(await Bun.file(join(root, "foreign-index")).text()).toBe("foreign index must survive");
+      if (scenario === "race") expect(await Bun.file(join(root, "apt-lists/archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages")).text()).toBe("replacement must survive");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 25000);
+}
+
+test("readable APT evidence preserves the actual incomplete setup diagnosis", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-apt-incomplete-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "apt-index-incomplete"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + "\n" + stdout).toBe(4);
+    const report = JSON.parse(stdout);
+    expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", error: { code: "NATIVE_SETUP_INCOMPLETE" } });
+    expect(report.signedIndexes).toHaveLength(2);
+    expect(report.authorizedFixtureSetup.exitCode).toBe(4);
+    expect(report.ordinaryUserDoctor.result.data.components.daemon.state).toBe("missing");
+    expect(report.phase).toBeUndefined(); expect(report.checkpoint).toBeUndefined();
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);
+
 // The second process context is an owned ordinary-session OS protocol fixture;
 // it cannot establish the separate host SSH authentication proof.
 test("an explicit fresh-session resume preserves the original baseline and reaches doctor without replaying enrollment", async () => {

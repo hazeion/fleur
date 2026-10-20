@@ -108,7 +108,7 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");

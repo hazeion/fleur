@@ -37,6 +37,7 @@ test("internal native candidate archive preserves the ordinary release and execu
     expect(await readFile(join(ordinaryPackage, "src/setup/native.ts"))).toEqual(before[1]!);
     expect(await Bun.file(join(ordinaryPackage, "internal-native-candidate.json")).exists()).toBe(false);
     expect(await Bun.file(join(ordinaryPackage, "bin/native-candidate-catalog.ts")).exists()).toBe(false);
+    expect(await Bun.file(join(ordinaryPackage, "bin/candidate-command-observer.ts")).exists()).toBe(false);
     expect(await Bun.file(join(ordinaryPackage, "scripts/build-native-candidate.ts")).exists()).toBe(false);
     expect(await Bun.file(join(ordinaryPackage, "package.json")).json()).toMatchObject({ name: "fleur" });
     expect(await readFile(join(internalPackage, "src/setup/native.ts"))).toEqual(before[1]!);
@@ -96,7 +97,7 @@ test("candidate provenance hashes actual copied source and unexpected entry shap
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
     expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
     const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
-    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
+    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     const script = join(source, "scripts/build-native-candidate.ts");
     const entryPath = join(source, "bin/fleur.ts"); const entry = await readFile(entryPath, "utf8");
     const inSource = await command([process.execPath, script, "--out", join(source, "src", "internal-artifacts")], source, environment);
@@ -125,7 +126,7 @@ test.each(["output", "parent"] as const)("replacing the %s directory during pack
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
     expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
     const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
-    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
+    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     const parent = join(scratch, "outside"); await mkdir(parent);
     const output = join(parent, "artifacts");
     const sourceDirectory = join(source, "src");
@@ -169,7 +170,7 @@ test.each(["inventoried", "opened"] as const)("replacing the %s parent before ou
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
     expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
     const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
-    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
+    for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     await mkdir(join(scratch, "outside"));
     const parent = await realpath(join(scratch, "outside"));
     const output = join(parent, "artifacts");
@@ -202,5 +203,55 @@ mock.module("node:fs/promises", () => ({ ...original, lstat: async (...args: Par
     expect((await lstat(parent)).isSymbolicLink()).toBe(true);
     expect(await readlink(parent)).toBe(sourceDirectory);
     expect(await readdir(parent + "-saved")).toEqual(phase === "opened" ? ["artifacts"] : []);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);
+
+test("produced candidate observes the unchanged privileged local-plan command result", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-observer-"));
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const output = join(scratch, "artifacts");
+    const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
+    expect(built.exit, built.stderr).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", scratch], scratch, environment)).exit).toBe(0);
+    const tools = join(scratch, "tools"); await mkdir(tools);
+    await writeFile(join(tools, "sudo"), `#!${process.execPath}\nawait Bun.write(${JSON.stringify(join(scratch, "invocation.json"))},JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()}));await Bun.write(${JSON.stringify(join(scratch, 'calls'))},(await Bun.file(${JSON.stringify(join(scratch, 'calls'))}).exists()?await Bun.file(${JSON.stringify(join(scratch, 'calls'))}).text():'')+'called\\n');process.stdout.write(process.env.OBS_TEXT??'local plan diagnostic\\n');process.stderr.write(process.env.OBS_TEXT??'E: fixture resolver refused\\n');process.exit(100);\n`, { mode: 0o700 });
+    const args = ["sudo", "-n", "apt-get", "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", "/owned/frozen.deb"];
+    const adapter = join(scratch, "package/bin/candidate-command-observer.ts");
+    const evaluated = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const host=productionHost();const adapter=${JSON.stringify(adapter)};const observed=await Bun.file(adapter).exists()?(await import(adapter)).observeCandidateCommands(host):host;const result=await observed.run(${JSON.stringify(args)},1000,{cwd:${JSON.stringify(scratch)}});console.log(JSON.stringify(result));`], scratch, { ...environment, PATH: tools });
+    expect(evaluated.exit).toBe(0);
+    expect(JSON.parse(evaluated.stdout)).toEqual({ status: "completed", exitCode: 100, stdout: "local plan diagnostic\n", stderr: "E: fixture resolver refused\n" });
+    expect(JSON.parse(await readFile(join(scratch, "invocation.json"), "utf8"))).toEqual({ args: args.slice(1), cwd: await realpath(scratch) });
+    expect(evaluated.stderr).toContain("FLEUR_NATIVE_COMMAND_OBSERVATION ");
+    const trace = JSON.parse(evaluated.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length));
+    expect(trace).toMatchObject({ formatVersion: 1, phase: "apt-local-archive-plan", status: "completed", exitCode: 100, stdout: "local plan diagnostic\n", stderr: "E: fixture resolver refused\n", stdoutTruncated: false, stderrTruncated: false });
+    expect(await readFile(join(scratch, "calls"), "utf8")).toBe("called\n");
+    const longOutput = "é".repeat(2047) + "€" + "\n\u001b[31m";
+    const bounded = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},1000,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools, OBS_TEXT: longOutput });
+    expect(bounded.exit).toBe(0);
+    expect(JSON.parse(bounded.stdout)).toMatchObject({ stdout: longOutput, stderr: longOutput, exitCode: 100 });
+    expect(bounded.stderr.trim().split("\n")).toHaveLength(1);
+    const boundedTrace = JSON.parse(bounded.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length));
+    expect(boundedTrace).toMatchObject({ stdout: "é".repeat(2047), stderr: "é".repeat(2047), stdoutTruncated: true, stderrTruncated: true });
+    expect(Buffer.byteLength(boundedTrace.stdout)).toBeLessThanOrEqual(4096);
+    expect(boundedTrace.stdout).not.toContain("�");
+    for (const other of [args.map((arg) => arg === "-n" ? "-v" : arg), args.map((arg) => arg === "apt-get" ? "other-tool" : arg), args.filter((arg) => arg !== "--simulate"), args.filter((arg) => arg !== "--no-download"), [...args.slice(0, -1), "docker-ce=1"], args.map((arg) => arg === "install" ? "download" : arg)]) {
+      const negative = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost()).run(${JSON.stringify(other)},1000,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools });
+      expect(negative.exit).toBe(0);
+      expect(JSON.parse(negative.stdout)).toMatchObject({ exitCode: 100, stdout: "local plan diagnostic\n", stderr: "E: fixture resolver refused\n" });
+      expect(negative.stderr).toBe("");
+    }
+    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(8);
+    const expired = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},0,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools });
+    expect(expired.exit).toBe(0);
+    expect(JSON.parse(expired.stdout)).toEqual({ status: "timeout", stdout: "", stderr: "" });
+    expect(JSON.parse(expired.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ status: "timeout", exitCode: null, stdout: "", stderr: "" });
+    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(8);
+    const exceptional = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});const sentinel=new Error('owned context getter');try{await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},1000,{get outputLimitBytes(){throw sentinel;}});process.exit(9);}catch(error){console.log(JSON.stringify({sameException:error===sentinel}));}`], scratch, { ...environment, PATH: tools });
+    expect(exceptional.exit).toBe(0);
+    expect(JSON.parse(exceptional.stdout)).toEqual({ sameException: true });
+    expect(exceptional.stderr).toBe("");
+    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(8);
+
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }, 20000);

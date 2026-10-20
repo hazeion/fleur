@@ -8,3 +8,9 @@ export async function hasPendingArchService(host: SetupHost): Promise<boolean> {
   try { await lstat(archServicePendingPath(host)); return true; }
   catch (error) { return (error as { code?: string }).code !== "ENOENT"; }
 }
+
+export function aptServicePendingPath(host: SetupHost): string { return join(stateDirectory(host), "apt-service-start-pending.json"); }
+export async function hasPendingAptService(host: SetupHost): Promise<boolean> {
+  try { await lstat(aptServicePendingPath(host)); return true; }
+  catch (error) { return (error as { code?: string }).code !== "ENOENT"; }
+}

@@ -58,6 +58,7 @@ async function partialInstallation({ authorize = true, interruptFirst = false, d
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, stdout, stderr: "", exitCode });
+        if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/run/docker.sock") return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
         const health = aptHealthProtocol(args, Object.entries(profile.packages).filter(([name]) => present.has(name)).map(([name, version]) => `${name}\t${version}\tinstalled\tok`));
         if (health) return health;
         const artifact = await aptArtifactProtocol(args, context, profile.packages);
@@ -205,6 +206,7 @@ test.each(["DPKG_ROOT", "DPKG_ADMINDIR"] as const)("package inventory ignores %s
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args, timeout) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, stdout, stderr: "", exitCode });
+        if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/run/docker.sock") return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
         if (args[0] === "dpkg-query") { queries.push([...args]); return production.run(args, timeout); }
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
         if (args[0] === "stat") return done(args.at(-1)?.endsWith(".asc") || args.at(-1)?.endsWith(".sources") ? "regular file|0|644|1" : "directory|0|755|2");

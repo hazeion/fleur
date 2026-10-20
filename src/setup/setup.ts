@@ -1,3 +1,4 @@
+import { permitsArchSystemStart } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
 import { setupNativeArch } from "./native-arch.ts";
 import { selectNativeProfile, type NativeInstallProfile } from "./native.ts";
@@ -59,12 +60,13 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
     } catch (error) { return failure("setup", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Setup is blocked by concurrent work or unsafe private state.", actions: [] }); }
   }
   const components = diagnostic(diagnostic(observed.result.data).components ?? null);
+  if (identity.distribution === "arch" && !permitsArchSystemStart(components.service)) return reframe(observed);
   const cli = diagnostic(components.cli ?? null);
   const daemon = diagnostic(components.daemon ?? null);
   const localUnready = endpoint !== undefined && cli.state === "ready" && (daemon.state === "ready" || daemon.state === "unavailable" || daemon.state === "denied");
   const packageInspectionAllowed = observed.exitCode === 4 && observed.result.error?.code === "PREREQUISITE_UNAVAILABLE" && (cli.state === "missing" || localUnready);
   const profile = packageInspectionAllowed ? selectNativeProfile(identity, profiles) : undefined;
-  if (profile?.method === "arch-official-pacman") return setupNativeArch(input, host, identity, profile, remaining, cli.state === "ready");
+  if (profile?.method === "arch-official-pacman") return setupNativeArch(input, host, identity, profile, remaining, cli.state === "ready", endpoint, daemon.state === "ready");
   if (profile?.method === "docker-official-apt") return setupNativeApt(input, host, identity, profile, remaining, cli.state === "ready");
   if (cli.state !== "missing") return reframe(observed);
   if (profile?.method === "docker-desktop-official-dmg") return setupNativeDesktop(input, host, identity, profile, remaining);

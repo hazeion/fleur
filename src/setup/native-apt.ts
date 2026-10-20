@@ -109,11 +109,11 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       const action = async (): Promise<CliOutcome> => {
       try {
         await stage.acquire(host, profile, Object.keys(missingPackages), sourceOptions, remaining, authorizeAcquisition);
-        const localSourceOptions = await stage.prepareLocalSources(sourceOptions);
+        const localSourceOptions = [...await stage.prepareLocalSources(sourceOptions), ...await stage.prepareArchiveCache(host, profile, Object.keys(missingPackages), remaining)];
         const fresh = await inspectAptPackageState(profile, host, remaining);
         if (JSON.stringify(fresh) !== JSON.stringify(actual)) throw new AptPayloadRecovery("Package state changed after archive verification");
         for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name as AptPackageName, remaining);
-        const guardPackages = await Promise.all(Object.keys(missingPackages).map(async (name, index) => ({ name, version: profile.packages[name as AptPackageName], architecture: profile.artifacts[name as AptPackageName].architecture, sha256: profile.artifacts[name as AptPackageName].sha256, size: profile.artifacts[name as AptPackageName].size, path: stage.paths[index]!, ...await stage.fileIdentity(stage.paths[index]!) })));
+        const guardPackages = await Promise.all(Object.keys(missingPackages).map(async (name, index) => ({ name, version: profile.packages[name as AptPackageName], architecture: profile.artifacts[name as AptPackageName].architecture, sha256: profile.artifacts[name as AptPackageName].sha256, size: profile.artifacts[name as AptPackageName].size, path: stage.archivePaths[index]!, ...await stage.fileIdentity(stage.archivePaths[index]!) })));
         const guardBytes = Buffer.from(JSON.stringify({ formatVersion: 1, user: process.getuid!(), packages: guardPackages, present: Object.fromEntries(actual.present.map((name) => [name, profile.packages[name as AptPackageName]])) }));
         const planPath = await stage.writeOwned("apt-plan.json", guardBytes);
         const guardChecksum = Bun.CryptoHasher.hash("sha256", guardBytes, "hex");
@@ -134,9 +134,10 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         retain = true;
         try { await fence.writeFile(JSON.stringify({ formatVersion: 1, checksum })); await fence.sync(); } finally { await fence.close(); }
         await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
-        const clearFence = async () => { await unlink(pendingPath); await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host)); retain = false; };
+        const clearFence = async (terminalInstall = false) => { await stage.finishArchiveCache(remaining, terminalInstall); await unlink(pendingPath); await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host)); retain = false; };
         await stage.verifyLocalSources(remaining);
-        const localPlan = await run(["sudo", "-n", "apt-get", ...localSourceOptions, ...guardOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.paths]);
+        await stage.verifyArchiveCache(remaining);
+        const localPlan = await run(["sudo", "-n", "apt-get", ...localSourceOptions, ...guardOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.archivePaths]);
         if (localPlan.status === "timeout" || localPlan.terminationUnconfirmed) throw new AptPayloadRecovery("The privileged local-archive simulation has no confirmed terminal result");
         if (localPlan.status !== "completed" || localPlan.exitCode !== 0 || !exactSimulation(localPlan.stdout, missingPackages)) {
           const state = await inspectAptPackageState(profile, host, remaining);
@@ -150,13 +151,14 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         if (JSON.stringify(stable) !== JSON.stringify(actual)) throw new AptPayloadRecovery("Package state changed before local archive installation");
         for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name as AptPackageName, remaining);
         await stage.verifyLocalSources(remaining);
-        const installed = await run(["sudo", "-n", "apt-get", ...localSourceOptions, ...guardOptions, ...dependencyPolicy, "--assume-yes", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.paths]);
+        await stage.verifyArchiveCache(remaining);
+        const installed = await run(["sudo", "-n", "apt-get", ...localSourceOptions, ...guardOptions, ...dependencyPolicy, "--assume-yes", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.archivePaths]);
         if (installed.status === "timeout" || installed.terminationUnconfirmed) throw new AptPayloadRecovery("The privileged transaction has no confirmed terminal result");
         if (installed.status === "completed" && installed.exitCode === 0 && installed.stdout.split("\n").filter((line) => line === `[fleur-apt-guard] ${guardChecksum}`).length !== 1) throw new AptPayloadRecovery("The completed package command did not confirm the actual archive guard");
         const final = await inspectAptPackageState(profile, host, remaining);
         const finalDiagnostic = { packageState: { state: final.state, present: [...final.present], missing: [...final.missing] }, resumable: true };
         if (final.state !== "compatible") throw new AptPayloadRecovery("The package database requires recovery after the terminal command");
-        await clearFence();
+        await clearFence(installed.status === "completed");
         if (installed.status !== "completed" || installed.exitCode !== 0) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "The package command ended without completing installation. Reprobe actual configured packages before resuming; consumed once authority cannot replay.", actions: [] }, { ...finalDiagnostic, setupAction: { action: "install", state: "incomplete" } });
         if (final.missing.length) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The completed package command did not establish the exact installed state.", actions: [] }, finalDiagnostic);
         return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Exact verified packages are installed. Run doctor to verify service access and disposable smoke readiness.", actions: [{ command: "fleur doctor", description: "Verify the installed native prerequisites." }] }, { setupAction: { action: "install", state: "completed", packages: [...actual.missing] }, ...finalDiagnostic });

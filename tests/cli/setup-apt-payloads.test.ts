@@ -9,7 +9,13 @@ import { aptArtifactProtocol, aptFixtureArtifacts, aptGuardProtocol, aptHealthPr
 const packages = { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" };
 const profile = { method: "docker-official-apt" as const, verified: true as const, distribution: "ubuntu" as const, release: "24.04", architecture: "x64" as const, repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages, artifacts: aptFixtureArtifacts(packages) };
 
+type CacheFault = "bytes" | "symlink" | "hardlink" | "inode" | "root" | "extra" | "lock-inode" | "lock-bytes" | "partial-inode" | "partial-extra" | "auxfiles-inode" | "auxfiles-extra" | "mode" | "source-bytes";
 interface PayloadOptions {
+  readonly cacheFault?: CacheFault;
+  readonly cacheFaultAt?: "after-plan" | "hook" | "after-install";
+  readonly cacheCollision?: boolean;
+  readonly cacheControlWrong?: boolean;
+  readonly noDownloadCache?: boolean;
   readonly guardFault?: AptGuardFault;
   readonly guardSink?: "closed" | "full";
   readonly isolatedLocalSources?: boolean;
@@ -41,6 +47,29 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   let actualForeignPath: string | undefined;
   let controlReads = 0;
   let collisionPath: string | undefined;
+  let cacheMutated = false;
+  let cacheForeign: string | undefined;
+  const mutateCache = async () => {
+    if (!options.cacheFault || cacheMutated) return;
+    const state = join(directory, "state");
+    const stage = join(state, (await readdir(state)).find((name) => name.startsWith("apt-payloads-"))!);
+    const archives = join(stage, "archives");
+    const copy = join(archives, (await readdir(archives)).find((name) => name.endsWith(".deb"))!);
+    const fault = options.cacheFault;
+    if (fault === "bytes") { const bytes = await readFile(copy); bytes[0] = 88; await writeFile(copy, bytes); }
+    if (fault === "source-bytes") { const source = join(stage, "docker-ce", (await readdir(join(stage, "docker-ce")))[0]!); const bytes = await readFile(source); bytes[0] = 88; await writeFile(source, bytes); }
+    if (fault === "symlink") { await rename(copy, join(directory, "original-copy")); cacheForeign = join(directory, "foreign-cache-target"); await writeFile(cacheForeign, "preserve cache sentinel"); await symlink(cacheForeign, copy); }
+    if (fault === "hardlink") await link(copy, join(directory, "outside-hardlink"));
+    if (fault === "inode") { const bytes = await readFile(copy); await rename(copy, join(directory, "original-copy")); await writeFile(copy, bytes, { mode: 0o600 }); }
+    if (fault === "root") { await rename(archives, join(directory, "original-archives")); await mkdir(archives, { mode: 0o700 }); }
+    if (fault === "extra") { cacheForeign = join(archives, "foreign-entry"); await writeFile(cacheForeign, "preserve cache sentinel"); }
+    if (fault === "lock-inode") { await rename(join(archives, "lock"), join(directory, "original-lock")); await writeFile(join(archives, "lock"), "", { mode: 0o600 }); }
+    if (fault === "lock-bytes") { cacheForeign = join(archives, "lock"); await writeFile(cacheForeign, "preserve cache sentinel"); }
+    if (fault === "partial-inode" || fault === "auxfiles-inode") { const path = fault === "partial-inode" ? join(archives, "partial") : join(stage, "local-lists", "auxfiles"); await rename(path, join(directory, "original-auxiliary")); await mkdir(path, { mode: fault === "partial-inode" ? 0o700 : 0o755 }); }
+    if (fault === "partial-extra" || fault === "auxfiles-extra") { cacheForeign = fault === "partial-extra" ? join(archives, "partial", "foreign-entry") : join(stage, "local-lists", "auxfiles", "foreign-entry"); await writeFile(cacheForeign, "preserve cache sentinel"); }
+    if (fault === "mode") await chmod(archives, 0o755);
+    cacheMutated = true;
+  };
   const sentinel = join(directory, "foreign-sentinel");
   const mutateSources = async () => {
     if (!options.sourceTamper || sourceMutated) return;
@@ -92,9 +121,10 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   try {
     const handlers = setupCommands({
       stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => { prompts++; return "once"; },
-      ...(options.durability || (options.sourceTamper && !options.afterPlan) ? { syncDirectory: async (path: string) => {
+      ...(options.durability || (options.cacheFault && !options.cacheFaultAt) || (options.sourceTamper && !options.afterPlan) ? { syncDirectory: async (path: string) => {
         let marker = false;
         try { await lstat(join(path, "apt-transaction-pending.json")); marker = true; } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+        if (marker && options.cacheFault && !options.cacheFaultAt) await mutateCache();
         if (marker && options.sourceTamper && !options.afterPlan) await mutateSources();
         if (options.durability === "create" && marker) throw Object.assign(new Error("Injected pending fence fsync failure"), { code: "EIO" });
         if (options.durability === "remove") { if (marker) markerSeen = true; else if (markerSeen) throw Object.assign(new Error("Injected fence removal fsync failure"), { code: "EIO" }); }
@@ -121,6 +151,11 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         if (artifact) {
           if (args[0] === "dpkg-deb") {
             controlReads++;
+            if (options.cacheCollision && controlReads === Object.keys(selectedPackages).length) {
+              const state = join(directory, "state"); const stage = join(state, (await readdir(state)).find((name) => name.startsWith("apt-payloads-"))!);
+              await mkdir(join(stage, "archives"), { mode: 0o700 }); cacheForeign = join(stage, "archives", "foreign-entry"); await writeFile(cacheForeign, "preserve cache sentinel");
+            }
+            if (options.cacheControlWrong && args[2]!.includes("/archives/")) return done("Package: wrong-package\nVersion: 1\nArchitecture: amd64\n");
             if (options.sourceCreationCollision && controlReads === Object.keys(selectedPackages).length) {
               const state = join(directory, "state");
               const stage = join(state, (await readdir(state)).find((name) => name.startsWith("apt-payloads-"))!);
@@ -172,6 +207,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
           const grants = (inspected.result.data as { grants: { revoked: boolean }[] }).grants;
           expect(grants).toHaveLength(5);
           expect(grants.every((grant) => grant.revoked)).toBe(true);
+          if (options.cacheFaultAt === "after-plan") await mutateCache();
           return done(simulation(args));
         }
         if (args[0] === "sudo") {
@@ -181,10 +217,12 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
             const path = args[args.indexOf("install") + 1]!;
             const bytes = await readFile(path); bytes[bytes.length - 2] = 88; await writeFile(path, bytes);
           }
-          const guarded = await aptGuardProtocol(args, selectedPackages, options.latePending ? ["another-application\t1\tunpacked\tok"] : [], options.guardFault, options.guardSink);
+          if (options.cacheFaultAt === "hook") await mutateCache();
+          const guarded = await aptGuardProtocol(args, selectedPackages, options.latePending ? ["another-application\t1\tunpacked\tok"] : [], options.guardFault, options.guardSink, options.noDownloadCache);
           guardResults.push(guarded);
           if (guarded.exitCode !== 0) return guarded;
           privilegedInstalls++; installed = true;
+          if (options.cacheFaultAt === "after-install") await mutateCache();
           if (options.uncertain === "timeout") return { status: "timeout", stdout: "", stderr: "" };
           if (options.uncertain === "truncated") return { ...guarded, terminationUnconfirmed: true };
           return guarded;
@@ -195,7 +233,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
     const outcome = await runCli(["setup"], { cwd: directory, handlers });
     const retry = options.uncertain ? await runCli(["setup"], { cwd: directory, handlers }) : undefined;
     const authorityAfterResolution = options.uncertainResolution ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
-    return { outcome, guardResults, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
+    return { outcome, guardResults, cacheMutated, cacheForeignBytes: cacheForeign ? await readFile(cacheForeign, "utf8") : undefined, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
@@ -441,3 +479,96 @@ test.each(["closed", "full"] as const)("a %s diagnostic pipe preserves an archiv
   expect(result.outcome.exitCode).toBe(3);
   expect(result.guardResults).toEqual([{ status: "completed", exitCode: 100, stdout: "", stderr: "" }]);
 }, 10000);
+
+
+test("no-download APT selects an already owned canonical cache archive before invoking the real guard", async () => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, apt283Wire: true });
+  expect(result.guardResults).toHaveLength(1);
+  expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed" } });
+  expect(result.privilegedInstalls).toBe(1);
+  expect(result.guardResults[0]).toMatchObject({ exitCode: 0, stderr: "" });
+});
+
+test("owned APT cache preparation works with a restrictive caller umask", async () => {
+  const previous = process.umask(0o077);
+  try {
+    const result = await payloadScenario(false, false, { noDownloadCache: true });
+    expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed" } });
+    expect(result.privilegedInstalls).toBe(1);
+  } finally { process.umask(previous); }
+});
+
+
+test.each(["bytes", "symlink", "hardlink", "inode", "root", "extra", "lock-inode", "lock-bytes", "partial-inode", "partial-extra", "auxfiles-inode", "auxfiles-extra", "mode", "source-bytes"] as const)("changed owned cache %s prevents privileged planning and retains recovery evidence", async (cacheFault) => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, cacheFault });
+  expect(result.cacheMutated).toBe(true);
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => args[0] === "sudo")).toBe(false);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
+  if (result.cacheForeignBytes !== undefined) expect(result.cacheForeignBytes).toBe("preserve cache sentinel");
+});
+
+test("a preexisting private archive directory is preserved without privileged installation", async () => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, cacheCollision: true });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => args[0] === "sudo")).toBe(false);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.cacheForeignBytes).toBe("preserve cache sentinel");
+});
+
+test("copied archives with mismatched control identity cannot reach privileged planning", async () => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, cacheControlWrong: true });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => args[0] === "sudo")).toBe(false);
+  expect(result.outcome.exitCode).toBe(4);
+});
+
+test.each(["bytes", "source-bytes", "partial-inode", "auxfiles-inode"] as const)("cache %s changes after simulation stop installation", async (cacheFault) => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, cacheFault, cacheFaultAt: "after-plan" });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.filter((args) => args[0] === "sudo")).toHaveLength(1);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+
+test.each(["bytes", "inode"] as const)("the real guard rejects cache %s changes immediately before dpkg", async (cacheFault) => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, cacheFault, cacheFaultAt: "hook" });
+  expect(result.guardResults).toHaveLength(1);
+  expect(result.guardResults[0]!.exitCode).toBe(100);
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+
+test.each(["extra", "lock-inode", "lock-bytes", "partial-extra", "partial-inode", "auxfiles-extra", "auxfiles-inode"] as const)("terminal cache %s uncertainty retains the pending fence and foreign entries", async (cacheFault) => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, cacheFault, cacheFaultAt: "after-install" });
+  expect(result.privilegedInstalls).toBe(1);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
+  if (result.cacheForeignBytes !== undefined) expect(result.cacheForeignBytes).toBe("preserve cache sentinel");
+});
+
+
+test("private cache and list scope is identical for local planning and installation without changing acquisition", async () => {
+  const result = await payloadScenario(false, false, { noDownloadCache: true, apt283Wire: true, isolatedLocalSources: true });
+  expect(result.privilegedInstalls).toBe(1);
+  const local = result.calls.filter((args) => args[0] === "sudo");
+  expect(local).toHaveLength(2);
+  const scope = (args: readonly string[]) => args.filter((arg) => arg.startsWith("Dir::Cache::Archives=") || arg.startsWith("Dir::State::lists="));
+  expect(scope(local[0]!)).toEqual(scope(local[1]!));
+  expect(scope(local[0]!)).toHaveLength(2);
+  expect(local[1]!.some((arg) => arg.endsWith("/archives/docker-ce_5%3a1~fixture+1_amd64.deb"))).toBe(true);
+  for (const args of local) {
+    expect(args).toContain("Dir::State::status=/var/lib/dpkg/status");
+    expect(args).toContain("Debug::NoLocking=false");
+    expect(args).toContain("--no-download");
+    expect(args).toContain("--no-remove");
+    expect(args).toContain("--no-upgrade");
+  }
+  for (const args of result.calls.filter((args) => args[0] === "apt-get")) expect(scope(args)).toEqual([]);
+  expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(false);
+  expect(result.entries).not.toContain("apt-transaction-pending.json");
+});

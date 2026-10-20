@@ -1,3 +1,4 @@
+import { aptFixtureArtifacts, aptArtifactProtocol, aptGuardProtocol, aptFixturePackageTargets, aptHealthProtocol } from "./fixtures/apt-artifacts.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { productionHost } from "../../src/setup/host.ts";
 const profile: AptInstallProfile = {
   method: "docker-official-apt", verified: true, distribution: "ubuntu", release: "24.04", architecture: "x64",
   repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
-  packages: { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" },
+  packages: { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" }, artifacts: aptFixtureArtifacts({ "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" }),
 };
 async function observeSetup(status: string, probe: { output?: string; exitCode?: number; status?: "completed" | "missing" | "timeout" } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "fleur-package-state-"));
@@ -55,8 +56,12 @@ async function partialInstallation({ authorize = true, interruptFirst = false, d
     const handlers = setupCommands({
       stateDirectory: join(directory, "state"), interactive: authorize, confirmHuman: async () => "once",
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
-      run: async (args) => {
+      run: async (args, _timeout, context) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, stdout, stderr: "", exitCode });
+        const health = aptHealthProtocol(args, Object.entries(profile.packages).filter(([name]) => present.has(name)).map(([name, version]) => `${name}\t${version}\tinstalled\tok`));
+        if (health) return health;
+        const artifact = await aptArtifactProtocol(args, context, profile.packages);
+        if (artifact) return artifact;
         if (args[0] === "docker") {
           if (args[1] === "--version") return done("Docker version 28.0.4");
           if (args[1] === "context" && args[2] === "show") return done("default");
@@ -72,17 +77,23 @@ async function partialInstallation({ authorize = true, interruptFirst = false, d
         if (args[0] === "cat") return done(args.at(-1)?.endsWith(".asc") ? dockerRepositoryKey : "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
         if (args[0] === "apt-cache") return done(Object.entries(profile.packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
         if (args[0] === "apt-get") {
-          const packages = args.slice(args.indexOf("install") + 1);
+          const packages = aptFixturePackageTargets(args, profile.packages);
           requests.simulated.push([...packages]);
           drifted = driftBeforeInstall;
           return done(packages.map((entry) => { const [name, version] = entry.split("="); return `Inst ${name} (${version} Docker:stable [amd64])`; }).join("\n"));
         }
+        if (args[0] === "sudo" && args.includes("--simulate")) {
+          const packages = aptFixturePackageTargets(args, profile.packages); requests.simulated.push([...packages]);
+          return done(packages.map((entry) => { const [name, version] = entry.split("="); return `Inst ${name} (${version} Docker:stable [amd64])`; }).join("\n"));
+        }
         if (args[0] === "sudo") {
-          const packages = args.slice(args.indexOf("install") + 1);
+          const packages = aptFixturePackageTargets(args, profile.packages);
+          const checked = await aptGuardProtocol(args, profile.packages, Object.entries(profile.packages).filter(([name]) => present.has(name)).map(([name, version]) => `${name}\t${version}\tinstalled\tok`));
+          if (checked.exitCode !== 0) return checked;
           requests.installed.push([...packages]);
           if (interruptFirst && !interrupted) { interrupted = true; present.add("docker-ce"); return done("", 1); }
           for (const entry of packages) present.add(entry.split("=")[0]!);
-          return done();
+          return checked;
         }
         throw new Error("Unexpected prerequisite operation");
       },
@@ -94,7 +105,7 @@ async function partialInstallation({ authorize = true, interruptFirst = false, d
 }
 test("setup resumes a partial exact package set without reinstalling already configured packages or ignoring a usable CLI", async () => {
   const result = await partialInstallation();
-  expect(result.requests.simulated).toEqual([["docker-ce=1", "docker-compose-plugin=1"]]);
+  expect(result.requests.simulated).toEqual([["docker-ce=1", "docker-compose-plugin=1"], ["docker-ce=1", "docker-compose-plugin=1"]]);
   expect(result.requests.installed).toEqual([["docker-ce=1", "docker-compose-plugin=1"]]);
   expect(result.queries).toBeGreaterThanOrEqual(3);
   expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed" }, packageState: { state: "compatible", present: ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"], missing: [] } });
@@ -146,7 +157,7 @@ test("retrying an interrupted install re-probes and never repeats the package th
   const result = await partialInstallation({ interruptFirst: true });
   expect(result.first.exitCode).toBe(3);
   expect(result.first.result.data).toMatchObject({ setupAction: { action: "install", state: "incomplete" } });
-  expect(result.requests.simulated).toEqual([["docker-ce=1", "docker-compose-plugin=1"], ["docker-compose-plugin=1"]]);
+  expect(result.requests.simulated).toEqual([["docker-ce=1", "docker-compose-plugin=1"], ["docker-ce=1", "docker-compose-plugin=1"], ["docker-compose-plugin=1"], ["docker-compose-plugin=1"]]);
   expect(result.requests.installed).toEqual([["docker-ce=1", "docker-compose-plugin=1"], ["docker-compose-plugin=1"]]);
   expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed", packages: ["docker-compose-plugin"] }, packageState: { state: "compatible", missing: [] } });
 });

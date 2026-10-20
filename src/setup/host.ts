@@ -1,6 +1,7 @@
+import { aptHealthArgs } from "./apt-health.ts";
 import { readFile } from "node:fs/promises";
 import { machine, release } from "node:os";
-import type { HostCommandResult, HostIdentity, SetupHost } from "./commands.ts";
+import type { HostCommandResult, HostCommandContext, HostIdentity, SetupHost } from "./commands.ts";
 
 async function identity(): Promise<HostIdentity> {
   if (process.platform === "darwin") {
@@ -53,10 +54,12 @@ async function identity(): Promise<HostIdentity> {
   return { system: process.platform, architecture: process.arch, translated, release: version, ...(distribution ? { distribution } : {}), ...(machineId ? { machineId } : {}) };
 }
 
-async function run(args: readonly string[], timeoutMs: number): Promise<HostCommandResult> {
+async function run(args: readonly string[], timeoutMs: number, context?: HostCommandContext): Promise<HostCommandResult> {
   if (timeoutMs <= 0) return { status: "timeout", stdout: "", stderr: "" };
+  const outputLimit = context?.outputLimitBytes ?? 65536;
+  if (!Number.isSafeInteger(outputLimit) || outputLimit <= 0 || outputLimit > 2097152 || (context?.outputLimitBytes !== undefined && JSON.stringify(args) !== JSON.stringify(aptHealthArgs))) return { status: "completed", exitCode: 126, stdout: "", stderr: "Unsupported internal output budget." };
   let child: ReturnType<typeof Bun.spawn>;
-  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: args.includes("--host") ? { ...process.env, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : { ...process.env } }); }
+  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: context?.cwd, env: args.includes("--host") ? { ...process.env, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : { ...process.env } }); }
   catch (error) { return { status: (error as { code?: string }).code === "ENOENT" ? "missing" : "completed", exitCode: 126, stdout: "", stderr: "Executable could not be started." }; }
   const stdout = child.stdout as ReadableStream<Uint8Array>;
   const stderr = child.stderr as ReadableStream<Uint8Array>;
@@ -64,7 +67,7 @@ async function run(args: readonly string[], timeoutMs: number): Promise<HostComm
   let truncated = false;
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout>;
-  async function collect(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  async function collect(reader: ReadableStreamDefaultReader<Uint8Array>, index: number): Promise<string> {
     const chunks: Uint8Array[] = [];
     let count = 0;
     try {
@@ -72,7 +75,7 @@ async function run(args: readonly string[], timeoutMs: number): Promise<HostComm
         const result = await reader.read();
         if (result.done) break;
         count += result.value.byteLength;
-        if (count > 65536) { truncated = true; child.kill("SIGKILL"); break; }
+        if (count > (index === 0 ? outputLimit : 65536)) { truncated = true; child.kill("SIGKILL"); break; }
         chunks.push(result.value);
       }
     } catch { /* Cancellation at the operation deadline is expected. */ }
@@ -86,7 +89,7 @@ async function run(args: readonly string[], timeoutMs: number): Promise<HostComm
   for (const reader of readers) void reader.cancel().catch(() => {});
   if (result === null || timedOut) return { status: "timeout", stdout: "", stderr: "" };
   const [[out, err], exitCode] = result;
-  return { status: "completed", stdout: out!, stderr: err!, exitCode: truncated ? 1 : exitCode };
+  return { status: "completed", stdout: out!, stderr: err!, exitCode: truncated ? 1 : exitCode, ...(truncated ? { terminationUnconfirmed: true } : {}) };
 }
 
 /** Construct lazily; help/argument parsing performs no host I/O. */

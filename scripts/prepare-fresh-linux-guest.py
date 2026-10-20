@@ -1,0 +1,114 @@
+"""Prepare only the authenticated guest Bun entry. No installer or external tool."""
+import hashlib
+import json
+import os
+import stat
+import sys
+import zipfile
+
+ARCHIVE_SHA256 = "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"
+MAX_ARCHIVE = 160 * 1024 * 1024
+MAX_EXECUTABLE = 256 * 1024 * 1024
+ENTRY = "bun-linux-x64/bun"
+report = {"formatVersion": 1, "scope": "guest-bun-preparation", "ok": False}
+parent = None
+created = None
+exit_code = 4
+
+
+def identity(value):
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def authenticate(archive):
+    archive.seek(0)
+    digest = hashlib.sha256()
+    size = 0
+    while chunk := archive.read(1024 * 1024):
+        size += len(chunk)
+        if size > MAX_ARCHIVE:
+            raise RuntimeError("Archive bound exceeded")
+        digest.update(chunk)
+    if digest.hexdigest() != ARCHIVE_SHA256:
+        raise RuntimeError("Archive authentication failed")
+    return size
+
+
+try:
+    if len(sys.argv) != 1:
+        raise RuntimeError("Guest preparation accepts no artifact or pin override")
+    cwd = os.getcwd()
+    parent = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    directory = os.fstat(parent)
+    if directory.st_uid != os.getuid() or directory.st_mode & 0o077:
+        raise RuntimeError("Guest preparation requires a private owned directory")
+    descriptor = os.open("bun.zip", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(descriptor, "rb") as archive:
+        original = os.fstat(archive.fileno())
+        if not stat.S_ISREG(original.st_mode) or original.st_uid != os.getuid() or original.st_size <= 0 or original.st_size > MAX_ARCHIVE:
+            raise RuntimeError("Archive is not an owned bounded regular file")
+        archive_size = authenticate(archive)
+        if identity(original) != identity(os.fstat(archive.fileno())):
+            raise RuntimeError("Archive changed during authentication")
+        with zipfile.ZipFile(archive) as contents:
+            entries = contents.infolist()
+            names = [item.filename for item in entries]
+            if len(entries) not in (1, 2) or len(set(names)) != len(names) or ENTRY not in names:
+                raise RuntimeError("Unexpected archive entry count")
+            for item in entries:
+                if item.filename != item.orig_filename or item.flag_bits & 1:
+                    raise RuntimeError("Ambiguous or encrypted archive entry")
+                kind = stat.S_IFMT(item.external_attr >> 16)
+                if item.filename == ENTRY:
+                    if item.is_dir() or kind != stat.S_IFREG or item.file_size <= 0 or item.file_size > MAX_EXECUTABLE:
+                        raise RuntimeError("Bun entry is not a bounded regular file")
+                elif item.filename != "bun-linux-x64/" or not item.is_dir() or kind != stat.S_IFDIR or item.file_size != 0:
+                    raise RuntimeError("Unadmitted archive entry")
+                if item.compress_size < 0 or item.compress_size > MAX_ARCHIVE:
+                    raise RuntimeError("Compressed entry bound exceeded")
+            entry = contents.getinfo(ENTRY)
+            descriptor = os.open("bun", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700, dir_fd=parent)
+            with os.fdopen(descriptor, "wb") as output:
+                owned = os.fstat(output.fileno())
+                created = owned.st_dev, owned.st_ino
+                copied = 0
+                executable_digest = hashlib.sha256()
+                with contents.open(entry) as source:
+                    while chunk := source.read(1024 * 1024):
+                        copied += len(chunk)
+                        if copied > entry.file_size or copied > MAX_EXECUTABLE:
+                            raise RuntimeError("Executable bound exceeded")
+                        output.write(chunk)
+                        executable_digest.update(chunk)
+                if copied != entry.file_size:
+                    raise RuntimeError("Executable size differs")
+                output.flush()
+                os.fsync(output.fileno())
+                os.fchmod(output.fileno(), 0o700)
+            # Recheck retained input bytes and pathname identities before success.
+            authenticate(archive)
+            if identity(original) != identity(os.fstat(archive.fileno())):
+                raise RuntimeError("Archive changed during extraction")
+            current = os.stat("bun", dir_fd=parent, follow_symlinks=False)
+            current_directory = os.stat(cwd, follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode) or current.st_size != copied or stat.S_IMODE(current.st_mode) != 0o700 or (current.st_dev, current.st_ino) != created or (current_directory.st_dev, current_directory.st_ino) != (directory.st_dev, directory.st_ino):
+                raise RuntimeError("Owned output or directory identity changed")
+            report.update(ok=True, archiveSha256=ARCHIVE_SHA256, archiveBytes=archive_size, executableBytes=copied, executableSha256=executable_digest.hexdigest())
+            exit_code = 0
+except Exception:
+    report["error"] = {"code": "PREPARATION_FAILED", "message": "Authenticated guest Bun preparation failed; no installation was attempted."}
+    if created is not None:
+        try:
+            current = os.stat("bun", dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != created:
+                raise RuntimeError("Output ownership changed")
+            os.unlink("bun", dir_fd=parent)
+            report["ownedPartialRemoved"] = True
+        except Exception:
+            exit_code = 5
+            report["error"] = {"code": "CLEANUP_UNCONFIRMED", "message": "Output ownership changed or cleanup failed; unrelated entries were preserved."}
+finally:
+    if parent is not None:
+        os.close(parent)
+    print(json.dumps(report, separators=(",", ":")))
+    sys.exit(exit_code)

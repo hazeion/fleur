@@ -170,9 +170,13 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const preparation = JSON.parse(prepare.stdout);
   if (preparation.formatVersion !== 1 || preparation.scope !== "guest-bun-preparation" || preparation.ok !== true || preparation.archiveSha256 !== bunPin.sha256 || !Number.isSafeInteger(preparation.executableBytes) || preparation.executableBytes <= 0 || preparation.executableBytes > 256 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(preparation.executableSha256)) fail("GUEST_REPORT_INVALID", "Guest Bun preparation did not establish its authenticated output identity.");
   report.guestPreparation = preparation;
-  const observed = await command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", `python3 lab/fresh-linux-guest.py ${nonce}`], 900000, [0, 4]);
+  const observed = await command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", `python3 lab/fresh-linux-guest.py ${nonce}`], 900000, [0, 3, 4]);
   const guest = JSON.parse(observed.stdout); report.guest = guest;
   if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false) fail("GUEST_REPORT_INVALID", "Guest proof metadata differs from its declared scope.");
+  if (observed.exitCode === 3 || guest.phase !== undefined) {
+    if (observed.exitCode !== 3 || guest.phase !== "new-login-required" || guest.ok !== false || !/^[a-f0-9]{64}$/.test(guest.checkpoint?.sha256 ?? "") || !guest.baseline) fail("GUEST_REPORT_INVALID", "Intermediate guest phase lacks its exact incomplete checkpoint envelope.");
+    fail("NEW_LOGIN_REQUIRED", "The ordinary account requires a genuinely new login. No resumed or final installation proof is claimed by this verifier yet.");
+  }
   if (guest.ok !== true) fail(guest.error?.code ?? "NATIVE_SETUP_INCOMPLETE", guest.error?.message ?? "Guest setup proof is incomplete.");
   if (guest.installationEvidence !== "verified-full-system-guest" || guest.runs?.length !== 2 || guest.sentinelCleanup !== true || guest.restrictionProbe?.exitCode !== 0 || guest.restrictionProbe?.result?.bounded_probe_passed !== true || guest.restrictionProbe?.result?.cleanup_complete !== true) fail("GUEST_REPORT_INVALID", "Successful guest report lacks completed repeat, restriction or cleanup evidence.");
   // Admission is always an independently reviewed later source change.

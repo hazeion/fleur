@@ -47,47 +47,64 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
     const child = spawn("ssh", ["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remoteCommand], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SSH_AUTH_SOCK: undefined, SSH_ASKPASS: undefined, DISPLAY: undefined } });
     const finished = new Promise<number>((resolve, reject) => { child.once("error", reject); child.once("close", (code) => resolve(code ?? 137)); });
     let groupKilled = false; let signalError: Error | undefined;
+    let terminationRequested = false; let killAttempted = false;
+    let cleanupStop: number | undefined;
+    let escalationTimer: ReturnType<typeof setTimeout> | undefined;
     let rejectSignal: (error: Error) => void = () => {};
     const signalFailed = new Promise<never>((_resolve, reject) => { rejectSignal = reject; });
-    const kill = () => {
+    const forceKill = () => {
       if (!child.pid || groupKilled) return;
+      killAttempted = true;
       try { process.kill(-child.pid, "SIGKILL"); groupKilled = true; }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ESRCH") { groupKilled = true; return; }
         signalError ??= new Error(`Owned SSH SIGKILL failed for ${child.pid}: ${String(error)}`);
-        // Timer/abort callbacks must enter the owned failure/finally path.
         rejectSignal(signalError);
       }
     };
+    const requestTermination = () => {
+      cleanupStop ??= performance.now() + 3000;
+      if (!child.pid || groupKilled || terminationRequested) return;
+      terminationRequested = true;
+      try { process.kill(-child.pid, "SIGTERM"); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") { groupKilled = true; return; }
+        signalError ??= new Error(`Owned SSH SIGTERM failed for ${child.pid}: ${String(error)}`);
+        rejectSignal(signalError);
+      }
+      escalationTimer = setTimeout(forceKill, Math.min(100, Math.max(0, cleanupStop - performance.now())));
+    };
     let startExpired = false; let sessionStarted = false;
-    const startTimer = setTimeout(() => { startExpired = true; kill(); }, Math.min(10000, timeout));
-    const timer = setTimeout(kill, timeout); signal?.addEventListener("abort", kill, { once: true });
+    const startTimer = setTimeout(() => { startExpired = true; requestTermination(); }, Math.min(10000, timeout));
+    const timer = setTimeout(requestTermination, timeout); signal?.addEventListener("abort", requestTermination, { once: true });
     const cleanup = async () => {
-      clearTimeout(startTimer); clearTimeout(timer); signal?.removeEventListener("abort", kill);
+      clearTimeout(startTimer); clearTimeout(timer); signal?.removeEventListener("abort", requestTermination);
       let survivor = false; let observationError: Error | undefined;
       if (child.pid && child.exitCode !== null) {
         try { process.kill(-child.pid, 0); survivor = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") observationError = new Error(`Owned SSH survivor observation failed for ${child.pid}: ${String(error)}`); }
       }
-      const stop = performance.now() + 3000;
-      kill();
+      requestTermination();
+      const stop = cleanupStop!;
+      // A failed escalation already entered finally; retry only that failed kill.
+      if (killAttempted && !groupKilled) forceKill();
       let closeTimer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([finished.catch(() => {}), new Promise<never>((_resolve, reject) => { closeTimer = setTimeout(() => reject(new Error("Owned SSH close cleanup is unconfirmed")), 3000); })]);
-      } finally { clearTimeout(closeTimer); }
-      if (child.pid) {
-        let lastObservation: unknown;
-        while (true) {
-          try { process.kill(-child.pid, 0); lastObservation = undefined; }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
-            if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-            lastObservation = error;
+        await Promise.race([finished.catch(() => {}), new Promise<never>((_resolve, reject) => { closeTimer = setTimeout(() => reject(new Error(`Owned SSH close cleanup is unconfirmed${signalError ? ": " + signalError.message : ""}`)), Math.max(1, stop - performance.now())); })]);
+        if (child.pid) {
+          let lastObservation: unknown;
+          while (true) {
+            try { process.kill(-child.pid, 0); lastObservation = undefined; }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
+              if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+              lastObservation = error;
+            }
+            // EPERM is not quiescence: require an actual ESRCH within the same bound.
+            if (performance.now() >= stop) throw new Error(`Owned SSH process group cleanup is unconfirmed${lastObservation ? ": " + String(lastObservation) : ""}`);
+            await new Promise((resolve) => setTimeout(resolve, 10));
           }
-          // EPERM is not quiescence: require an actual ESRCH within the same bound.
-          if (performance.now() >= stop) throw new Error(`Owned SSH process group cleanup is unconfirmed${lastObservation ? ": " + String(lastObservation) : ""}`);
-          await new Promise((resolve) => setTimeout(resolve, 10));
         }
-      }
+      } finally { clearTimeout(closeTimer); clearTimeout(escalationTimer); }
       if (signalError) throw signalError;
       if (observationError) throw observationError;
       if (survivor) throw new Error("A surviving owned SSH process group invalidated its completed leader");

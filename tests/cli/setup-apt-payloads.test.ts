@@ -11,6 +11,7 @@ const profile = { method: "docker-official-apt" as const, verified: true as cons
 
 interface PayloadOptions {
   readonly isolatedLocalSources?: boolean;
+  readonly sourceCreationCollision?: "config" | "parts";
   readonly sourceTamper?: "list-bytes" | "config-bytes" | "list-symlink" | "config-symlink" | "list-hardlink" | "config-mode" | "parts-entry" | "parts-replaced" | "parts-mode";
   readonly afterPlan?: boolean;
   readonly missingLocalDependency?: boolean;
@@ -34,6 +35,9 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   let privilegedInstalls = 0;
   let plannedScope: string[] | undefined;
   let sourceMutated = false;
+  let actualForeignPath: string | undefined;
+  let controlReads = 0;
+  let collisionPath: string | undefined;
   const sentinel = join(directory, "foreign-sentinel");
   const mutateSources = async () => {
     if (!options.sourceTamper || sourceMutated) return;
@@ -46,8 +50,8 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
     if (options.sourceTamper === "list-symlink" || options.sourceTamper === "config-symlink") { const target = options.sourceTamper === "list-symlink" ? list : config; await rename(target, target + "-saved"); await symlink(sentinel, target); }
     if (options.sourceTamper === "list-hardlink") await link(list, list + "-alias");
     if (options.sourceTamper === "config-mode") await chmod(config, 0o644);
-    if (options.sourceTamper === "parts-entry") await writeFile(join(parts, "foreign.sources"), "preserve foreign source content\n");
-    if (options.sourceTamper === "parts-replaced") { await rename(parts, parts + "-saved"); await mkdir(parts); }
+    if (options.sourceTamper === "parts-entry") { actualForeignPath = join(parts, "foreign.sources"); await writeFile(actualForeignPath, "preserve foreign source content\n"); }
+    if (options.sourceTamper === "parts-replaced") { await rename(parts, parts + "-saved"); await mkdir(parts); actualForeignPath = join(parts, "replacement.sources"); await writeFile(actualForeignPath, "preserve foreign source content\n"); }
     if (options.sourceTamper === "parts-mode") await chmod(parts, 0o755);
     sourceMutated = true;
   };
@@ -112,6 +116,21 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         }
         const artifact = await aptArtifactProtocol(args, context, selectedPackages, tamper, options.apt283Wire);
         if (artifact) {
+          if (args[0] === "dpkg-deb") {
+            controlReads++;
+            if (options.sourceCreationCollision && controlReads === Object.keys(selectedPackages).length) {
+              const state = join(directory, "state");
+              const stage = join(state, (await readdir(state)).find((name) => name.startsWith("apt-payloads-"))!);
+              if (options.sourceCreationCollision === "config") {
+                collisionPath = join(stage, "local-only.conf");
+                await writeFile(collisionPath, "preserve actual foreign collision bytes\n", { flag: "wx" });
+              } else {
+                const parts = join(stage, "local-only.parts"); await mkdir(parts);
+                collisionPath = join(parts, "foreign.sources");
+                await writeFile(collisionPath, "preserve actual foreign collision bytes\n", { flag: "wx" });
+              }
+            }
+          }
           if (args.includes("--print-uris")) {
             if (options.uncertainResolution) return { ...artifact, terminationUnconfirmed: true };
             if (options.uriFailure) {
@@ -172,7 +191,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
     const outcome = await runCli(["setup"], { cwd: directory, handlers });
     const retry = options.uncertain ? await runCli(["setup"], { cwd: directory, handlers }) : undefined;
     const authorityAfterResolution = options.uncertainResolution ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
-    return { outcome, retry, authorityAfterResolution, sourceMutated, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
+    return { outcome, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
@@ -301,6 +320,7 @@ for (const sourceTamper of ["list-bytes", "config-bytes", "list-symlink", "confi
     expect(result.entries).toContain("apt-transaction-pending.json");
     expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
     expect(result.sentinel).toBe("preserve foreign source content\n");
+    if (sourceTamper === "parts-entry" || sourceTamper === "parts-replaced") expect(result.actualForeignBytes).toBe("preserve foreign source content\n");
     expect(result.privilegedInstalls).toBe(0);
   });
 }
@@ -326,3 +346,17 @@ test("isolated local APT planning still rejects an additional package operation"
   expect(result.privilegedInstalls).toBe(0);
   expect(result.calls.some((args) => args[0] === "sudo" && !args.includes("--simulate"))).toBe(false);
 });
+
+for (const sourceCreationCollision of ["config", "parts"] as const) {
+  test(`local APT source creation preserves a foreign ${sourceCreationCollision} collision before the privilege fence`, async () => {
+    const result = await payloadScenario(false, false, { isolatedLocalSources: true, sourceCreationCollision });
+    expect(result.controlReads).toBe(5);
+    expect(result.outcome.exitCode).toBe(5);
+    expect(result.outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+    expect(result.calls.some((args) => args[0] === "sudo")).toBe(false);
+    expect(result.privilegedInstalls).toBe(0);
+    expect(result.entries).not.toContain("apt-transaction-pending.json");
+    expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
+    expect(result.collisionBytes).toBe("preserve actual foreign collision bytes\n");
+  });
+}

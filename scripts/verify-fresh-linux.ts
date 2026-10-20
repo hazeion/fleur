@@ -97,7 +97,7 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/fresh-linux-guest.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");
@@ -139,10 +139,13 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   if (!/^[a-f0-9]{40}$/.test(sourceCommit)) fail("ARTIFACT_MISMATCH", "Runtime probe source revision is malformed.");
   await command(["git", "-C", repository, "archive", "--format=tar", `--output=${restrictionArchive}`, sourceCommit, "experiments/compatibility/runtime-probe"]);
   report.restrictionSource = { commit: sourceCommit, sha256: Bun.CryptoHasher.hash("sha256", await readFile(restrictionArchive), "hex") };
-  const guestFiles = [archive, runtime, restrictionArchive, join(repository, "scripts/fresh-linux-guest.py")];
+  const guestFiles = [archive, runtime, restrictionArchive, join(repository, "scripts/fresh-linux-guest.py"), join(repository, "scripts/prepare-fresh-linux-guest.py")];
   await command(["scp", ...sshOptions, "-P", String(port), ...guestFiles, "fleur@127.0.0.1:lab/"], 120000);
-  const prepare = await ssh("cd lab && unzip -p bun.zip bun-linux-x64/bun > bun && chmod 700 bun && tar -xzf fleur-internal-native-candidate.tgz && tar -xf runtime-probe.tar");
+  const prepare = await ssh("cd lab && python3 -I prepare-fresh-linux-guest.py && tar -xzf fleur-internal-native-candidate.tgz && tar -xf runtime-probe.tar");
   if (prepare.exitCode !== 0) fail("TRANSPORT_FAILED", "Guest artifact preparation failed.");
+  const preparation = JSON.parse(prepare.stdout);
+  if (preparation.formatVersion !== 1 || preparation.scope !== "guest-bun-preparation" || preparation.ok !== true || preparation.archiveSha256 !== bunPin.sha256 || !Number.isSafeInteger(preparation.executableBytes) || preparation.executableBytes <= 0 || preparation.executableBytes > 256 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(preparation.executableSha256)) fail("GUEST_REPORT_INVALID", "Guest Bun preparation did not establish its authenticated output identity.");
+  report.guestPreparation = preparation;
   const observed = await command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", `python3 lab/fresh-linux-guest.py ${nonce}`], 900000, [0, 4]);
   const guest = JSON.parse(observed.stdout); report.guest = guest;
   if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false) fail("GUEST_REPORT_INVALID", "Guest proof metadata differs from its declared scope.");

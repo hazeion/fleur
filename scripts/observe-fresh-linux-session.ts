@@ -4,10 +4,21 @@ import type { Readable } from "node:stream";
 export interface SessionTarget { port: number; identity: string; knownHosts: string; nonce: string }
 export interface SessionObservation { formatVersion: 1; scope: "fresh-linux-session-observation"; ok: boolean; guest?: Record<string, unknown>; initialGuest?: Record<string, unknown>; error?: { code: string; message: string } }
 const failure = (code: string, message: string): SessionObservation => ({ formatVersion: 1, scope: "fresh-linux-session-observation", ok: false, error: { code, message } });
-async function bounded(stream: Readable): Promise<string> {
-  const parts: Buffer[] = []; let bytes = 0;
-  for await (const chunk of stream) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > 2 * 1024 * 1024) throw new Error("Session output exceeded its bound"); parts.push(part); }
-  return Buffer.concat(parts).toString("utf8");
+async function bounded(stream: Readable, prefix = "", started?: () => void): Promise<string> {
+  const parts: Buffer[] = []; let bytes = 0; let matched = 0;
+  const expected = Buffer.from(prefix);
+  for await (const chunk of stream) {
+    const part = Buffer.from(chunk); bytes += part.length;
+    if (bytes > 2 * 1024 * 1024) throw new Error("Session output exceeded its bound");
+    if (matched < expected.length) {
+      const count = Math.min(part.length, expected.length - matched);
+      if (!part.subarray(0, count).equals(expected.subarray(matched, matched + count))) throw new Error("SSH session start marker is invalid");
+      matched += count;
+      if (matched === expected.length) started?.();
+    }
+    parts.push(part);
+  }
+  return Buffer.concat(parts).subarray(expected.length).toString("utf8");
 }
 function numericGroups(value: unknown): value is number[] {
   return Array.isArray(value) && value.every((gid) => Number.isSafeInteger(gid) && gid >= 0) && new Set(value).size === value.length;
@@ -31,34 +42,69 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
   const remaining = () => { const value = deadline - performance.now(); if (value <= 0 || signal?.aborted) throw new Error("Guest session aggregate deadline expired or was cancelled"); return Math.ceil(value); };
   async function ssh(remote: string): Promise<{ code: number; guest: Record<string, unknown> }> {
     const timeout = remaining();
-    const child = spawn("ssh", ["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remote], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SSH_AUTH_SOCK: undefined, SSH_ASKPASS: undefined, DISPLAY: undefined } });
+    const readyPrefix = `FLEUR_SESSION_READY=${target.nonce}\n`;
+    const remoteCommand = `printf 'FLEUR_SESSION_READY=${target.nonce}\\n'; exec ${remote}`;
+    const child = spawn("ssh", ["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remoteCommand], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SSH_AUTH_SOCK: undefined, SSH_ASKPASS: undefined, DISPLAY: undefined } });
     const finished = new Promise<number>((resolve, reject) => { child.once("error", reject); child.once("close", (code) => resolve(code ?? 137)); });
-    const kill = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } } };
-    const timer = setTimeout(kill, timeout); signal?.addEventListener("abort", kill, { once: true });
-    try {
-      const [stdout, stderr, code] = await Promise.all([bounded(child.stdout!), bounded(child.stderr!), finished]);
-      remaining();
-      if (![0, 3, 4].includes(code)) throw new Error(`SSH workflow exited ${code}: ${stderr.slice(-2048)}`);
-      const parsed: unknown = JSON.parse(stdout);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Guest report is not an object");
-      return { code, guest: parsed as Record<string, unknown> };
-    } finally {
-      clearTimeout(timer); signal?.removeEventListener("abort", kill);
-      let survivor = false;
-      if (child.pid && child.exitCode !== null) {
-        try { process.kill(-child.pid, 0); survivor = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    let groupKilled = false; let signalError: Error | undefined;
+    let rejectSignal: (error: Error) => void = () => {};
+    const signalFailed = new Promise<never>((_resolve, reject) => { rejectSignal = reject; });
+    const kill = () => {
+      if (!child.pid || groupKilled) return;
+      try { process.kill(-child.pid, "SIGKILL"); groupKilled = true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") { groupKilled = true; return; }
+        signalError ??= new Error(`Owned SSH SIGKILL failed for ${child.pid}: ${String(error)}`);
+        // Timer/abort callbacks must enter the owned failure/finally path.
+        rejectSignal(signalError);
       }
-      kill(); await finished.catch(() => {});
+    };
+    let startExpired = false; let sessionStarted = false;
+    const startTimer = setTimeout(() => { startExpired = true; kill(); }, Math.min(10000, timeout));
+    const timer = setTimeout(kill, timeout); signal?.addEventListener("abort", kill, { once: true });
+    const cleanup = async () => {
+      clearTimeout(startTimer); clearTimeout(timer); signal?.removeEventListener("abort", kill);
+      let survivor = false; let observationError: Error | undefined;
+      if (child.pid && child.exitCode !== null) {
+        try { process.kill(-child.pid, 0); survivor = true; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") observationError = new Error(`Owned SSH survivor observation failed for ${child.pid}: ${String(error)}`); }
+      }
+      const stop = performance.now() + 3000;
+      kill();
+      let closeTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([finished.catch(() => {}), new Promise<never>((_resolve, reject) => { closeTimer = setTimeout(() => reject(new Error("Owned SSH close cleanup is unconfirmed")), 3000); })]);
+      } finally { clearTimeout(closeTimer); }
       if (child.pid) {
-        const stop = performance.now() + 3000;
+        let lastObservation: unknown;
         while (true) {
-          try { process.kill(-child.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") break; throw error; }
-          if (performance.now() >= stop) throw new Error("Owned SSH process group cleanup is unconfirmed");
+          try { process.kill(-child.pid, 0); lastObservation = undefined; }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
+            if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+            lastObservation = error;
+          }
+          // EPERM is not quiescence: require an actual ESRCH within the same bound.
+          if (performance.now() >= stop) throw new Error(`Owned SSH process group cleanup is unconfirmed${lastObservation ? ": " + String(lastObservation) : ""}`);
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
       }
+      if (signalError) throw signalError;
+      if (observationError) throw observationError;
       if (survivor) throw new Error("A surviving owned SSH process group invalidated its completed leader");
-    }
+    };
+    try {
+      const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!, readyPrefix, () => { sessionStarted = true; clearTimeout(startTimer); }), bounded(child.stderr!), finished]), signalFailed]);
+      remaining();
+      if (startExpired) throw new Error("SSH session start deadline expired");
+      if (![0, 3, 4].includes(code)) throw new Error(`SSH workflow exited ${code}: ${stderr.slice(-2048)}`);
+      if (!sessionStarted) throw new Error("SSH session start marker was absent or incomplete");
+      const parsed: unknown = JSON.parse(stdout);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Guest report is not an object");
+      return { code, guest: parsed as Record<string, unknown> };
+    } catch (error) {
+      if (startExpired) throw new Error("SSH session start deadline expired");
+      throw error;
+    } finally { await cleanup(); }
   }
   let initialGuest: Record<string, unknown> | undefined;
   try {

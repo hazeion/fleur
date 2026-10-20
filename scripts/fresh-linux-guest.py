@@ -123,7 +123,7 @@ def setup_pty(reply, expected_prompt=None):
                     raise RuntimeError("Unexpected authority prompt; no response supplied")
                 prompt = {"action": match[1], "method": match[2], "target": match[3], "checksum": match[4]}
                 if expected_prompt and (answered != 0 or any(prompt[key] != expected_prompt[key] for key in ("action", "method", "target", "checksum"))):
-                    raise RuntimeError("Enrollment prompt differs from its separately inspected plan")
+                    raise RuntimeError("Authority prompt differs from its separately inspected plan")
                 accepted_prompts.append(prompt)
                 os.write(master, (reply + "\n").encode())
                 answered += 1
@@ -527,7 +527,27 @@ def finish_ready_guest(state):
     # Doctor's complete image identity and nonce checks remain the product boundary.
     # No public image-acquire grant mint is available here; missing authority stays incomplete.
     if state.get("smoke", {}).get("state") != "ready":
-        REPORT["smokeAcquisitionFixture"] = setup_pty("once")
+        REPORT["smokeAcquisitionPlan"] = command_json("setup")
+        observed = REPORT["smokeAcquisitionPlan"]
+        envelope = observed["result"]
+        plan = envelope.get("data", {}).get("plan", {})
+        checksum = plan.get("checksum", "")
+        prior_checksums = {prompt["checksum"] for phase in ("authorizedFixtureSetup", "separateEnrollmentSetup") for prompt in REPORT.get(phase, {}).get("prompts", [])}
+        if (observed["exitCode"] != 3 or envelope.get("ok") is not False or envelope.get("error", {}).get("code") != "AUTHORITY_REQUIRED"
+                or plan.get("action") != "image-acquire" or plan.get("method") != "docker-digest-pull"
+                or state.get("smoke", {}).get("state") != "image-required" or plan.get("image") != state["smoke"].get("image")
+                or not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", plan.get("image", "")) or not re.fullmatch(r"[a-f0-9]{64}", checksum) or checksum in prior_checksums):
+            raise RuntimeError("Separate smoke image acquisition plan is invalid")
+        context = run(["docker", "context", "show"])[1].strip()
+        endpoint = json.loads(run(["docker", "context", "inspect", context, "--format", "{{json .Endpoints.docker}}"])[1])["Host"]
+        if not isinstance(endpoint, str) or not re.fullmatch(r"unix:///[^\s?#]+", endpoint):
+            raise RuntimeError("Smoke acquisition endpoint is not a local Unix socket")
+        target = plan["image"] + " via " + endpoint
+        if len(target) > 512:
+            raise RuntimeError("Smoke acquisition target exceeds its bound")
+        REPORT["smokeAcquisitionFixture"] = setup_pty("once", expected_prompt={"action": "image-acquire", "method": "docker-digest-pull", "target": target, "checksum": checksum})
+        if REPORT["smokeAcquisitionFixture"]["promptsAnswered"] != 1:
+            raise RuntimeError("Separate image acquisition did not present exactly one matching prompt")
         REPORT["ordinaryUserDoctorAfterAcquisition"] = command_json("doctor")
         state = REPORT["ordinaryUserDoctorAfterAcquisition"]["result"].get("data", {}).get("components", {})
         if state.get("smoke", {}).get("state") != "ready":

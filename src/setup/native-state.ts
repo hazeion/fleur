@@ -9,10 +9,23 @@ export interface AptPackageState {
 
 export function validAptProfile(profile: AptInstallProfile): boolean {
   const names = ["docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"];
-  return /^[A-F0-9]{40}$/.test(profile.repositoryFingerprint)
+  if (!profile.artifacts || typeof profile.artifacts !== "object" || Array.isArray(profile.artifacts) || Object.keys(profile.artifacts).length !== names.length) return false;
+  const architecture = profile.architecture === "x64" ? "amd64" : "arm64";
+  const suite = profile.distribution === "debian" ? "trixie" : profile.release === "24.04" ? "noble" : "resolute";
+  return typeof profile.repositoryFingerprint === "string" && /^[A-F0-9]{40}$/.test(profile.repositoryFingerprint)
     && Object.keys(profile.packages).length === names.length
-    && names.every((name) => Object.hasOwn(profile.packages, name))
-    && Object.values(profile.packages).every((version) => /^[0-9][A-Za-z0-9.+:~_-]{0,127}$/.test(version));
+    && names.every((name) => Object.hasOwn(profile.packages, name) && Object.hasOwn(profile.artifacts, name))
+    && Object.values(profile.packages).every((version) => typeof version === "string" && /^[0-9][A-Za-z0-9.+:~_-]{0,127}$/.test(version))
+    && names.every((name) => {
+      const artifact = profile.artifacts[name as keyof typeof profile.artifacts];
+      return artifact && typeof artifact === "object" && !Array.isArray(artifact)
+        && Object.keys(artifact).sort().join(",") === "architecture,name,sha256,size,url,version"
+        && artifact.name === name && artifact.version === profile.packages[name as keyof typeof profile.packages]
+        && artifact.architecture === architecture && typeof artifact.sha256 === "string" && /^[a-f0-9]{64}$/.test(artifact.sha256)
+        && typeof artifact.url === "string" && artifact.url.startsWith(`https://download.docker.com/linux/${profile.distribution}/dists/${suite}/pool/stable/${architecture}/`)
+        && /^[A-Za-z0-9._~+%:-]+\.deb$/.test(artifact.url.slice(`https://download.docker.com/linux/${profile.distribution}/dists/${suite}/pool/stable/${architecture}/`.length))
+        && Number.isSafeInteger(artifact.size) && artifact.size > 0 && artifact.size <= 268435456;
+    }) && Object.values(profile.artifacts).reduce((sum, artifact) => sum + artifact.size, 0) <= 1073741824;
 }
 export async function inspectAptPackageState(profile: AptInstallProfile, host: SetupHost, remaining: () => number): Promise<AptPackageState> {
   const refused = (state: "conflict" | "unavailable"): AptPackageState => ({ state, present: [], missing: [] });

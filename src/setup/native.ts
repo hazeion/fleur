@@ -2,6 +2,16 @@ import type { ArchInstallProfile } from "./native-arch.ts";
 import { inspectAptPackageState } from "./native-state.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
 
+export type AptPackageName = "docker-ce" | "docker-ce-cli" | "containerd.io" | "docker-buildx-plugin" | "docker-compose-plugin";
+export interface AptPackageArtifact {
+  readonly name: AptPackageName;
+  readonly version: string;
+  readonly architecture: "amd64" | "arm64";
+  readonly url: string;
+  readonly sha256: string;
+  readonly size: number;
+}
+
 /** Compiled release authority, never read from CLI JSON, project files or environment. */
 export interface AptInstallProfile {
   readonly method: "docker-official-apt";
@@ -10,7 +20,8 @@ export interface AptInstallProfile {
   readonly release: string;
   readonly architecture: "x64" | "arm64";
   readonly repositoryFingerprint: string;
-  readonly packages: Readonly<Record<"docker-ce" | "docker-ce-cli" | "containerd.io" | "docker-buildx-plugin" | "docker-compose-plugin", string>>;
+  readonly packages: Readonly<Record<AptPackageName, string>>;
+  readonly artifacts: Readonly<Record<AptPackageName, AptPackageArtifact>>;
 }
 export interface DesktopInstallProfile {
   readonly method: "docker-desktop-official-dmg";

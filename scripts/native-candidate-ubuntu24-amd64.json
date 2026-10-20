@@ -75,7 +75,7 @@
   "limits": [
     "Legacy verified:true means source-owned internal catalog admission, not native installation evidence.",
     "The ordinary production catalog remains empty.",
-    "The current apt adapter checks package names, versions and authenticated repository bytes; direct comparison of downloaded payloads with these compiled hashes remains required before production admission.",
+    "The apt adapter compares acquired payloads with these frozen URL, size, SHA256 and control identities and guards actual dpkg archive/action inputs; real guest execution remains unverified.",
     "Fresh guest dependency closure and native/full-system installation evidence remain pending."
   ]
 }

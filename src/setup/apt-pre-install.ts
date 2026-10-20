@@ -1,9 +1,11 @@
 import { aptHealthArgs, healthyDpkgSnapshot } from "./apt-health.ts";
 /** Standard APT protocol-v2 guard; frontend serialization, not a backend-lock claim. */
-import { constants } from "node:fs";
+import { constants, write } from "node:fs";
 import { open } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 
+type GuardStage = "invocation" | "plan-file" | "plan-schema" | "protocol-input" | "protocol-config" | "protocol-actions" | "package-inventory" | "package-state" | "archive-identity" | "archive-digest";
+let stage: GuardStage = "invocation";
 const packageNames = ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"];
 async function boundedFile(path: string, limit: number) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -33,8 +35,10 @@ async function inventory(): Promise<string> {
 async function guard(): Promise<boolean> {
   const path = process.argv[2]; const checksum = process.argv[3];
   if (process.argv.length !== 4 || !path || !checksum || !/^[a-f0-9]{64}$/.test(checksum) || process.env.APT_HOOK_INFO_FD !== "0" || process.env.DPKG_FRONTEND_LOCKED !== "true") return false;
+  stage = "plan-file";
   const loaded = await boundedFile(path, 65536);
   if ((loaded.info.mode & 0o777n) !== 0o600n || Bun.CryptoHasher.hash("sha256", loaded.bytes, "hex") !== checksum) return false;
+  stage = "plan-schema";
   const value: unknown = JSON.parse(loaded.bytes.toString("utf8"));
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const plan = value as Record<string, unknown>;
@@ -48,8 +52,10 @@ async function guard(): Promise<boolean> {
     packages.set(artifact.name, artifact);
   }
   if (Object.keys(present).some((name) => !packageNames.includes(name) || typeof present[name] !== "string") || packages.size + Object.keys(present).length !== 5) return false;
+  stage = "protocol-input";
   const lines = (await input()).replace(/\n$/, "").split("\n");
   if (lines.shift() !== "VERSION 2") return false;
+  stage = "protocol-config";
   const config = new Map<string, string[]>();
   let separator = false;
   while (lines.length) {
@@ -59,6 +65,7 @@ async function guard(): Promise<boolean> {
     config.set(key, [...config.get(key) ?? [], value]);
   }
   if (!separator || !lines.length || JSON.stringify(config.get("RootDir")) !== '["/"]' || JSON.stringify(config.get("Dir::State::status")) !== '["/var/lib/dpkg/status"]' || JSON.stringify(config.get("Debug::NoLocking")) !== '["false"]') return false;
+  stage = "protocol-actions";
   const installed = new Set<string>(); const configured = new Set<string>();
   for (const line of lines) {
     const action = /^(\S+) (\S+) ([<=>]) (\S+) (.+)$/.exec(line);
@@ -73,8 +80,10 @@ async function guard(): Promise<boolean> {
   if (installed.size !== packages.size) return false;
   // Protocol v2 omits global ConfigurePending: independently reject every preexisting
   // incomplete package, trigger state or reinstreq instead of silently repairing it.
+  stage = "package-inventory";
   const snapshot = healthyDpkgSnapshot(await inventory());
   if (!snapshot) return false;
+  stage = "package-state";
   const retained = new Set<string>();
   for (const [name, state] of snapshot) {
     const base = name.split(":")[0]!;
@@ -83,10 +92,12 @@ async function guard(): Promise<boolean> {
   }
   if (retained.size !== Object.keys(present).length) return false;
   for (const artifact of packages.values()) {
+    stage = "archive-identity";
     const file = await open(artifact.path as string, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const info = await file.stat({ bigint: true }); const size = artifact.size as number;
       if (!info.isFile() || info.nlink !== 1n || info.uid !== loaded.info.uid || info.dev !== BigInt(artifact.dev as string) || info.ino !== BigInt(artifact.ino as string) || info.size !== BigInt(size)) return false;
+      stage = "archive-digest";
       const hash = new Bun.CryptoHasher("sha256"); const buffer = Buffer.alloc(65536); let used = 0;
       while (used <= size) { const read = await file.read(buffer, 0, Math.min(buffer.length, size + 1 - used)); if (!read.bytesRead) break; used += read.bytesRead; hash.update(buffer.subarray(0, read.bytesRead)); }
       if (used !== size || hash.digest("hex") !== artifact.sha256) return false;
@@ -96,3 +107,7 @@ async function guard(): Promise<boolean> {
   return true;
 }
 try { process.exitCode = await guard() ? 0 : 1; } catch { process.exitCode = 1; }
+
+if (process.exitCode === 1) {
+  try { write(process.stderr.fd, Buffer.from("FLEUR_APT_GUARD_REFUSAL " + JSON.stringify({ formatVersion: 1, stage }) + "\n"), () => {}); } catch { /* Diagnostic delivery cannot change the refusal. */ }
+}

@@ -334,3 +334,64 @@ for (const action of ["install", "access", "image"] as const) {
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 25000);
 }
+
+
+test("a valid unavailable setup result with null data remains incomplete without starting enrollment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-enrollment-unavailable-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "setup-unavailable-null"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const report = JSON.parse(stdout);
+    const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(exit, stderr).toBe(4);
+    expect(report.reprobe).toMatchObject({ exitCode: 4, result: { data: null, error: { code: "PREREQUISITE_UNAVAILABLE" } } });
+    expect(state.enrollmentPrompts).toEqual([]);
+    expect(state.enrollmentOffers ?? []).toEqual([]);
+    expect(state.enrolled).toBe(false);
+    expect(report.phase).toBeUndefined(); expect(report.checkpoint).toBeUndefined();
+    expect(await Bun.file(join(root, "lab/fresh-linux-state.json")).exists()).toBe(false);
+    expect(report.runs).toEqual([]);
+    expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", humanConsentProof: false, error: { code: "NATIVE_SETUP_INCOMPLETE" } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);
+
+
+for (const scenario of ["setup-recovery-null", "plan-data-null", "plan-data-scalar", "plan-value-null", "plan-value-scalar", "doctor-data-null", "doctor-data-scalar"] as const) test(`guest enrollment refuses unavailable or malformed authority evidence safely: ${scenario}`, async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-enrollment-data-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const report = JSON.parse(stdout); const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(exit, stderr).toBe(4);
+    expect(state.enrollmentPrompts).toEqual([]); expect(state.enrollmentOffers ?? []).toEqual([]); expect(state.enrolled).toBe(false);
+    expect(report.phase).toBeUndefined(); expect(report.checkpoint).toBeUndefined(); expect(report.runs).toEqual([]);
+    expect(await Bun.file(join(root, "lab/fresh-linux-state.json")).exists()).toBe(false);
+    expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", humanConsentProof: false });
+    const observed = scenario.startsWith("doctor-") ? report.ordinaryUserDoctor : report.reprobe;
+    expect(observed.result.data).toEqual(scenario.startsWith("plan-value-") ? { plan: scenario.endsWith("-null") ? null : 7 } : scenario.endsWith("-null") ? null : 7);
+    expect(report.error.message).not.toMatch(/NoneType|has no attribute|expected string/);
+    expect(report.error.code).toBe(["setup-recovery-null", "doctor-data-null"].includes(scenario) ? "NATIVE_SETUP_INCOMPLETE" : "GUEST_VERIFICATION_FAILED");
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);
+
+
+for (const scenario of ["stale-data-null", "stale-data-scalar", "resume-doctor-data-null", "resume-doctor-data-scalar", "resume-smoke-data-null", "resume-smoke-data-scalar"] as const) test(`guest handoff retains incomplete nullable command evidence without replay: ${scenario}`, async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-handoff-data-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const report = JSON.parse(stdout); const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(exit, stderr).toBe(4); expect(state.enrollmentPrompts).toHaveLength(1); expect(state.smokeOffers ?? []).toEqual([]);
+    expect(report.phase).toBeUndefined(); expect(report.checkpoint).toBeUndefined(); expect(report.runs).toEqual([]);
+    expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", humanConsentProof: false });
+    const observed = scenario.startsWith("stale-") ? report.staleLoginReprobes[0] : scenario.startsWith("resume-doctor-") ? report.ordinaryUserDoctorAfterResume : report.smokeAcquisitionPlan;
+    expect(observed.result.data).toBe(scenario.endsWith("-null") ? null : 7);
+    expect(report.error.message).not.toMatch(/NoneType|has no attribute|expected string/);
+    expect(report.error.code).toBe(scenario === "resume-doctor-data-null" ? "NATIVE_SETUP_INCOMPLETE" : "GUEST_VERIFICATION_FAILED");
+    if (scenario.startsWith("stale-")) expect(await Bun.file(join(root, "lab/fresh-linux-state.json")).exists()).toBe(false);
+    else { expect(state.resumeFixtureTransition).toBe(scenario); expect(await Bun.file(join(root, "lab/fresh-linux-resume-started.json")).exists()).toBe(true); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);

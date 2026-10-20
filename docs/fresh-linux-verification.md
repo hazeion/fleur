@@ -84,3 +84,10 @@ The internal candidate observes its existing privileged local-archive APT simula
 Diagnostic delivery is best effort: an unavailable, full or partially written sink supplies no complete diagnostic evidence. Delivery uses one asynchronous descriptor write with its own error callback, without awaiting, retrying, changing descriptor flags or adding stream-wide error listeners. The original command outcome still governs setup. Owned pipe checks cover closed and full sinks on the tested host; they do not establish every platform's stream behavior.
 
 The internal candidate explicitly composes separate plan and install observation phases. The adapter's default remains plan-only. Its install phase records only the existing noninteractive local-archive installation command with no-download, no-remove and no-upgrade; it adds no command, authority or retry. The phases share bounded best-effort delivery and preserve the original command result. Produced-artifact protocol tests cover composition, one actual external invocation and real PTY/closed/full-pipe behavior on the test host. An absent or incomplete record remains missing diagnostic evidence. Actual installation success and release support require the real guest proof.
+
+The guest verifier preserves version 1 command results whose `data` is null.
+Unavailable setup or recovery results do not authorize enrollment: the report
+stays incomplete with its original setup and doctor evidence, without an
+additional enrollment prompt or login checkpoint. Missing authority-plan fields
+and non-object data at handoff/readiness boundaries are rejected explicitly;
+null data cannot count as a plan, new-login requirement or readiness proof.

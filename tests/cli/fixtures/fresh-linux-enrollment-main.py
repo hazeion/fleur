@@ -54,16 +54,24 @@ if name=='bun':
  if args==['--version']:print('1.4.3');sys.exit(0)
  command=args[1]
  if command=='doctor':
+  if s.get('freshSession') and s['scenario'].startswith('resume-doctor-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,4,'PREREQUISITE_UNAVAILABLE')
+  if s['installed'] and s['scenario'].startswith('doctor-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,4,'PREREQUISITE_UNAVAILABLE')
   if s.get('freshSession') and s['scenario'].startswith('resume-smoke-'):
    envelope(command,{'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'image-required','image':'oven/bun@sha256:'+'c'*64}}},3,'AUTHORITY_REQUIRED')
   ready=s['installed'];envelope(command,{'components':{'cli':{'state':'ready' if ready else 'missing'},'daemon':{'state':'denied' if ready and s['scenario']!='apt-index-incomplete' else 'missing'},'compose':{'state':'ready' if ready else 'missing'},'smoke':{'state':'missing'},'release':{'state':'unverified'}}},4,'PREREQUISITE_UNAVAILABLE')
  if command!='setup':raise RuntimeError('Unexpected fake CLI command')
  if '--json' in args:
+  if s.get('freshSession') and s['scenario'].startswith('resume-smoke-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,3,'AUTHORITY_REQUIRED')
   if s.get('freshSession') and s['scenario'].startswith('resume-smoke-'):
    envelope(command,{'plan':{'action':'image-acquire','method':'docker-digest-pull','image':'oven/bun@sha256:'+'c'*64,'checksum':'d'*64},'resumable':True,'grantsCreated':False},3,'AUTHORITY_REQUIRED')
   if not s['installed']:envelope(command,{'plan':{'action':'install','checksum':package_checksum}},3,'AUTHORITY_REQUIRED')
+  if not s['enrolled'] and s['scenario']=='setup-recovery-null':envelope(command,None,5,'RECOVERY_REQUIRED')
+  if not s['enrolled'] and s['scenario'].startswith('plan-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,3,'AUTHORITY_REQUIRED')
+  if not s['enrolled'] and s['scenario'].startswith('plan-value-'):envelope(command,{'plan':None if s['scenario'].endswith('-null') else 7},3,'AUTHORITY_REQUIRED')
+  if not s['enrolled'] and s['scenario']=='setup-unavailable-null':envelope(command,None,4,'PREREQUISITE_UNAVAILABLE')
   if not s['enrolled']:envelope(command,{'plan':plan(),'resumable':True},3,'AUTHORITY_REQUIRED')
   if s['scenario']=='stale-replayed-plan':envelope(command,{'plan':plan()},3,'AUTHORITY_REQUIRED')
+  if s['scenario'].startswith('stale-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,3,'HUMAN_ACTION_REQUIRED')
   s['staleReprobes']+=1;envelope(command,{'access':{'state':'new-login-required'},'resumable':True},3,'HUMAN_ACTION_REQUIRED')
  if s.get('freshSession') and s['scenario'].startswith('resume-smoke-'):
   action={'resume-smoke-install':'install','resume-smoke-access':'docker-access','resume-smoke-image':'image-acquire'}[s['scenario']]
@@ -366,7 +374,7 @@ os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/u
 sys.argv = [str(source), nonce]
 with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
-        if scenario in ("fresh-resume", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+        if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()
             with contextlib.redirect_stdout(first_output):
                 try:

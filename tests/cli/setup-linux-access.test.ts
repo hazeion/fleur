@@ -365,3 +365,58 @@ test.each(["", "0", "0 ", "12", "\u0000"])("last-position Job value %j retains i
     expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("the observed Docker socket root-mount dependency permits only separately authorized enrollment", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] !== "/usr/bin/systemctl") return result;
+    let stdout = result.stdout.replace("Job=0", "Job=").replace("UnitFileState=disabled", "UnitFileState=enabled");
+    if (args.at(-1) === "docker.socket") stdout = stdout.replace("Requires=sysinit.target", "Requires=system.slice -.mount sysinit.target").replace("SubState=listening", "SubState=running");
+    return { ...result, stdout };
+  };
+  try {
+    const plan = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(plan.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(plan.result.data).toMatchObject({ plan: { action: "docker-access" } });
+    expect(fixture.calls).toContainEqual(["/usr/bin/systemctl", "--system", "is-active", "--quiet", "--", "-.mount"]);
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test.each(["root-inactive", "root-unavailable", "foreign-mount", "service-root", "containerd-root", "root-wants", "root-after-prompt"] as const)("root-mount enrollment policy refuses %s", async (mode) => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run; const confirm = fixture.host.confirmHuman; let prompted = false;
+  fixture.host.confirmHuman = async (plan) => { prompted = true; return confirm(plan); };
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] !== "/usr/bin/systemctl") return result;
+    if (args.includes("is-active") && args.at(-1) === "-.mount") {
+      expect(args.at(-2)).toBe("--");
+      if (mode === "root-unavailable") return { status: "missing", stdout: "", stderr: "" };
+      if (mode === "root-inactive" || mode === "root-after-prompt" && prompted) return { ...result, exitCode: 3, stdout: "inactive\n" };
+    }
+    const full = args.some((arg) => arg.startsWith("--property=") && arg.includes("Requires"));
+    if (!full) return result;
+    let stdout = result.stdout.replace("Job=0", "Job=");
+    if (args.at(-1) === "docker.socket") {
+      stdout = stdout.replace("Requires=sysinit.target", `Requires=system.slice ${mode === "foreign-mount" ? "run.mount" : "-.mount"} sysinit.target`);
+      if (mode === "root-wants") stdout = stdout.replace("Wants=", "Wants=-.mount");
+    }
+    if (mode === "service-root" && args.at(-1) === "docker.service" || mode === "containerd-root" && args.at(-1) === "containerd.service") stdout = stdout.replace(/Requires=([^\n]*)/, "Requires=$1 -.mount");
+    return { ...result, stdout };
+  };
+  try {
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("PREREQUISITE_UNAVAILABLE");
+    expect(fixture.prompts).toEqual(mode === "root-after-prompt" ? ["docker-access"] : []);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.state.enrolled).toBe(false);
+    if (mode === "root-after-prompt") {
+      const grants = await runCli(["setup", "grants", "list", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+      expect(grants.result.data).toMatchObject({ grants: [{ action: "docker-access", revoked: false }] });
+    }
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});

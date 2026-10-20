@@ -61,11 +61,12 @@ export async function observeLinuxService(host: SetupHost, remaining: () => numb
     const wants = value.Wants!.split(/\s+/).filter(Boolean);
     const requires = value.Requires!.split(/\s+/).filter(Boolean);
     const allowedWants = unit === "docker.service" ? ["network-online.target", "containerd.service"] : [];
-    const allowedRequires = unit === "docker.service" ? ["docker.socket", "sysinit.target", "system.slice"] : ["sysinit.target", "system.slice"];
+    const allowedRequires = unit === "docker.service" ? ["docker.socket", "sysinit.target", "system.slice"] : unit === "docker.socket" ? ["sysinit.target", "system.slice", "-.mount"] : ["sysinit.target", "system.slice"];
     if (wants.some((name) => !allowedWants.includes(name)) || requires.some((name) => !allowedRequires.includes(name)) || (unit === "docker.service" && (allowedWants.some((name) => !wants.includes(name)) || !requires.includes("docker.socket")))) throw new Error("Unreviewed service dependency");
     observed[unit] = value;
   }
   if (observed["docker.socket"]!.SubState === "running" && (observed["docker.service"]!.ActiveState !== "active" || observed["docker.service"]!.SubState !== "running")) throw new Error("Running socket and Docker service state disagree");
+  if (observed["docker.socket"]!.Requires!.split(/\s+/).includes("-.mount")) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", "--", "-.mount"]);
   return observed;
 }
 /** Caller holds the existing setup lock and has checked exact package state and its pending fence. */
@@ -85,12 +86,14 @@ export async function setupLinuxService(input: CommandInput, host: SetupHost, id
   try {
     try { await lstat(pendingPath); throw new ServiceRecovery("Earlier service operation is unresolved"); } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
     const observed = await observeLinuxService(host, remaining, policy);
+    const rootMountRequired = observed["docker.socket"]!.Requires!.split(/\s+/).includes("-.mount");
+    const startupDependencies = [...externalDependencies, ...(rootMountRequired ? ["-.mount"] : [])];
     if (observed["docker.service"]!.ActiveState === "active") return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The Docker service is already active. Access and runtime readiness need separate observation; no restart was attempted.", actions: [{ command: "fleur doctor", description: "Inspect current-user readiness." }] });
     await policy.provenance(host, remaining);
-    for (const unit of externalDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", unit]);
-    const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify({ formatVersion: 1, profile: binding, ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), endpoint, canonicalEndpoint: "unix:///run/docker.sock", user: process.getuid!(), machine: identity.machineId, hashes, externalDependencies, enablement: Object.fromEntries(units.map((unit) => [unit, observed[unit]!.UnitFileState])), effects: { action: "service-start", units, enable: false, membership: "unchanged", configuration: "unchanged" } }), "hex");
+    for (const unit of startupDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", "--", unit]);
+    const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify({ formatVersion: 1, profile: binding, ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), endpoint, canonicalEndpoint: "unix:///run/docker.sock", user: process.getuid!(), machine: identity.machineId, hashes, externalDependencies: startupDependencies, enablement: Object.fromEntries(units.map((unit) => [unit, observed[unit]!.UnitFileState])), effects: { action: "service-start", units, enable: false, membership: "unchanged", configuration: "unchanged" } }), "hex");
     const target = `Docker ${policy.label} service-start plan ${checksum}${policy.targetDescription ? `; ${policy.targetDescription}` : ""}`;
-    const plan = { ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), action: "service-start", method: method, endpoint, units, externalDependencies, checksum, ...(policy.targetDescription ? { target } : {}) };
+    const plan = { ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), action: "service-start", method: method, endpoint, units, externalDependencies: startupDependencies, checksum, ...(policy.targetDescription ? { target } : {}) };
     const authority = () => failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Starting Docker and its declared containerd/socket dependencies needs a separate matching service-start grant. Boot enablement and user access are unchanged.", actions: [{ command: "fleur setup", description: "Inspect this exact service-start action interactively." }] }, { plan, resumable: true });
     const specified = input.args[0] === "--grant" ? input.args[1] : undefined;
     const matches = (grant: Grant) => !grant.revoked && (!specified || grant.id === specified) && grant.action === "service-start" && grant.method === method && grant.target === target && grant.planChecksum === checksum && grant.machine === identity.machineId && grant.user === process.getuid?.();
@@ -112,9 +115,10 @@ export async function setupLinuxService(input: CommandInput, host: SetupHost, id
     if (!permitsArchSystemStart(beforeComponents.service)) return { ...before, result: { ...before.result, command: "setup" } };
     if (currentEndpoint !== endpoint || JSON.stringify(await host.host()) !== JSON.stringify(identity)) return manual("The selected endpoint or machine changed; no service action was taken.");
     const fresh = await observeLinuxService(host, remaining, policy);
+    if (fresh["docker.socket"]!.Requires!.split(/\s+/).includes("-.mount") !== rootMountRequired) return manual("Socket mount dependency changed after authorization; no service action was taken.");
     if (fresh["docker.service"]!.ActiveState === "active") return { ...before, result: { ...before.result, command: "setup" } };
     await policy.provenance(host, remaining);
-    for (const unit of externalDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", unit]);
+    for (const unit of startupDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", "--", unit]);
     if (units.some((unit) => fresh[unit]!.UnitFileState !== observed[unit]!.UnitFileState)) return manual("Service configuration changed after authorization; no service action was taken.");
     grants = [...await readAuthority()];
     grant = grants.find(matches);

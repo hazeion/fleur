@@ -124,6 +124,7 @@ def inspect(image, expected):
 parent_fd = source_fd = stage_fd = inputs_fd = None
 stage_name = None
 owned_image = None
+original_inputs = {}
 
 def tool(args):
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, pass_fds=(stage_fd, inputs_fd), start_new_session=True)
@@ -204,10 +205,11 @@ try:
     expected = {}
     for name, maximum in LIMITS.items():
         fd, before = regular(name, maximum, source_fd)
-        with os.fdopen(fd, "rb") as file:
-            data = file.read(maximum + 1)
-            if len(data) > maximum or identity(before) != identity(os.fstat(file.fileno())):
-                raise RuntimeError("Input changed during bounded read")
+        file = os.fdopen(fd, "rb")
+        original_inputs[name] = (file, before)
+        data = file.read(maximum + 1)
+        if len(data) > maximum or identity(before) != identity(os.fstat(file.fileno())):
+            raise RuntimeError("Input changed during bounded read")
         expected[name] = data
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=inputs_fd)
         with os.fdopen(fd, "wb") as file:
@@ -228,6 +230,17 @@ try:
         current = os.stat("seed.iso", dir_fd=stage_fd, follow_symlinks=False)
         if identity(current) != identity(before):
             raise RuntimeError("ISO pathname changed")
+        # The frozen construction inputs must still be the same source objects
+        # and bytes, not just an earlier copy in our private staging directory.
+        current_source = os.stat(source, follow_symlinks=False)
+        if identity(current_source) != identity(source_info) or identity(os.fstat(source_fd)) != identity(source_info) or current_source.st_mode != source_info.st_mode or set(os.listdir(source_fd)) != set(LIMITS):
+            raise RuntimeError("Original source directory identity changed")
+        for name, (original_file, original_info) in original_inputs.items():
+            original_file.seek(0)
+            current_bytes = original_file.read(LIMITS[name] + 1)
+            current_entry = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+            if current_bytes != expected[name] or identity(original_info) != identity(os.fstat(original_file.fileno())) or identity(current_entry) != identity(original_info):
+                raise RuntimeError("Original source input changed")
         os.link("seed.iso", output.name, src_dir_fd=stage_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
         published = True
         sealed = os.fstat(file.fileno())
@@ -244,27 +257,55 @@ except Exception as error:
     report["preparationError"] = str(error)
 finally:
     if stage_fd is not None:
+        cleanup_fd = None
+        cleanup_name = ".fleur-seed-cleanup-" + secrets.token_hex(16)
         try:
+            # Public staging names must be claimed before any deletion. A
+            # concurrent foreign directory is preserved in private quarantine.
+            os.mkdir(cleanup_name, 0o700, dir_fd=parent_fd)
+            cleanup_fd = os.open(cleanup_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            os.rename(stage_name, "stage", src_dir_fd=parent_fd, dst_dir_fd=cleanup_fd)
+            claimed_stage = os.stat("stage", dir_fd=cleanup_fd, follow_symlinks=False)
+            retained_stage = os.fstat(stage_fd)
+            if not stat.S_ISDIR(claimed_stage.st_mode) or (claimed_stage.st_dev, claimed_stage.st_ino) != (retained_stage.st_dev, retained_stage.st_ino):
+                raise RuntimeError("Foreign staging directory claimed")
             allowed = {"inputs"} | ({"seed.iso"} if owned_image else set())
             if set(os.listdir(stage_fd)) != allowed or set(os.listdir(inputs_fd)) != set(owned):
                 raise RuntimeError("Unknown staged seed entry retained")
-            for name, expected_identity in owned.items():
-                current = os.stat(name, dir_fd=inputs_fd, follow_symlinks=False)
-                if not stat.S_ISREG(current.st_mode) or identity(current) != expected_identity:
-                    raise RuntimeError("Staged input changed")
+            # Claim the inputs directory before touching its known children.
+            os.rename("inputs", "input-directory", src_dir_fd=stage_fd, dst_dir_fd=cleanup_fd)
+            claimed_inputs = os.stat("input-directory", dir_fd=cleanup_fd, follow_symlinks=False)
+            retained_inputs = os.fstat(inputs_fd)
+            if not stat.S_ISDIR(claimed_inputs.st_mode) or (claimed_inputs.st_dev, claimed_inputs.st_ino) != (retained_inputs.st_dev, retained_inputs.st_ino):
+                raise RuntimeError("Foreign input directory claimed")
+
+            def remove_owned(name, directory, expected_identity):
+                claim = "file-" + secrets.token_hex(16)
+                os.rename(name, claim, src_dir_fd=directory, dst_dir_fd=cleanup_fd)
+                claimed = os.stat(claim, dir_fd=cleanup_fd, follow_symlinks=False)
+                if not stat.S_ISREG(claimed.st_mode) or identity(claimed)[:3] != expected_identity[:3]:
+                    report["retainedEntry"] = claim
+                    raise RuntimeError("Foreign seed entry claimed")
+                # The fresh nonce namespace has this helper as its writer.
+                # Unrestricted same-user tampering inside it is not contained.
+                os.unlink(claim, dir_fd=cleanup_fd)
+
             if owned_image:
-                current = os.stat("seed.iso", dir_fd=stage_fd, follow_symlinks=False)
-                if not stat.S_ISREG(current.st_mode) or identity(current)[:3] != owned_image[:3]:
-                    raise RuntimeError("Staged image changed")
-                os.unlink("seed.iso", dir_fd=stage_fd)
-            for name in owned:
-                os.unlink(name, dir_fd=inputs_fd)
-            os.rmdir("inputs", dir_fd=stage_fd)
-            os.rmdir(stage_name, dir_fd=parent_fd)
+                remove_owned("seed.iso", stage_fd, owned_image)
+            for name, expected_identity in owned.items():
+                remove_owned(name, inputs_fd, expected_identity)
+            os.rmdir("input-directory", dir_fd=cleanup_fd)
+            os.rmdir("stage", dir_fd=cleanup_fd)
+            os.rmdir(cleanup_name, dir_fd=parent_fd)
         except Exception:
             code = 5
-            report["retainedStage"] = stage_name
+            report["retainedStage"] = cleanup_name
             report["error"] = {"code": "SEED_CLEANUP_UNCONFIRMED", "message": "Private seed ownership or cleanup is uncertain; entries were retained."}
+        finally:
+            if cleanup_fd is not None:
+                os.close(cleanup_fd)
+    for original_file, _ in original_inputs.values():
+        original_file.close()
     for fd in (inputs_fd, stage_fd, source_fd, parent_fd):
         if fd is not None:
             os.close(fd)

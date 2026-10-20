@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const helper = resolve(import.meta.dir, "../../scripts/prepare-nocloud-seed.py");
@@ -124,3 +124,59 @@ for (const [name, bytes] of [["user-data", 65537], ["meta-data", 16385]] as cons
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 }
+
+for (const scenario of ["source-bytes", "source-directory"] as const) {
+  test(`seed construction rejects original ${scenario} drift before publication`, async () => {
+    const f = await fixture();
+    try {
+      const change = scenario === "source-bytes"
+        ? `Path(${JSON.stringify(join(f.source, "user-data"))}).write_text('concurrent replacement bytes')`
+        : `import os\nos.rename(${JSON.stringify(f.source)},${JSON.stringify(join(f.root, "moved-input"))})\nPath(${JSON.stringify(f.source)}).mkdir(mode=0o700)`;
+      const result = await run(f.source, f.output, await protocol(f.source, change));
+      expect(result.exit).not.toBe(0);
+      expect(result.result.ok).toBe(false);
+      expect(await Bun.file(f.output).exists()).toBe(false);
+      if (scenario === "source-bytes") expect(await readFile(join(f.source, "user-data"), "utf8")).toBe("concurrent replacement bytes");
+      else expect(await Bun.file(join(f.root, "moved-input", "meta-data")).exists()).toBe(true);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+}
+
+async function directoryInodes(root: string): Promise<number[]> {
+  const values: number[] = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const path = join(root, entry.name);
+    values.push((await lstat(path)).ino, ...await directoryInodes(path));
+  }
+  return values;
+}
+test("cleanup preserves a foreign directory substituted for the original stage name", async () => {
+  const f = await fixture(); const fact = join(f.root, "foreign-stage-inode");
+  try {
+    const change = `import os
+stage=Path.cwd()
+os.rename(stage,str(stage)+'-moved')
+stage.mkdir(mode=0o700)
+Path(${JSON.stringify(fact)}).write_text(str(stage.stat().st_ino))`;
+    const result = await run(f.source, f.output, await protocol(f.source, change));
+    expect(result.exit).toBe(5);
+    expect(result.result.ok).toBe(false);
+    expect(await directoryInodes(f.root)).toContain(Number(await readFile(fact, "utf8")));
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("cleanup claims a checked image before deletion and retains a raced foreign replacement", async () => {
+  const f = await fixture();
+  try {
+    const path = await protocol(f.source);
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/nocloud-cleanup-race.py"), helper, f.source, f.output, f.root], { env: { HOME: f.root, PATH: path }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 35000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const lines = stdout.trim().split("\n"); const result = JSON.parse(lines[0]!); const facts = JSON.parse(lines[1]!);
+    expect(facts.replacementInserted, stderr).toBe(true);
+    expect(exit).toBe(5);
+    expect(result).toMatchObject({ ok: false, error: { code: "SEED_CLEANUP_UNCONFIRMED" } });
+    expect(facts.foreignLocations).toHaveLength(1);
+    expect(await readFile(join(f.root, facts.foreignLocations[0]), "utf8")).toBe("foreign seed replacement must survive");
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});

@@ -265,3 +265,12 @@ zero spelling. Missing Job metadata and active job IDs remain refused. The
 Docker socket may require the implicit `system.slice` dependency; other slices
 or unreviewed dependencies are not admitted. Unit enablement, provenance and
 separate access/startup authority checks remain unchanged.
+
+The reviewed Docker socket may declare the root filesystem dependency `-.mount`.
+Systemd derives mount requirements from filesystem listener paths
+([socket source](https://github.com/systemd/systemd/blob/v255/src/core/socket.c)).
+Only this exact mount is admitted, only in `docker.socket` Requires. Access and
+startup observations require it to be active when declared, using an explicit
+`--` before its name. Startup includes the declared prerequisite in its plan and
+checksum and rejects declaration changes after authorization. No mount operation
+is authorized; arbitrary mount dependencies remain refused.

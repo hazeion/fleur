@@ -502,3 +502,57 @@ test("a running Docker socket paired with an inactive service cannot offer or ex
     expect(fixture.state.active).toBe(false);
   } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("service startup binds root readiness into its plan and preserves unused authority if root becomes inactive", async () => {
+  const fixture = await aptServiceFixture();
+  const run = fixture.host.run; const confirm = fixture.host.confirmHuman; let prompted = false;
+  fixture.host.confirmHuman = async (plan) => { prompted = true; return confirm(plan); };
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] !== "/usr/bin/systemctl") return result;
+    if (args.includes("is-active") && args.at(-1) === "-.mount") {
+      expect(args.at(-2)).toBe("--");
+      return prompted ? { ...result, exitCode: 3, stdout: "inactive\n" } : result;
+    }
+    if (args.at(-1) === "docker.socket" && args.some((arg) => arg.includes("Requires"))) return { ...result, stdout: result.stdout.replace("Requires=sysinit.target", "Requires=system.slice -.mount sysinit.target") };
+    return result;
+  };
+  try {
+    const plan = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(plan.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(plan.result.data).toMatchObject({ plan: { action: "service-start", externalDependencies: ["sysinit.target", "basic.target", "network-online.target", "system.slice", "-.mount"], checksum: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("HUMAN_ACTION_REQUIRED");
+    expect(fixture.prompts).toEqual(["service-start"]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    const grants = await runCli(["setup", "grants", "list", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(grants.result.data).toMatchObject({ grants: [{ action: "service-start", revoked: false }] });
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("startup does not inspect or bind an unreported root mount dependency", async () => {
+  const fixture = await aptServiceFixture();
+  try {
+    const result = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(result.result.data).toMatchObject({ plan: { externalDependencies: ["sysinit.target", "basic.target", "network-online.target", "system.slice"] } });
+    expect(fixture.calls.some((args) => args.includes("is-active") && args.at(-1) === "-.mount")).toBe(false);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("a newly declared root mount after startup authorization leaves the grant unused", async () => {
+  const fixture = await aptServiceFixture();
+  const run = fixture.host.run; const confirm = fixture.host.confirmHuman; let prompted = false;
+  fixture.host.confirmHuman = async (plan) => { prompted = true; return confirm(plan); };
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    return prompted && args[0] === "/usr/bin/systemctl" && args.at(-1) === "docker.socket" && args.some((arg) => arg.includes("Requires")) ? { ...result, stdout: result.stdout.replace("Requires=sysinit.target", "Requires=sysinit.target -.mount") } : result;
+  };
+  try {
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("HUMAN_ACTION_REQUIRED");
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    const grants = await runCli(["setup", "grants", "list", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(grants.result.data).toMatchObject({ grants: [{ action: "service-start", revoked: false }] });
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});

@@ -378,3 +378,110 @@ test("interactive APT startup discloses named units and vendor pre-start effects
     expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
   } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("an unrelated cloud-init FIFO listener does not block passive Docker readiness", async () => {
+  const fixture = await aptServiceFixture();
+  fixture.state.active = true;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const done = (stdout: string): HostCommandResult => { fixture.calls.push([...args]); return { status: "completed", exitCode: 0, stdout, stderr: "" }; };
+    if (args[0] === "/usr/bin/systemctl" && args.includes("list-units")) return done("cloud-init-hotplugd.socket loaded active listening cloud-init\n");
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "cloud-init-hotplugd.socket") return done("Id=cloud-init-hotplugd.socket\nLoadState=loaded\nActiveState=active\nSubState=listening\nListen=/run/cloud-init/share/hook-hotplug-cmd (FIFO)\nTriggers=cloud-init-hotplugd.service\n");
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === "/run/cloud-init/share/hook-hotplug-cmd") return done("1|600|fifo\n");
+    return run(args);
+  };
+  try {
+    const outcome = await runCli(["doctor", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(outcome.result.data).toMatchObject({ components: { daemon: { state: "ready" }, smoke: { state: "image-required" } } });
+    expect(fixture.calls.some((args) => args.includes("info"))).toBe(true);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.prompts).toEqual([]);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("a running activation socket with an already running Docker service permits passive readiness", async () => {
+  const fixture = await aptServiceFixture();
+  fixture.state.active = true;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    return args[0] === "/usr/bin/systemctl" && args.at(-1) === "docker.socket" ? { ...result, stdout: result.stdout.replace("SubState=listening", "SubState=running") } : result;
+  };
+  try {
+    const outcome = await runCli(["doctor", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(outcome.result.data).toMatchObject({ components: { daemon: { state: "ready" }, smoke: { state: "image-required" } } });
+    expect(fixture.calls.some((args) => args.includes("info"))).toBe(true);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.prompts).toEqual([]);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+for (const mode of ["socket-behind-fifo", "same-identity", "unavailable", "malformed", "unknown-kind", "unknown-relative-kind", "selected-fifo"] as const) test(`inconsistent ${mode} activation evidence blocks setup without daemon RPC`, async () => {
+  const fixture = await aptServiceFixture();
+  fixture.state.active = true;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const done = (stdout: string, exitCode = 0, stderr = ""): HostCommandResult => { fixture.calls.push([...args]); return { status: "completed", exitCode, stdout, stderr }; };
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === "/run/docker.sock" && mode === "selected-fifo") return done("1|500|fifo\n");
+    if (args[0] === "/usr/bin/systemctl" && args.includes("list-units")) return done("other.socket loaded active listening Other\n");
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "other.socket") return done(`Id=other.socket\nLoadState=loaded\nActiveState=active\nSubState=listening\nListen=${mode === "unknown-relative-kind" ? "9000" : "/run/other.fifo"} (${mode === "unknown-kind" || mode === "unknown-relative-kind" ? "Unreviewed" : "FIFO"})\nTriggers=other.service\n`);
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === "/run/other.fifo") {
+      expect(args).toContain("--dereference");
+      if (mode === "socket-behind-fifo") return done("1|600|socket\n");
+      if (mode === "same-identity") return done("0001|500|fifo\n");
+      if (mode === "unavailable") return done("", 1, "Permission denied");
+      if (mode === "malformed") return done("1|600|regular file\n");
+      return done("1|600|fifo\n");
+    }
+    return run(args);
+  };
+  try {
+    const outcome = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(outcome.result.data).toMatchObject({ components: { service: { state: "activation-unknown" } } });
+    expect(fixture.calls.some((args) => args.includes("info") || args[0] === "/usr/bin/sudo" || args[0] === "dpkg-query")).toBe(false);
+    expect(fixture.prompts).toEqual([]);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("an unrelated FIFO cannot hide a later running socket alias with a stopped activation target", async () => {
+  const fixture = await aptServiceFixture();
+  fixture.state.active = true;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const done = (stdout: string): HostCommandResult => { fixture.calls.push([...args]); return { status: "completed", exitCode: 0, stdout, stderr: "" }; };
+    if (args[0] === "/usr/bin/systemctl" && args.includes("list-units")) return done("other.socket loaded active listening Other\ncustom.socket loaded active running Custom\n");
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "other.socket") return done("Id=other.socket\nLoadState=loaded\nActiveState=active\nSubState=listening\nListen=/run/other.fifo (FIFO)\nTriggers=other.service\n");
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "custom.socket") return done("Id=custom.socket\nLoadState=loaded\nActiveState=active\nSubState=running\nListen=/run/alias.sock (Stream)\nTriggers=custom.service\n");
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "custom.service") return done("Id=custom.service\nLoadState=loaded\nActiveState=inactive\nSubState=dead\n");
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === "/run/other.fifo") return done("1|600|fifo\n");
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === "/run/alias.sock") return done("0001|500|socket\n");
+    return run(args);
+  };
+  try {
+    const outcome = await runCli(["doctor", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(outcome.result.data).toMatchObject({ components: { service: { state: "activation-needed", sockets: ["custom.socket"], triggers: ["custom.service"] } } });
+    expect(fixture.calls.some((args) => args.includes("custom.service"))).toBe(true);
+    expect(fixture.calls.some((args) => args.includes("info") || args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.prompts).toEqual([]);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("an unrelated running socket remains compatible with an already running Docker daemon", async () => {
+  const fixture = await aptServiceFixture();
+  fixture.state.active = true;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const done = (stdout: string): HostCommandResult => { fixture.calls.push([...args]); return { status: "completed", exitCode: 0, stdout, stderr: "" }; };
+    if (args[0] === "/usr/bin/systemctl" && args.includes("list-units")) return done("other.socket loaded active running Other\n");
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "other.socket") return done("Id=other.socket\nLoadState=loaded\nActiveState=active\nSubState=running\nListen=/run/other.sock (Stream)\nTriggers=other.service\n");
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === "/run/other.sock") return done("1|600|socket\n");
+    return run(args);
+  };
+  try {
+    const outcome = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(outcome.result.data).toMatchObject({ plan: { action: "image-acquire" } });
+    expect(fixture.calls.some((args) => args.includes("info"))).toBe(true);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.prompts).toEqual([]);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});

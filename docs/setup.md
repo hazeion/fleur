@@ -216,3 +216,13 @@ metadata or uncertain command termination preserve recovery evidence and block
 replay. Cleanup uses no sudo operation and never removes a global APT cache.
 Command fixtures cover this behavior; actual sandbox-account ownership changes
 and successful native installation still require the guest verification gate.
+
+Passive activation observation recognizes loaded sockets in stable listening or
+running states. A matching socket still blocks Docker RPC unless every reported
+activation target is already an active, running service. Filesystem listeners
+must match their declared kind: Stream, Datagram and SequentialPacket endpoints
+must be sockets; FIFO endpoints must be FIFOs with a distinct device/inode from
+the selected Docker socket. Unknown kinds, inaccessible paths, conflicting types
+and inconsistent identities remain activation-unknown. Finding an unrelated FIFO
+does not stop inspection of the remaining socket owners. These passive checks do
+not grant service startup authority or contact the daemon.

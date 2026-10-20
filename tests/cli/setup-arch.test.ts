@@ -32,7 +32,7 @@ test("missing Arch Docker packages require installation, configuration and acces
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "untrusted" | "extra-dependency" | "partial" | "timeout" | "missing-key" | "foreign-removal" | "conflict-question" | "marker-sync-failure" | "marker-remove-sync-failure") {
+async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "untrusted" | "extra-dependency" | "partial" | "timeout" | "missing-key" | "foreign-removal" | "conflict-question" | "marker-sync-failure" | "marker-remove-sync-failure" | "unconfirmed") {
   const { writeFile, readFile, mkdir, readdir, lstat } = await import("node:fs/promises");
   const directory = await mkdtemp("/tmp/fleur-arch-install-");
   const bytes = Object.fromEntries(Object.keys(packages).map((name) => [name, Buffer.from(`disposable archive ${name}\n`)]));
@@ -110,13 +110,13 @@ async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "un
           if (await guard.exited !== 0) return done("", 1, "PreTransaction guard rejected changed package state");
           if (mode === "foreign-removal") foreignPresent = false;
           for (const name of Object.keys(packages)) installed.add(name);
-          return done();
+          return mode === "unconfirmed" ? { ...done(), terminationUnconfirmed: true } : done();
         }
         throw new Error(`Unexpected fixture operation: ${args[0]}`);
       },
     }, [fixtureProfile]);
     const outcome = await runCli(["setup"], { cwd: "/tmp", handlers });
-    const retry = mode === "timeout" ? await runCli(["setup"], { cwd: "/tmp", handlers }) : undefined;
+    const retry = mode === "timeout" || mode === "unconfirmed" ? await runCli(["setup"], { cwd: "/tmp", handlers }) : undefined;
     return { outcome, retry, installed, calls, baseline, authorized, importedKeys, foreignPresent, stateEntries: await readdir(join(directory, "state")) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -202,5 +202,14 @@ test("failure to durably remove a completed Arch transaction fence cannot report
   expect(installed.size).toBe(4);
   expect(outcome.exitCode).toBe(5);
   expect(outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(stateEntries.some((name) => name.startsWith("arch-") && name !== "arch-transaction-pending.json")).toBe(true);
+});
+
+test("unconfirmed Arch installer termination retains its pending fence even with a successful-looking exit", async () => {
+  const { outcome, retry, installed, stateEntries } = await archScenario("unconfirmed");
+  expect(installed.size).toBe(4);
+  expect(outcome.exitCode).toBe(5);
+  expect(retry?.exitCode).toBe(5);
+  expect(stateEntries).toContain("arch-transaction-pending.json");
   expect(stateEntries.some((name) => name.startsWith("arch-") && name !== "arch-transaction-pending.json")).toBe(true);
 });

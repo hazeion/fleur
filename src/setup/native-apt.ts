@@ -1,3 +1,5 @@
+import { setupLinuxAccess } from "./linux-access.ts";
+import { aptServicePolicy } from "./apt-service.ts";
 import { setupAptService } from "./apt-service.ts";
 import { aptHealthArgs, healthyDpkgSnapshot } from "./apt-health.ts";
 import { constants } from "node:fs";
@@ -36,7 +38,7 @@ function exactSimulation(stdout: string, packages: Readonly<Record<string, strin
   return installed.size === Object.keys(packages).length;
 }
 
-export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false): Promise<CliOutcome> {
+export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
   if (!validAptProfile(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
   const requiredAuthorities = ["install", "configuration", "docker-access", "service-start", "service-enable"] as const;
   const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify(profile), "hex");
@@ -50,6 +52,7 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
       const pendingPath = join(stateDirectory(host), "apt-transaction-pending.json");
       try { await lstat(pendingPath); return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "An earlier privileged APT transaction has no confirmed terminal result; its private artifacts were preserved.", actions: [] }, { ...diagnostic, resumable: true }); }
       catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+      if (actual.missing.length === 0 && daemonDenied && endpoint) return setupLinuxAccess(input, host, identity, aptServicePolicy(profile), remaining, endpoint);
       if (actual.missing.length === 0 && !daemonReady && endpoint) return setupAptService(input, host, identity, profile, remaining, endpoint);
       if (actual.missing.length === 0) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Exact packages are already configured. Run doctor to verify service access and disposable smoke readiness.", actions: [{ command: "fleur doctor", description: "Verify the installed native prerequisites." }] }, diagnostic);
       const specified = input.args[0] === "--grant" ? input.args[1] : undefined;

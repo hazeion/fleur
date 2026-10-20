@@ -49,7 +49,7 @@ function parseProperties(text: string, unit: string): Record<string, string> {
   if (Object.keys(result).length !== properties.length || result.Id !== unit) throw new Error("Incomplete unit metadata");
   return result;
 }
-async function observe(host: SetupHost, remaining: () => number, policy: LinuxServicePolicy) {
+export async function observeLinuxService(host: SetupHost, remaining: () => number, policy: LinuxServicePolicy) {
   const observed: Record<string, Record<string, string>> = {};
   for (const unit of units) {
     const value = parseProperties(await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "show", "--all", "--no-pager", `--property=${properties.join(",")}`, unit]), unit);
@@ -82,7 +82,7 @@ export async function setupLinuxService(input: CommandInput, host: SetupHost, id
   const sync = () => (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
   try {
     try { await lstat(pendingPath); throw new ServiceRecovery("Earlier service operation is unresolved"); } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
-    const observed = await observe(host, remaining, policy);
+    const observed = await observeLinuxService(host, remaining, policy);
     if (observed["docker.service"]!.ActiveState === "active") return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The Docker service is already active. Access and runtime readiness need separate observation; no restart was attempted.", actions: [{ command: "fleur doctor", description: "Inspect current-user readiness." }] });
     await policy.provenance(host, remaining);
     for (const unit of externalDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", unit]);
@@ -109,7 +109,7 @@ export async function setupLinuxService(input: CommandInput, host: SetupHost, id
     const beforeComponents = diagnostic(diagnostic(before.result.data).components);
     if (!permitsArchSystemStart(beforeComponents.service)) return { ...before, result: { ...before.result, command: "setup" } };
     if (currentEndpoint !== endpoint || JSON.stringify(await host.host()) !== JSON.stringify(identity)) return manual("The selected endpoint or machine changed; no service action was taken.");
-    const fresh = await observe(host, remaining, policy);
+    const fresh = await observeLinuxService(host, remaining, policy);
     if (fresh["docker.service"]!.ActiveState === "active") return { ...before, result: { ...before.result, command: "setup" } };
     await policy.provenance(host, remaining);
     for (const unit of externalDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", unit]);
@@ -130,7 +130,7 @@ export async function setupLinuxService(input: CommandInput, host: SetupHost, id
       return manual("OS authentication is required. Complete it outside Fleur and inspect fresh service-start authority before retrying.");
     }
     if (!terminal(result)) throw new ServiceRecovery("Privileged start has no confirmed terminal result");
-    const after = await observe(host, remaining, policy);
+    const after = await observeLinuxService(host, remaining, policy);
     if (units.some((unit) => after[unit]!.ActiveState !== "active" || after[unit]!.UnitFileState !== observed[unit]!.UnitFileState)) throw new ServiceRecovery("Service activation or unchanged enablement unconfirmed");
     await policy.provenance(host, remaining);
     // The privileged operation is terminal and its declared units are confirmed before retiring its fence.

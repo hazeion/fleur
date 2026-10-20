@@ -1,3 +1,4 @@
+import { write } from "node:fs";
 import type { SetupHost } from "../src/setup/commands.ts";
 function excerpt(value: string): { text: string; truncated: boolean } {
   const bytes = Buffer.from(value);
@@ -13,7 +14,7 @@ export function observeCandidateCommands(host: SetupHost): SetupHost {
     if (args[0] === "sudo" && args[1] === "-n" && args[2] === "apt-get" && args.includes("--simulate") && args.includes("--no-download") && install > 2 && args.slice(install + 1).length > 0 && args.slice(install + 1).every((path) => path.startsWith("/") && path.endsWith(".deb"))) {
       const stdout = excerpt(result.stdout); const stderr = excerpt(result.stderr);
       const trace = { formatVersion: 1, phase: "apt-local-archive-plan", status: result.status, exitCode: result.exitCode ?? null, terminationUnconfirmed: result.terminationUnconfirmed === true, stdout: stdout.text, stderr: stderr.text, stdoutTruncated: stdout.truncated, stderrTruncated: stderr.truncated };
-      try { process.stderr.write("FLEUR_NATIVE_COMMAND_OBSERVATION " + JSON.stringify(trace) + "\n"); } catch { /* Observation cannot alter the original command result. */ }
+      try { write(process.stderr.fd, Buffer.from("FLEUR_NATIVE_COMMAND_OBSERVATION " + JSON.stringify(trace) + "\n"), () => {}); } catch { /* Observation cannot alter the original command result. */ }
     }
     return result;
   } };

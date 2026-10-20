@@ -226,6 +226,34 @@ test("produced candidate observes the unchanged privileged local-plan command re
     const trace = JSON.parse(evaluated.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length));
     expect(trace).toMatchObject({ formatVersion: 1, phase: "apt-local-archive-plan", status: "completed", exitCode: 100, stdout: "local plan diagnostic\n", stderr: "E: fixture resolver refused\n", stdoutTruncated: false, stderrTruncated: false });
     expect(await readFile(join(scratch, "calls"), "utf8")).toBe("called\n");
+    const ptyProgram = `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},1000,{cwd:${JSON.stringify(scratch)}})));`;
+    const ptyScript = `import os,pty,subprocess,select,time,json,signal
+master,slave=pty.openpty(); child=None; data=bytearray()
+try:
+ child=subprocess.Popen(${JSON.stringify([process.execPath, "--eval", "__PROGRAM__"]).replace('"__PROGRAM__"', JSON.stringify(ptyProgram))},stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=slave,start_new_session=True)
+ os.close(slave); slave=-1; deadline=time.monotonic()+5
+ while time.monotonic()<deadline:
+  if select.select([master],[],[],0.05)[0]:
+   try: part=os.read(master,16384)
+   except OSError: break
+   if not part: break
+   data.extend(part)
+   if len(data)>65536: raise RuntimeError('PTY output bound')
+  if child.poll() is not None: break
+ stdout,_=child.communicate(timeout=max(0.01,deadline-time.monotonic()))
+ print(json.dumps({'exit':child.returncode,'stdout':stdout.decode(),'stderr':data.decode()}))
+finally:
+ if child is not None and child.poll() is None: os.killpg(child.pid,signal.SIGKILL);child.wait()
+ if slave>=0: os.close(slave)
+ os.close(master)
+`;
+    const pty = await command(["/usr/bin/python3", "-c", ptyScript], scratch, { ...environment, PATH: tools });
+    expect(pty.exit, pty.stderr).toBe(0);
+    const ptyResult = JSON.parse(pty.stdout);
+    expect(ptyResult.exit).toBe(0);
+    expect(JSON.parse(ptyResult.stdout)).toMatchObject({ exitCode: 100, stdout: "local plan diagnostic\n", stderr: "E: fixture resolver refused\n" });
+    expect(JSON.parse(ptyResult.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ phase: "apt-local-archive-plan", exitCode: 100 });
+
     const longOutput = "é".repeat(2047) + "€" + "\n\u001b[31m";
     const bounded = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},1000,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools, OBS_TEXT: longOutput });
     expect(bounded.exit).toBe(0);
@@ -241,17 +269,43 @@ test("produced candidate observes the unchanged privileged local-plan command re
       expect(JSON.parse(negative.stdout)).toMatchObject({ exitCode: 100, stdout: "local plan diagnostic\n", stderr: "E: fixture resolver refused\n" });
       expect(negative.stderr).toBe("");
     }
-    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(8);
+    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(9);
     const expired = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},0,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools });
     expect(expired.exit).toBe(0);
     expect(JSON.parse(expired.stdout)).toEqual({ status: "timeout", stdout: "", stderr: "" });
     expect(JSON.parse(expired.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ status: "timeout", exitCode: null, stdout: "", stderr: "" });
-    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(8);
+    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(9);
     const exceptional = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});const sentinel=new Error('owned context getter');try{await observeCandidateCommands(productionHost()).run(${JSON.stringify(args)},1000,{get outputLimitBytes(){throw sentinel;}});process.exit(9);}catch(error){console.log(JSON.stringify({sameException:error===sentinel}));}`], scratch, { ...environment, PATH: tools });
     expect(exceptional.exit).toBe(0);
     expect(JSON.parse(exceptional.stdout)).toEqual({ sameException: true });
     expect(exceptional.stderr).toBe("");
-    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(8);
+    expect((await readFile(join(scratch, "calls"), "utf8")).trim().split("\n")).toHaveLength(9);
 
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);
+
+test("a closed diagnostic pipe preserves the original candidate command outcome", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-closed-trace-"));
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const output = join(scratch, "artifacts");
+    const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
+    expect(built.exit, built.stderr).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", scratch], scratch, environment)).exit).toBe(0);
+    const tools = join(scratch, "tools"); await mkdir(tools);
+    await writeFile(join(tools, "sudo"), `#!${process.execPath}\nconst until=Date.now()+3000;while(!await Bun.file(process.env.PROBE_GATE).exists()){if(Date.now()>until)process.exit(124);await Bun.sleep(10);}process.stdout.write('owned-command-result\\n');process.stderr.write('owned-command-error\\n');process.exit(100);\n`, { mode: 0o700 });
+    for (const [observed, full] of [[false, false], [true, false], [true, true]]) {
+      const gate = join(scratch, (observed ? "observed" : "baseline") + (full ? "-full" : ""));
+      const witness = gate + "-witness";
+      const child = Bun.spawn([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(join(scratch, "package/bin/candidate-command-observer.ts"))});process.stderr.write('INTERNAL NATIVE CANDIDATE disclosure\\n');if(${full}){const {writeSync}=await import('node:fs');let bytes=0,errorCode=null;for(let i=0;i<1000;i++){try{bytes+=writeSync(2,Buffer.alloc(4096,120));}catch(error){errorCode=error.code;break;}}await Bun.write(${JSON.stringify(witness)},JSON.stringify({bytes,errorCode}));}const host=productionHost();console.log(JSON.stringify(await (${observed}?observeCandidateCommands(host):host).run(['sudo','-n','apt-get','--simulate','--no-download','install','/owned/frozen.deb'],4000)));`], { cwd: scratch, env: { ...environment, PATH: tools, PROBE_GATE: gate }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 6000, killSignal: "SIGKILL" });
+      const reader = child.stderr.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("INTERNAL NATIVE CANDIDATE disclosure");
+      if (!full) await reader.cancel();
+      await writeFile(gate, "release", { flag: "wx" });
+      const [stdout, exit] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      expect(JSON.parse(stdout)).toEqual({ status: "completed", stdout: "owned-command-result\n", stderr: "owned-command-error\n", exitCode: 100 });
+      if (full) { await reader.cancel(); expect(JSON.parse(await readFile(witness, "utf8"))).toMatchObject({ bytes: expect.any(Number), errorCode: "EAGAIN" }); }
+      expect(exit).toBe(0);
+    }
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }, 20000);

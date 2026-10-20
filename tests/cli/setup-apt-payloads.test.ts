@@ -2,14 +2,16 @@ import { expect, test } from "bun:test";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/main.ts";
-import { setupCommands } from "../../src/setup/commands.ts";
+import { setupCommands, type HostCommandResult } from "../../src/setup/commands.ts";
 import { dockerRepositoryKey } from "../../src/setup/docker-key.ts";
-import { aptArtifactProtocol, aptFixtureArtifacts, aptGuardProtocol, aptHealthProtocol } from "./fixtures/apt-artifacts.ts";
+import { aptArtifactProtocol, aptFixtureArtifacts, aptGuardProtocol, aptHealthProtocol, type AptGuardFault } from "./fixtures/apt-artifacts.ts";
 
 const packages = { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" };
 const profile = { method: "docker-official-apt" as const, verified: true as const, distribution: "ubuntu" as const, release: "24.04", architecture: "x64" as const, repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages, artifacts: aptFixtureArtifacts(packages) };
 
 interface PayloadOptions {
+  readonly guardFault?: AptGuardFault;
+  readonly guardSink?: "closed" | "full";
   readonly isolatedLocalSources?: boolean;
   readonly sourceCreationCollision?: "config" | "parts";
   readonly sourceTamper?: "list-bytes" | "config-bytes" | "list-symlink" | "config-symlink" | "list-hardlink" | "config-mode" | "parts-entry" | "parts-replaced" | "parts-mode";
@@ -33,6 +35,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   const selectedProfile = { ...profile, packages: selectedPackages, artifacts: aptFixtureArtifacts(selectedPackages) };
   const directory = await mkdtemp("/tmp/fleur-apt-payload-");
   let privilegedInstalls = 0;
+  const guardResults: HostCommandResult[] = [];
   let plannedScope: string[] | undefined;
   let sourceMutated = false;
   let actualForeignPath: string | undefined;
@@ -178,7 +181,8 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
             const path = args[args.indexOf("install") + 1]!;
             const bytes = await readFile(path); bytes[bytes.length - 2] = 88; await writeFile(path, bytes);
           }
-          const guarded = await aptGuardProtocol(args, selectedPackages, options.latePending ? ["another-application\t1\tunpacked\tok"] : []);
+          const guarded = await aptGuardProtocol(args, selectedPackages, options.latePending ? ["another-application\t1\tunpacked\tok"] : [], options.guardFault, options.guardSink);
+          guardResults.push(guarded);
           if (guarded.exitCode !== 0) return guarded;
           privilegedInstalls++; installed = true;
           if (options.uncertain === "timeout") return { status: "timeout", stdout: "", stderr: "" };
@@ -191,7 +195,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
     const outcome = await runCli(["setup"], { cwd: directory, handlers });
     const retry = options.uncertain ? await runCli(["setup"], { cwd: directory, handlers }) : undefined;
     const authorityAfterResolution = options.uncertainResolution ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
-    return { outcome, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
+    return { outcome, guardResults, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
@@ -360,3 +364,44 @@ for (const sourceCreationCollision of ["config", "parts"] as const) {
     expect(result.collisionBytes).toBe("preserve actual foreign collision bytes\n");
   });
 }
+
+
+test("an actual APT guard refusal identifies its validation stage without exposing package state", async () => {
+  const result = await payloadScenario(false, false, { latePending: true });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.guardResults).toHaveLength(1);
+  expect(result.guardResults[0]).toMatchObject({ exitCode: 100, stdout: "" });
+  expect(result.guardResults[0]!.stderr).toBe('FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"package-inventory"}\n');
+});
+
+
+test.each([
+  ["invocation", "invocation"], ["plan-mode", "plan-file"], ["plan-json", "plan-schema"], ["plan-schema", "plan-schema"],
+  ["protocol-header", "protocol-input"], ["protocol-config", "protocol-config"], ["protocol-action", "protocol-actions"],
+  ["package-state", "package-state"], ["archive-identity", "archive-identity"], ["archive-digest", "archive-digest"],
+] as const)("the real APT guard reports %s refusal without leaking rejected input", async (guardFault, stage) => {
+  const result = await payloadScenario(false, false, { guardFault });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.guardResults).toHaveLength(1);
+  expect(result.guardResults[0]).toEqual({ status: "completed", exitCode: 100, stdout: "", stderr: `FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"${stage}"}\n` });
+  expect(result.outcome.exitCode).not.toBe(0);
+  expect(JSON.stringify(result.outcome)).not.toContain("PRIVATE-SENTINEL");
+});
+
+test("a successful real APT guard preserves its receipt and emits no refusal diagnostic", async () => {
+  const result = await payloadScenario(false);
+  expect(result.privilegedInstalls).toBe(1);
+  expect(result.guardResults).toHaveLength(1);
+  expect(result.guardResults[0]).toMatchObject({ status: "completed", exitCode: 0, stderr: "" });
+  expect(result.guardResults[0]!.stdout).toMatch(/^\[fleur-apt-guard\] [a-f0-9]{64}\n$/);
+  expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed" } });
+});
+
+
+test.each(["closed", "full"] as const)("a %s diagnostic pipe leaves the real APT guard refusal unchanged", async (guardSink) => {
+  const result = await payloadScenario(false, false, { guardFault: "invocation", guardSink });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.guardResults).toEqual([{ status: "completed", exitCode: 100, stdout: "", stderr: "" }]);
+}, 10000);

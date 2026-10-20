@@ -1,5 +1,5 @@
-import { writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { readFile, writeFile, chmod } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { AptInstallProfile } from "../../../src/setup/native.ts";
 import type { HostCommandResult } from "../../../src/setup/commands.ts";
 
@@ -39,14 +39,16 @@ export async function aptArtifactProtocol(args: readonly string[], context: { re
   return undefined;
 }
 
+export type AptGuardFault = "invocation" | "plan-mode" | "plan-json" | "plan-schema" | "protocol-header" | "protocol-config" | "protocol-action" | "package-state" | "archive-identity" | "archive-digest";
+
 /** Executes the actual source-owned hook through a disposable external APT/dpkg fixture. */
-export async function aptGuardProtocol(args: readonly string[], packages: Readonly<Record<string, string>>, rows: readonly string[]): Promise<HostCommandResult> {
+export async function aptGuardProtocol(args: readonly string[], packages: Readonly<Record<string, string>>, rows: readonly string[], fault?: AptGuardFault, sink?: "closed" | "full"): Promise<HostCommandResult> {
   const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
   const directory = await mkdtemp("/tmp/fleur-apt-guard-fixture-");
   try {
     const bin = join(directory, "bin"); await mkdir(bin);
     await writeFile(join(bin, "dpkg-query"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify([...rows, "unrelated-sentinel\\t1\\tinstalled\\tok".replaceAll("\\t", "\t")].join("\n") + "\n")});\n`, { mode: 0o700 });
-    const command = args.find((arg) => arg.startsWith("DPkg::Pre-Install-Pkgs::="))?.slice("DPkg::Pre-Install-Pkgs::=".length);
+    let command = args.find((arg) => arg.startsWith("DPkg::Pre-Install-Pkgs::="))?.slice("DPkg::Pre-Install-Pkgs::=".length);
     if (!command) return { status: "completed", exitCode: 0, stdout: "", stderr: "" }; // Models an unguarded ordinary APT invocation.
     const paths = args.slice(args.indexOf("install") + 1);
     const actions = paths.flatMap((path) => {
@@ -54,9 +56,40 @@ export async function aptGuardProtocol(args: readonly string[], packages: Readon
       if (!Object.hasOwn(packages, name)) throw new Error("Unexpected fixture archive action");
       return [`${name} - < ${packages[name]} ${path}`, `${name} - < ${packages[name]} **CONFIGURE**`];
     });
-    const protocol = "VERSION 2\nRootDir=/\nDir::State::status=/var/lib/dpkg/status\nDebug::NoLocking=false\n\n" + actions.join("\n") + "\n";
-    const guard = Bun.spawn(["/bin/sh", "-c", command], { env: { PATH: bin, APT_HOOK_INFO_FD: "0", DPKG_FRONTEND_LOCKED: "true" }, stdin: Buffer.from(protocol), stdout: "pipe", stderr: "pipe" });
+    let protocol = "VERSION 2\nRootDir=/\nDir::State::status=/var/lib/dpkg/status\nDebug::NoLocking=false\n\n" + actions.join("\n") + "\n";
+    const env = { PATH: bin, APT_HOOK_INFO_FD: "0", DPKG_FRONTEND_LOCKED: "true" };
+    if (fault === "invocation") env.APT_HOOK_INFO_FD = "PRIVATE-SENTINEL\n\u001b[31m";
+    if (fault === "protocol-header") protocol = protocol.replace("VERSION 2", "PRIVATE-SENTINEL\u001b[31m");
+    if (fault === "protocol-config") protocol = protocol.replace("RootDir=/", "RootDir=%PRIVATE-SENTINEL");
+    if (fault === "protocol-action") protocol += "PRIVATE-SENTINEL\u001b[31m\n";
+    if (fault === "package-state") await writeFile(join(bin, "dpkg-query"), `#!${process.execPath}\nprocess.stdout.write('docker-ce\\t1\\tinstalled\\tok\\n');\n`, { mode: 0o700 });
+    if (fault === "archive-identity") await writeFile(paths[0]!, "PRIVATE-SENTINEL");
+    if (fault === "archive-digest") { const bytes = await readFile(paths[0]!); bytes[0] = 88; await writeFile(paths[0]!, bytes); }
+    const plan = join(dirname(dirname(paths[0]!)), "apt-plan.json");
+    const original = fault?.startsWith("plan-") ? await readFile(plan) : undefined;
+    if (fault === "plan-mode") await chmod(plan, 0o644);
+    if (fault === "plan-json" || fault === "plan-schema") {
+      const altered = Buffer.from(fault === "plan-json" ? "PRIVATE-SENTINEL\n\u001b[31m" : '{"private":"PRIVATE-SENTINEL"}');
+      await writeFile(plan, altered);
+      command = command.replace(Bun.CryptoHasher.hash("sha256", original!, "hex"), Bun.CryptoHasher.hash("sha256", altered, "hex"));
+    }
+    if (sink) {
+      const gate = join(directory, "release"); const witness = join(directory, "fill-witness");
+      // This owned wrapper fills/closes only the diagnostic sink before executing the real hook.
+      const wrapper = `process.stderr.write('OWNED GUARD PIPE\\n');if(${sink === "full"}){const {writeSync}=await import('node:fs');let errorCode=null;for(let i=0;i<1000;i++){try{writeSync(2,Buffer.alloc(4096,120));}catch(error){errorCode=error.code;break;}}await Bun.write(${JSON.stringify(witness)},JSON.stringify({errorCode}));}const deadline=Date.now()+3000;while(!await Bun.file(${JSON.stringify(gate)}).exists()){if(Date.now()>deadline)process.exit(124);await Bun.sleep(5);}const child=Bun.spawn(['/bin/sh','-c',${JSON.stringify(command)}],{stdin:'inherit',stdout:'inherit',stderr:'inherit'});process.exitCode=await child.exited;`;
+      const child = Bun.spawn([process.execPath, "--eval", wrapper], { env, stdin: Buffer.from(protocol), stdout: "pipe", stderr: "pipe", timeout: 6000, killSignal: "SIGKILL" });
+      const reader = child.stderr.getReader();
+      if (!new TextDecoder().decode((await reader.read()).value).includes("OWNED GUARD PIPE")) throw new Error("Missing owned pipe ordering witness");
+      if (sink === "closed") await reader.cancel();
+      await writeFile(gate, "release", { flag: "wx" });
+      const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      if (sink === "full") { await reader.cancel(); if (JSON.parse(await readFile(witness, "utf8")).errorCode !== "EAGAIN") throw new Error("Diagnostic pipe did not reach EAGAIN"); }
+      if (exitCode !== 1) throw new Error(`Guard refusal exit changed with ${sink} pipe: ${exitCode}`);
+      return { status: "completed", exitCode: 100, stdout, stderr: "" };
+    }
+    const guard = Bun.spawn(["/bin/sh", "-c", command], { env, stdin: Buffer.from(protocol), stdout: "pipe", stderr: "pipe", timeout: 6000, killSignal: "SIGKILL" });
     const [stdout, stderr, exitCode] = await Promise.all([new Response(guard.stdout).text(), new Response(guard.stderr).text(), guard.exited]);
+    if (original) { await writeFile(plan, original); await chmod(plan, 0o600); }
     return { status: "completed", exitCode: exitCode === 0 ? 0 : 100, stdout, stderr };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }

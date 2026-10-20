@@ -183,3 +183,11 @@ APT setup excludes optional recommended and suggested packages consistently in i
 APT artifact resolution accepts the frozen URL literally or its exact APT path encoding for plus, tilde and percent. It does not decode arbitrary returned URLs or broaden their origin or path. The exact size, payload hash and package control checks remain required. An unconfirmed URI-resolution process stops with recovery required before acquisition authority is consumed or a payload download begins.
 
 After signed-repository planning and authenticated payload acquisition, APT's privileged local-archive simulation and installation use the same owned empty source list and source-parts directory. An owned literal configuration clears inherited `APT::Sources::With` entries before the fixed command options are applied. Installed dependencies still come from the actual package database; missing dependencies fail instead of being fetched. Setup verifies these inputs' exact bytes, ownership, modes and identities before both commands and checks the directory for any entry. Changes retain recovery state. No repository configuration or package cache is replaced. This behavior has command-protocol coverage; actual native installation remains a separate verification requirement.
+
+The APT pre-install guard emits a bounded `FLEUR_APT_GUARD_REFUSAL` stderr record
+when it refuses the operation. Version 1 contains only a fixed validation-stage
+name, without input values, paths, package state or exception details. The stage
+identifies the last validation group reached; it does not prove the cause of a
+failure or the resulting package state. Delivery is best effort, so an absent
+record supplies no diagnostic evidence. This does not change the public setup
+result, grant consumption, recovery checks or the required success receipt.

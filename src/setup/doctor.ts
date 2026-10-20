@@ -1,3 +1,4 @@
+import { hasPendingLinuxAccess } from "./access-pending.ts";
 import { hasPendingArchService, hasPendingAptService } from "./service-pending.ts";
 import { observeEndpointActivation } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
@@ -32,6 +33,7 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
     }
     if (typeof endpoint !== "string" || !endpoint.startsWith("unix:///") || endpoint.length <= 8 || endpoint.length > 4096 || [...endpoint].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) || /[?#]/.test(endpoint) || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(endpoint)) return failure("doctor", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "A local Unix Docker endpoint is required; global context was preserved.", actual: typeof endpoint === "string" && endpoint && !endpoint.startsWith("unix:") ? "remote endpoint" : "malformed endpoint", actions: [{ command: "fleur doctor", description: "Select an existing compatible local endpoint outside Fleur and retry." }] });
     localEndpoint?.(endpoint);
+    if (["arch", "ubuntu", "debian"].includes(identity.distribution ?? "") && ["unix:///run/docker.sock", "unix:///var/run/docker.sock"].includes(endpoint) && await hasPendingLinuxAccess(host)) return failure("doctor", 5, { code: "RECOVERY_REQUIRED", message: "An earlier Docker access operation is unresolved. Its pending state was preserved; no daemon RPC was sent.", actions: [] });
     if (identity.distribution === "arch" && ["unix:///run/docker.sock", "unix:///var/run/docker.sock"].includes(endpoint) && await hasPendingArchService(host)) return failure("doctor", 5, { code: "RECOVERY_REQUIRED", message: "An earlier privileged service operation is unresolved. Its pending state was preserved; no daemon RPC was sent.", actions: [] });
     if (["ubuntu", "debian"].includes(identity.distribution ?? "") && ["unix:///run/docker.sock", "unix:///var/run/docker.sock"].includes(endpoint) && await hasPendingAptService(host)) return failure("doctor", 5, { code: "RECOVERY_REQUIRED", message: "An earlier privileged service operation is unresolved. Its pending state was preserved; no daemon RPC was sent.", actions: [] });
     if (["arch", "ubuntu", "debian"].includes(identity.distribution ?? "")) {

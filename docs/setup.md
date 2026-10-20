@@ -83,7 +83,8 @@ The disabled native catalog also has an executable Arch x86_64 adapter for the
 exact authenticated October 12, 2026 package inventory. Installation,
 configuration hooks and system Docker group creation require separate scoped
 grants. Installing packages does not authorize starting/enabling services or
-adding a user to the Docker group; those actions remain separate work.
+adding a user to the Docker group. Service startup has its own scoped action;
+Arch user enrollment remains a separate pending adapter slice.
 
 The adapter preserves exact existing packages and downloads only missing pinned
 archives into private staging. It checks size, digest, exact signer and current
@@ -144,3 +145,31 @@ installation.
 
 See [Linux service startup](setup-arch-services.md) for the separate startup
 authority and the native verification still required before profile admission.
+
+### Ordinary-user Docker access on APT
+
+Exact installed APT profiles can separately propose adding the current local user
+to the system Docker group. This grants **root-equivalent daemon access**; the
+human confirmation and grant target state that privilege explicitly. An install
+grant for package-created groups cannot authorize user enrollment. The plan binds
+the current UID/local account, Docker GID, actual socket identity, authenticated
+profile and observed active service configuration. Custom/rootless endpoints and
+unverified or inactive services require separate human action.
+
+Already-enrolled users whose current session lacks the group receive new-login
+guidance without another prompt or membership change. If the session already
+has the group but access is denied, setup preserves the account and reports an
+OS access-policy action. Missing membership requires a separately matching
+`docker-access` grant. Setup rechecks identities and authority before a bounded,
+noninteractive additive `usermod` operation targeting the validated `docker`
+group name, preserves all other memberships,
+and still requires a new login. It never invokes root Docker or a replacement
+shell, changes socket ownership/mode, or starts/enables a service as part of
+enrollment. A fresh session must prove its own ordinary-user access.
+
+Once authority is consumed durably before the operation. Uncertain completion
+or pending-fence durability failures return recovery status and block daemon
+RPC/replay. Confirmed authentication failures preserve observed memberships and
+require fresh authority. These public disposable-host fixtures do not prove
+native NSS/locking, privileged descendant termination or actual session refresh.
+Native profiles remain disabled; Arch enrollment reuse remains pending.

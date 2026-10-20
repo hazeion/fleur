@@ -259,3 +259,9 @@ when the Docker service is also active and running. An inconsistent or
 transitional pair requires human inspection. Enrollment still checks package and
 unit provenance, local user/group identity and socket ownership, then requires
 its own scoped Docker-access grant; it does not start or restart services.
+
+Service metadata treats a present empty `Job=` as idle, alongside the supported
+zero spelling. Missing Job metadata and active job IDs remain refused. The
+Docker socket may require the implicit `system.slice` dependency; other slices
+or unreviewed dependencies are not admitted. Unit enablement, provenance and
+separate access/startup authority checks remain unchanged.

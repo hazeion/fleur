@@ -111,6 +111,7 @@ if scenario.startswith("apt-index-"):
     (apt_lists / "lock").chmod(0o640)
     (apt_lists / "partial").mkdir(mode=0o700)
     (apt_lists / "auxfiles").mkdir(mode=0o755)
+    (apt_lists / "auxfiles").chmod(0o755)
     (apt_lists / "archive.ubuntu.com_ubuntu_dists_noble_InRelease").write_bytes(b"owned authenticated InRelease fixture\n")
     (apt_lists / "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages").write_bytes(b"Package: fixture\nVersion: 1\n")
     index_file = apt_lists / "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages"

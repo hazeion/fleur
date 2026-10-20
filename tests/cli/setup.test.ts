@@ -40,6 +40,8 @@ test("doctor distinguishes denied daemon access from missing software and never 
     host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu" }),
     run: async (args) => {
       const command = args.join(" ");
+      if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/run/docker.sock") return { status: "completed", exitCode: 0, stdout: "1|500|socket\n", stderr: "" };
+      if (args[0] === "/usr/bin/systemctl" && args.includes("list-units")) return { status: "completed", exitCode: 0, stdout: "", stderr: "" };
       if (command === "docker --version") return { status: "completed", exitCode: 0, stdout: "Docker version 28.0.4, build b8034c0", stderr: "" };
       if (command === "docker context show") return { status: "completed", exitCode: 0, stdout: "default\n", stderr: "" };
       if (command.startsWith("docker context inspect")) return { status: "completed", exitCode: 0, stdout: '{"Host":"unix:///var/run/docker.sock"}', stderr: "" };
@@ -85,6 +87,9 @@ function localHost(extra: (args: readonly string[]) => Promise<import("../../src
     host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu" }),
     run: async (args) => {
       const command = args.join(" ");
+      // This fixture daemon has a real socket identity and no loaded activation owner.
+      if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/run/docker.sock") return { status: "completed", exitCode: 0, stdout: "1|500|socket\n", stderr: "" };
+      if (args[0] === "/usr/bin/systemctl" && args.includes("list-units")) return { status: "completed", exitCode: 0, stdout: "", stderr: "" };
       const output = command === "docker --version" ? "Docker version 28.0.4" : command === "docker context show" ? "default" : command.startsWith("docker context inspect") ? '{"Host":"unix:///var/run/docker.sock"}' : command.endsWith("info --format {{json .}}") ? '{"ServerVersion":"28.0.4","OSType":"linux","Architecture":"x86_64"}' : command.endsWith("compose version --short") ? "5.6.0" : null;
       return output === null ? extra(args) : { status: "completed", exitCode: 0, stdout: output, stderr: "" };
     },

@@ -142,5 +142,5 @@ modified private entries are retained rather than recursively deleted. None of
 these checks activates the ordinary empty production catalog or proves a native
 installation.
 
-See [Arch service startup](setup-arch-services.md) for the separate startup
+See [Linux service startup](setup-arch-services.md) for the separate startup
 authority and the native verification still required before profile admission.

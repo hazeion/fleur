@@ -333,3 +333,35 @@ test.each(["missing-job", "positive-job", "job-whitespace", "malformed-job", "du
     expect(fixture.state.enrolled).toBe(false);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("trailing Job value whitespace is not normalized into an idle unit", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] === "/usr/bin/systemctl" && args.some((arg) => arg.startsWith("--property=") && arg.includes("Job"))) return { ...result, stdout: result.stdout.split("\n").filter((line) => !line.startsWith("Job=")).join("\n") + "\nJob= \t\n" };
+    return result;
+  };
+  try {
+    const result = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("PREREQUISITE_UNAVAILABLE");
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test.each(["", "0", "0 ", "12", "\u0000"])("last-position Job value %j retains its exact meaning", async (job) => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] === "/usr/bin/systemctl" && args.some((arg) => arg.startsWith("--property=") && arg.includes("Job"))) return { ...result, stdout: result.stdout.split("\n").filter((line) => !line.startsWith("Job=")).join("\n") + `\nJob=${job}\n` };
+    return result;
+  };
+  try {
+    const result = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe(job === "" || job === "0" ? "AUTHORITY_REQUIRED" : "PREREQUISITE_UNAVAILABLE");
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});

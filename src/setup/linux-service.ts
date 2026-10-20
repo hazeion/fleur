@@ -41,7 +41,7 @@ export async function serviceObservation(host: SetupHost, remaining: () => numbe
 function parseProperties(text: string, unit: string): Record<string, string> {
   if (text.length > 16384) throw new Error("Unit metadata is oversized");
   const result: Record<string, string> = {};
-  for (const line of text.trimEnd().split("\n")) {
+  for (const line of text.replace(/(?:\r?\n)+$/, "").split("\n")) {
     const index = line.indexOf("=");
     const key = line.slice(0, index);
     if (index < 1 || !properties.includes(key) || Object.hasOwn(result, key)) throw new Error("Unknown unit metadata");

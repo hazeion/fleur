@@ -91,3 +91,25 @@ for (const scenario of ["checkpoint-byte-mutation", "candidate-source-symlink", 
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 25000);
 }
+
+test("the actual handoff bounds every candidate entry during enumeration before publishing state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-enrollment-directory-bound-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "directory-bound"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const report = JSON.parse(stdout);
+    const witness = await Bun.file(join(root, "enumeration-witness.json")).json();
+    expect(witness.distinctValidDirectories).toBe(5001);
+    expect(witness.yielded, JSON.stringify({ report, witness })).toBeGreaterThan(0);
+    expect(exit, stderr + "\n" + stdout).toBe(4);
+    expect(report.error).toMatchObject({ code: "GUEST_VERIFICATION_FAILED", message: "Candidate source entry bound exceeded" });
+    expect(witness.yielded).toBeLessThanOrEqual(5000);
+    expect(witness.firstDirectoryMetadataAfterYielded).toBeGreaterThan(0);
+    expect(witness.firstDirectoryMetadataAfterYielded).toBeLessThanOrEqual(5000);
+    expect(witness.enumerationCompleted).toBe(false);
+    expect(report).toMatchObject({ ok: false, installationEvidence: "pending" });
+    expect(report.phase).toBeUndefined(); expect(report.checkpoint).toBeUndefined();
+    expect(await Bun.file(join(root, "lab/fresh-linux-state.json")).exists()).toBe(false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);

@@ -104,6 +104,86 @@ for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "
 if scenario == "existing-checkpoint":
     (lab / "fresh-linux-state.json").write_text("foreign checkpoint must survive")
 
+original_scandir = os.scandir
+original_rglob = Path.rglob
+original_lstat = Path.lstat
+enumeration = {"distinctValidDirectories": 0, "yielded": 0, "firstDirectoryMetadataAfterYielded": None, "enumerationCompleted": False}
+
+def bounded_directory(path):
+    return path.parent == lab / "package" and path.name.startswith("verification-directory-")
+
+if scenario == "directory-bound":
+    import time
+    started = time.monotonic()
+    inodes = set()
+    for index in range(5001):
+        directory = lab / "package" / ("verification-directory-%05d" % index)
+        directory.mkdir(mode=0o700)
+        inodes.add(original_lstat(directory).st_ino)
+    enumeration["distinctValidDirectories"] = len(inodes)
+    enumeration["creationSeconds"] = time.monotonic() - started
+
+yielded_directories = set()
+
+def directory_yielded(path):
+    if bounded_directory(path):
+        yielded_directories.add(str(path.relative_to(lab / "package")))
+        enumeration["yielded"] = len(yielded_directories)
+
+def rglob(path, pattern, *args, **kwargs):
+    for entry in original_rglob(path, pattern, *args, **kwargs):
+        if scenario == "directory-bound" and path == lab / "package":
+            directory_yielded(entry)
+        yield entry
+    if scenario == "directory-bound" and path == lab / "package":
+        enumeration["enumerationCompleted"] = True
+
+def directory_metadata_observed():
+    if enumeration["firstDirectoryMetadataAfterYielded"] is None:
+        enumeration["firstDirectoryMetadataAfterYielded"] = enumeration["yielded"]
+
+class DirectoryEntry:
+    def __init__(self, entry):
+        self.entry = entry
+    def __getattr__(self, name):
+        return getattr(self.entry, name)
+    def stat(self, *, follow_symlinks=True):
+        directory_metadata_observed()
+        return self.entry.stat(follow_symlinks=follow_symlinks)
+
+class Scan:
+    def __init__(self, original):
+        self.original = original
+    def __iter__(self):
+        return self
+    def __next__(self):
+        try:
+            entry = next(self.original)
+        except StopIteration:
+            enumeration["enumerationCompleted"] = True
+            raise
+        if bounded_directory(Path(entry.path)):
+            directory_yielded(Path(entry.path))
+            return DirectoryEntry(entry)
+        return entry
+    def close(self):
+        self.original.close()
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        self.close()
+
+def scandir(path):
+    entries = original_scandir(path)
+    if scenario == "directory-bound" and isinstance(path, (str, os.PathLike)) and Path(path) == lab / "package":
+        return Scan(entries)
+    return entries
+
+def lstat(path, *args, **kwargs):
+    if scenario == "directory-bound" and bounded_directory(path):
+        directory_metadata_observed()
+    return original_lstat(path, *args, **kwargs)
+
 original_open = os.open
 original_fsync = os.fsync
 original_path_open = Path.open
@@ -181,5 +261,9 @@ def popen(args, *positional, **kwargs):
 
 os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/usr/bin:/bin")
 sys.argv = [str(source), nonce]
-with patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
-    runpy.run_path(str(source), run_name="__main__")
+with patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
+    try:
+        runpy.run_path(str(source), run_name="__main__")
+    finally:
+        if scenario == "directory-bound":
+            (root / "enumeration-witness.json").write_text(json.dumps(enumeration))

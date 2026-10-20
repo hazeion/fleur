@@ -178,6 +178,7 @@ def file_identity(info):
 
 
 def observed_input(path, limit, expected=None):
+    budget_seconds(900)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
@@ -185,8 +186,11 @@ def observed_input(path, limit, expected=None):
             raise RuntimeError("Handoff input is not the expected owned bounded regular file")
         digest = hashlib.sha256()
         size = 0
-        while chunk := stream.read(1024 * 1024):
+        while True:
             budget_seconds(900)
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
             size += len(chunk)
             if size > limit:
                 raise RuntimeError("Handoff input grew beyond its bound")
@@ -209,18 +213,36 @@ def handoff_artifacts():
         records[label] = observed_input(path, limit)
     files = []
     total = 0
-    for path in sorted(package.rglob("*"), key=lambda value: str(value.relative_to(package))):
+    entries = 0
+    pending = [package]
+    while pending:
         budget_seconds(900)
-        info = path.lstat()
-        if stat.S_ISDIR(info.st_mode):
-            continue
-        if len(files) >= 5000:
-            raise RuntimeError("Candidate source entry bound exceeded")
-        observed = observed_input(path, 8 * 1024 * 1024, expected=info)
-        total += observed["size"]
-        if total > 32 * 1024 * 1024:
-            raise RuntimeError("Candidate source handoff byte bound exceeded")
-        files.append({"path": str(path.relative_to(package)), **observed})
+        with os.scandir(pending.pop()) as scanner:
+            while True:
+                budget_seconds(900)
+                try:
+                    entry = next(scanner)
+                except StopIteration:
+                    break
+                entries += 1
+                if entries > 5000:
+                    raise RuntimeError("Candidate source entry bound exceeded")
+                budget_seconds(900)
+                info = entry.stat(follow_symlinks=False)
+                path = Path(entry.path)
+                if stat.S_ISDIR(info.st_mode):
+                    budget_seconds(900)
+                    pending.append(path)
+                    continue
+                if len(files) >= 5000:
+                    raise RuntimeError("Candidate source entry bound exceeded")
+                if total + info.st_size > 32 * 1024 * 1024:
+                    raise RuntimeError("Candidate source handoff byte bound exceeded")
+                observed = observed_input(path, 8 * 1024 * 1024, expected=info)
+                total += observed["size"]
+                budget_seconds(900)
+                files.append({"path": str(path.relative_to(package)), **observed})
+    files.sort(key=lambda item: item["path"])
     if file_identity(ROOT.lstat()) != file_identity(root_identity) or file_identity(package.lstat()) != file_identity(package_identity):
         raise RuntimeError("Handoff source directory identity changed")
     records["candidateSources"] = files

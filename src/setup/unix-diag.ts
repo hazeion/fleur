@@ -69,7 +69,8 @@ export async function collectUnixSocketSnapshot(open: () => Promise<UnixDiagnost
               if (data[0] !== 0) {
                 if (data.at(-1) === 0) data = data.subarray(0, -1);
                 if (data.includes(0)) throw new Error("Invalid filesystem diagnostic name");
-                name = new TextDecoder("utf-8", { fatal: true }).decode(data);
+                name = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data);
+                if (!Buffer.from(name, "utf8").equals(data)) throw new Error("Nonidentical diagnostic name encoding");
               }
             } else if (type === 1) {
               if (size !== 12) throw new Error("Invalid diagnostic VFS");

@@ -104,6 +104,7 @@ export async function observeEndpointActivation(host: SetupHost, remaining: () =
     for (const unit of names) {
       const observed = await properties(host, remaining, unit, true);
       const { values, listens } = observed;
+      rememberUnit(unit, true, metadataKey(observed));
       if (values.ActiveState === "inactive" && values.SubState === "dead" && values.LoadState === "loaded") continue;
       if (values.ActiveState !== "active" || (values.SubState !== "listening" && values.SubState !== "running")) throw new Error("Socket lifecycle is not a stable listening/running/inactive state");
       if (values.LoadState !== "loaded" || !listens.length) throw new Error("Socket state is incomplete");
@@ -124,13 +125,11 @@ export async function observeEndpointActivation(host: SetupHost, remaining: () =
             }
           } catch (error) {
             if (!(error instanceof ProtectedSocketPath) || kind === "FIFO" || kind === "Special") throw error;
-            rememberUnit(unit, true, metadataKey(observed));
             if (await protectedIdentity(path, kind)) matching = true;
           }
         }
       }
       if (!matching) continue;
-      rememberUnit(unit, true, metadataKey(observed));
       const targets = values.Triggers!.split(/\s+/).filter(Boolean);
       if (!targets.length || targets.length > 16 || new Set(targets).size !== targets.length || targets.some((target) => !unitName.test(target) || !target.endsWith(".service"))) throw new Error("Activation targets incomplete");
       for (const target of targets) {

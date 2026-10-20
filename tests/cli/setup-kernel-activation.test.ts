@@ -163,3 +163,18 @@ for (const changing of [true, false]) test(`shared activation targets retain ${c
   if (changing) expectUnknown(result);
   else expect(result.outcome.result.data).toMatchObject({ components: { daemon: { state: "ready" } } });
 });
+
+for (const inactive of [false, true]) test(`an initially ${inactive ? "inactive" : "unrelated"} socket cannot change ownership during kernel observation`, async () => {
+  const result = await kernelScenario({ tape: syntheticTape(), respond: (args, occurrence) => {
+    if (args.includes("list-units")) return commandResult("other.socket loaded active listening Other\nguarded.socket loaded active listening Guarded\n");
+    if (args.at(-1) === "other.socket") return commandResult(`Id=other.socket\nLoadState=loaded\nActiveState=${inactive && occurrence === 1 ? "inactive" : "active"}\nSubState=${inactive && occurrence === 1 ? "dead" : "listening"}\nListen=${occurrence === 1 ? "/run/other.sock" : "/run/docker.sock"} (Stream)\nTriggers=other.service\n`);
+    if (args.at(-1) === "/run/other.sock") return commandResult("7|3333|socket\n");
+    return undefined;
+  } });
+  expectUnknown(result);
+  expect(result.calls.filter((args) => args.at(-1) === "other.socket")).toHaveLength(2);
+});
+
+test("a BOM-prefixed relative kernel NAME cannot supply identity for an absolute listener path", async () => {
+  expectUnknown(await kernelScenario({ tape: syntheticTape([diagnosticRecord("\uFEFF" + protectedPath)]) }));
+});

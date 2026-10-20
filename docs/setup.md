@@ -232,8 +232,9 @@ On Linux, an exact permission-denied response for a protected filesystem socket
 listener may use a private, unprivileged Unix SOCK_DIAG capability. The selected
 Docker endpoint still requires direct socket stat. The fallback requires positive
 NAME/VFS evidence for a unique binding, two complete kernel dumps with stable
-relevant identities and cookies, and fresh inventory, selected-socket and relevant
-unit/trigger metadata checks. Accepted stream children do not count as listening
+relevant identities and cookies, and fresh inventory, selected-socket, every observed socket unit and matching
+trigger metadata checks. Kernel names retain exact UTF-8 bytes, including any
+leading BOM; they are not normalized into a different pathname. Accepted stream children do not count as listening
 bindings. Bound datagrams in connected or unconnected states remain eligible.
 The two dump calls share a three-second collection allowance; metadata commands
 retain the original readiness deadline. Missing, ambiguous, changed or incomplete

@@ -93,8 +93,8 @@ test("cancelling the session command reaps its owned SSH group and returns incom
   }
 }, 15000);
 
-for (const scenario of ["pending-exit", "pending-digest", "pending-baseline", "pending-groups", "resume-baseline", "resume-digest", "resume-groups", "resume-phase", "transport-pin"] as const) {
-  test(`session orchestration refuses mismatched transport or checkpoint evidence: ${scenario}`, async () => {
+for (const scenario of ["pending-exit", "pending-digest", "pending-baseline", "pending-groups", "resume-baseline", "resume-digest", "resume-groups", "resume-phase", "transport-pin", "resume-group-order"] as const) {
+  test(`session orchestration validates transport and checkpoint evidence: ${scenario}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "fleur-session-binding-"));
     try {
       const tools = join(root, "tools"); await mkdir(tools);
@@ -105,7 +105,7 @@ for (const scenario of ["pending-exit", "pending-digest", "pending-baseline", "p
 const root=process.env.FIXTURE_ROOT;const scenario=${JSON.stringify(scenario)};const file=root+'/calls';const n=await Bun.file(file).exists()?Number(await Bun.file(file).text())+1:1;await Bun.write(file,String(n));
 const report=n===1?${JSON.stringify(pending)}:${JSON.stringify(resumed)};let code=n===1?3:4;
 if(n===1){if(scenario==='pending-exit')code=0;if(scenario==='pending-digest')report.checkpoint.sha256='wrong';if(scenario==='pending-baseline')delete report.baseline;if(scenario==='pending-groups')report.accessHandoff.after.sessionGroups.push(997);if(scenario==='transport-pin'){process.stderr.write('Host key verification failed.\\n');process.exit(255);}}
-else{if(scenario==='resume-baseline')report.baseline={packages:'installed replacement'};if(scenario==='resume-digest')report.accessResume.checkpointSha256='c'.repeat(64);if(scenario==='resume-groups')report.accessResume.sessionGroups=[1000];if(scenario==='resume-phase')report.phase='new-login-required';}
+else{if(scenario==='resume-baseline')report.baseline={packages:'installed replacement'};if(scenario==='resume-digest')report.accessResume.checkpointSha256='c'.repeat(64);if(scenario==='resume-groups')report.accessResume.sessionGroups=[1000];if(scenario==='resume-phase')report.phase='new-login-required';if(scenario==='resume-group-order')report.accessResume.sessionGroups.reverse();}
 await Bun.write(root+'/fault-exercised',scenario);process.stdout.write(JSON.stringify(report));process.exit(code);
 `, { mode: 0o700 });
       const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
@@ -113,7 +113,12 @@ await Bun.write(root+'/fault-exercised',scenario);process.stdout.write(JSON.stri
       expect(exit, stderr + stdout).toBe(4);
       expect(await readFile(join(root, "calls"), "utf8")).toBe(scenario.startsWith("resume-") ? "2" : "1");
       if (scenario !== "transport-pin") expect(await readFile(join(root, "fault-exercised"), "utf8")).toBe(scenario);
+      if (scenario === "resume-group-order") {
+        expect(JSON.parse(stdout)).toMatchObject({ ok: false, guest: { accessResume: { sessionGroups: [1000, 997] } } });
+        expect(JSON.parse(stdout).error).toBeUndefined();
+      } else {
       expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: "SESSION_FAILED", message: expect.stringContaining(scenario === "transport-pin" ? "Host key verification failed" : scenario.startsWith("resume-") ? "Resumed ordinary login report differs" : "Intermediate guest handoff is invalid") } });
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 15000);
 }
@@ -145,8 +150,8 @@ test("the second connection receives only the remainder of the original aggregat
   }
 }, 10000);
 
-for (const missing of ["doctor-release", "doctor-daemon", "smoke-cleanup", "repeat", "sentinel-cleanup", "restriction-bounded", "restriction-cleanup", "exit-envelope"] as const) {
-  test(`a session report cannot complete without the original final proof gate: ${missing}`, async () => {
+for (const missing of ["doctor-release", "doctor-daemon", "smoke-cleanup", "repeat", "sentinel-cleanup", "restriction-bounded", "restriction-cleanup", "exit-envelope", "complete"] as const) {
+  test(`a session report requires the original final proof gates: ${missing}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "fleur-session-final-gate-"));
     try {
       const tools = join(root, "tools"); await mkdir(tools);
@@ -163,8 +168,48 @@ for (const missing of ["doctor-release", "doctor-daemon", "smoke-cleanup", "repe
       const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
       const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect(await readFile(join(root, "gate-exercised"), "utf8")).toBe(missing);
-      expect(exit, stderr + stdout).toBe(4);
-      expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { message: expect.stringContaining("final proof") } });
+      expect(exit, stderr + stdout).toBe(missing === "complete" ? 0 : 4);
+      expect(JSON.parse(stdout)).toMatchObject(missing === "complete" ? { ok: true, scope: "fresh-linux-session-observation", guest: final } : { ok: false, error: { message: expect.stringContaining("final proof") } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 15000);
+}
+
+test("an SSH session that never starts cannot consume the full guest workflow budget", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-session-start-budget-"));
+  let sshPid: number | undefined;
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid));setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    const started = performance.now();
+    const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    sshPid = Number(await readFile(join(root, "ssh-pid"), "utf8"));
+    expect(sshPid).toBeGreaterThan(0);
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: "SESSION_FAILED", message: expect.stringContaining("session start") } });
+    expect(performance.now() - started).toBeLessThan(11000);
+    expect(() => process.kill(sshPid!, 0)).toThrow();
+  } finally {
+    if (!sshPid && await Bun.file(join(root, "ssh-pid")).exists()) sshPid = Number(await readFile(join(root, "ssh-pid"), "utf8"));
+    if (sshPid) { try { process.kill(-sshPid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);
+
+for (const frame of ["cross-nonce", "duplicate", "malformed", "marker-only"] as const) {
+  test(`session-start framing cannot substitute for the exact guest proof: ${frame}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleur-session-framing-"));
+    try {
+      const tools = join(root, "tools"); await mkdir(tools);
+      const marker = "FLEUR_SESSION_READY=" + nonce + "\n";
+      const guest = JSON.stringify({ formatVersion: 1, ok: false, runtimeSupport: "unverified", humanConsentProof: false, installationEvidence: "pending" });
+      const stdout = frame === "cross-nonce" ? "FLEUR_SESSION_READY=ffffffff-ffff-ffff-ffff-ffffffffffff\n" + guest : frame === "duplicate" ? marker + marker + guest : frame === "malformed" ? "FLEUR_SESSION_READY?" + nonce + "\n" + guest : marker;
+      await writeFile(join(tools, "ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/framing-exercised',${JSON.stringify(frame)});process.stdout.write(${JSON.stringify(stdout)});process.exit(4);\n`, { mode: 0o700 });
+      const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+      const [output, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(await readFile(join(root, "framing-exercised"), "utf8")).toBe(frame);
+      expect(exit, stderr + output).toBe(4);
+      expect(JSON.parse(output)).toMatchObject({ scope: "fresh-linux-session-observation", ok: false, error: { code: "SESSION_FAILED" } });
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 15000);
 }

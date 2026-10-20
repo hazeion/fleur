@@ -367,22 +367,38 @@ def resume_guest(nonce, expected_digest):
         plan = checked_enrollment_plan(REPORT["reprobe"])
         previous = REPORT["accessHandoff"]["after"]
         current = access_observation(plan)
+        fresh_snapshot = snapshot()
+        # Session group text must change on genuine login; numeric groups above
+        # bind the exact membership while every installed-state field stays fixed.
+        installed_before = {key: value for key, value in REPORT["afterSetup"].items() if key != "groups"}
+        installed_now = {key: value for key, value in fresh_snapshot.items() if key != "groups"}
         if (current["user"] != previous["user"] or current["group"] != previous["group"] or current["socket"] != previous["socket"] or current["members"] != previous["members"]
-                or current["accountGroups"] != previous["accountGroups"] or current["sessionGroups"] != previous["accountGroups"] or plan["group"]["gid"] not in current["sessionGroups"] or snapshot() != REPORT["afterSetup"]):
+                or set(current["accountGroups"]) != set(previous["accountGroups"]) or set(current["sessionGroups"]) != set(previous["accountGroups"]) or plan["group"]["gid"] not in current["sessionGroups"] or installed_now != installed_before):
             raise RuntimeError("Fresh ordinary login identity, groups or installed state differs")
         check_root()
         check_checkpoint()
-        marker = os.open("fresh-linux-resume-started.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
-        with os.fdopen(marker, "w") as stream:
-            stream.write(json.dumps({"checkpointSha256": expected_digest, "nonce": nonce}))
+        marker_body = json.dumps({"checkpointSha256": expected_digest, "nonce": nonce}).encode()
+        marker = os.open("fresh-linux-resume-started.json", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+        with os.fdopen(marker, "w+b") as stream:
+            stream.write(marker_body)
             stream.flush()
             os.fsync(stream.fileno())
-        os.fsync(directory)
-        check_checkpoint()
+            os.fsync(directory)
+            check_checkpoint()
+            before_marker = os.fstat(stream.fileno())
+            stream.seek(0)
+            retained_marker = stream.read(4097)
+            after_marker = os.fstat(stream.fileno())
+            published_marker = os.stat("fresh-linux-resume-started.json", dir_fd=directory, follow_symlinks=False)
+            if (not stat.S_ISREG(after_marker.st_mode) or after_marker.st_uid != os.getuid() or stat.S_IMODE(after_marker.st_mode) != 0o600 or after_marker.st_nlink != 1 or retained_marker != marker_body
+                    or file_identity(before_marker) != file_identity(after_marker) or file_identity(published_marker) != file_identity(after_marker)):
+                raise RuntimeError("Resume claim bytes or identity changed")
+            check_root()
     finally:
         if checkpoint_fd is not None:
             os.close(checkpoint_fd)
         os.close(directory)
+    REPORT["freshLoginSnapshot"] = fresh_snapshot
     REPORT["accessResume"] = {"checkpointSha256": expected_digest, "sessionGroups": current["sessionGroups"]}
     REPORT["ordinaryUserSetupAfterResume"] = command_json("setup")
     REPORT["ordinaryUserDoctorAfterResume"] = command_json("doctor")

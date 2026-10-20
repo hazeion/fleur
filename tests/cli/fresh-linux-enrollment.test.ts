@@ -184,22 +184,28 @@ test("readable APT evidence preserves the actual incomplete setup diagnosis", as
 
 // The second process context is an owned ordinary-session OS protocol fixture;
 // it cannot establish the separate host SSH authentication proof.
-test("an explicit fresh-session resume preserves the original baseline and reaches doctor without replaying enrollment", async () => {
+for (const scenario of ["fresh-resume", "resume-reordered-groups", "resume-human-groups"] as const) {
+test(`an explicit fresh-session resume preserves the original baseline and reaches doctor without replaying enrollment: ${scenario}`, async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-enrollment-resume-"));
   try {
     const python = Bun.which("python3"); expect(python).not.toBeNull();
-    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "fresh-resume"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     const first = await Bun.file(join(root, "first-session-report.json")).json();
     const report = JSON.parse(stdout);
     const state = await Bun.file(join(root, "protocol-state.json")).json();
     expect(first.phase, stderr + "\n" + stdout).toBe("new-login-required");
     expect(state.freshSession).toBe(true);
+    if (scenario === "resume-reordered-groups") expect(state.reorderedSessionGroups).toBe(true);
     expect(state.enrollmentPrompts).toHaveLength(1);
     expect(state.installPrompts).toHaveLength(7);
     expect(report.baseline).toEqual(first.baseline);
     expect(report.accessResume).toMatchObject({ checkpointSha256: first.checkpoint.sha256, sessionGroups: expect.arrayContaining([state.uid, 27, 997]) });
     expect(report.ordinaryUserDoctorAfterResume.result.command).toBe("doctor");
+    if (scenario === "resume-human-groups") {
+      expect(report.afterSetup.groups).not.toContain("997(docker)");
+      expect(report.freshLoginSnapshot.groups).toContain("997(docker)");
+    }
     // The fixture daemon remains denied: accepting a fresh login alone never
     // manufactures native readiness or skips the existing final proof.
     expect(exit).toBe(4);
@@ -208,6 +214,7 @@ test("an explicit fresh-session resume preserves the original baseline and reach
     expect(state.unexpected).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+}
 
 for (const [scenario, message] of [["resume-stale-session", "Fresh ordinary login identity, groups or installed state differs"], ["resume-wrong-digest", "Resume checkpoint bytes or identity changed"], ["resume-replay", "fresh-linux-resume-started.json"]] as const) {
   test(`the actual guest resume refuses stale, altered or replayed state without reenrollment: ${scenario}`, async () => {
@@ -250,3 +257,80 @@ test("the actual resume refuses checkpoint bytes changed during artifact revalid
     expect(report.error.message).toContain("Resume checkpoint bytes or identity changed");
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+for (const [scenario, message] of [["resume-boot-change", "Resume checkpoint binding or original deadline is invalid"], ["resume-artifact-change", "Resume artifact identities changed"], ["resume-state-symlink", "Too many levels"], ["resume-state-hardlink", "Resume checkpoint custody is invalid"], ["resume-state-oversize", "Resume checkpoint custody is invalid"], ["resume-deadline-expired", "Resume checkpoint binding or original deadline is invalid"], ["resume-socket-change", "Fresh ordinary login identity, groups or installed state differs"], ["resume-lost-group", "Fresh ordinary login identity, groups or installed state differs"]] as const) {
+  test(`guest resume rejects changed identity, artifact custody or original budget: ${scenario}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleur-resume-binding-"));
+    try {
+      const python = Bun.which("python3"); expect(python).not.toBeNull();
+      const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const state = await Bun.file(join(root, "protocol-state.json")).json();
+      const first = await Bun.file(join(root, "first-session-report.json")).json();
+      expect(first.phase).toBe("new-login-required");
+      expect(state.resumeFixtureTransition).toBe(scenario);
+      expect(state.freshSession).toBe(true);
+      expect(state.enrollmentPrompts).toHaveLength(1);
+      expect(state.installPrompts).toHaveLength(7);
+      expect(exit, stderr + stdout).toBe(4);
+      const report = JSON.parse(stdout);
+      expect(report.error.message).toContain(message);
+      expect(report.accessResume).toBeUndefined();
+      expect(report.ordinaryUserDoctorAfterResume).toBeUndefined();
+      expect(await Bun.file(join(root, "lab/fresh-linux-resume-started.json")).exists()).toBe(false);
+      expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", humanConsentProof: false });
+      expect(state.unexpected).toEqual([]);
+      if (scenario === "resume-state-symlink") expect(Bun.CryptoHasher.hash("sha256", await Bun.file(join(root, "retained-original-checkpoint")).arrayBuffer(), "hex")).toBe(first.checkpoint.sha256);
+      if (scenario === "resume-artifact-change") expect(await Bun.file(join(root, "lab/package/bin/fleur.ts")).text()).toBe("Changed owned candidate after initial handoff\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 25000);
+}
+
+test("the actual resume preserves a changed once-only claim and refuses to proceed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-resume-claim-custody-"));
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "resume-marker-mutation"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(state.custodyFaultInjected).toBe("resume-marker");
+    expect(state.enrollmentPrompts).toHaveLength(1);
+    const bytes = await Bun.file(join(root, "lab/fresh-linux-resume-started.json")).text();
+    expect(bytes.length).toBeGreaterThan(0);
+    expect(bytes).toBe("X".repeat(bytes.length));
+    const report = JSON.parse(stdout);
+    expect(exit, stderr + stdout).toBe(4);
+    expect(report.accessResume).toBeUndefined();
+    expect(report.ordinaryUserDoctorAfterResume).toBeUndefined();
+    expect(report.error.message).toContain("Resume claim bytes or identity changed");
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);
+
+for (const action of ["install", "access", "image"] as const) {
+  test(`resumed smoke acquisition grants only the independently observed digest-image plan: ${action}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleur-resume-smoke-scope-"));
+    try {
+      const python = Bun.which("python3"); expect(python).not.toBeNull();
+      const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "resume-smoke-" + action], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const state = await Bun.file(join(root, "protocol-state.json")).json();
+      expect(state.freshSession).toBe(true);
+      expect(state.enrollmentPrompts).toHaveLength(1);
+      expect(state.smokeOffers).toHaveLength(1);
+      expect(exit, stderr + stdout).toBe(4);
+      const report = JSON.parse(stdout);
+      expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", humanConsentProof: false });
+      if (action === "image") {
+        expect(state.smokeReplies).toEqual([{ action: "image-acquire", method: "docker-digest-pull", target: "oven/bun@sha256:" + "c".repeat(64) + " via unix:///var/run/docker.sock", checksum: "d".repeat(64), reply: "once" }]);
+        expect(report.smokeAcquisitionFixture.prompts).toEqual([{ action: "image-acquire", method: "docker-digest-pull", target: "oven/bun@sha256:" + "c".repeat(64) + " via unix:///var/run/docker.sock", checksum: "d".repeat(64) }]);
+        expect(report.error.code).toBe("SMOKE_AUTHORITY_REQUIRED");
+      } else {
+        expect(state.smokeReplies ?? []).toEqual([]);
+        expect(state.installPrompts).toHaveLength(7);
+        expect(report.error.message).toContain("prompt differs from its separately inspected plan");
+      }
+      expect(report.runs).toHaveLength(0);
+      expect(state.unexpected).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 25000);
+}

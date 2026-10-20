@@ -9,6 +9,21 @@ async function bounded(stream: Readable): Promise<string> {
   for await (const chunk of stream) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > 2 * 1024 * 1024) throw new Error("Session output exceeded its bound"); parts.push(part); }
   return Buffer.concat(parts).toString("utf8");
 }
+function numericGroups(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((gid) => Number.isSafeInteger(gid) && gid >= 0) && new Set(value).size === value.length;
+}
+function checkTerminalProof(code: number, guest: Record<string, unknown>): void {
+  if (typeof guest.ok !== "boolean" || (code === 0) !== guest.ok) throw new Error("Guest final proof contradicts its exit status");
+  if (!guest.ok) return;
+  const restriction = guest.restrictionProbe as { exitCode?: unknown; result?: { bounded_probe_passed?: unknown; cleanup_complete?: unknown } } | undefined;
+  if (guest.installationEvidence !== "verified-full-system-guest" || !guest.baseline || !Array.isArray(guest.runs) || guest.runs.length !== 2 || guest.sentinelCleanup !== true || restriction?.exitCode !== 0 || restriction.result?.bounded_probe_passed !== true || restriction.result.cleanup_complete !== true) throw new Error("Guest final proof is incomplete");
+  for (const item of guest.runs) {
+    const observed = item as { exitCode?: unknown; result?: { formatVersion?: unknown; command?: unknown; ok?: unknown; truncated?: unknown; error?: { code?: unknown }; data?: { components?: Record<string, { state?: unknown; cleanup?: unknown }> } } };
+    const envelope = observed?.result; const components = envelope?.data?.components;
+    if (observed?.exitCode !== 4 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== false || envelope.truncated !== false || envelope.error?.code !== "PREREQUISITE_UNAVAILABLE"
+        || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true || components?.release?.state !== "unverified") throw new Error("Guest final proof lacks the complete release-unverified doctor rounds");
+  }
+}
 /** Own the guest workflow transport; artifact authentication remains the caller's gate. */
 export async function observeGuestSessions(target: SessionTarget, signal?: AbortSignal): Promise<SessionObservation> {
   if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !/^[a-f0-9-]{36}$/.test(target.nonce) || !target.identity || !target.knownHosts) return failure("ARGUMENT_INVALID", "An exact pinned loopback guest target is required.");
@@ -57,14 +72,17 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
       if (observed.code !== 3 || guest.phase !== "new-login-required" || guest.ok !== false || guest.installationEvidence !== "pending" || !guest.baseline || !checkpoint || typeof checkpoint.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint.sha256)
           || typeof checkpoint.bytes !== "number" || !Number.isSafeInteger(checkpoint.bytes) || checkpoint.bytes <= 0 || checkpoint.bytes > 2 * 1024 * 1024 - 65536
           || after?.user?.name !== "fleur" || typeof after.user.uid !== "number" || !Number.isSafeInteger(after.user.uid) || after.user.uid <= 0 || typeof after.group?.gid !== "number"
-          || !Array.isArray(after.accountGroups) || !Array.isArray(after.sessionGroups) || !after.accountGroups.includes(after.group.gid) || after.sessionGroups.includes(after.group.gid)) throw new Error("Intermediate guest handoff is invalid");
+          || !numericGroups(after.accountGroups) || !numericGroups(after.sessionGroups) || !after.accountGroups.includes(after.group.gid) || after.sessionGroups.includes(after.group.gid)) throw new Error("Intermediate guest handoff is invalid");
+      const expectedGroups = after.accountGroups;
       const resumed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce} --resume ${checkpoint.sha256}`);
       const final = resumed.guest;
       const access = final.accessResume as { checkpointSha256?: unknown; sessionGroups?: unknown } | undefined;
       if (resumed.code === 3 || final.phase !== undefined || final.formatVersion !== 1 || final.runtimeSupport !== "unverified" || final.humanConsentProof !== false || !isDeepStrictEqual(final.baseline, guest.baseline)
-          || access?.checkpointSha256 !== checkpoint.sha256 || !isDeepStrictEqual(access.sessionGroups, after.accountGroups)) throw new Error("Resumed ordinary login report differs from its anchored handoff");
+          || access?.checkpointSha256 !== checkpoint.sha256 || !numericGroups(access.sessionGroups) || access.sessionGroups.length !== expectedGroups.length || !access.sessionGroups.every((gid) => expectedGroups.includes(gid))) throw new Error("Resumed ordinary login report differs from its anchored handoff");
+      checkTerminalProof(resumed.code, final);
       return { formatVersion: 1, scope: "fresh-linux-session-observation", ok: resumed.code === 0 && final.ok === true, initialGuest: guest, guest: final };
     }
+    checkTerminalProof(observed.code, guest);
     return { formatVersion: 1, scope: "fresh-linux-session-observation", ok: observed.code === 0 && guest.ok === true, guest };
   } catch (error) { return { ...failure("SESSION_FAILED", error instanceof Error ? error.message : "Guest session failed"), ...(initialGuest ? { initialGuest } : {}) }; }
 }

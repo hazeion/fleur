@@ -28,6 +28,8 @@ async function serviceFixture() {
     host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "rolling", distribution: "arch", machineId: "a".repeat(64) }),
     run: async (args) => {
       calls.push([...args]);
+      if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/lib/pacman/db.lck") return done("", 1, "No such file or directory");
+      if (args[0] === "/usr/bin/pacman" && args.includes("--database")) return done();
       if (args[0] === "docker") {
         if (args[1] === "--version") return done("Docker version29.9.0");
         if (args[1] === "context") return args[2] === "show" ? done("default\n") : done('{"Host":"unix:///run/docker.sock"}');

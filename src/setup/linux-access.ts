@@ -56,7 +56,10 @@ export async function setupLinuxAccess(input: CommandInput, host: SetupHost, ide
     if (!grant) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Adding this user to the Docker group grants root-equivalent daemon access and needs separate human authorization.", actions: [] }, { plan: { action: plan.action, method: plan.method, privilege: plan.privilege, user: plan.user, group: plan.group, endpoint, checksum, target }, resumable: true });
     if (sessionGroups.includes(group[2]!)) return manual("Account and current session groups disagree; inspect local account policy manually.");
     if (JSON.stringify(await inspect()) !== JSON.stringify(actual)) throw new Error("Access identity changed after authorization");
-    if ((await serviceObservation(host, remaining, ["/usr/bin/stat", "--format=%F|%u|%a|%h", "--", "/usr/sbin/usermod"])).trim() !== "regular file|0|755|1" || (await serviceObservation(host, remaining, ["/usr/bin/dpkg-query", "--root=/", "--admindir=/var/lib/dpkg", "--search", "--", "/usr/sbin/usermod"])).trim() !== "passwd: /usr/sbin/usermod") throw new Error("Membership tool ownership differs");
+    const tool = policy.membershipTool === "apt-shadow" && policy.method === "docker-official-apt" ? "/usr/sbin/usermod" : policy.membershipTool === "arch-shadow" && policy.method === "arch-official-pacman" ? "/usr/bin/usermod" : null;
+    if (!tool) throw new Error("Unsupported source-owned membership policy");
+    const owned = policy.membershipTool === "apt-shadow" ? (await serviceObservation(host, remaining, ["/usr/bin/dpkg-query", "--root=/", "--admindir=/var/lib/dpkg", "--search", "--", tool])).trim() === `passwd: ${tool}` : (await serviceObservation(host, remaining, ["/usr/bin/pacman", "--query", "--owns", "--quiet", "--", tool])).trim() === "shadow";
+    if (!owned || (await serviceObservation(host, remaining, ["/usr/bin/stat", "--format=%F|%u|%a|%h", "--", tool])).trim() !== "regular file|0|755|1") throw new Error("Membership tool ownership differs");
     grants = [...await readGrants(host)]; grant = grants.find(matches);
     if (!grant) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "The selected Docker access authority changed before enrollment.", actions: [] });
     if (grant.mode === "once") await writeGrants(host, grants.map((value) => value.id === grant!.id ? { ...value, revoked: true } : value));
@@ -66,7 +69,7 @@ export async function setupLinuxAccess(input: CommandInput, host: SetupHost, ide
     const sync = () => (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
     await sync();
     if (remaining() <= 0) throw new Error("Enrollment deadline");
-    const outcome = await host.run(["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", user[0]!], remaining());
+    const outcome = await host.run(["/usr/bin/sudo", "-n", tool, "--append", "--groups", "docker", "--", user[0]!], remaining());
     if (outcome.status !== "completed" || outcome.terminationUnconfirmed) throw new Error("Membership outcome is uncertain");
     const after = await inspect();
     // Only this user's addition to the one Docker group may change.

@@ -12,6 +12,7 @@ import type { HostCommandResult, HostIdentity, SetupHost } from "./commands.ts";
 export interface LinuxServicePolicy {
   readonly method: "arch-official-pacman" | "docker-official-apt";
   readonly label: string;
+  readonly membershipTool: "apt-shadow" | "arch-shadow";
   readonly targetDescription?: string;
   readonly binding: unknown;
   readonly hashes: Readonly<Record<string, string>>;

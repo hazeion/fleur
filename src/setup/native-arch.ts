@@ -1,4 +1,5 @@
-import { setupArchService } from "./arch-service.ts";
+import { setupLinuxAccess } from "./linux-access.ts";
+import { setupArchService, archServicePolicy } from "./arch-service.ts";
 import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -41,7 +42,7 @@ function validProfile(profile: ArchInstallProfile): boolean {
   }) && Object.values(profile.packages).reduce((total, artifact) => total + artifact.size, 0) <= 268435456;
 }
 
-export async function setupNativeArch(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: ArchInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false): Promise<CliOutcome> {
+export async function setupNativeArch(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: ArchInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
   const unavailable = (message: string) => failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message, actions: [] });
   if (!validProfile(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return unavailable("The exact Arch artifact profile or machine identity is unavailable.");
   const run = (args: readonly string[]) => remaining() > 0 ? host.run(args, remaining()) : Promise.resolve({ status: "timeout" as const, stdout: "", stderr: "" });
@@ -69,6 +70,7 @@ export async function setupNativeArch(input: CommandInput, host: SetupHost, iden
       if (consistent.status !== "completed" || consistent.exitCode !== 0) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The existing package database requires human recovery; no repair was attempted.", actions: [] });
       const pendingPath = join(stateDirectory(host), "arch-transaction-pending.json");
       try { await lstat(pendingPath); return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "An earlier privileged Arch transaction has no confirmed terminal result. Preserve its private data and inspect actual package state before recovery.", actions: [] }); } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+      if (actual.missing.length === 0 && daemonDenied && endpoint) return setupLinuxAccess(input, host, identity, archServicePolicy(profile), remaining, endpoint);
       if (actual.missing.length === 0 && daemonReady) return unavailable("The existing daemon is usable; no system service action was attempted. Native runtime support remains unverified.");
       if (actual.missing.length === 0) return setupArchService(input, host, identity, profile, remaining, endpoint);
       const requiredAuthorities = ["install", "configuration", "docker-access"] as const;

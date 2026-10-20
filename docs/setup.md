@@ -84,7 +84,7 @@ exact authenticated October 12, 2026 package inventory. Installation,
 configuration hooks and system Docker group creation require separate scoped
 grants. Installing packages does not authorize starting/enabling services or
 adding a user to the Docker group. Service startup has its own scoped action;
-Arch user enrollment remains a separate pending adapter slice.
+Arch user enrollment uses the separate ordinary-user access flow described below.
 
 The adapter preserves exact existing packages and downloads only missing pinned
 archives into private staging. It checks size, digest, exact signer and current
@@ -146,9 +146,9 @@ installation.
 See [Linux service startup](setup-arch-services.md) for the separate startup
 authority and the native verification still required before profile admission.
 
-### Ordinary-user Docker access on APT
+### Ordinary-user Docker access on Linux
 
-Exact installed APT profiles can separately propose adding the current local user
+Exact installed APT and Arch profiles can separately propose adding the current local user
 to the system Docker group. This grants **root-equivalent daemon access**; the
 human confirmation and grant target state that privilege explicitly. An install
 grant for package-created groups cannot authorize user enrollment. The plan binds
@@ -172,4 +172,8 @@ or pending-fence durability failures return recovery status and block daemon
 RPC/replay. Confirmed authentication failures preserve observed memberships and
 require fresh authority. These public disposable-host fixtures do not prove
 native NSS/locking, privileged descendant termination or actual session refresh.
-Native profiles remain disabled; Arch enrollment reuse remains pending.
+Native profiles remain disabled. The source-owned membership tool policy uses
+APT's `passwd`-owned `/usr/sbin/usermod` or Arch's `shadow`-owned
+`/usr/bin/usermod`; callers cannot supply a tool path or ownership override. Arch
+also rechecks package database health and lock absence during each verified
+service/access observation. Actual native session and OS behavior remains pending.

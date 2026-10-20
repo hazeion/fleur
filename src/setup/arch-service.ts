@@ -1,5 +1,5 @@
 import { archServicePendingPath } from "./service-pending.ts";
-import { serviceObservation, setupLinuxService } from "./linux-service.ts";
+import { serviceObservation, setupLinuxService, type LinuxServicePolicy } from "./linux-service.ts";
 import { failure, type CliOutcome } from "../cli/result.ts";
 import type { CommandInput } from "../cli/catalog.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
@@ -11,6 +11,10 @@ const hashes: Readonly<Record<string, string>> = {
   "containerd.service": "7522a4e33c633f22fc0049d3c075b552f7df30cd978acd0175b972bdebc922ea",
 };
 async function provenance(host: SetupHost, remaining: () => number, profile: ArchInstallProfile): Promise<void> {
+  if (remaining() <= 0) throw new Error("Arch health deadline");
+  const lock = await host.run(["/usr/bin/stat", "--format=%F|%u|%a|%h", "--", "/var/lib/pacman/db.lck"], remaining());
+  if (lock.status !== "completed" || lock.terminationUnconfirmed || lock.exitCode !== 1 || lock.stdout.trim() || !/No such file or directory/.test(lock.stderr)) throw new Error("Arch package lock unavailable");
+  if ((await serviceObservation(host, remaining, ["/usr/bin/pacman", "--database", "--check", "--quiet"])).trim()) throw new Error("Arch package health is indeterminate");
   const names = Object.keys(profile.packages).sort() as (keyof ArchInstallProfile["packages"])[];
   const inventory = await serviceObservation(host, remaining, ["/usr/bin/pacman", "--query", "--", ...names]);
   if (JSON.stringify(inventory.trim().split("\n").sort()) !== JSON.stringify(names.map((name) => `${name} ${profile.packages[name].version}`))) throw new Error("Package provenance changed");
@@ -27,5 +31,10 @@ async function provenance(host: SetupHost, remaining: () => number, profile: Arc
 /** Caller holds the existing setup lock and checked exact package state/pending fence. */
 export async function setupArchService(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: ArchInstallProfile, remaining: () => number, endpoint?: string): Promise<CliOutcome> {
   if (profile.packages.docker.sha256 !== "3cc00845b632f3302fe148b939c2736a094599d42e885aab214a5a532bd87d54" || profile.packages.containerd.sha256 !== "c352b4c019c3d527daa50517a6420a7672b01876b95b80d72dd7192f05220999") return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Exact installed packages do not establish an admitted local service action.", actions: [] });
-  return setupLinuxService(input, host, identity, { method: profile.method, label: "Arch", binding: profile, hashes, pendingPath: archServicePendingPath, fragmentPaths: (unit) => [`/usr/lib/systemd/system/${unit}`], provenance: (target, budget) => provenance(target, budget, profile) }, remaining, endpoint);
+  return setupLinuxService(input, host, identity, archServicePolicy(profile), remaining, endpoint);
+}
+/** Source-owned exact Arch artifact policy; no CLI policy construction. */
+export function archServicePolicy(profile: ArchInstallProfile): LinuxServicePolicy {
+  if (profile.packages.docker.sha256 !== "3cc00845b632f3302fe148b939c2736a094599d42e885aab214a5a532bd87d54" || profile.packages.containerd.sha256 !== "c352b4c019c3d527daa50517a6420a7672b01876b95b80d72dd7192f05220999") throw new Error("No authenticated Arch service binding");
+  return { method: profile.method, label: "Arch", membershipTool: "arch-shadow", binding: profile, hashes, pendingPath: archServicePendingPath, fragmentPaths: (unit) => [`/usr/lib/systemd/system/${unit}`], provenance: (target, budget) => provenance(target, budget, profile) };
 }

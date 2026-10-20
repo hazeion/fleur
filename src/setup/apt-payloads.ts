@@ -10,6 +10,8 @@ interface Identity { readonly dev: bigint; readonly ino: bigint; readonly direct
 /** Exact owned temporary entries; unknown or replaced content is retained, never recursively deleted. */
 export class AptPayloadStage {
   readonly paths: string[] = [];
+  readonly archivePaths: string[] = [];
+  private readonly cacheNodes = new Map<string, { readonly mode: bigint; readonly auxiliary: boolean }>();
   private localInputs?: { list: string; config: string; parts: string };
   private readonly entries = new Map<string, Identity>();
   private constructor(readonly root: string) {}
@@ -90,13 +92,123 @@ export class AptPayloadStage {
       await this.unchanged(parts); await this.unchanged(this.root);
     } finally { await held.close(); }
   }
+  async prepareArchiveCache(host: SetupHost, profile: AptInstallProfile, missing: readonly string[], remaining: () => number): Promise<readonly string[]> {
+    const archives = join(this.root, "archives"); const lists = join(this.root, "local-lists");
+    for (const [path, mode, auxiliary] of [[archives, 0o700, false], [join(archives, "partial"), 0o700, true], [lists, 0o755, false], [join(lists, "auxfiles"), 0o755, true]] as const) {
+      await this.unchanged(this.root); await this.unchanged(dirname(path));
+      await mkdir(path, { mode }); await this.bind(path, true);
+      const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try {
+        const info = await directory.stat({ bigint: true }); const bound = this.entries.get(path)!;
+        if (info.dev !== bound.dev || info.ino !== bound.ino || !info.isDirectory() || info.uid !== BigInt(process.getuid!())) throw new AptPayloadRecovery("Cache directory changed during creation");
+        await directory.chmod(mode);
+      } finally { await directory.close(); }
+      await this.unchanged(path); await this.unchanged(dirname(path));
+      this.cacheNodes.set(path, { mode: BigInt(mode), auxiliary });
+    }
+    const lock = join(archives, "lock");
+    const heldLock = await open(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      await this.bind(lock, false);
+      const info = await heldLock.stat({ bigint: true }); const bound = this.entries.get(lock)!;
+      if (!info.isFile() || info.dev !== bound.dev || info.ino !== bound.ino || info.uid !== BigInt(process.getuid!()) || info.nlink !== 1n || info.size !== 0n) throw new AptPayloadRecovery("Private archive lock identity changed during creation");
+      await heldLock.sync();
+    } finally { await heldLock.close(); }
+    this.entries.set(lock, { ...this.entries.get(lock)!, size: 0, sha256: Bun.CryptoHasher.hash("sha256", new Uint8Array(), "hex") });
+    this.cacheNodes.set(lock, { mode: 0o600n, auxiliary: false });
+    for (const [index, name] of (missing as readonly AptPackageName[]).entries()) {
+      const artifact = profile.artifacts[name]; const source = this.paths[index]!;
+      await this.verify(source, profile, name, remaining);
+      // APT QuoteString uses these escapes for the admitted ASCII package tuple.
+      const quote = (value: string) => value.replaceAll("_", "%5f").replaceAll(":", "%3a");
+      const path = join(archives, `${quote(name)}_${quote(artifact.version)}_${artifact.architecture}.deb`);
+      await this.unchanged(archives);
+      const input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const info = await input.stat({ bigint: true }); const expected = this.entries.get(source)!;
+        if (!info.isFile() || info.nlink !== 1n || info.uid !== BigInt(process.getuid!()) || info.dev !== expected.dev || info.ino !== expected.ino || info.size !== BigInt(artifact.size)) throw new AptPayloadRecovery("Source archive changed before cache copy");
+        const output = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        try {
+          const created = await output.stat({ bigint: true });
+          await this.bind(path, false);
+          const bound = this.entries.get(path)!;
+          if (!created.isFile() || created.nlink !== 1n || created.uid !== BigInt(process.getuid!()) || created.size !== 0n || created.dev !== bound.dev || created.ino !== bound.ino) throw new AptPayloadRecovery("Archive copy destination identity changed");
+          this.cacheNodes.set(path, { mode: 0o600n, auxiliary: false });
+          const buffer = Buffer.alloc(65536); let total = 0;
+          while (total <= artifact.size) {
+            if (remaining() <= 0) throw new AptPayloadUnavailable("The archive copy deadline expired");
+            const read = await input.read(buffer, 0, Math.min(buffer.length, artifact.size + 1 - total), total);
+            if (!read.bytesRead) break;
+            if (total + read.bytesRead > artifact.size) throw new AptPayloadRecovery("Source archive grew during cache copy");
+            let written = 0;
+            while (written < read.bytesRead) {
+              const next = await output.write(buffer, written, read.bytesRead - written, total + written);
+              if (!next.bytesWritten) throw new AptPayloadRecovery("Archive cache copy made no progress");
+              written += next.bytesWritten;
+            }
+            total += read.bytesRead;
+          }
+          if (total !== artifact.size) throw new AptPayloadRecovery("Source archive shortened during cache copy");
+          await output.sync();
+        } finally { await output.close(); }
+      } finally { await input.close(); }
+      await this.verify(source, profile, name, remaining);
+      await this.verify(path, profile, name, remaining);
+      if (remaining() <= 0) throw new AptPayloadUnavailable("The archive control verification deadline expired");
+      const metadata = await host.run(["dpkg-deb", "--field", path, "Package", "Version", "Architecture"], remaining());
+      const fields = Object.fromEntries(metadata.stdout.trim().split("\n").map((line) => { const separator = line.indexOf(": "); return [line.slice(0, separator), line.slice(separator + 2)]; }));
+      if (metadata.status !== "completed" || metadata.exitCode !== 0 || metadata.terminationUnconfirmed || metadata.stdout.trim().split("\n").length !== 3 || Object.keys(fields).length !== 3 || fields.Package !== name || fields.Version !== artifact.version || fields.Architecture !== artifact.architecture) throw new AptPayloadUnavailable("The cached archive control identity does not match its frozen package tuple");
+      this.archivePaths.push(path);
+    }
+    await this.verifyArchiveCache(remaining);
+    return ["-o", `Dir::Cache::Archives=${archives}/`, "-o", `Dir::State::lists=${lists}/`];
+  }
+  private async verifyEntries(remaining: () => number, terminalAuxiliary = false): Promise<void> {
+    for (const [path, identity] of this.entries) {
+      const node = this.cacheNodes.get(path);
+      if (terminalAuxiliary && node?.auxiliary) {
+        const info = await lstat(path, { bigint: true });
+        if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== identity.dev || info.ino !== identity.ino || (info.mode & 0o7777n) !== node.mode) throw new AptPayloadRecovery("APT auxiliary directory identity changed");
+        continue; // Only identity-checked empty rmdir may remove this original inode.
+      }
+      await this.unchanged(path);
+      if (node && ((await lstat(path, { bigint: true })).mode & 0o7777n) !== node.mode) throw new AptPayloadRecovery("APT cache entry mode changed");
+      if (identity.directory) {
+        const expectedChildren = [...this.entries.keys()].filter((entry) => dirname(entry) === path).length;
+        const directory = await opendir(path);
+        try {
+          let count = 0;
+          while (true) {
+            if (remaining() <= 0) throw new AptPayloadUnavailable("The archive stage verification deadline expired");
+            const entry = await directory.read(); if (!entry) break;
+            if (++count > expectedChildren || !this.entries.has(join(path, entry.name))) throw new AptPayloadRecovery("Private archive stage contains unknown entries");
+          }
+        } finally { await directory.close(); }
+        await this.unchanged(path);
+      } else if (identity.sha256 === undefined || identity.size === undefined || await this.digest(path, identity.size, remaining) !== identity.sha256) throw new AptPayloadRecovery("Private archive stage bytes changed");
+    }
+  }
+  async verifyArchiveCache(remaining: () => number): Promise<void> {
+    await this.unchanged(this.root);
+    if (((await lstat(this.root, { bigint: true })).mode & 0o7777n) !== 0o700n) throw new AptPayloadRecovery("Private archive stage mode changed");
+    await this.verifyEntries(remaining);
+  }
+  async finishArchiveCache(remaining: () => number, terminalInstall: boolean): Promise<void> {
+    await this.unchanged(this.root);
+    if (((await lstat(this.root, { bigint: true })).mode & 0o7777n) !== 0o700n) throw new AptPayloadRecovery("Private archive stage mode changed");
+    await this.verifyEntries(remaining, terminalInstall);
+    for (const [path, node] of this.cacheNodes) {
+      if (!node.auxiliary) continue;
+      await this.unchanged(dirname(path));
+      const info = await lstat(path, { bigint: true }); const expected = this.entries.get(path)!;
+      if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== expected.dev || info.ino !== expected.ino || (info.mode & 0o7777n) !== node.mode || (!terminalInstall && info.uid !== BigInt(process.getuid!()))) throw new AptPayloadRecovery("APT auxiliary directory changed before cleanup");
+      try { await rmdir(path); } catch { throw new AptPayloadRecovery("APT auxiliary directory could not be safely removed"); }
+      this.entries.delete(path); this.cacheNodes.delete(path);
+    }
+  }
   async cleanup(): Promise<boolean> {
     try {
-      for (const [path, identity] of this.entries) {
-        await this.unchanged(path);
-        if (identity.directory) { for (const name of await readdir(path)) if (!this.entries.has(join(path, name))) return false; }
-        else if (identity.sha256 === undefined || identity.size === undefined || await this.digest(path, identity.size, () => 1) !== identity.sha256) return false;
-      }
+      await this.verifyEntries(() => 1);
       for (const [path, identity] of [...this.entries].reverse()) {
         await this.unchanged(path);
         if (identity.directory) await rmdir(path); else await unlink(path);

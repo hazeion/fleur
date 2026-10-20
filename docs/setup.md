@@ -196,3 +196,23 @@ identifies the last validation group reached; it does not prove the cause of a
 failure or the resulting package state. Delivery is best effort, so an absent
 record supplies no diagnostic evidence. This does not change the public setup
 result, grant consumption, recovery checks or the required success receipt.
+
+Local APT transactions use a private archive cache populated from the already
+authenticated downloads. Copies retain the frozen package identity, size and
+SHA256, and use APT's canonical package/version/architecture filename. The exact
+copied paths and inodes become the guard inputs. This supplies complete local
+archives before `--no-download` installation; queued local-file acquisition alone
+can leave APT without an absolute install operand. Both privileged simulation and
+installation use the same private cache and empty private lists directory. Signed
+repository acquisition and the actual dpkg status database remain unchanged.
+
+Fleur creates and binds the private cache lock, partial directory and lists
+auxfiles directory before APT. It rejects replaced nodes, modified copies and
+unknown entries before privileged commands. After a confirmed terminal install,
+APT may have changed the owner of the original partial or auxfiles directory.
+Fleur removes only those original empty directory inodes, with their required
+modes, using nonrecursive removal. Replaced or nonempty directories, changed lock
+metadata or uncertain command termination preserve recovery evidence and block
+replay. Cleanup uses no sudo operation and never removes a global APT cache.
+Command fixtures cover this behavior; actual sandbox-account ownership changes
+and successful native installation still require the guest verification gate.

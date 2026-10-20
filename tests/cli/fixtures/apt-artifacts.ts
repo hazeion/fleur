@@ -42,7 +42,7 @@ export async function aptArtifactProtocol(args: readonly string[], context: { re
 export type AptGuardFault = "unknown-package" | "existing-version" | "direction" | "target-version" | "configure-before-install" | "duplicate-configure" | "duplicate-install" | "missing-install" | "archive-path-canonical" | "archive-path-different" | "invocation" | "plan-mode" | "plan-json" | "plan-schema" | "protocol-header" | "protocol-config" | "protocol-action" | "package-state" | "archive-identity" | "archive-digest";
 
 /** Executes the actual source-owned hook through a disposable external APT/dpkg fixture. */
-export async function aptGuardProtocol(args: readonly string[], packages: Readonly<Record<string, string>>, rows: readonly string[], fault?: AptGuardFault, sink?: "closed" | "full"): Promise<HostCommandResult> {
+export async function aptGuardProtocol(args: readonly string[], packages: Readonly<Record<string, string>>, rows: readonly string[], fault?: AptGuardFault, sink?: "closed" | "full", noDownloadCache = false): Promise<HostCommandResult> {
   const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
   const directory = await mkdtemp("/tmp/fleur-apt-guard-fixture-");
   try {
@@ -54,7 +54,14 @@ export async function aptGuardProtocol(args: readonly string[], packages: Readon
     const actions = paths.flatMap((path) => {
       const name = basename(path).split("_")[0]!;
       if (!Object.hasOwn(packages, name)) throw new Error("Unexpected fixture archive action");
-      return [`${name} - < ${packages[name]} ${path}`, `${name} - < ${packages[name]} **CONFIGURE**`];
+      let selected = path;
+      if (noDownloadCache) {
+        const cache = args.find((arg) => arg.startsWith("Dir::Cache::Archives="))?.slice("Dir::Cache::Archives=".length);
+        const filename = `${name}_${packages[name]!.replaceAll(":", "%3a").replaceAll("_", "%5f")}_amd64.deb`;
+        const final = cache ? join(cache, filename) : undefined;
+        selected = final && Bun.file(final).size === aptFixtureArtifacts(packages)[name as keyof AptInstallProfile["artifacts"]]!.size ? final : "**ERROR**";
+      }
+      return [`${name} - < ${packages[name]} ${selected}`, `${name} - < ${packages[name]} **CONFIGURE**`];
     });
     if (fault === "unknown-package") actions[0] = actions[0]!.replace(/^\S+/, "PRIVATE-SENTINEL");
     if (fault === "existing-version") actions[0] = actions[0]!.replace(" - < ", " 0 < ");
@@ -109,7 +116,7 @@ export function aptFixturePackageTargets(args: readonly string[], packages: Read
   return args.slice(args.indexOf("install") + 1).map((entry) => {
     const exact = Object.entries(packages).find(([name, version]) => entry === `${name}=${version}`);
     if (exact) return `${exact[0]}=${exact[1]}`;
-    const artifact = Object.values(artifacts).find((candidate) => basename(entry) === new URL(candidate.url).pathname.split("/").at(-1));
+    const artifact = Object.values(artifacts).find((candidate) => basename(entry) === new URL(candidate.url).pathname.split("/").at(-1) || basename(entry) === `${candidate.name}_${candidate.version.replaceAll(":", "%3a").replaceAll("_", "%5f")}_${candidate.architecture}.deb`);
     if (!entry.startsWith("/") || !artifact) throw new Error("Unadmitted fixture local archive");
     return `${artifact.name}=${artifact.version}`;
   });

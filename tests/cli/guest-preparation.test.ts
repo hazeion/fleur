@@ -130,3 +130,29 @@ test("an output replaced during preparation is preserved and cleanup remains exp
   expect(await readFile(output, "utf8")).toBe("concurrent user file");
   expect(await Bun.file(join(directory, "moved-partial")).exists()).toBe(true);
 });
+
+async function fault(directory: string, path: string, scenario: string) {
+  const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/guest-preparation-faults.py"), preparation, scenario], { cwd: directory, env: { HOME: directory, PATH: path }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000, killSignal: "SIGKILL" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  const lines = stdout.trim().split("\n");
+  return { result: JSON.parse(lines[0]!), facts: JSON.parse(lines[1]!), stderr, exit };
+}
+test("cleanup atomically claims the output and preserves a replacement introduced at its cleanup boundary", async () => {
+  const { directory, path } = await guest();
+  const result = await fault(directory, path, "cleanup-swap");
+  expect(result.facts.replacementInjected).toBe(true);
+  expect(result.exit).toBe(5);
+  expect(result.result).toMatchObject({ ok: false, error: { code: "CLEANUP_UNCONFIRMED" } });
+  expect(result.facts.foreignLocations).toHaveLength(1);
+  expect(await readFile(join(directory, result.facts.foreignLocations[0]), "utf8")).toBe("unrelated concurrent output");
+});
+
+test("preparation authenticates final retained output bytes before reporting executable integrity", async () => {
+  const { directory, path } = await guest();
+  const result = await fault(directory, path, "output-mutation");
+  expect(result.facts.inPlaceMutationInjected).toBe(true);
+  expect(result.exit).toBe(4);
+  expect(result.result.ok).toBe(false);
+  expect(result.facts.outputExists).toBe(false);
+  expect(result.result.ownedPartialRemoved).toBe(true);
+});

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import secrets
 import stat
 import sys
 import zipfile
@@ -67,8 +68,8 @@ try:
                 if item.compress_size < 0 or item.compress_size > MAX_ARCHIVE:
                     raise RuntimeError("Compressed entry bound exceeded")
             entry = contents.getinfo(ENTRY)
-            descriptor = os.open("bun", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700, dir_fd=parent)
-            with os.fdopen(descriptor, "wb") as output:
+            descriptor = os.open("bun", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700, dir_fd=parent)
+            with os.fdopen(descriptor, "w+b") as output:
                 owned = os.fstat(output.fileno())
                 created = owned.st_dev, owned.st_ino
                 copied = 0
@@ -85,16 +86,30 @@ try:
                 output.flush()
                 os.fsync(output.fileno())
                 os.fchmod(output.fileno(), 0o700)
-            # Recheck retained input bytes and pathname identities before success.
-            authenticate(archive)
-            if identity(original) != identity(os.fstat(archive.fileno())):
-                raise RuntimeError("Archive changed during extraction")
-            current = os.stat("bun", dir_fd=parent, follow_symlinks=False)
-            current_directory = os.stat(cwd, follow_symlinks=False)
-            if not stat.S_ISREG(current.st_mode) or current.st_size != copied or stat.S_IMODE(current.st_mode) != 0o700 or (current.st_dev, current.st_ino) != created or (current_directory.st_dev, current_directory.st_ino) != (directory.st_dev, directory.st_ino):
-                raise RuntimeError("Owned output or directory identity changed")
-            report.update(ok=True, archiveSha256=ARCHIVE_SHA256, archiveBytes=archive_size, executableBytes=copied, executableSha256=executable_digest.hexdigest())
-            exit_code = 0
+                # Authenticate the actual retained output, not merely the ZIP
+                # stream we intended to write. Keep this descriptor until every
+                # final input/path identity check has completed.
+                sealed = os.fstat(output.fileno())
+                output.seek(0)
+                final_digest = hashlib.sha256()
+                verified = 0
+                while chunk := output.read(1024 * 1024):
+                    verified += len(chunk)
+                    if verified > MAX_EXECUTABLE or verified > copied:
+                        raise RuntimeError("Final executable bound exceeded")
+                    final_digest.update(chunk)
+                final = os.fstat(output.fileno())
+                if verified != copied or final_digest.digest() != executable_digest.digest() or identity(sealed) != identity(final):
+                    raise RuntimeError("Retained executable bytes changed")
+                authenticate(archive)
+                if identity(original) != identity(os.fstat(archive.fileno())):
+                    raise RuntimeError("Archive changed during extraction")
+                current = os.stat("bun", dir_fd=parent, follow_symlinks=False)
+                current_directory = os.stat(cwd, follow_symlinks=False)
+                if not stat.S_ISREG(current.st_mode) or current.st_size != copied or stat.S_IMODE(current.st_mode) != 0o700 or identity(current) != identity(final) or (current.st_dev, current.st_ino) != created or (current_directory.st_dev, current_directory.st_ino) != (directory.st_dev, directory.st_ino):
+                    raise RuntimeError("Owned output or directory identity changed")
+                report.update(ok=True, archiveSha256=ARCHIVE_SHA256, archiveBytes=archive_size, executableBytes=copied, executableSha256=final_digest.hexdigest())
+                exit_code = 0
 except Exception:
     report["error"] = {"code": "PREPARATION_FAILED", "message": "Authenticated guest Bun preparation failed; no installation was attempted."}
     if created is not None:
@@ -102,7 +117,22 @@ except Exception:
             current = os.stat("bun", dir_fd=parent, follow_symlinks=False)
             if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != created:
                 raise RuntimeError("Output ownership changed")
-            os.unlink("bun", dir_fd=parent)
+            # Claim the public entry atomically before deleting anything. The
+            # precheck preserves an already-known foreign entry in place; a
+            # replacement racing that check is retained in private quarantine.
+            quarantine_name = ".fleur-bun-cleanup-" + secrets.token_hex(16)
+            os.mkdir(quarantine_name, 0o700, dir_fd=parent)
+            quarantine = os.open(quarantine_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                os.rename("bun", "entry", src_dir_fd=parent, dst_dir_fd=quarantine)
+                claimed = os.stat("entry", dir_fd=quarantine, follow_symlinks=False)
+                if not stat.S_ISREG(claimed.st_mode) or (claimed.st_dev, claimed.st_ino) != created:
+                    report["retainedQuarantine"] = quarantine_name
+                    raise RuntimeError("Claimed output is a foreign replacement")
+                os.unlink("entry", dir_fd=quarantine)
+            finally:
+                os.close(quarantine)
+            os.rmdir(quarantine_name, dir_fd=parent)
             report["ownedPartialRemoved"] = True
         except Exception:
             exit_code = 5

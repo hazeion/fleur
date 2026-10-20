@@ -10,6 +10,9 @@ const packages = { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2",
 const profile = { method: "docker-official-apt" as const, verified: true as const, distribution: "ubuntu" as const, release: "24.04", architecture: "x64" as const, repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages, artifacts: aptFixtureArtifacts(packages) };
 
 interface PayloadOptions {
+  readonly producerPolicy?: boolean;
+  readonly rejectedPlan?: "extra-install" | "extra-configure" | "remove" | "wrong-version" | "missing" | "duplicate" | "unknown";
+  readonly rejectedPhase?: "initial" | "privileged";
   readonly unrelatedStatus?: string;
   readonly unrelatedError?: string;
   readonly inventoryTruncated?: boolean;
@@ -24,6 +27,24 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   let prompts = 0;
   let markerSeen = false;
   const calls: string[][] = [];
+  const simulation = (args: readonly string[]) => {
+    const operations = Object.entries(packages).flatMap(([name, version]) => [`Inst ${name} (${version} Docker CE:noble [amd64])`, `Conf ${name} (${version} Docker CE:noble [amd64])`]).join("\n");
+    if (!options.producerPolicy) return Object.entries(packages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n");
+    const note = args.includes("APT::Get::Show-User-Simulation-Note=false") ? "" : "NOTE: This is only a simulation!\n      apt-get needs root privileges for real execution.\n      Keep also in mind that locking is deactivated,\n      so don't depend on the relevance to the real current situation!\n";
+    const advisory = args.includes("--quiet=2") ? "" : "Reading package lists...\nBuilding dependency tree...\nReading state information...\nSuggested packages:\n  cgroupfs-mount | cgroup-lite docker-model-plugin\nRecommended packages:\n  docker-ce-rootless-extras pigz\nThe following NEW packages will be installed:\n  containerd.io docker-buildx-plugin docker-ce docker-ce-cli\n  docker-compose-plugin\n0 upgraded, 5 newly installed, 0 to remove and 0 not upgraded.\n";
+    const optional = args.includes("--no-install-recommends") && args.includes("--no-install-suggests") ? "" : "\nInst pigz (2.8-1 Ubuntu:noble [amd64])";
+    let plan = operations;
+    if (options.rejectedPlan && (args[0] === "sudo" ? "privileged" : "initial") === options.rejectedPhase) {
+      if (options.rejectedPlan === "extra-install") plan += "\nInst unapproved-package (1 vendor [amd64])";
+      if (options.rejectedPlan === "extra-configure") plan += "\nConf unapproved-service (1 vendor [amd64])";
+      if (options.rejectedPlan === "remove") plan += "\nRemv existing-application [1]";
+      if (options.rejectedPlan === "wrong-version") plan = plan.replace("Inst docker-ce (1 ", "Inst docker-ce (99 ");
+      if (options.rejectedPlan === "missing") plan = plan.split("\n").filter((line) => !line.startsWith("Inst docker-ce ")).join("\n");
+      if (options.rejectedPlan === "duplicate") plan += "\nInst docker-ce (1 Docker CE:noble [amd64])";
+      if (options.rejectedPlan === "unknown") plan += "\nUnrecognized package transaction output";
+    }
+    return note + advisory + plan + optional;
+  };
   const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
   try {
     const handlers = setupCommands({
@@ -55,15 +76,16 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         if (args[0] === "stat") return done(args.at(-1)?.endsWith("docker.asc") || args.at(-1)?.endsWith("docker.sources") ? "regular file|0|644|1\n" : "directory|0|755|2\n");
         if (args[0] === "cat") return done(args.at(-1)?.endsWith("docker.asc") ? dockerRepositoryKey : "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
         if (args[0] === "apt-cache") return done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
-        if (args[0] === "apt-get") return done(Object.entries(packages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n"));
+        if (args[0] === "apt-get") return done(simulation(args));
         if (args[0] === "sudo" && args.includes("--simulate")) {
           const inspected = await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers });
           const grants = (inspected.result.data as { grants: { revoked: boolean }[] }).grants;
           expect(grants).toHaveLength(5);
           expect(grants.every((grant) => grant.revoked)).toBe(true);
-          return done(Object.entries(packages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n"));
+          return done(simulation(args));
         }
         if (args[0] === "sudo") {
+          if (options.producerPolicy && (!args.includes("--no-install-recommends") || !args.includes("--no-install-suggests") || args.includes("--quiet=2") || args.includes("APT::Get::Show-User-Simulation-Note=false"))) return done("Producer policy does not cover this real installation", 100);
           if (substituteAtHook) {
             const path = args[args.indexOf("install") + 1]!;
             const bytes = await readFile(path); bytes[bytes.length - 2] = 88; await writeFile(path, bytes);
@@ -147,3 +169,22 @@ test("failure to durably remove a completed APT fence cannot report completed se
   expect(result.outcome.exitCode).toBe(5);
   expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
 });
+
+test("APT producer policy permits exact frozen installation without optional dependency authority", async () => {
+  const result = await payloadScenario(false, false, { producerPolicy: true });
+  expect(result.outcome.result.error?.message).toBe("Exact verified packages are installed. Run doctor to verify service access and disposable smoke readiness.");
+  expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed" } });
+  expect(result.privilegedInstalls).toBe(1);
+});
+
+for (const rejectedPhase of ["initial", "privileged"] as const) {
+  for (const rejectedPlan of ["extra-install", "extra-configure", "remove", "wrong-version", "missing", "duplicate", "unknown"] as const) {
+    test(`normalized ${rejectedPhase} APT simulation rejects ${rejectedPlan} without installing`, async () => {
+      const result = await payloadScenario(false, false, { producerPolicy: true, rejectedPhase, rejectedPlan });
+      expect(result.privilegedInstalls).toBe(0);
+      expect(result.outcome.exitCode).toBe(4);
+      expect(result.outcome.result.error?.code).toBe("PREREQUISITE_UNAVAILABLE");
+      expect(result.calls.some((args) => args[0] === "sudo" && args.includes("install") && !args.includes("--simulate"))).toBe(false);
+    });
+  }
+}

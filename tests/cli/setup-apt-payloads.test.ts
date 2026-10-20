@@ -10,6 +10,9 @@ const packages = { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2",
 const profile = { method: "docker-official-apt" as const, verified: true as const, distribution: "ubuntu" as const, release: "24.04", architecture: "x64" as const, repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages, artifacts: aptFixtureArtifacts(packages) };
 
 interface PayloadOptions {
+  readonly apt283Wire?: boolean;
+  readonly uncertainResolution?: boolean;
+  readonly uriFailure?: "origin" | "scheme" | "path" | "encoded-slash" | "double-escape" | "size-zero" | "size-wrong" | "sha" | "hash-missing" | "multiple" | "nonzero" | "missing-command";
   readonly producerPolicy?: boolean;
   readonly rejectedPlan?: "extra-install" | "extra-configure" | "remove" | "wrong-version" | "missing" | "duplicate" | "unknown";
   readonly rejectedPhase?: "initial" | "privileged";
@@ -21,6 +24,8 @@ interface PayloadOptions {
   readonly durability?: "create" | "remove";
 }
 async function payloadScenario(tamper: boolean, substituteAtHook = false, options: PayloadOptions = {}) {
+  const selectedPackages = options.apt283Wire ? { ...packages, "docker-ce": "5:1~fixture+1" } : packages;
+  const selectedProfile = { ...profile, packages: selectedPackages, artifacts: aptFixtureArtifacts(selectedPackages) };
   const directory = await mkdtemp("/tmp/fleur-apt-payload-");
   let privilegedInstalls = 0;
   let installed = false;
@@ -28,8 +33,8 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   let markerSeen = false;
   const calls: string[][] = [];
   const simulation = (args: readonly string[]) => {
-    const operations = Object.entries(packages).flatMap(([name, version]) => [`Inst ${name} (${version} Docker CE:noble [amd64])`, `Conf ${name} (${version} Docker CE:noble [amd64])`]).join("\n");
-    if (!options.producerPolicy) return Object.entries(packages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n");
+    const operations = Object.entries(selectedPackages).flatMap(([name, version]) => [`Inst ${name} (${version} Docker CE:noble [amd64])`, `Conf ${name} (${version} Docker CE:noble [amd64])`]).join("\n");
+    if (!options.producerPolicy) return Object.entries(selectedPackages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n");
     const note = args.includes("APT::Get::Show-User-Simulation-Note=false") ? "" : "NOTE: This is only a simulation!\n      apt-get needs root privileges for real execution.\n      Keep also in mind that locking is deactivated,\n      so don't depend on the relevance to the real current situation!\n";
     const advisory = args.includes("--quiet=2") ? "" : "Reading package lists...\nBuilding dependency tree...\nReading state information...\nSuggested packages:\n  cgroupfs-mount | cgroup-lite docker-model-plugin\nRecommended packages:\n  docker-ce-rootless-extras pigz\nThe following NEW packages will be installed:\n  containerd.io docker-buildx-plugin docker-ce docker-ce-cli\n  docker-compose-plugin\n0 upgraded, 5 newly installed, 0 to remove and 0 not upgraded.\n";
     const optional = args.includes("--no-install-recommends") && args.includes("--no-install-suggests") ? "" : "\nInst pigz (2.8-1 Ubuntu:noble [amd64])";
@@ -58,7 +63,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context?: { readonly cwd?: string; readonly outputLimitBytes?: number }) => {
         calls.push([...args]);
-        const health = aptHealthProtocol(args, [...(installed ? Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`) : []), ...(options.unrelatedStatus || options.unrelatedError ? [`another-application\t1\t${options.unrelatedStatus ?? "installed"}\t${options.unrelatedError ?? "ok"}`] : [])]);
+        const health = aptHealthProtocol(args, [...(installed ? Object.entries(selectedPackages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`) : []), ...(options.unrelatedStatus || options.unrelatedError ? [`another-application\t1\t${options.unrelatedStatus ?? "installed"}\t${options.unrelatedError ?? "ok"}`] : [])]);
         if (health) { expect(context?.outputLimitBytes).toBe(2097152); return options.inventoryTruncated ? { ...health, exitCode: 1, terminationUnconfirmed: true } : health; }
         if (args[0] === "apt-get" && args.includes("download") && !args.includes("--print-uris")) {
           const inspected = await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers });
@@ -69,13 +74,34 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
           expect(grants.filter((grant) => grant.action === "install").every((grant) => grant.revoked)).toBe(true);
           expect(grants.filter((grant) => grant.action !== "install").every((grant) => !grant.revoked)).toBe(true);
         }
-        const artifact = await aptArtifactProtocol(args, context, packages, tamper);
-        if (artifact) return artifact;
+        const artifact = await aptArtifactProtocol(args, context, selectedPackages, tamper, options.apt283Wire);
+        if (artifact) {
+          if (args.includes("--print-uris")) {
+            if (options.uncertainResolution) return { ...artifact, terminationUnconfirmed: true };
+            if (options.uriFailure) {
+              let stdout = artifact.stdout;
+              if (options.uriFailure === "origin") stdout = stdout.replace("download.docker.com", "untrusted.example");
+              if (options.uriFailure === "scheme") stdout = stdout.replace("https:", "http:");
+              if (options.uriFailure === "path") stdout = stdout.replace("/stable/", "/other/");
+              if (options.uriFailure === "encoded-slash") stdout = stdout.replace("/pool/", "/pool%2f");
+              if (options.uriFailure === "double-escape") stdout = stdout.replaceAll("%7e", "%257e");
+              if (options.uriFailure === "size-zero") stdout = stdout.replace(/ [0-9]+ SHA256:/, " 0 SHA256:");
+              if (options.uriFailure === "size-wrong") stdout = stdout.replace(/ [0-9]+ SHA256:/, " 1 SHA256:");
+              if (options.uriFailure === "sha") stdout = stdout.replace(/SHA256:[a-f0-9]+/, "SHA256:" + "0".repeat(64));
+              if (options.uriFailure === "hash-missing") stdout = stdout.replace(/SHA256:[a-f0-9]+/, "");
+              if (options.uriFailure === "multiple") stdout += stdout;
+              if (options.uriFailure === "nonzero") return { ...artifact, exitCode: 100, stdout, stderr: "E: repository resolution failed" };
+              if (options.uriFailure === "missing-command") return { status: "missing", stdout, stderr: "apt-get unavailable" };
+              return { ...artifact, stdout };
+            }
+          }
+          return artifact;
+        }
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return done(installed ? Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n") : "", installed ? 0 : 1);
+        if (args[0] === "dpkg-query") return done(installed ? Object.entries(selectedPackages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n") : "", installed ? 0 : 1);
         if (args[0] === "stat") return done(args.at(-1)?.endsWith("docker.asc") || args.at(-1)?.endsWith("docker.sources") ? "regular file|0|644|1\n" : "directory|0|755|2\n");
         if (args[0] === "cat") return done(args.at(-1)?.endsWith("docker.asc") ? dockerRepositoryKey : "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
-        if (args[0] === "apt-cache") return done(Object.entries(packages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
+        if (args[0] === "apt-cache") return done(Object.entries(selectedPackages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
         if (args[0] === "apt-get") return done(simulation(args));
         if (args[0] === "sudo" && args.includes("--simulate")) {
           const inspected = await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers });
@@ -90,7 +116,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
             const path = args[args.indexOf("install") + 1]!;
             const bytes = await readFile(path); bytes[bytes.length - 2] = 88; await writeFile(path, bytes);
           }
-          const guarded = await aptGuardProtocol(args, packages, options.latePending ? ["another-application\t1\tunpacked\tok"] : []);
+          const guarded = await aptGuardProtocol(args, selectedPackages, options.latePending ? ["another-application\t1\tunpacked\tok"] : []);
           if (guarded.exitCode !== 0) return guarded;
           privilegedInstalls++; installed = true;
           if (options.uncertain === "timeout") return { status: "timeout", stdout: "", stderr: "" };
@@ -99,10 +125,11 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         }
         throw new Error("Unexpected payload fixture operation");
       },
-    }, [profile]);
+    }, [selectedProfile]);
     const outcome = await runCli(["setup"], { cwd: directory, handlers });
     const retry = options.uncertain ? await runCli(["setup"], { cwd: directory, handlers }) : undefined;
-    return { outcome, retry, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
+    const authorityAfterResolution = options.uncertainResolution ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
+    return { outcome, retry, authorityAfterResolution, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
@@ -187,4 +214,30 @@ for (const rejectedPhase of ["initial", "privileged"] as const) {
       expect(result.calls.some((args) => args[0] === "sudo" && args.includes("install") && !args.includes("--simulate"))).toBe(false);
     });
   }
+}
+
+test("APT 2.8.3 encoded URI and epoch destination preserve the frozen payload identity", async () => {
+  const result = await payloadScenario(false, false, { apt283Wire: true });
+  expect(result.outcome.result.error?.message).toBe("Exact verified packages are installed. Run doctor to verify service access and disposable smoke readiness.");
+  expect(result.privilegedInstalls).toBe(1);
+  const installation = result.calls.find((args) => args[0] === "sudo" && !args.includes("--simulate"))!;
+  expect(installation.some((arg) => arg.endsWith("/docker-ce_5%3a1~fixture+1_amd64.deb"))).toBe(true);
+});
+
+test("an uncertain URI resolution cannot consume acquisition authority or download payloads", async () => {
+  const result = await payloadScenario(false, false, { uncertainResolution: true });
+  expect(result.authorityAfterResolution?.result.data).toMatchObject({ grants: expect.arrayContaining([expect.objectContaining({ action: "install", mode: "once", revoked: false })]) });
+  expect(result.calls.some((args) => args.includes("download") && !args.includes("--print-uris"))).toBe(false);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.privilegedInstalls).toBe(0);
+});
+
+for (const uriFailure of ["origin", "scheme", "path", "encoded-slash", "double-escape", "size-zero", "size-wrong", "sha", "hash-missing", "multiple", "nonzero", "missing-command"] as const) {
+  test(`APT URI representation preserves acquisition rejection: ${uriFailure}`, async () => {
+    const result = await payloadScenario(false, false, { apt283Wire: true, uriFailure });
+    expect(result.outcome.exitCode).toBe(4);
+    expect(result.outcome.result.error?.code).toBe("PREREQUISITE_UNAVAILABLE");
+    expect(result.calls.some((args) => args.includes("download") && !args.includes("--print-uris"))).toBe(false);
+    expect(result.privilegedInstalls).toBe(0);
+  });
 }

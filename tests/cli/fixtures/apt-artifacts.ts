@@ -11,7 +11,7 @@ export function aptFixtureArtifacts(packages: Readonly<Record<string, string>>, 
   })) as AptInstallProfile["artifacts"];
 }
 /** Disposable external apt/dpkg-deb protocol fixture, not a production helper mock. */
-export async function aptArtifactProtocol(args: readonly string[], context: { readonly cwd?: string } | undefined, packages: Readonly<Record<string, string>>, tamper = false): Promise<HostCommandResult | undefined> {
+export async function aptArtifactProtocol(args: readonly string[], context: { readonly cwd?: string } | undefined, packages: Readonly<Record<string, string>>, tamper = false, apt283Wire = false): Promise<HostCommandResult | undefined> {
   const done = (stdout = "") => ({ status: "completed" as const, exitCode: 0, stdout, stderr: "" });
   const artifacts = aptFixtureArtifacts(packages);
   if (args[0] === "apt-get" && args.includes("download")) {
@@ -21,8 +21,9 @@ export async function aptArtifactProtocol(args: readonly string[], context: { re
     const version = target.slice(separator + 1);
     const artifact = artifacts[name as keyof typeof artifacts];
     if (!artifact || version !== artifact.version) throw new Error("Unadmitted fixture artifact");
-    const filename = new URL(artifact.url).pathname.split("/").at(-1)!;
-    if (args.includes("--print-uris")) return done(`'${artifact.url}' ${filename} ${artifact.size} SHA256:${artifact.sha256}\n`);
+    const filename = apt283Wire ? `${name}_${version.replaceAll(":", "%3a")}_amd64.deb` : new URL(artifact.url).pathname.split("/").at(-1)!;
+    const uri = apt283Wire ? artifact.url.replaceAll("~", "%7e").replaceAll("+", "%2b") : artifact.url;
+    if (args.includes("--print-uris")) return done(`'${uri}' ${filename} ${artifact.size} SHA256:${artifact.sha256}\n`);
     if (!context?.cwd) throw new Error("APT downloads require their owned operation cwd");
     const bytes = aptFixtureBytes(name, version);
     if (tamper) bytes[bytes.length - 2] = bytes[bytes.length - 2] === 48 ? 49 : 48;

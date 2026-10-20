@@ -179,3 +179,5 @@ also rechecks package database health and lock absence during each verified
 service/access observation. Actual native session and OS behavior remains pending.
 
 APT setup excludes optional recommended and suggested packages consistently in initial planning, privileged local-archive planning and installation. Simulations use APT's quiet level 2 and disable its nonroot simulation note so the strict operation validator sees the package actions. These output options apply only to simulations; installation retains its separately authorized guarded command. Extra, removed, changed-version or unrecognized operations still stop setup. This policy has command-protocol coverage; native installation evidence remains pending.
+
+APT artifact resolution accepts the frozen URL literally or its exact APT path encoding for plus, tilde and percent. It does not decode arbitrary returned URLs or broaden their origin or path. The exact size, payload hash and package control checks remain required. An unconfirmed URI-resolution process stops with recovery required before acquisition authority is consumed or a payload download begins.

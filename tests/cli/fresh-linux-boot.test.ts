@@ -10,7 +10,7 @@ async function fixture() {
   const remote = `test() { if [ "$1" = '-f' ] && [ "$2" = '/var/lib/cloud/instance/boot-finished' ]; then command test -f "$FIXTURE_ROOT/finished"; else command test "$@"; fi; }
 cat() { if [ "$1" = '/etc/fleur-owned-guest' ]; then command cat "$FIXTURE_ROOT/nonce"; else command cat "$@"; fi; }
 `;
-  await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT; const hard=await Bun.file(root+'/ssh-exit').text(); if(Number(hard)!==0){process.stderr.write(await Bun.file(root+'/ssh-stderr').text());process.exit(Number(hard));} const child=Bun.spawn(['/bin/sh','-c',${JSON.stringify(remote)}+process.argv.at(-1)],{stdin:'ignore',stdout:'inherit',stderr:'inherit',env:process.env});process.exit(await child.exited);\n`, { mode: 0o700 });
+  await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT; const hard=await Bun.file(root+'/ssh-exit').text(); if(Number(hard)!==0){if(await Bun.file(root+'/ssh-stdout').exists())process.stdout.write(await Bun.file(root+'/ssh-stdout').text());process.stderr.write(await Bun.file(root+'/ssh-stderr').text());process.exit(Number(hard));} const child=Bun.spawn(['/bin/sh','-c',${JSON.stringify(remote)}+process.argv.at(-1)],{stdin:'ignore',stdout:'inherit',stderr:'inherit',env:process.env});process.exit(await child.exited);\n`, { mode: 0o700 });
   await writeFile(join(tools, "cloud-init"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT; await Bun.write(root+'/cloud-init-calls',(await Bun.file(root+'/cloud-init-calls').exists()?await Bun.file(root+'/cloud-init-calls').text():'')+'called\\n'); if(process.argv.includes('--wait')){while(!await Bun.file(root+'/finished').exists())await Bun.sleep(100);} process.stdout.write(await Bun.file(root+'/status.json').text()); process.exit(Number(await Bun.file(root+'/cloud-init-exit').text()));\n`, { mode: 0o700 });
   await Promise.all([writeFile(join(root, "nonce"), nonce + "\n"), writeFile(join(root, "status.json"), JSON.stringify({ status: "done", extended_status: "done", errors: [], recoverable_errors: {} })), writeFile(join(root, "cloud-init-exit"), "0"), writeFile(join(root, "ssh-exit"), "0"), writeFile(join(root, "ssh-stderr"), "")]);
   const observe = async () => {
@@ -58,3 +58,45 @@ for (const scenario of ["running", "nonce-mismatch", "degraded", "errors", "reco
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+
+test("owned loopback pre-authentication reset remains pending until genuine completed boot", async () => {
+  const { root, observe } = await fixture();
+  try {
+    await writeFile(join(root, "ssh-exit"), "255");
+    await writeFile(join(root, "ssh-stderr"), "kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port 2222\r\n");
+    expect(await observe()).toMatchObject({ exit: 3, stderr: "", result: { state: "pending", ok: false } });
+    await writeFile(join(root, "ssh-exit"), "0");
+    await writeFile(join(root, "finished"), "finished");
+    expect(await observe()).toMatchObject({ exit: 0, stderr: "", result: { state: "ready", ok: true, cloudInitComplete: true, nonceMatched: true } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const scenario of ["host-key-prefix", "authentication-suffix", "unexpected-output", "other-address", "other-port", "other-exit", "unknown-suffix"] as const) {
+  test(`pre-authentication reset cannot mask transport failure: ${scenario}`, async () => {
+    const { root, observe } = await fixture();
+    try {
+      let stderr = "kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port 2222\r\n";
+      if (scenario === "host-key-prefix") stderr = "Host key verification failed.\n" + stderr;
+      if (scenario === "authentication-suffix") stderr += "fleur@127.0.0.1: Permission denied (publickey).\n";
+      if (scenario === "unexpected-output") await writeFile(join(root, "ssh-stdout"), "unexpected remote output\n");
+      if (scenario === "other-address") stderr = stderr.replace("127.0.0.1", "127.0.0.2");
+      if (scenario === "other-port") stderr = stderr.replace("2222", "2223");
+      if (scenario === "unknown-suffix") stderr += "unknown transport failure\n";
+      await writeFile(join(root, "ssh-exit"), scenario === "other-exit" ? "1" : "255");
+      await writeFile(join(root, "ssh-stderr"), stderr);
+      const observed = await observe();
+      expect(observed).toMatchObject({ exit: 4, stderr: "", result: { state: "failed", ok: false, error: { code: "SSH_FAILED" } } });
+      expect(observed.result.cloudInitComplete).not.toBe(true);
+      expect(observed.result.nonceMatched).not.toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test("owned loopback pre-authentication reset accepts ordinary LF transport diagnostics", async () => {
+  const { root, observe } = await fixture();
+  try {
+    await writeFile(join(root, "ssh-exit"), "255");
+    await writeFile(join(root, "ssh-stderr"), "kex_exchange_identification: read: Connection reset by peer\nConnection reset by 127.0.0.1 port 2222\n");
+    expect(await observe()).toMatchObject({ exit: 3, stderr: "", result: { state: "pending", ok: false } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

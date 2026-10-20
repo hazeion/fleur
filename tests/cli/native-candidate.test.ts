@@ -309,3 +309,86 @@ test("a closed diagnostic pipe preserves the original candidate command outcome"
     }
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }, 20000);
+
+test("produced candidate install phase observes one unchanged external command", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-install-observer-"));
+  try {
+    const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
+    const output = join(scratch, "artifacts");
+    const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
+    expect(built.exit, built.stderr).toBe(0);
+    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", scratch], scratch, environment)).exit).toBe(0);
+    const tools = join(scratch, "tools"); await mkdir(tools);
+    const witness = join(scratch, "calls.json");
+    await writeFile(join(tools, "sudo"), `#!${process.execPath}\nconst file=Bun.file(${JSON.stringify(witness)});const calls=await file.exists()?await file.json():[];calls.push({args:process.argv.slice(2),cwd:process.cwd()});await Bun.write(file,JSON.stringify(calls));if(process.env.PROBE_GATE){const until=Date.now()+3000;while(!await Bun.file(process.env.PROBE_GATE).exists()){if(Date.now()>until)process.exit(124);await Bun.sleep(5);}}process.stdout.write(process.env.OBS_TEXT??'actual install output\\n');process.stderr.write(process.env.OBS_TEXT??'actual install failure\\n');process.exit(100);\n`, { mode: 0o700 });
+    const args = ["sudo", "-n", "apt-get", "--assume-yes", "--no-download", "--no-remove", "--no-upgrade", "install", "/owned/frozen.deb"];
+    const adapter = join(scratch, "package/bin/candidate-command-observer.ts");
+    const evaluated = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(join(scratch, "package/src/setup/host.ts"))});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});const host=observeCandidateCommands(observeCandidateCommands(productionHost(),'apt-local-archive-install'));console.log(JSON.stringify(await host.run(${JSON.stringify(args)},1000,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools });
+    expect(evaluated.exit).toBe(0);
+    expect(JSON.parse(evaluated.stdout)).toEqual({ status: "completed", exitCode: 100, stdout: "actual install output\n", stderr: "actual install failure\n" });
+    expect(JSON.parse(await readFile(witness, "utf8"))).toEqual([{ args: args.slice(1), cwd: await realpath(scratch) }]);
+    expect(evaluated.stderr).toContain("FLEUR_NATIVE_COMMAND_OBSERVATION ");
+    expect(evaluated.stderr.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(evaluated.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ phase: "apt-local-archive-install", status: "completed", exitCode: 100, stdout: "actual install output\n", stderr: "actual install failure\n" });
+    const hostPath = join(scratch, "package/src/setup/host.ts");
+    const execute = (invocation: string[], phase: string, extra: Record<string, string> = {}) => command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(hostPath)});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(productionHost(),${JSON.stringify(phase)}).run(${JSON.stringify(invocation)},1000,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools, ...extra });
+    let executed = 1;
+    for (const other of [args.map((arg) => arg === "-n" ? "-v" : arg), args.map((arg) => arg === "apt-get" ? "other-tool" : arg), [...args, "--simulate"], args.filter((arg) => arg !== "--no-download"), args.filter((arg) => arg !== "--assume-yes"), args.filter((arg) => arg !== "--no-remove"), args.filter((arg) => arg !== "--no-upgrade"), [...args.slice(0, -1), "docker-ce=1"], args.map((arg) => arg === "install" ? "download" : arg), args.slice(0, -1)]) {
+      const negative = await execute(other, "apt-local-archive-install");
+      expect(negative.exit).toBe(0);
+      expect(JSON.parse(negative.stdout)).toMatchObject({ exitCode: 100, stdout: "actual install output\n", stderr: "actual install failure\n" });
+      expect(negative.stderr).toBe(""); executed++;
+    }
+    const unknown = await execute(args, "unknown-internal-phase");
+    expect(unknown.exit).toBe(0); expect(unknown.stderr).toBe(""); executed++;
+    const longOutput = "é".repeat(2047) + "€\n\u001b[31m";
+    const bounded = await execute(args, "apt-local-archive-install", { OBS_TEXT: longOutput });
+    expect(bounded.exit).toBe(0);
+    expect(JSON.parse(bounded.stdout)).toMatchObject({ stdout: longOutput, stderr: longOutput, exitCode: 100 });
+    expect(bounded.stderr.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(bounded.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ phase: "apt-local-archive-install", stdout: "é".repeat(2047), stderr: "é".repeat(2047), stdoutTruncated: true, stderrTruncated: true }); executed++;
+    const exceptional = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(hostPath)});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});const host=observeCandidateCommands(observeCandidateCommands(productionHost(),'apt-local-archive-install'));const sentinel=new Error('owned context getter');try{await host.run(${JSON.stringify(args)},1000,{get outputLimitBytes(){throw sentinel;}});process.exit(9);}catch(error){console.log(JSON.stringify({same:error===sentinel}));}`], scratch, { ...environment, PATH: tools });
+    expect(exceptional.exit).toBe(0); expect(JSON.parse(exceptional.stdout)).toEqual({ same: true }); expect(exceptional.stderr).toBe("");
+    const expired = await command([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(hostPath)});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(observeCandidateCommands(productionHost(),'apt-local-archive-install')).run(${JSON.stringify(args)},0,{cwd:${JSON.stringify(scratch)}})));`], scratch, { ...environment, PATH: tools });
+    expect(expired.exit).toBe(0); expect(JSON.parse(expired.stdout)).toEqual({ status: "timeout", stdout: "", stderr: "" });
+    expect(JSON.parse(expired.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ phase: "apt-local-archive-install", status: "timeout", exitCode: null });
+    expect((await Bun.file(witness).json()).length).toBe(executed);
+    for (const [observed, full] of [[false, false], [true, false], [true, true]]) {
+      const gate = join(scratch, (observed ? "observed" : "baseline") + (full ? "-full" : "")); const fillWitness = gate + "-witness";
+      const child = Bun.spawn([process.execPath, "--eval", `const {productionHost}=await import(${JSON.stringify(hostPath)});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});process.stderr.write('INTERNAL NATIVE CANDIDATE disclosure\\n');if(${full}){const {writeSync}=await import('node:fs');let bytes=0,errorCode=null;for(let i=0;i<1000;i++){try{bytes+=writeSync(2,Buffer.alloc(4096,120));}catch(error){errorCode=error.code;break;}}await Bun.write(${JSON.stringify(fillWitness)},JSON.stringify({bytes,errorCode}));}const host=productionHost();console.log(JSON.stringify(await (${observed}?observeCandidateCommands(observeCandidateCommands(host,'apt-local-archive-install')):host).run(${JSON.stringify(args)},4000)));`], { cwd: scratch, env: { ...environment, PATH: tools, PROBE_GATE: gate }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 6000, killSignal: "SIGKILL" });
+      const reader = child.stderr.getReader(); expect(new TextDecoder().decode((await reader.read()).value)).toContain("INTERNAL NATIVE CANDIDATE disclosure");
+      if (!full) await reader.cancel(); await writeFile(gate, "release", { flag: "wx" });
+      const [stdout, exit] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      expect(JSON.parse(stdout)).toEqual({ status: "completed", stdout: "actual install output\n", stderr: "actual install failure\n", exitCode: 100 });
+      if (full) { await reader.cancel(); expect(JSON.parse(await readFile(fillWitness, "utf8"))).toMatchObject({ bytes: expect.any(Number), errorCode: "EAGAIN" }); }
+      expect(exit).toBe(0); executed++;
+    }
+    const ptyProgram = `const {productionHost}=await import(${JSON.stringify(hostPath)});const {observeCandidateCommands}=await import(${JSON.stringify(adapter)});console.log(JSON.stringify(await observeCandidateCommands(observeCandidateCommands(productionHost(),'apt-local-archive-install')).run(${JSON.stringify(args)},1000,{cwd:${JSON.stringify(scratch)}})));`;
+    const ptyScript = `import os,pty,subprocess,select,time,json,signal
+master,slave=pty.openpty();child=None;data=bytearray()
+try:
+ child=subprocess.Popen(${JSON.stringify([process.execPath, "--eval", "__PROGRAM__"]).replace('"__PROGRAM__"', JSON.stringify(ptyProgram))},stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=slave,start_new_session=True)
+ os.close(slave);slave=-1;deadline=time.monotonic()+5
+ while time.monotonic()<deadline:
+  if select.select([master],[],[],0.05)[0]:
+   try: part=os.read(master,16384)
+   except OSError: break
+   if not part: break
+   data.extend(part)
+   if len(data)>65536: raise RuntimeError('PTY output bound')
+  if child.poll() is not None: break
+ stdout,_=child.communicate(timeout=max(0.01,deadline-time.monotonic()))
+ print(json.dumps({'exit':child.returncode,'stdout':stdout.decode(),'stderr':data.decode()}))
+finally:
+ if child is not None and child.poll() is None: os.killpg(child.pid,signal.SIGKILL);child.wait()
+ if slave>=0: os.close(slave)
+ os.close(master)
+`;
+    const pty = await command(["/usr/bin/python3", "-c", ptyScript], scratch, { ...environment, PATH: tools });
+    expect(pty.exit, pty.stderr).toBe(0); const ptyResult = JSON.parse(pty.stdout);
+    expect(ptyResult.exit).toBe(0); expect(JSON.parse(ptyResult.stdout)).toMatchObject({ exitCode: 100, stdout: "actual install output\n", stderr: "actual install failure\n" });
+    expect(JSON.parse(ptyResult.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ phase: "apt-local-archive-install", exitCode: 100 }); executed++;
+    expect((await Bun.file(witness).json()).length).toBe(executed);
+
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);

@@ -86,9 +86,26 @@ def command_json(name):
     limit = int(budget_seconds(60))
     code, text, _ = run([BUN, CLI, name, "--json", "--timeout", str(limit)], timeout=75, allowed=(0, 1, 3, 4, 5))
     data = json.loads(text)
-    if data.get("formatVersion") != 1 or data.get("command") != name or data.get("truncated") is not False:
+    if not isinstance(data, dict) or data.get("formatVersion") != 1 or data.get("command") != name or data.get("truncated") is not False:
         raise RuntimeError("Candidate returned malformed command evidence")
     return {"exitCode": code, "result": data}
+
+
+
+def object_field(value, key):
+    field = value.get(key, {})
+    if not isinstance(field, dict):
+        raise RuntimeError("Candidate returned malformed object field: " + key)
+    return field
+
+
+def command_data(envelope):
+    # Version 1 permits null data. It supplies no plan or readiness evidence.
+    if "data" not in envelope:
+        raise RuntimeError("Candidate returned missing command data")
+    if envelope["data"] is None:
+        return {}
+    return object_field(envelope, "data")
 
 
 def setup_pty(reply, expected_prompt=None):
@@ -158,10 +175,10 @@ def access_observation(plan):
 
 def checked_enrollment_plan(observed):
     envelope = observed.get("result", {})
-    plan = envelope.get("data", {}).get("plan", {})
-    user, group = plan.get("user", {}), plan.get("group", {})
+    plan = object_field(command_data(envelope), "plan")
+    user, group = object_field(plan, "user"), object_field(plan, "group")
     checksum = plan.get("checksum", "")
-    if (observed.get("exitCode") != 3 or envelope.get("formatVersion") != 1 or envelope.get("command") != "setup" or envelope.get("ok") is not False or envelope.get("truncated") is not False or envelope.get("error", {}).get("code") != "AUTHORITY_REQUIRED"
+    if (observed.get("exitCode") != 3 or envelope.get("formatVersion") != 1 or envelope.get("command") != "setup" or envelope.get("ok") is not False or envelope.get("truncated") is not False or object_field(envelope, "error").get("code") != "AUTHORITY_REQUIRED"
             or plan.get("action") != "docker-access" or plan.get("method") != "docker-official-apt" or plan.get("privilege") != "root-equivalent daemon access"
             or type(user.get("uid")) is not int or user["uid"] != os.getuid() or user["uid"] == 0 or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user.get("name", ""))
             or group.get("name") != "docker" or type(group.get("gid")) is not int or not 0 < group["gid"] <= 4294967294
@@ -301,9 +318,9 @@ def enrollment_handoff(nonce):
     for _ in range(2):
         observed = command_json("setup")
         envelope = observed["result"]
-        if observed["exitCode"] != 3 or envelope.get("ok") is not False or envelope.get("error", {}).get("code") != "HUMAN_ACTION_REQUIRED" or envelope.get("data", {}).get("access", {}).get("state") != "new-login-required":
-            raise RuntimeError("The original login did not retain its explicit new-login requirement")
         REPORT["staleLoginReprobes"].append(observed)
+        if observed["exitCode"] != 3 or envelope.get("ok") is not False or object_field(envelope, "error").get("code") != "HUMAN_ACTION_REQUIRED" or object_field(command_data(envelope), "access").get("state") != "new-login-required":
+            raise RuntimeError("The original login did not retain its explicit new-login requirement")
     after = access_observation(plan)
     if (snapshot() != unchanged or after["user"] != before["user"] or after["group"] != before["group"] or after["socket"] != before["socket"] or after["sessionGroups"] != before["sessionGroups"]
             or set(after["accountGroups"]) != set(before["accountGroups"]) | {gid} or after["members"] != sorted(before["members"] + [plan["user"]["name"]])):
@@ -402,8 +419,8 @@ def resume_guest(nonce, expected_digest):
     REPORT["accessResume"] = {"checkpointSha256": expected_digest, "sessionGroups": current["sessionGroups"]}
     REPORT["ordinaryUserSetupAfterResume"] = command_json("setup")
     REPORT["ordinaryUserDoctorAfterResume"] = command_json("doctor")
-    state = REPORT["ordinaryUserDoctorAfterResume"]["result"].get("data", {}).get("components", {})
-    if state.get("daemon", {}).get("state") != "ready":
+    state = object_field(command_data(REPORT["ordinaryUserDoctorAfterResume"]["result"]), "components")
+    if object_field(state, "daemon").get("state") != "ready":
         REPORT["error"] = {"code": "NATIVE_SETUP_INCOMPLETE", "message": "Fresh ordinary login did not establish daemon readiness."}
         return
     finish_ready_guest(state)
@@ -513,11 +530,18 @@ def main():
     capture_signed_indexes()
     REPORT["reprobe"] = command_json("setup")
     REPORT["ordinaryUserDoctor"] = command_json("doctor")
-    state = REPORT["ordinaryUserDoctor"]["result"].get("data", {}).get("components", {})
-    if state.get("daemon", {}).get("state") == "denied":
+    state = object_field(command_data(REPORT["ordinaryUserDoctor"]["result"]), "components")
+    if object_field(state, "daemon").get("state") == "denied":
+        reprobe = REPORT["reprobe"]
+        envelope = reprobe["result"]
+        command_data(envelope)
+        if (envelope.get("ok") is False and isinstance(envelope.get("error"), dict)
+                and (reprobe["exitCode"], envelope["error"].get("code")) in ((4, "PREREQUISITE_UNAVAILABLE"), (5, "RECOVERY_REQUIRED"))):
+            REPORT["error"] = {"code": "NATIVE_SETUP_INCOMPLETE", "message": "Setup did not provide enrollment authority. Inspect the preserved setup and doctor results before resuming."}
+            return
         enrollment_handoff(nonce)
         return
-    if state.get("daemon", {}).get("state") != "ready":
+    if object_field(state, "daemon").get("state") != "ready":
         REPORT["error"] = {"code": "NATIVE_SETUP_INCOMPLETE", "message": "Inspect actual setup transcript, package state and signed repository evidence. No dependency preinstallation was performed."}
         return
     finish_ready_guest(state)
@@ -526,16 +550,16 @@ def main():
 def finish_ready_guest(state):
     # Doctor's complete image identity and nonce checks remain the product boundary.
     # No public image-acquire grant mint is available here; missing authority stays incomplete.
-    if state.get("smoke", {}).get("state") != "ready":
+    if object_field(state, "smoke").get("state") != "ready":
         REPORT["smokeAcquisitionPlan"] = command_json("setup")
         observed = REPORT["smokeAcquisitionPlan"]
         envelope = observed["result"]
-        plan = envelope.get("data", {}).get("plan", {})
+        plan = object_field(command_data(envelope), "plan")
         checksum = plan.get("checksum", "")
         prior_checksums = {prompt["checksum"] for phase in ("authorizedFixtureSetup", "separateEnrollmentSetup") for prompt in REPORT.get(phase, {}).get("prompts", [])}
-        if (observed["exitCode"] != 3 or envelope.get("ok") is not False or envelope.get("error", {}).get("code") != "AUTHORITY_REQUIRED"
+        if (observed["exitCode"] != 3 or envelope.get("ok") is not False or object_field(envelope, "error").get("code") != "AUTHORITY_REQUIRED"
                 or plan.get("action") != "image-acquire" or plan.get("method") != "docker-digest-pull"
-                or state.get("smoke", {}).get("state") != "image-required" or plan.get("image") != state["smoke"].get("image")
+                or object_field(state, "smoke").get("state") != "image-required" or plan.get("image") != state["smoke"].get("image")
                 or not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", plan.get("image", "")) or not re.fullmatch(r"[a-f0-9]{64}", checksum) or checksum in prior_checksums):
             raise RuntimeError("Separate smoke image acquisition plan is invalid")
         context = run(["docker", "context", "show"])[1].strip()
@@ -549,8 +573,8 @@ def finish_ready_guest(state):
         if REPORT["smokeAcquisitionFixture"]["promptsAnswered"] != 1:
             raise RuntimeError("Separate image acquisition did not present exactly one matching prompt")
         REPORT["ordinaryUserDoctorAfterAcquisition"] = command_json("doctor")
-        state = REPORT["ordinaryUserDoctorAfterAcquisition"]["result"].get("data", {}).get("components", {})
-        if state.get("smoke", {}).get("state") != "ready":
+        state = object_field(command_data(REPORT["ordinaryUserDoctorAfterAcquisition"]["result"]), "components")
+        if object_field(state, "smoke").get("state") != "ready":
             REPORT["error"] = {"code": "SMOKE_AUTHORITY_REQUIRED", "message": "Separate supported image acquisition did not establish readiness."}
             return
     verify_smoke_and_restrictions(state)
@@ -584,7 +608,7 @@ def verify_smoke_and_restrictions(state):
             before = snapshot()
             observed = command_json("doctor")
             envelope = observed.get("result", {})
-            components = envelope.get("data", {}).get("components", {})
+            components = object_field(command_data(envelope), "components")
             # The internal candidate deliberately remains release-unverified:
             # healthy readiness must retain doctor exit 4 and its exact envelope.
             ready = (observed.get("exitCode") == 4
@@ -592,11 +616,11 @@ def verify_smoke_and_restrictions(state):
                      and envelope.get("command") == "doctor"
                      and envelope.get("ok") is False
                      and envelope.get("truncated") is False
-                     and envelope.get("error", {}).get("code") == "PREREQUISITE_UNAVAILABLE"
-                     and all(components.get(name, {}).get("state") == "ready"
+                     and object_field(envelope, "error").get("code") == "PREREQUISITE_UNAVAILABLE"
+                     and all(object_field(components, name).get("state") == "ready"
                              for name in ("cli", "daemon", "compose", "smoke"))
-                     and components.get("smoke", {}).get("cleanup") is True
-                     and components.get("release", {}).get("state") == "unverified")
+                     and object_field(components, "smoke").get("cleanup") is True
+                     and object_field(components, "release").get("state") == "unverified")
             if not ready or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
                 raise RuntimeError("Repeat ordinary-user smoke or host state preservation failed")
             REPORT["runs"].append(observed)

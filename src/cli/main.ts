@@ -1,3 +1,4 @@
+import release from "../../package.json" with { type: "json" };
 import { resolve } from "node:path";
 import { globalOptions, helpCommand, type CommandDefinition } from "./catalog.ts";
 import { failure, success, type CliOutcome } from "./result.ts";
@@ -68,6 +69,13 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   const { guardProjectPin } = await import("./project-pin.ts");
   const blocked = await guardProjectPin(handler.name, project);
   if (blocked) return blocked;
+  const invalidArguments = handler.validateArgs?.(commandArgs);
+  if (invalidArguments) return invalidArguments;
+  if (Bun.version !== release.engines.bun) return failure(handler.name, 4, {
+    code: "BUN_VERSION_MISMATCH", expected: release.engines.bun, actual: Bun.version,
+    message: `Fleur ${release.version} requires Bun ${release.engines.bun}; invoking Bun is ${Bun.version}. Install the required Bun version manually and retry.`,
+    actions: [{ command: "bun --version", description: `Inspect Bun, then install ${release.engines.bun} manually using https://bun.sh/docs/installation. Fleur does not upgrade or replace Bun.` }],
+  });
   try { return await handler.run({ args: commandArgs, project, timeoutSeconds, json }); }
   catch { return failure(handler.name, 1, { code: "INTERNAL_FAILURE", message: "The command failed unexpectedly.", actions: [] }); }
 }

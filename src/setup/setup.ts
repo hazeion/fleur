@@ -1,3 +1,4 @@
+import { validateSetupArguments } from "./syntax.ts";
 import { setupNativeArch } from "./native-arch.ts";
 import { selectNativeProfile, type NativeInstallProfile } from "./native.ts";
 import { setupNativeDesktop } from "./native-desktop.ts";
@@ -12,7 +13,8 @@ import { withSetupLock, SetupBusy } from "./lock.ts";
 function diagnostic(data: Json): Readonly<Record<string, Json>> { return data !== null && typeof data === "object" && !Array.isArray(data) ? data as Readonly<Record<string, Json>> : {}; }
 function reframe(outcome: CliOutcome, extra: Readonly<Record<string, Json>> = {}): CliOutcome { return { ...outcome, result: { ...outcome.result, command: "setup", data: outcome.result.data === null && Object.keys(extra).length === 0 ? null : { ...diagnostic(outcome.result.data), ...extra } } }; }
 export async function setup(input: CommandInput, host: SetupHost, profiles: readonly NativeInstallProfile[] = []): Promise<CliOutcome> {
-  if (input.args.some((arg, index) => arg !== "--grant" && input.args[index - 1] !== "--grant")) return failure("setup", 2, { code: "ARGUMENT_INVALID", message: "Setup accepts only --grant <id>.", actions: [] });
+  const invalid = validateSetupArguments("setup", input.args);
+  if (invalid) return invalid;
   const deadline = performance.now() + input.timeoutSeconds * 1000;
   const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
   const identity = await host.host();

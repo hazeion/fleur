@@ -10,6 +10,8 @@ export interface CommandDefinition {
   readonly summary: string;
   readonly usage?: string;
   readonly options?: readonly { readonly name: string; readonly value: boolean }[];
+  /** Pure syntax validation only; must not probe or change external state. */
+  readonly validateArgs?: (args: readonly string[]) => CliOutcome | undefined;
   readonly run: (input: CommandInput) => Promise<CliOutcome>;
 }
 export const helpCommand = { name: "help", summary: "Show available commands and global options." } as const;

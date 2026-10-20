@@ -59,7 +59,9 @@ async function run(args: readonly string[], timeoutMs: number, context?: HostCom
   const outputLimit = context?.outputLimitBytes ?? 65536;
   if (!Number.isSafeInteger(outputLimit) || outputLimit <= 0 || outputLimit > 2097152 || (context?.outputLimitBytes !== undefined && JSON.stringify(args) !== JSON.stringify(aptHealthArgs))) return { status: "completed", exitCode: 126, stdout: "", stderr: "Unsupported internal output budget." };
   let child: ReturnType<typeof Bun.spawn>;
-  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: context?.cwd, env: args.includes("--host") ? { ...process.env, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : { ...process.env } }); }
+  const passiveStat = process.platform === "linux" && args.length === 5 && args[0] === "/usr/bin/stat" && args[1] === "--dereference" && args[2] === "--format=%d|%i|%F" && args[3] === "--" && args[4]!.startsWith("/");
+  const environment = { ...process.env, ...(passiveStat ? { LC_ALL: "C", LANG: "C" } : {}) };
+  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: context?.cwd, env: args.includes("--host") ? { ...environment, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : environment }); }
   catch (error) { return { status: (error as { code?: string }).code === "ENOENT" ? "missing" : "completed", exitCode: 126, stdout: "", stderr: "Executable could not be started." }; }
   const stdout = child.stdout as ReadableStream<Uint8Array>;
   const stderr = child.stderr as ReadableStream<Uint8Array>;
@@ -103,4 +105,4 @@ async function confirmHuman(plan: { readonly action: string; readonly method: st
   } catch { return "deny"; }
   finally { terminal.close(); process.stdin.pause(); }
 }
-export function productionHost(): SetupHost { return { host: identity, run, environment: { ...process.env }, interactive: process.stdin.isTTY === true && process.stdout.isTTY === true, confirmHuman }; }
+export function productionHost(): SetupHost { return { host: identity, run, unixSocketSnapshot: async (timeoutMs) => process.platform === "linux" ? (await import("./unix-diag-native.ts")).unixSocketSnapshot(timeoutMs) : { state: "unavailable" }, environment: { ...process.env }, interactive: process.stdin.isTTY === true && process.stdout.isTTY === true, confirmHuman }; }

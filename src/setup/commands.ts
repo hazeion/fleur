@@ -1,3 +1,4 @@
+import type { UnixSocketSnapshot } from "./unix-diag.ts";
 import { validateSetupArguments } from "./syntax.ts";
 import { nativeInstallProfiles, type NativeInstallProfile } from "./native.ts";
 import { doctor } from "./doctor.ts";
@@ -23,6 +24,8 @@ export interface HostCommandResult {
 }
 export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number }
 export interface SetupHost {
+  /** Private passive Linux kernel observation; no application or caller-selected messages. */
+  readonly unixSocketSnapshot?: (timeoutMs: number) => Promise<UnixSocketSnapshot>;
   readonly host: () => Promise<HostIdentity>;
   readonly stateDirectory?: string;
   /** Private host filesystem boundary; production always uses /Applications. */

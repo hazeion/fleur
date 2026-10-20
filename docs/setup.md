@@ -222,7 +222,34 @@ running states. A matching socket still blocks Docker RPC unless every reported
 activation target is already an active, running service. Filesystem listeners
 must match their declared kind: Stream, Datagram and SequentialPacket endpoints
 must be sockets; FIFO endpoints must be FIFOs with a distinct device/inode from
-the selected Docker socket. Unknown kinds, inaccessible paths, conflicting types
+the selected Docker socket. Unknown kinds, unavailable identity evidence, conflicting types
 and inconsistent identities remain activation-unknown. Finding an unrelated FIFO
 does not stop inspection of the remaining socket owners. These passive checks do
 not grant service startup authority or contact the daemon.
+
+
+On Linux, an exact permission-denied response for a protected filesystem socket
+listener may use a private, unprivileged Unix SOCK_DIAG capability. The selected
+Docker endpoint still requires direct socket stat. The fallback requires positive
+NAME/VFS evidence for a unique binding, two complete kernel dumps with stable
+relevant identities and cookies, and fresh inventory, selected-socket, every observed socket unit and matching
+trigger metadata checks. Kernel names retain exact UTF-8 bytes, including any
+leading BOM; they are not normalized into a different pathname. Accepted stream children do not count as listening
+bindings. Bound datagrams in connected or unconnected states remain eligible.
+The two dump calls share a three-second collection allowance; metadata commands
+retain the original readiness deadline. Missing, ambiguous, changed or incomplete
+evidence remains activation-unknown. No dump completion alone authorizes RPC.
+
+Kernel VFS inode values are only 32 bits. The fallback refuses larger selected
+filesystem inodes; an equal tuple is treated as a possible match and retains all
+trigger checks. Kernel and stat device encodings are compared as major/minor
+pairs. Stable observations do not constitute an atomic snapshot or contain
+arbitrary root/same-user path mutation outside the supported grant boundary.
+The Linux FFI adapter loads only when needed and closes its dedicated netlink
+socket on every path. It never connects to the observed Unix socket, changes
+permissions, invokes sudo or exposes raw kernel records in CLI output.
+
+Special listeners are admitted only when passive stat proves a distinct character
+special file, such as rfkill. They use filesystem device/inode identity rather
+than the device's target number, and never use a Unix socket diagnostic fallback.
+The fixed passive stat command runs with C locale for exact type/error parsing.

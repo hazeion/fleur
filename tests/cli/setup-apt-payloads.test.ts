@@ -384,7 +384,7 @@ test.each([
   const result = await payloadScenario(false, false, { guardFault });
   expect(result.privilegedInstalls).toBe(0);
   expect(result.guardResults).toHaveLength(1);
-  expect(result.guardResults[0]).toEqual({ status: "completed", exitCode: 100, stdout: "", stderr: `FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"${stage}"}\n` });
+  expect(result.guardResults[0]).toEqual({ status: "completed", exitCode: 100, stdout: "", stderr: `FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"${stage}"${guardFault === "protocol-action" ? ',"reason":"malformed-action"' : ""}}\n` });
   expect(result.outcome.exitCode).not.toBe(0);
   expect(JSON.stringify(result.outcome)).not.toContain("PRIVATE-SENTINEL");
 });
@@ -401,6 +401,42 @@ test("a successful real APT guard preserves its receipt and emits no refusal dia
 
 test.each(["closed", "full"] as const)("a %s diagnostic pipe leaves the real APT guard refusal unchanged", async (guardSink) => {
   const result = await payloadScenario(false, false, { guardFault: "invocation", guardSink });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.guardResults).toEqual([{ status: "completed", exitCode: 100, stdout: "", stderr: "" }]);
+}, 10000);
+
+
+test("an archive path spelling mismatch remains refused and reports only fixed diagnostic categories", async () => {
+  const result = await payloadScenario(false, false, { guardFault: "archive-path-canonical" });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.guardResults).toHaveLength(1);
+  expect(result.guardResults[0]).toEqual({ status: "completed", exitCode: 100, stdout: "", stderr: 'FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"protocol-actions","reason":"archive-path-mismatch","pathEquivalence":"canonical-path-equal"}\n' });
+});
+
+
+test.each([
+  "unknown-package", "existing-version", "direction", "target-version", "configure-before-install", "duplicate-configure", "duplicate-install", "missing-install",
+] as const)("the real APT guard distinguishes %s without changing its refusal", async (guardFault) => {
+  const result = await payloadScenario(false, false, { guardFault });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.guardResults).toEqual([{ status: "completed", exitCode: 100, stdout: "", stderr: `FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"protocol-actions","reason":"${guardFault}"}\n` }]);
+  expect(JSON.stringify(result.outcome)).not.toContain("PRIVATE-SENTINEL");
+});
+
+test("a different archive path is refused without disclosing the supplied path", async () => {
+  const result = await payloadScenario(false, false, { guardFault: "archive-path-different" });
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.guardResults).toEqual([{ status: "completed", exitCode: 100, stdout: "", stderr: 'FLEUR_APT_GUARD_REFUSAL {"formatVersion":1,"stage":"protocol-actions","reason":"archive-path-mismatch","pathEquivalence":"different-path"}\n' }]);
+  expect(JSON.stringify(result.outcome)).not.toContain("PRIVATE-SENTINEL");
+});
+
+
+test.each(["closed", "full"] as const)("a %s diagnostic pipe preserves an archive-path refusal with its optional reason", async (guardSink) => {
+  const result = await payloadScenario(false, false, { guardFault: "archive-path-canonical", guardSink });
   expect(result.privilegedInstalls).toBe(0);
   expect(result.outcome.exitCode).toBe(3);
   expect(result.guardResults).toEqual([{ status: "completed", exitCode: 100, stdout: "", stderr: "" }]);

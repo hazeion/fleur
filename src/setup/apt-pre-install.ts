@@ -6,6 +6,9 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 
 type GuardStage = "invocation" | "plan-file" | "plan-schema" | "protocol-input" | "protocol-config" | "protocol-actions" | "package-inventory" | "package-state" | "archive-identity" | "archive-digest";
 let stage: GuardStage = "invocation";
+type ActionRefusal = "malformed-action" | "unknown-package" | "existing-version" | "direction" | "target-version" | "configure-before-install" | "duplicate-configure" | "archive-path-mismatch" | "duplicate-install" | "missing-install";
+let reason: ActionRefusal | undefined;
+let pathEquivalence: "canonical-path-equal" | "different-path" | undefined;
 const packageNames = ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"];
 async function boundedFile(path: string, limit: number) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -69,15 +72,22 @@ async function guard(): Promise<boolean> {
   const installed = new Set<string>(); const configured = new Set<string>();
   for (const line of lines) {
     const action = /^(\S+) (\S+) ([<=>]) (\S+) (.+)$/.exec(line);
-    if (!action) return false;
+    if (!action) { reason = "malformed-action"; return false; }
     const [, name, oldVersion, direction, newVersion, operation] = action;
     const artifact = packages.get(name!);
-    if (!artifact || oldVersion !== "-" || direction !== "<" || newVersion !== artifact.version) return false;
-    if (operation === "**CONFIGURE**") { if (!installed.has(name!) || configured.has(name!)) return false; configured.add(name!); continue; }
-    if (operation !== artifact.path || installed.has(name!)) return false;
+    if (!artifact || oldVersion !== "-" || direction !== "<" || newVersion !== artifact.version) {
+      reason = !artifact ? "unknown-package" : oldVersion !== "-" ? "existing-version" : direction !== "<" ? "direction" : "target-version";
+      return false;
+    }
+    if (operation === "**CONFIGURE**") { if (!installed.has(name!) || configured.has(name!)) { reason = !installed.has(name!) ? "configure-before-install" : "duplicate-configure"; return false; } configured.add(name!); continue; }
+    if (operation !== artifact.path || installed.has(name!)) {
+      reason = operation !== artifact.path ? "archive-path-mismatch" : "duplicate-install";
+      if (reason === "archive-path-mismatch") pathEquivalence = resolve(operation!) === resolve(artifact.path as string) ? "canonical-path-equal" : "different-path";
+      return false;
+    }
     installed.add(name!);
   }
-  if (installed.size !== packages.size) return false;
+  if (installed.size !== packages.size) { reason = "missing-install"; return false; }
   // Protocol v2 omits global ConfigurePending: independently reject every preexisting
   // incomplete package, trigger state or reinstreq instead of silently repairing it.
   stage = "package-inventory";
@@ -109,5 +119,5 @@ async function guard(): Promise<boolean> {
 try { process.exitCode = await guard() ? 0 : 1; } catch { process.exitCode = 1; }
 
 if (process.exitCode === 1) {
-  try { write(process.stderr.fd, Buffer.from("FLEUR_APT_GUARD_REFUSAL " + JSON.stringify({ formatVersion: 1, stage }) + "\n"), () => {}); } catch { /* Diagnostic delivery cannot change the refusal. */ }
+  try { write(process.stderr.fd, Buffer.from("FLEUR_APT_GUARD_REFUSAL " + JSON.stringify({ formatVersion: 1, stage, reason, pathEquivalence }) + "\n"), () => {}); } catch { /* Diagnostic delivery cannot change the refusal. */ }
 }

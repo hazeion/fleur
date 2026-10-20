@@ -185,8 +185,13 @@ APT artifact resolution accepts the frozen URL literally or its exact APT path e
 After signed-repository planning and authenticated payload acquisition, APT's privileged local-archive simulation and installation use the same owned empty source list and source-parts directory. An owned literal configuration clears inherited `APT::Sources::With` entries before the fixed command options are applied. Installed dependencies still come from the actual package database; missing dependencies fail instead of being fetched. Setup verifies these inputs' exact bytes, ownership, modes and identities before both commands and checks the directory for any entry. Changes retain recovery state. No repository configuration or package cache is replaced. This behavior has command-protocol coverage; actual native installation remains a separate verification requirement.
 
 The APT pre-install guard emits a bounded `FLEUR_APT_GUARD_REFUSAL` stderr record
-when it refuses the operation. Version 1 contains only a fixed validation-stage
-name, without input values, paths, package state or exception details. The stage
+when it refuses the operation. Version 1 contains a fixed validation-stage name,
+without input values, paths, package state or exception details. Protocol-action
+refusals also include a fixed reason naming the rejected constraint. Archive-path
+mismatches include `pathEquivalence`: `canonical-path-equal` means lexical path
+resolution agrees, and `different-path` means it differs. This does not inspect
+filesystem identity, and both mismatches remain refused. Other stages have no
+reason or path-equivalence field. The stage
 identifies the last validation group reached; it does not prove the cause of a
 failure or the resulting package state. Delivery is best effort, so an absent
 record supplies no diagnostic evidence. This does not change the public setup

@@ -39,7 +39,7 @@ export async function aptArtifactProtocol(args: readonly string[], context: { re
   return undefined;
 }
 
-export type AptGuardFault = "invocation" | "plan-mode" | "plan-json" | "plan-schema" | "protocol-header" | "protocol-config" | "protocol-action" | "package-state" | "archive-identity" | "archive-digest";
+export type AptGuardFault = "unknown-package" | "existing-version" | "direction" | "target-version" | "configure-before-install" | "duplicate-configure" | "duplicate-install" | "missing-install" | "archive-path-canonical" | "archive-path-different" | "invocation" | "plan-mode" | "plan-json" | "plan-schema" | "protocol-header" | "protocol-config" | "protocol-action" | "package-state" | "archive-identity" | "archive-digest";
 
 /** Executes the actual source-owned hook through a disposable external APT/dpkg fixture. */
 export async function aptGuardProtocol(args: readonly string[], packages: Readonly<Record<string, string>>, rows: readonly string[], fault?: AptGuardFault, sink?: "closed" | "full"): Promise<HostCommandResult> {
@@ -56,6 +56,16 @@ export async function aptGuardProtocol(args: readonly string[], packages: Readon
       if (!Object.hasOwn(packages, name)) throw new Error("Unexpected fixture archive action");
       return [`${name} - < ${packages[name]} ${path}`, `${name} - < ${packages[name]} **CONFIGURE**`];
     });
+    if (fault === "unknown-package") actions[0] = actions[0]!.replace(/^\S+/, "PRIVATE-SENTINEL");
+    if (fault === "existing-version") actions[0] = actions[0]!.replace(" - < ", " 0 < ");
+    if (fault === "direction") actions[0] = actions[0]!.replace(" - < ", " - > ");
+    if (fault === "target-version") actions[0] = actions[0]!.replace(/ - < \S+ /, " - < 99 ");
+    if (fault === "configure-before-install") [actions[0], actions[1]] = [actions[1]!, actions[0]!];
+    if (fault === "duplicate-configure") actions.splice(2, 0, actions[1]!);
+    if (fault === "duplicate-install") actions.splice(1, 0, actions[0]!);
+    if (fault === "missing-install") actions.splice(-2);
+    if (fault === "archive-path-canonical") actions[0] = actions[0]!.replace(paths[0]!, dirname(paths[0]!) + "/./" + basename(paths[0]!));
+    if (fault === "archive-path-different") actions[0] = actions[0]!.replace(paths[0]!, "/PRIVATE-SENTINEL\u001b[31m.deb");
     let protocol = "VERSION 2\nRootDir=/\nDir::State::status=/var/lib/dpkg/status\nDebug::NoLocking=false\n\n" + actions.join("\n") + "\n";
     const env = { PATH: bin, APT_HOOK_INFO_FD: "0", DPKG_FRONTEND_LOCKED: "true" };
     if (fault === "invocation") env.APT_HOOK_INFO_FD = "PRIVATE-SENTINEL\n\u001b[31m";

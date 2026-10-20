@@ -57,3 +57,26 @@ test("guest verifier refuses an unowned host before package, service, or Docker 
     expect(stderr).toBe("");
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
+
+for (const scenario of ["failed-smoke", "missing-compose", "denied-daemon", "missing-cli", "wrong-command", "wrong-exit", "wrong-error", "wrong-envelope", "truncated", "wrong-ok", "wrong-release", "ready"]) {
+  test(`guest repeat proof requires complete doctor readiness and pending-release semantics: ${scenario}`, async () => {
+    const python = Bun.which("python3");
+    expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, resolve(import.meta.dir, "fixtures/fresh-linux-repeat.py"), scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr).toBe(0);
+    const proof = JSON.parse(stdout);
+    expect(proof.doctorCalls).toBe(2);
+    expect(proof.report.sentinelCleanup).toBe(true);
+    if (scenario === "ready") {
+      expect(proof.report.ok).toBe(true);
+      expect(proof.report.installationEvidence).toBe("verified-full-system-guest");
+      expect(proof.restrictionCalls).toBe(1);
+      expect(proof.report.runs).toHaveLength(2);
+    } else {
+      expect(proof.report.ok).toBe(false);
+      expect(proof.report.installationEvidence).toBe("pending");
+      expect(proof.restrictionCalls).toBe(0);
+    }
+  });
+}

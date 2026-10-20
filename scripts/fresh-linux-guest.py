@@ -202,7 +202,21 @@ def verify_smoke_and_restrictions(state):
         for _ in range(2):
             before = snapshot()
             observed = command_json("doctor")
-            if observed["result"].get("data", {}).get("components", {}).get("smoke", {}).get("cleanup") is not True or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
+            envelope = observed.get("result", {})
+            components = envelope.get("data", {}).get("components", {})
+            # The internal candidate deliberately remains release-unverified:
+            # healthy readiness must retain doctor exit 4 and its exact envelope.
+            ready = (observed.get("exitCode") == 4
+                     and envelope.get("formatVersion") == 1
+                     and envelope.get("command") == "doctor"
+                     and envelope.get("ok") is False
+                     and envelope.get("truncated") is False
+                     and envelope.get("error", {}).get("code") == "PREREQUISITE_UNAVAILABLE"
+                     and all(components.get(name, {}).get("state") == "ready"
+                             for name in ("cli", "daemon", "compose", "smoke"))
+                     and components.get("smoke", {}).get("cleanup") is True
+                     and components.get("release", {}).get("state") == "unverified")
+            if not ready or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
                 raise RuntimeError("Repeat ordinary-user smoke or host state preservation failed")
             REPORT["runs"].append(observed)
         # Execute the existing gate without skipping any GC, idle, resource or deadline assertion.

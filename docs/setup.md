@@ -253,3 +253,9 @@ Special listeners are admitted only when passive stat proves a distinct characte
 special file, such as rfkill. They use filesystem device/inode identity rather
 than the device's target number, and never use a Unix socket diagnostic fallback.
 The fixed passive stat command runs with C locale for exact type/error parsing.
+
+Verified Linux service and access observation accepts a running Docker socket
+when the Docker service is also active and running. An inconsistent or
+transitional pair requires human inspection. Enrollment still checks package and
+unit provenance, local user/group identity and socket ownership, then requires
+its own scoped Docker-access grant; it does not start or restart services.

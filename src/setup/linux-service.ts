@@ -57,7 +57,7 @@ export async function observeLinuxService(host: SetupHost, remaining: () => numb
     if (value.LoadState !== "loaded" || !["enabled", "disabled"].includes(value.UnitFileState!) || !policy.fragmentPaths(unit).includes(value.FragmentPath!) || value.DropInPaths !== "" || value.Transient !== "no" || value.NeedDaemonReload !== "no" || value.Job !== "0") throw new Error("Custom, masked or changing unit");
     if (["Requisite", "BindsTo", "Upholds", "OnSuccess", "OnFailure"].some((key) => value[key] !== "") || value.CanStart !== "yes" || value.RefuseManualStart !== "no") throw new Error("Unreviewed activation or manual-start policy");
     const state = `${value.ActiveState}/${value.SubState}`;
-    if (!["inactive/dead", unit.endsWith(".socket") ? "active/listening" : "active/running"].includes(state)) throw new Error("Service state requires human action");
+    if (!(unit.endsWith(".socket") ? ["inactive/dead", "active/listening", "active/running"] : ["inactive/dead", "active/running"]).includes(state)) throw new Error("Service state requires human action");
     const wants = value.Wants!.split(/\s+/).filter(Boolean);
     const requires = value.Requires!.split(/\s+/).filter(Boolean);
     const allowedWants = unit === "docker.service" ? ["network-online.target", "containerd.service"] : [];
@@ -65,6 +65,7 @@ export async function observeLinuxService(host: SetupHost, remaining: () => numb
     if (wants.some((name) => !allowedWants.includes(name)) || requires.some((name) => !allowedRequires.includes(name)) || (unit === "docker.service" && (allowedWants.some((name) => !wants.includes(name)) || !requires.includes("docker.socket")))) throw new Error("Unreviewed service dependency");
     observed[unit] = value;
   }
+  if (observed["docker.socket"]!.SubState === "running" && (observed["docker.service"]!.ActiveState !== "active" || observed["docker.service"]!.SubState !== "running")) throw new Error("Running socket and Docker service state disagree");
   return observed;
 }
 /** Caller holds the existing setup lock and has checked exact package state and its pending fence. */

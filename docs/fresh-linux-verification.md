@@ -1,0 +1,44 @@
+# Fresh Ubuntu guest verification
+
+`scripts/verify-fresh-linux.ts` is an internal full-system verification command for one Ubuntu 24.04 amd64 candidate. It never admits a production installer profile. The ordinary catalog stays empty. No VM or native installer has been executed as part of developing this command. Local tests cover refusal and reporting boundaries, not QEMU, cloud-init, APT, Docker or runtime isolation execution.
+
+The command has two modes:
+
+```sh
+bun scripts/verify-fresh-linux.ts --observe
+
+# Run only on an explicitly authorized, disposable Linux x64 host.
+FLEUR_OWNED_DISPOSABLE_HOST=yes bun scripts/verify-fresh-linux.ts \
+  --run --image /owned-input/ubuntu-24.04-server-cloudimg-amd64.img \
+  --candidate source-owned --bun-archive /owned-input/bun-linux-x64.zip
+```
+
+Both commands emit one JSON result. Observation returns exit 4 because tool discovery does not establish executable infrastructure. Execution returns 4 for missing authority, bad artifacts, unavailable infrastructure or incomplete guest proof, and 5 when cleanup cannot be established. A successful verification can return 0 only after the real guest path passes. Such a report still says `runtimeSupport: unverified`; release admission requires independent review and a later source change.
+
+No host package installation, KVM permission changes, Docker commands, global SSH configuration, host bind mounts, Docker sockets or credentials are used. QEMU, qemu-img, cloud-localds, SSH, SCP, ssh-keygen, unzip, Python and Git must already be available. This script does not install them. `FLEUR_GUEST_ACCELERATOR` selects exactly `tcg` or `kvm`, defaulting to TCG. It never silently falls back after KVM fails. Successful full-system TCG execution is guest functional evidence, not native CPU performance evidence.
+
+## Artifact and transport identities
+
+The Ubuntu image is the exact official noble release dated 20261017. Its authenticated SHA256 is `04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94`, with 621284352 bytes. Prior artifact research authenticated Canonical's signed checksum manifest against primary fingerprint `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`; it did not boot the image. The command rechecks the frozen payload hash, copies through a retained handle into private storage, rejects unexpected image metadata, and runs qemu-img validation before boot.
+
+The Bun 1.4.3 Linux x64 ZIP uses the already pinned compatibility bootstrap hash `3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18`. Only `bun-linux-x64/bun` is extracted inside the disposable guest. No global Bun installation changes.
+
+The verifier builds the internal native candidate from the current source with `build-native-candidate.ts`. It refuses caller-supplied candidate archives or runtime profile overrides. It records the builder's archive and source-file identities. The existing runtime probe comes from a separately recorded exact Git commit and archive hash. Uncommitted experiment edits do not enter that archive.
+
+The private NoCloud seed creates a nonce-marked test account with passwordless guest sudo, ephemeral SSH transport keys and a pre-generated guest host key. This is fixture preparation, not evidence of a user's consent. It installs no Docker packages or dependency closure. SSH is bound to loopback, uses a fixed known-host key, ignores personal SSH configuration and agents, and requires public-key authentication. The only mutable disk is an owned qcow2 overlay. No host data directories are shared.
+
+## Guest proof and honest failures
+
+The guest requires its nonce marker, Ubuntu 24.04 x86_64, its own systemd, QEMU virtualization identity and exact Bun. It captures package inventory, source/key hashes, groups and service state; existing Docker packages invalidate a fresh fixture.
+
+The actual packed CLI runs doctor, noninteractive setup, a denied PTY confirmation and explicitly scoped `once` PTY fixture responses. Denied and noninteractive paths must preserve the baseline. Automated PTY responses are labeled test inputs and never legal acceptance or proof of real human consent. No production flag, environment variable or API mints grants.
+
+After setup, the report captures actual dependency simulation and signed-index byte identities. Missing distro dependencies remain a failure. They are not preinstalled to make the fixture pass. Likewise, missing ordinary-user Docker access returns `USER_ACCESS_REQUIRED`; root readiness or pre-enrolling the user cannot satisfy that requirement. The current access implementation remains a blocker to executing this path successfully on a pristine guest.
+
+If ordinary-user readiness becomes available through supported setup, the verifier uses separate image-acquisition authority, runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
+
+The host requests QMP powerdown, then terminates and reaps only its owned QEMU child if needed. Owned temporary disks, seed and keys are removed after termination. The JSON report carries guest diagnostics and bounded serial output. There is no CI job or automatic infrastructure provisioning in this change.
+
+Further work remains before release support: actual full-system execution, authenticated dependency closure from the real guest, scoped ordinary-user access, failure/interruption/revocation cases on separate fresh overlays, and other Linux/macOS tuples. The existing runtime probe is a scoped experiment and cannot set the aggregate v1 compatibility gate true.
+
+References: [QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html), [NoCloud](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html), [Ubuntu cloud image](https://cloud-images.ubuntu.com/releases/noble/release-20261017/), [Canonical checksum verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/).

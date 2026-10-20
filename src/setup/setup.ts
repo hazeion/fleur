@@ -66,7 +66,7 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
   const localUnready = endpoint !== undefined && cli.state === "ready" && (daemon.state === "ready" || daemon.state === "unavailable" || daemon.state === "denied");
   const packageInspectionAllowed = observed.exitCode === 4 && observed.result.error?.code === "PREREQUISITE_UNAVAILABLE" && (cli.state === "missing" || localUnready);
   const profile = packageInspectionAllowed ? selectNativeProfile(identity, profiles) : undefined;
-  if (profile?.method === "arch-official-pacman") return setupNativeArch(input, host, identity, profile, remaining, cli.state === "ready", endpoint, daemon.state === "ready");
+  if (profile?.method === "arch-official-pacman") return setupNativeArch(input, host, identity, profile, remaining, cli.state === "ready", endpoint, daemon.state === "ready", daemon.state === "denied");
   if (profile?.method === "docker-official-apt") return setupNativeApt(input, host, identity, profile, remaining, cli.state === "ready", endpoint, daemon.state === "ready", daemon.state === "denied");
   if (cli.state !== "missing") return reframe(observed);
   if (profile?.method === "docker-desktop-official-dmg") return setupNativeDesktop(input, host, identity, profile, remaining);

@@ -83,8 +83,12 @@ export class AptPayloadStage {
       await this.bind(directory, true);
       const target = `${name}=${profile.packages[name]}`;
       const resolved = await run(["apt-get", ...options, "--print-uris", "download", target], { cwd: directory });
+      if (resolved.status === "timeout" || resolved.terminationUnconfirmed) throw new AptPayloadRecovery("The artifact URI resolution has no confirmed terminal result");
+      // APT 2.8 encodes +, ~ and percent in the repository path before printing its URI.
+      const frozenUrl = new URL(artifact.url);
+      const transportUrl = frozenUrl.origin + frozenUrl.pathname.replace(/[+~%]/g, (character) => "%" + character.charCodeAt(0).toString(16));
       const uri = /^'([^'\r\n]+)' ([A-Za-z0-9._~+%:-]+\.deb) ([0-9]+) (?:(?:MD5Sum|MD5|SHA1|SHA256|SHA512):)?([A-Fa-f0-9]+)\s*$/.exec(resolved.stdout);
-      if (resolved.status !== "completed" || resolved.exitCode !== 0 || !uri || uri[1] !== artifact.url || Number(uri[3]) !== artifact.size || (resolved.stdout.includes("SHA256:") && uri[4]!.toLowerCase() !== artifact.sha256)) throw new AptPayloadUnavailable("The signed repository does not resolve the frozen artifact URL and size");
+      if (resolved.status !== "completed" || resolved.exitCode !== 0 || !uri || (uri[1] !== artifact.url && uri[1] !== transportUrl) || Number(uri[3]) !== artifact.size || (resolved.stdout.includes("SHA256:") && uri[4]!.toLowerCase() !== artifact.sha256)) throw new AptPayloadUnavailable("The signed repository does not resolve the frozen artifact URL and size");
       await authorize();
       await this.unchanged(directory);
       const downloaded = await run(["apt-get", ...options, "download", target], { cwd: directory });

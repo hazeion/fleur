@@ -2,6 +2,8 @@
 No production function is replaced. Native account/services/packages never run.
 """
 import glob
+import contextlib
+import io
 import hashlib
 import json
 import os
@@ -82,7 +84,7 @@ if name=='systemctl':
 if name=='id':
  if args in (['-un'],['--user','--name'],['--name','--user']):print('fleur')
  elif args in (['-u'],['--user']):print(uid)
- elif args and args[0] in ('--groups','-G'):print(str(uid)+' 27'+(' 997' if s['enrolled'] and 'fleur' in args else ''))
+ elif args and args[0] in ('--groups','-G'):print(str(uid)+' 27'+(' 997' if s['enrolled'] and ('fleur' in args or s.get('freshSession',False)) else ''))
  else:print('uid='+str(uid)+'(fleur) gid='+str(uid)+'(fleur) groups='+str(uid)+'(fleur),27(sudo)')
  sys.exit(0)
 if name=='getent':
@@ -216,6 +218,13 @@ def path_open(path, *args, **kwargs):
 def descriptor_open(path, *args, **kwargs):
     source_fault(path)
     fd = original_open(path, *args, **kwargs)
+    if scenario == "resume-checkpoint-change" and "resume-checkpoint" not in injected and isinstance(path, (str, os.PathLike)) and Path(path) == lab / "package/bin/fleur.ts" and (lab / "fresh-linux-state.json").exists():
+        record_fault("resume-checkpoint")
+        with original_path_open(lab / "fresh-linux-state.json", "r+b") as stream:
+            body = stream.read()
+            stream.seek(0)
+            stream.write(b"X" * len(body))
+            stream.flush()
     if scenario == "root-replacement" and "root" not in injected and isinstance(path, (str, os.PathLike)) and Path(path) == lab:
         record_fault("root")
         lab.rename(root / "parked-lab")
@@ -263,6 +272,27 @@ os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/u
 sys.argv = [str(source), nonce]
 with patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
+        if scenario in ("fresh-resume", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change"):
+            first_output = io.StringIO()
+            with contextlib.redirect_stdout(first_output):
+                try:
+                    runpy.run_path(str(source), run_name="__main__")
+                except SystemExit as first_exit:
+                    if first_exit.code != 3:
+                        raise RuntimeError("Fixture initial workflow did not reach its genuine handoff")
+            initial = json.loads(first_output.getvalue())
+            (root / "first-session-report.json").write_text(json.dumps(initial))
+            state = json.loads(state_path.read_text())
+            state["freshSession"] = scenario != "resume-stale-session"
+            state_path.write_text(json.dumps(state))
+            sys.argv = [str(source), nonce, "--resume", "0" * 64 if scenario == "resume-wrong-digest" else initial["checkpoint"]["sha256"]]
+            if scenario == "resume-replay":
+                with contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        runpy.run_path(str(source), run_name="__main__")
+                    except SystemExit as resume_exit:
+                        if resume_exit.code != 4 or not (lab / "fresh-linux-resume-started.json").is_file():
+                            raise RuntimeError("Fixture first resume did not claim its once-only boundary")
         runpy.run_path(str(source), run_name="__main__")
     finally:
         if scenario == "directory-bound":

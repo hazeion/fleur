@@ -316,14 +316,95 @@ def enrollment_handoff(nonce):
     REPORT["checkpoint"] = checkpoint
 
 
+
+def resume_guest(nonce, expected_digest):
+    global GUEST_DEADLINE
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+        raise RuntimeError("Resume checkpoint digest is invalid")
+    directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    checkpoint_fd = None
+    try:
+        root_identity = os.fstat(directory)
+        def check_root():
+            if file_identity(ROOT.lstat()) != file_identity(os.fstat(directory)):
+                raise RuntimeError("Resume lab pathname changed")
+        if root_identity.st_uid != os.getuid() or root_identity.st_mode & 0o077:
+            raise RuntimeError("Resume requires the private owned lab")
+        check_root()
+        descriptor = os.open("fresh-linux-state.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or not 0 < before.st_size <= 2 * 1024 * 1024 - 65536:
+                raise RuntimeError("Resume checkpoint custody is invalid")
+            body = stream.read(2 * 1024 * 1024)
+            after = os.fstat(stream.fileno())
+            if file_identity(before) != file_identity(after) or file_identity(os.stat("fresh-linux-state.json", dir_fd=directory, follow_symlinks=False)) != file_identity(after) or hashlib.sha256(body).hexdigest() != expected_digest:
+                raise RuntimeError("Resume checkpoint bytes or identity changed")
+            check_root()
+            checkpoint_fd = os.dup(stream.fileno())
+        def check_checkpoint():
+            budget_seconds(900)
+            current = os.fstat(checkpoint_fd)
+            retained = os.pread(checkpoint_fd, 2 * 1024 * 1024, 0)
+            published = os.stat("fresh-linux-state.json", dir_fd=directory, follow_symlinks=False)
+            if file_identity(current) != file_identity(after) or file_identity(os.fstat(checkpoint_fd)) != file_identity(after) or file_identity(published) != file_identity(after) or hashlib.sha256(retained).hexdigest() != expected_digest:
+                raise RuntimeError("Resume checkpoint bytes or identity changed")
+            check_root()
+        payload = json.loads(body)
+        deadline = payload.get("guestDeadlineMonotonic")
+        evidence = payload.get("report", {})
+        if (payload.get("formatVersion") != 1 or payload.get("phase") != "new-login-required" or payload.get("nonce") != nonce or payload.get("bootId") != Path("/proc/sys/kernel/random/boot_id").read_text().strip() or payload.get("uid") != os.getuid()
+                or type(deadline) not in (int, float) or not time.monotonic() < deadline <= GUEST_DEADLINE
+                or evidence.get("phase") != "new-login-required" or evidence.get("ok") is not False or evidence.get("installationEvidence") != "pending" or evidence.get("runtimeSupport") != "unverified" or evidence.get("humanConsentProof") is not False or not evidence.get("baseline") or evidence.get("runs") != []):
+            raise RuntimeError("Resume checkpoint binding or original deadline is invalid")
+        GUEST_DEADLINE = deadline
+        budget_seconds(900)
+        if handoff_artifacts() != payload.get("artifacts"):
+            raise RuntimeError("Resume artifact identities changed")
+        REPORT.clear()
+        REPORT.update(evidence)
+        REPORT.pop("phase", None)
+        plan = checked_enrollment_plan(REPORT["reprobe"])
+        previous = REPORT["accessHandoff"]["after"]
+        current = access_observation(plan)
+        if (current["user"] != previous["user"] or current["group"] != previous["group"] or current["socket"] != previous["socket"] or current["members"] != previous["members"]
+                or current["accountGroups"] != previous["accountGroups"] or current["sessionGroups"] != previous["accountGroups"] or plan["group"]["gid"] not in current["sessionGroups"] or snapshot() != REPORT["afterSetup"]):
+            raise RuntimeError("Fresh ordinary login identity, groups or installed state differs")
+        check_root()
+        check_checkpoint()
+        marker = os.open("fresh-linux-resume-started.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+        with os.fdopen(marker, "w") as stream:
+            stream.write(json.dumps({"checkpointSha256": expected_digest, "nonce": nonce}))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(directory)
+        check_checkpoint()
+    finally:
+        if checkpoint_fd is not None:
+            os.close(checkpoint_fd)
+        os.close(directory)
+    REPORT["accessResume"] = {"checkpointSha256": expected_digest, "sessionGroups": current["sessionGroups"]}
+    REPORT["ordinaryUserSetupAfterResume"] = command_json("setup")
+    REPORT["ordinaryUserDoctorAfterResume"] = command_json("doctor")
+    state = REPORT["ordinaryUserDoctorAfterResume"]["result"].get("data", {}).get("components", {})
+    if state.get("daemon", {}).get("state") != "ready":
+        REPORT["error"] = {"code": "NATIVE_SETUP_INCOMPLETE", "message": "Fresh ordinary login did not establish daemon readiness."}
+        return
+    finish_ready_guest(state)
+
+
 def main():
     global GUEST_DEADLINE
     GUEST_DEADLINE = time.monotonic() + 900
-    nonce = sys.argv[1] if len(sys.argv) == 2 else ""
+    resume = len(sys.argv) == 4 and sys.argv[2] == "--resume"
+    nonce = sys.argv[1] if len(sys.argv) == 2 or resume else ""
     if not re.fullmatch(r"[a-f0-9-]{36}", nonce) or Path("/etc/fleur-owned-guest").read_text().strip() != nonce:
         raise RuntimeError("Owned guest identity is absent")
     if os.getuid() == 0 or Path("/proc/1/comm").read_text().strip() != "systemd":
         raise RuntimeError("Ordinary guest account and its own systemd are required")
+    if resume:
+        resume_guest(nonce, sys.argv[3])
+        return
     try:
         (ROOT / "fresh-linux-state.json").lstat()
     except FileNotFoundError:
@@ -368,6 +449,10 @@ def main():
     if state.get("daemon", {}).get("state") != "ready":
         REPORT["error"] = {"code": "NATIVE_SETUP_INCOMPLETE", "message": "Inspect actual setup transcript, package state and signed repository evidence. No dependency preinstallation was performed."}
         return
+    finish_ready_guest(state)
+
+
+def finish_ready_guest(state):
     # Doctor's complete image identity and nonce checks remain the product boundary.
     # No public image-acquire grant mint is available here; missing authority stays incomplete.
     if state.get("smoke", {}).get("state") != "ready":

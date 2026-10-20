@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type catalogShape from "./native-candidate-ubuntu24-amd64.json";
 import { productionHost } from "../src/setup/host.ts";
 
-const catalogSha256 = "40ba7df11ad9f28338896531cfef0a838a5f272163478394ba8a168dfd2571df";
+const catalogSha256 = "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58";
 const markerName = "internal-native-candidate.json";
 const disclosure = "INTERNAL NATIVE CANDIDATE: artifact-authenticated catalog; installation evidence pending; runtime support unverified.\n";
 const repository = resolve(import.meta.dir, "..");
@@ -144,14 +144,15 @@ async function build(output: string) {
       legacyProfileAdmission: { verified: true, meaning: "internal-catalog-admission-only" },
       provenance, authentication: catalog.authentication, artifacts: catalog.artifacts, limits: catalog.limits,
     };
-    const profile = { ...catalog.profile, internalCandidateCatalogSha256: catalogSha256, installationEvidence: "pending", runtimeSupport: "unverified" };
+    const artifacts = Object.fromEntries(catalog.artifacts.map(({ name, version, url, sha256, size }) => [name, { name, version, architecture: catalog.profile.architecture === "x64" ? "amd64" : "arm64", url, sha256, size }]));
+    const profile = { ...catalog.profile, artifacts, internalCandidateCatalogSha256: catalogSha256, installationEvidence: "pending", runtimeSupport: "unverified" };
     const entryPath = join(staged, "bin", "fleur.ts");
     const entry = await readFile(entryPath, "utf8");
     const anchor = "const handlers = [...projectCommands, ...setupCommands()];";
     if (entry.split(anchor).length !== 2) throw new Error("Unexpected release entry shape; candidate injection refused.");
     const injected = `import { productionHost } from "../src/setup/host.ts";\nimport { candidateProfiles } from "./native-candidate-catalog.ts";\nprocess.stderr.write(${JSON.stringify(disclosure)});\nconst handlers = [...projectCommands, ...setupCommands(productionHost(), candidateProfiles)];`;
     await writeFile(entryPath, entry.replace(anchor, injected));
-    await writeFile(join(staged, "bin", "native-candidate-catalog.ts"), `// Internal immutable source-owned catalog; verified means admission only.\nconst profile = ${JSON.stringify(profile, null, 2)} as const;\nObject.freeze(profile.packages);\nexport const candidateProfiles = Object.freeze([Object.freeze(profile)]);\n`);
+    await writeFile(join(staged, "bin", "native-candidate-catalog.ts"), `// Internal immutable source-owned catalog; verified means admission only.\nconst profile = ${JSON.stringify(profile, null, 2)} as const;\nObject.freeze(profile.packages);\nfor (const artifact of Object.values(profile.artifacts)) Object.freeze(artifact);\nObject.freeze(profile.artifacts);\nexport const candidateProfiles = Object.freeze([Object.freeze(profile)]);\n`);
     const manifest = JSON.parse(await readFile(join(staged, "package.json"), "utf8"));
     manifest.name = "fleur-internal-native-candidate";
     manifest.private = true;

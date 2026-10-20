@@ -16,7 +16,7 @@ See [Docker Desktop application placement](setup-desktop.md) for its separate au
 
 Observed CLI, daemon, Compose and smoke readiness do not yet establish a verified native release installation profile. Doctor therefore reports the release profile as unverified and returns exit 4 even after a successful smoke check. This is an explicit implementation limitation, not a passed release gate. Native Docker Desktop installation/readiness and native Debian/Arch Docker installations were not established by the earlier compatibility userspace fixtures.
 
-Assisted package installation remains blocked. Its permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. These payloads/signatures and native installation behavior have not been verified or executed by Fleur. They are never executed by setup. A missing or incompatible profile requires manual action and leaves this acceptance criterion incomplete.
+Assisted package installation remains blocked. Its permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication has been researched separately, as recorded in the artifact evidence document. Native installation behavior remains unverified. The ordinary release catalog is empty, so setup does not execute these research candidates. A missing or incompatible profile requires manual action and leaves this acceptance criterion incomplete.
 
 Installation, repository changes, service starting/enabling, Docker access privileges, PATH/configuration and agreement acceptance require separate authority. Package post-install scripts and Desktop installation can have these side effects; an install grant cannot silently cover them. Fleur never removes conflicts, upgrades or replaces existing installations, edits profiles/context, changes Docker permissions or accepts legal terms automatically.
 
@@ -106,3 +106,38 @@ An unconfirmed privileged transaction retains private installer data and reports
 recovery. Further setup cannot create new grants while that transaction remains
 indeterminate. Native verification must still establish privileged child cleanup
 before this adapter can be admitted as supported.
+
+### Frozen APT payload gate
+
+A source-owned APT profile now requires exact artifact URL, package/version,
+Debian architecture, size and SHA256 records. Normal signed-repository resolution
+must match the frozen URI and size. Unprivileged `apt-get download` writes only to
+owned private operation directories; streamed digest and `dpkg-deb` control checks
+must match before any privileged package action. A displayed MD5 is not treated
+as payload authentication.
+
+The installation once grant is consumed durably before acquisition. Its exact
+scope survives only as a private invocation lease; a previously revoked grant
+cannot recreate that lease. Configuration, group, start and enable permissions
+are separately rechecked and consumed before privileged APT simulation, whose
+root configuration may contain hooks. Both privileged simulation and installation
+use explicit actual-root/status settings. The final command uses verified local
+archives with `--no-download`, retaining no-upgrade/no-remove gates.
+
+A fixed source-owned Pre-Install-Pkgs protocol-v2 helper admits the actual archive
+files and package actions, rehashes their exact bytes and rejects unknown,
+duplicate, replacement or unrelated configuration work. A complete machine
+package-health snapshot is checked before acquisition and again in the hook;
+protocol-v2 alone does not expose implicit ConfigurePending work. Upstream APT
+holds its frontend lock at this hook, not its backend dpkg lock; ordinary APT and
+direct dpkg honor frontend serialization. Forced root bypass and actual native
+lock/child behavior remain outside the proven fixture evidence.
+
+A durable pending fence precedes privileged APT. Timeout or uncertain truncated
+results retain the fence and installer data, and retry cannot create new grants.
+A confirmed terminal failure re-probes actual package state; compatible completed
+packages can be preserved and missing packages resumed with fresh authority.
+Fence creation and removal both require file/directory durability. Unknown or
+modified private entries are retained rather than recursively deleted. None of
+these checks activates the ordinary empty production catalog or proves a native
+installation.

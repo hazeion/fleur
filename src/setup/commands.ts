@@ -17,7 +17,10 @@ export interface HostCommandResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode?: number;
+  /** The direct child was killed; privileged descendants may still be live. */
+  readonly terminationUnconfirmed?: boolean;
 }
+export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number }
 export interface SetupHost {
   readonly host: () => Promise<HostIdentity>;
   readonly stateDirectory?: string;
@@ -28,7 +31,7 @@ export interface SetupHost {
   readonly syncDirectory?: (directory: string) => Promise<void>;
   readonly confirmHuman?: (plan: { readonly action: string; readonly method: string; readonly target: string; readonly checksum: string }, timeoutMs: number) => Promise<"once" | "remembered" | "deny">;
   readonly environment?: Readonly<Record<string, string | undefined>>;
-  readonly run: (args: readonly string[], timeoutMs: number) => Promise<HostCommandResult>;
+  readonly run: (args: readonly string[], timeoutMs: number, context?: HostCommandContext) => Promise<HostCommandResult>;
 }
 export function setupCommands(host: SetupHost = productionHost(), profiles: readonly NativeInstallProfile[] = nativeInstallProfiles): readonly CommandDefinition[] {
   return [

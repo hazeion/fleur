@@ -48,6 +48,12 @@ test("internal native candidate archive preserves the ordinary release and execu
     expect(await Bun.file(join(internalPackage, "package.json")).json()).toMatchObject({ name: "fleur-internal-native-candidate", private: true });
     const metadata = await Bun.file(join(internalPackage, "internal-native-candidate.json")).json();
     expect(metadata).toMatchObject({ internalArtifact: true, installationEvidence: "pending", runtimeSupport: "unverified", artifactAuthentication: "authenticated", legacyProfileAdmission: { verified: true, meaning: "internal-catalog-admission-only" } });
+    const compiled = await command([process.execPath, "--eval", `const { candidateProfiles } = await import(${JSON.stringify(join(internalPackage, "bin/native-candidate-catalog.ts"))}); const profile = candidateProfiles[0]; console.log(JSON.stringify({ artifacts: profile.artifacts, frozen: Object.isFrozen(profile) && Object.isFrozen(profile.artifacts) && Object.values(profile.artifacts).every(Object.isFrozen) }));`], scratch, environment);
+    expect(compiled.exit).toBe(0);
+    const compiledCatalog = JSON.parse(compiled.stdout);
+    expect(compiledCatalog.frozen).toBe(true);
+    expect(Object.keys(compiledCatalog.artifacts).sort()).toEqual(["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"]);
+    expect(compiledCatalog.artifacts["docker-ce"]).toMatchObject({ name: "docker-ce", version: "5:29.9.1-1~ubuntu.24.04~noble", architecture: "amd64", sha256: "463a666215797c9f9ea7d0ad1751de5b2b3806a1b539a3550e16822ef34ccbfd", size: 24548040 });
     expect(metadata.provenance.ordinaryArchiveSha256).toBe(report.ordinary.sha256);
     expect(report.provenance.sourceFiles).toContainEqual({ path: "src/setup/native.ts", sha256: digest(before[1]!) });
     const normalHelp = await command([process.execPath, join(ordinaryPackage, "bin/fleur.ts"), "--json", "--help"], scratch, environment);

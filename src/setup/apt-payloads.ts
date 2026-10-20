@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, rmdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, opendir, readdir, rmdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AptInstallProfile, AptPackageName } from "./native.ts";
 import type { HostCommandContext, HostCommandResult, SetupHost } from "./commands.ts";
@@ -10,6 +10,7 @@ interface Identity { readonly dev: bigint; readonly ino: bigint; readonly direct
 /** Exact owned temporary entries; unknown or replaced content is retained, never recursively deleted. */
 export class AptPayloadStage {
   readonly paths: string[] = [];
+  private localInputs?: { list: string; config: string; parts: string };
   private readonly entries = new Map<string, Identity>();
   private constructor(readonly root: string) {}
   static async create(directory: string): Promise<AptPayloadStage> {
@@ -42,12 +43,12 @@ export class AptPayloadStage {
     const identity = this.entries.get(path)!;
     return { dev: String(identity.dev), ino: String(identity.ino) };
   }
-  private async digest(path: string, size: number, remaining: () => number): Promise<string> {
+  private async digest(path: string, size: number, remaining: () => number, mode?: bigint): Promise<string> {
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const info = await file.stat({ bigint: true });
       const identity = this.entries.get(path)!;
-      if (!info.isFile() || info.uid !== BigInt(process.getuid!()) || info.nlink !== 1n || info.size !== BigInt(size) || info.dev !== identity.dev || info.ino !== identity.ino) throw new AptPayloadRecovery("Archive descriptor identity or size changed");
+      if (!info.isFile() || (mode !== undefined && (info.mode & 0o777n) !== mode) || info.uid !== BigInt(process.getuid!()) || info.nlink !== 1n || info.size !== BigInt(size) || info.dev !== identity.dev || info.ino !== identity.ino) throw new AptPayloadRecovery("Archive descriptor identity or size changed");
       const hash = new Bun.CryptoHasher("sha256"); const buffer = Buffer.alloc(65536); let total = 0;
       while (total <= size) {
         if (remaining() <= 0) throw new AptPayloadUnavailable("The archive verification deadline expired");
@@ -58,6 +59,36 @@ export class AptPayloadStage {
       if (total !== size) throw new AptPayloadRecovery("Archive size changed while hashing");
       return hash.digest("hex");
     } finally { await file.close(); }
+  }
+  async prepareLocalSources(options: readonly string[]): Promise<readonly string[]> {
+    const list = await this.writeOwned("local-only.list", new Uint8Array());
+    const config = await this.writeOwned("local-only.conf", Buffer.from("#clear APT::Sources::With;\n"));
+    const parts = join(this.root, "local-only.parts");
+    await this.unchanged(this.root);
+    await mkdir(parts, { mode: 0o700 }); await this.bind(parts, true);
+    this.localInputs = { list, config, parts };
+    return ["-c", config, ...options.map((option) => option.startsWith("Dir::Etc::sourcelist=") ? `Dir::Etc::sourcelist=${list}` : option.startsWith("Dir::Etc::sourceparts=") ? `Dir::Etc::sourceparts=${parts}` : option)];
+  }
+  async verifyLocalSources(remaining: () => number): Promise<void> {
+    if (!this.localInputs) throw new AptPayloadRecovery("Local APT sources are unavailable");
+    await this.unchanged(this.root);
+    const { list, config, parts } = this.localInputs;
+    for (const [path, bytes] of [[list, Buffer.alloc(0)], [config, Buffer.from("#clear APT::Sources::With;\n")]] as const) {
+      await this.unchanged(path);
+      if (await this.digest(path, bytes.length, remaining, 0o600n) !== Bun.CryptoHasher.hash("sha256", bytes, "hex")) throw new AptPayloadRecovery("Local APT source bytes changed");
+      await this.unchanged(path);
+    }
+    await this.unchanged(parts);
+    const held = await open(parts, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const info = await held.stat({ bigint: true }); const expected = this.entries.get(parts)!;
+      if (!info.isDirectory() || info.uid !== BigInt(process.getuid!()) || info.dev !== expected.dev || info.ino !== expected.ino || (info.mode & 0o777n) !== 0o700n) throw new AptPayloadRecovery("Local APT source directory changed");
+      if (remaining() <= 0) throw new AptPayloadUnavailable("The local source verification deadline expired");
+      const directory = await opendir(parts);
+      try { if (await directory.read() !== null) throw new AptPayloadRecovery("Local APT source directory is not empty"); }
+      finally { await directory.close(); }
+      await this.unchanged(parts); await this.unchanged(this.root);
+    } finally { await held.close(); }
   }
   async cleanup(): Promise<boolean> {
     try {

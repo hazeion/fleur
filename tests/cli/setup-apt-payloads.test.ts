@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/main.ts";
 import { setupCommands } from "../../src/setup/commands.ts";
@@ -10,6 +10,10 @@ const packages = { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2",
 const profile = { method: "docker-official-apt" as const, verified: true as const, distribution: "ubuntu" as const, release: "24.04", architecture: "x64" as const, repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages, artifacts: aptFixtureArtifacts(packages) };
 
 interface PayloadOptions {
+  readonly isolatedLocalSources?: boolean;
+  readonly sourceTamper?: "list-bytes" | "config-bytes" | "list-symlink" | "config-symlink" | "list-hardlink" | "config-mode" | "parts-entry" | "parts-replaced" | "parts-mode";
+  readonly afterPlan?: boolean;
+  readonly missingLocalDependency?: boolean;
   readonly apt283Wire?: boolean;
   readonly uncertainResolution?: boolean;
   readonly uriFailure?: "origin" | "scheme" | "path" | "encoded-slash" | "double-escape" | "size-zero" | "size-wrong" | "sha" | "hash-missing" | "multiple" | "nonzero" | "missing-command";
@@ -28,6 +32,33 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   const selectedProfile = { ...profile, packages: selectedPackages, artifacts: aptFixtureArtifacts(selectedPackages) };
   const directory = await mkdtemp("/tmp/fleur-apt-payload-");
   let privilegedInstalls = 0;
+  let plannedScope: string[] | undefined;
+  let sourceMutated = false;
+  const sentinel = join(directory, "foreign-sentinel");
+  const mutateSources = async () => {
+    if (!options.sourceTamper || sourceMutated) return;
+    const state = join(directory, "state");
+    const stage = join(state, (await readdir(state)).find((name) => name.startsWith("apt-payloads-"))!);
+    const list = join(stage, "local-only.list"); const config = join(stage, "local-only.conf"); const parts = join(stage, "local-only.parts");
+    await writeFile(sentinel, "preserve foreign source content\n");
+    if (options.sourceTamper === "list-bytes") await writeFile(list, "deb https://unapproved.example stable main\n");
+    if (options.sourceTamper === "config-bytes") await writeFile(config, "APT::Sources::With:: /unapproved.sources;\n");
+    if (options.sourceTamper === "list-symlink" || options.sourceTamper === "config-symlink") { const target = options.sourceTamper === "list-symlink" ? list : config; await rename(target, target + "-saved"); await symlink(sentinel, target); }
+    if (options.sourceTamper === "list-hardlink") await link(list, list + "-alias");
+    if (options.sourceTamper === "config-mode") await chmod(config, 0o644);
+    if (options.sourceTamper === "parts-entry") await writeFile(join(parts, "foreign.sources"), "preserve foreign source content\n");
+    if (options.sourceTamper === "parts-replaced") { await rename(parts, parts + "-saved"); await mkdir(parts); }
+    if (options.sourceTamper === "parts-mode") await chmod(parts, 0o755);
+    sourceMutated = true;
+  };
+  const localScope = async (args: readonly string[]): Promise<string[] | undefined> => {
+    const list = args.find((arg) => arg.startsWith("Dir::Etc::sourcelist="))?.slice("Dir::Etc::sourcelist=".length);
+    const parts = args.find((arg) => arg.startsWith("Dir::Etc::sourceparts="))?.slice("Dir::Etc::sourceparts=".length);
+    const config = args[args.indexOf("-c") + 1];
+    if (!list || !parts || !config || ![list, parts, config].every((path) => path.startsWith(join(directory, "state", "apt-payloads-")))) return undefined;
+    if (await readFile(list, "utf8") !== "" || await readFile(config, "utf8") !== "#clear APT::Sources::With;\n" || (await readdir(parts)).length !== 0) return undefined;
+    return [config, list, parts];
+  };
   let installed = false;
   let prompts = 0;
   let markerSeen = false;
@@ -54,15 +85,20 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   try {
     const handlers = setupCommands({
       stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => { prompts++; return "once"; },
-      ...(options.durability ? { syncDirectory: async (path: string) => {
+      ...(options.durability || (options.sourceTamper && !options.afterPlan) ? { syncDirectory: async (path: string) => {
         let marker = false;
         try { await lstat(join(path, "apt-transaction-pending.json")); marker = true; } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+        if (marker && options.sourceTamper && !options.afterPlan) await mutateSources();
         if (options.durability === "create" && marker) throw Object.assign(new Error("Injected pending fence fsync failure"), { code: "EIO" });
         if (options.durability === "remove") { if (marker) markerSeen = true; else if (markerSeen) throw Object.assign(new Error("Injected fence removal fsync failure"), { code: "EIO" }); }
       } } : {}),
       host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context?: { readonly cwd?: string; readonly outputLimitBytes?: number }) => {
         calls.push([...args]);
+        if (options.isolatedLocalSources && args[0] === "apt-get") {
+          expect(args).not.toContain("-c");
+          expect(args).toContain("Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources");
+        }
         const health = aptHealthProtocol(args, [...(installed ? Object.entries(selectedPackages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`) : []), ...(options.unrelatedStatus || options.unrelatedError ? [`another-application\t1\t${options.unrelatedStatus ?? "installed"}\t${options.unrelatedError ?? "ok"}`] : [])]);
         if (health) { expect(context?.outputLimitBytes).toBe(2097152); return options.inventoryTruncated ? { ...health, exitCode: 1, terminationUnconfirmed: true } : health; }
         if (args[0] === "apt-get" && args.includes("download") && !args.includes("--print-uris")) {
@@ -98,12 +134,18 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
           return artifact;
         }
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
+        if (args[0] === "dpkg-query" && plannedScope && options.afterPlan) await mutateSources();
         if (args[0] === "dpkg-query") return done(installed ? Object.entries(selectedPackages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n") : "", installed ? 0 : 1);
         if (args[0] === "stat") return done(args.at(-1)?.endsWith("docker.asc") || args.at(-1)?.endsWith("docker.sources") ? "regular file|0|644|1\n" : "directory|0|755|2\n");
         if (args[0] === "cat") return done(args.at(-1)?.endsWith("docker.asc") ? dockerRepositoryKey : "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n");
         if (args[0] === "apt-cache") return done(Object.entries(selectedPackages).map(([name, version]) => `Package: ${name}\nVersion: ${version}\n`).join("\n"));
         if (args[0] === "apt-get") return done(simulation(args));
         if (args[0] === "sudo" && args.includes("--simulate")) {
+          if (options.isolatedLocalSources) {
+            plannedScope = await localScope(args);
+            if (options.missingLocalDependency && plannedScope) return { ...done("", 100), stderr: "E: Unmet dependencies. Frozen package depends on missing distro dependency.\n" };
+            if (!plannedScope) return { ...done("", 100), stderr: "W: Problem unlinking the file / - FileFd::Open (21: Is a directory)\nW: Could not open file / - open (17: File exists)\nW: Could not open file '/' - EDSP::Resolve (17: File exists)\nE: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?\n" };
+          }
           const inspected = await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers });
           const grants = (inspected.result.data as { grants: { revoked: boolean }[] }).grants;
           expect(grants).toHaveLength(5);
@@ -111,6 +153,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
           return done(simulation(args));
         }
         if (args[0] === "sudo") {
+          if (options.isolatedLocalSources && JSON.stringify(await localScope(args)) !== JSON.stringify(plannedScope)) return done("Local installation sources differ from the actual plan", 100);
           if (options.producerPolicy && (!args.includes("--no-install-recommends") || !args.includes("--no-install-suggests") || args.includes("--quiet=2") || args.includes("APT::Get::Show-User-Simulation-Note=false"))) return done("Producer policy does not cover this real installation", 100);
           if (substituteAtHook) {
             const path = args[args.indexOf("install") + 1]!;
@@ -129,7 +172,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
     const outcome = await runCli(["setup"], { cwd: directory, handlers });
     const retry = options.uncertain ? await runCli(["setup"], { cwd: directory, handlers }) : undefined;
     const authorityAfterResolution = options.uncertainResolution ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
-    return { outcome, retry, authorityAfterResolution, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
+    return { outcome, retry, authorityAfterResolution, sourceMutated, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
@@ -241,3 +284,45 @@ for (const uriFailure of ["origin", "scheme", "path", "encoded-slash", "double-e
     expect(result.privilegedInstalls).toBe(0);
   });
 }
+
+test("local APT transaction uses only owned empty source inputs after authenticated acquisition", async () => {
+  const result = await payloadScenario(false, false, { isolatedLocalSources: true });
+  expect(result.outcome.result.error?.message).toBe("Exact verified packages are installed. Run doctor to verify service access and disposable smoke readiness.");
+  expect(result.privilegedInstalls).toBe(1);
+});
+
+for (const sourceTamper of ["list-bytes", "config-bytes", "list-symlink", "config-symlink", "list-hardlink", "config-mode", "parts-entry", "parts-replaced", "parts-mode"] as const) {
+  test(`local APT source custody refuses ${sourceTamper} before privileged planning`, async () => {
+    const result = await payloadScenario(false, false, { isolatedLocalSources: true, sourceTamper });
+    expect(result.sourceMutated).toBe(true);
+    expect(result.outcome.exitCode).toBe(5);
+    expect(result.outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+    expect(result.calls.some((args) => args[0] === "sudo")).toBe(false);
+    expect(result.entries).toContain("apt-transaction-pending.json");
+    expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
+    expect(result.sentinel).toBe("preserve foreign source content\n");
+    expect(result.privilegedInstalls).toBe(0);
+  });
+}
+test("local APT source custody is rechecked after a successful plan before installation", async () => {
+  const result = await payloadScenario(false, false, { isolatedLocalSources: true, sourceTamper: "config-bytes", afterPlan: true });
+  expect(result.sourceMutated).toBe(true);
+  expect(result.calls.some((args) => args[0] === "sudo" && args.includes("--simulate"))).toBe(true);
+  expect(result.calls.some((args) => args[0] === "sudo" && !args.includes("--simulate"))).toBe(false);
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.sentinel).toBe("preserve foreign source content\n");
+});
+test("isolated local APT sources cannot supply an absent distribution dependency", async () => {
+  const result = await payloadScenario(false, false, { isolatedLocalSources: true, missingLocalDependency: true });
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => args[0] === "sudo" && !args.includes("--simulate"))).toBe(false);
+});
+
+test("isolated local APT planning still rejects an additional package operation", async () => {
+  const result = await payloadScenario(false, false, { isolatedLocalSources: true, producerPolicy: true, rejectedPhase: "privileged", rejectedPlan: "extra-install" });
+  expect(result.outcome.exitCode).toBe(4);
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => args[0] === "sudo" && !args.includes("--simulate"))).toBe(false);
+});

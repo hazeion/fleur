@@ -47,7 +47,22 @@ The guest requires its nonce marker, Ubuntu 24.04 x86_64, its own systemd, QEMU 
 
 The actual packed CLI runs doctor, noninteractive setup, a denied PTY confirmation and explicitly scoped `once` PTY fixture responses. Denied and noninteractive paths must preserve the baseline. Automated PTY responses are labeled test inputs and never legal acceptance or proof of real human consent. No production flag, environment variable or API mints grants.
 
-After setup, the report captures actual dependency simulation and signed-index byte identities. Missing distro dependencies remain a failure. They are not preinstalled to make the fixture pass. Likewise, missing ordinary-user Docker access returns `USER_ACCESS_REQUIRED`; root readiness or pre-enrolling the user cannot satisfy that requirement. The current access implementation remains a blocker to executing this path successfully on a pristine guest.
+After setup, the report captures actual dependency simulation and signed-index byte identities. Missing distro dependencies remain a failure. They are not preinstalled to make the fixture pass. When exact installed packages and active services leave the ordinary user without Docker access, the guest inspects the product adapter's separate root-equivalent enrollment plan. Package-side-effect permission cannot cover that account enrollment: action, method, target, checksum, UID, group and endpoint must match a new explicit PTY fixture prompt. After enrollment it requires two unchanged stale-session setup probes with exit 3 and `new-login-required`, while only the account gains the Docker group. Root readiness, pre-enrollment and in-process group-refresh substitutes cannot satisfy this handoff.
+
+The guest then emits `ok: false`, phase `new-login-required` and exit 3. A private exclusively created checkpoint retains the original pristine baseline, complete initial phase evidence, nonce, boot ID, ordinary account/group identities, candidate/source/archive byte identities and the original guest deadline. Candidate inventory checks time and counts every file and directory during incremental enumeration, at most 5,000 entries, before inspecting or queuing the entry. It retains the 8 MiB source-file and 32 MiB source-total ceilings and sorts only admitted bounded records. Retained descriptors and final byte/path/root checks precede publication; malformed inputs, preexisting state, changed bytes, symlinks and replaced lab directories fail closed. Partial or uncertain state is retained and blocks a new initial workflow. This state assumes the owned verification lab has one trusted writer; it does not contain unrestricted same-user interference. Automated replies remain fixture authority, not real human consent.
+
+The host validates and records this incomplete checkpoint envelope, then stops with `NEW_LOGIN_REQUIRED` and exit 4 even though the guest handoff exits 3. The guest retains `ok: false`, installation evidence pending, runtime support unverified and `humanConsentProof: false`; the host also remains incomplete and unverified. A genuine new pinned SSH login consumer is not implemented in this milestone, so enrollment cannot become successful installation evidence. Future resume must disable SSH multiplexing, retain the original host 900-second aggregate clock and consume this exact baseline/checkpoint once. No resumed or native-release support is claimed here. A host-report excerpt is:
+
+```json
+{
+  "ok": false,
+  "installationEvidence": "pending",
+  "runtimeSupport": "unverified",
+  "error": { "code": "NEW_LOGIN_REQUIRED" },
+  "guest": { "ok": false, "phase": "new-login-required" }
+}
+```
+
 
 If ordinary-user readiness becomes available through supported setup, the verifier uses separate image-acquisition authority, runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready, smoke cleanup to succeed, and the exact pending-release doctor envelope with exit 4. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
 

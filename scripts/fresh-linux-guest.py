@@ -12,6 +12,7 @@ import re
 import select
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -24,7 +25,17 @@ REPORT = {"formatVersion": 1, "ok": False, "installationEvidence": "pending",
           "authorityInput": "automated-disposable-guest-PTY-fixture", "runs": []}
 
 
+GUEST_DEADLINE = None
+
+def budget_seconds(limit):
+    remaining = limit if GUEST_DEADLINE is None else min(limit, GUEST_DEADLINE - time.monotonic())
+    if remaining < 1:
+        raise RuntimeError("Guest aggregate verification deadline expired")
+    return remaining
+
+
 def run(args, timeout=60, allowed=(0,)):
+    timeout = budget_seconds(timeout)
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True)
     output = {child.stdout: bytearray(), child.stderr: bytearray()}
@@ -72,21 +83,24 @@ def snapshot():
 
 
 def command_json(name):
-    code, text, _ = run([BUN, CLI, name, "--json", "--timeout", "60"], timeout=75, allowed=(0, 1, 3, 4, 5))
+    limit = int(budget_seconds(60))
+    code, text, _ = run([BUN, CLI, name, "--json", "--timeout", str(limit)], timeout=75, allowed=(0, 1, 3, 4, 5))
     data = json.loads(text)
     if data.get("formatVersion") != 1 or data.get("command") != name or data.get("truncated") is not False:
         raise RuntimeError("Candidate returned malformed command evidence")
     return {"exitCode": code, "result": data}
 
 
-def setup_pty(reply):
+def setup_pty(reply, expected_prompt=None):
+    limit = int(budget_seconds(600))
     master, slave = pty.openpty()
-    child = subprocess.Popen([BUN, CLI, "setup", "--timeout", "600"], stdin=slave, stdout=slave,
+    child = subprocess.Popen([BUN, CLI, "setup", "--timeout", str(limit)], stdin=slave, stdout=slave,
                              stderr=slave, start_new_session=True, close_fds=True)
     os.close(slave)
     output = bytearray()
     answered = 0
-    deadline = time.monotonic() + 615
+    accepted_prompts = []
+    deadline = time.monotonic() + budget_seconds(615)
     try:
         while child.poll() is None:
             if time.monotonic() > deadline:
@@ -101,12 +115,16 @@ def setup_pty(reply):
             if len(output) > 1024 * 1024:
                 raise RuntimeError("Candidate PTY output exceeded evidence limit")
             text = output.decode(errors="replace")
-            prompts = list(re.finditer(r"Authorize ([a-z-]+) using ([a-z-]+) for [^\r\n]+\r?\nPlan ([a-f0-9]{64})\r?\nType 'once', 'remember', or 'deny': ", text))
+            prompts = list(re.finditer(r"Authorize ([a-z-]+) using ([a-z-]+) for ([^\r\n]+)\r?\nPlan ([a-f0-9]{64})\r?\nType 'once', 'remember', or 'deny': ", text))
             while answered < len(prompts):
                 match = prompts[answered]
                 allowed = {"install", "configuration", "repository-configuration", "docker-access", "service-start", "service-enable", "image-acquire"}
                 if match[1] not in allowed or match[2] != ("docker-digest-pull" if match[1] == "image-acquire" else "docker-official-apt") or answered >= 8:
                     raise RuntimeError("Unexpected authority prompt; no response supplied")
+                prompt = {"action": match[1], "method": match[2], "target": match[3], "checksum": match[4]}
+                if expected_prompt and (answered != 0 or any(prompt[key] != expected_prompt[key] for key in ("action", "method", "target", "checksum"))):
+                    raise RuntimeError("Enrollment prompt differs from its separately inspected plan")
+                accepted_prompts.append(prompt)
                 os.write(master, (reply + "\n").encode())
                 answered += 1
         child.wait(timeout=5)
@@ -116,15 +134,202 @@ def setup_pty(reply):
             child.wait(timeout=5)
         os.close(master)
     return {"exitCode": child.returncode, "promptsAnswered": answered,
-            "transcript": output.decode(errors="replace"), "reply": reply}
+            "transcript": output.decode(errors="replace"), "reply": reply, "prompts": accepted_prompts}
+
+
+def access_observation(plan):
+    user = run(["getent", "--service=files", "passwd", str(os.getuid())])[1].strip().split(":")
+    group = run(["getent", "--service=files", "group", "docker"])[1].strip().split(":")
+    if len(user) != 7 or len(group) != 4 or user[0] != plan["user"]["name"] or int(user[2]) != os.getuid() or group[0] != "docker" or int(group[2]) != plan["group"]["gid"]:
+        raise RuntimeError("Enrollment account or Docker group identity differs")
+    def groups(args):
+        text = run(args)[1].strip()
+        if not re.fullmatch(r"[0-9]+(?: [0-9]+)*", text):
+            raise RuntimeError("Numeric enrollment groups are unavailable")
+        values = [int(value) for value in text.split()]
+        if len(set(values)) != len(values):
+            raise RuntimeError("Duplicate enrollment groups")
+        return values
+    socket = run(["stat", "--format=%d|%i|%F|%u|%g|%a", "--", "/run/docker.sock"])[1].strip()
+    if not re.fullmatch(r"[0-9]+\|[0-9]+\|socket\|0\|" + str(plan["group"]["gid"]) + r"\|660", socket):
+        raise RuntimeError("Enrollment socket identity differs")
+    return {"user": {"name": user[0], "uid": int(user[2])}, "group": {"name": "docker", "gid": int(group[2])}, "members": sorted(filter(None, group[3].split(","))), "accountGroups": groups(["id", "--groups", "--", user[0]]), "sessionGroups": groups(["id", "--groups"]), "socket": socket}
+
+
+def checked_enrollment_plan(observed):
+    envelope = observed.get("result", {})
+    plan = envelope.get("data", {}).get("plan", {})
+    user, group = plan.get("user", {}), plan.get("group", {})
+    checksum = plan.get("checksum", "")
+    if (observed.get("exitCode") != 3 or envelope.get("formatVersion") != 1 or envelope.get("command") != "setup" or envelope.get("ok") is not False or envelope.get("truncated") is not False or envelope.get("error", {}).get("code") != "AUTHORITY_REQUIRED"
+            or plan.get("action") != "docker-access" or plan.get("method") != "docker-official-apt" or plan.get("privilege") != "root-equivalent daemon access"
+            or type(user.get("uid")) is not int or user["uid"] != os.getuid() or user["uid"] == 0 or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user.get("name", ""))
+            or group.get("name") != "docker" or type(group.get("gid")) is not int or not 0 < group["gid"] <= 4294967294
+            or plan.get("endpoint") not in ("unix:///run/docker.sock", "unix:///var/run/docker.sock") or not re.fullmatch(r"[a-f0-9]{64}", checksum)
+            or plan.get("target") != f'Add {user["name"]} to Docker group {group["gid"]}: root-equivalent daemon access; plan {checksum}'):
+        raise RuntimeError("Separate root-equivalent enrollment plan is invalid")
+    if checksum in {prompt["checksum"] for prompt in REPORT["authorizedFixtureSetup"]["prompts"]}:
+        raise RuntimeError("Package-side-effect authority cannot cover account enrollment")
+    return plan
+
+
+def file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def observed_input(path, limit, expected=None):
+    budget_seconds(900)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or before.st_size > limit or (expected and file_identity(before) != file_identity(expected)):
+            raise RuntimeError("Handoff input is not the expected owned bounded regular file")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            budget_seconds(900)
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise RuntimeError("Handoff input grew beyond its bound")
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+        if size != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
+            raise RuntimeError("Handoff input bytes or pathname identity changed")
+        return {"sha256": digest.hexdigest(), "size": size}
+
+
+def handoff_artifacts():
+    records = {}
+    root_identity = ROOT.lstat()
+    package = ROOT / "package"
+    package_identity = package.lstat()
+    if not stat.S_ISDIR(root_identity.st_mode) or not stat.S_ISDIR(package_identity.st_mode) or root_identity.st_uid != os.getuid() or package_identity.st_uid != os.getuid():
+        raise RuntimeError("Handoff source directories are not owned regular directories")
+    paths = {"candidateArchive": (ROOT / "fleur-internal-native-candidate.tgz", 8 * 1024 * 1024), "bunArchive": (ROOT / "bun.zip", 160 * 1024 * 1024), "restrictionArchive": (ROOT / "runtime-probe.tar", 16 * 1024 * 1024), "bunExecutable": (ROOT / "bun", 256 * 1024 * 1024), "guestSource": (Path(__file__), 256 * 1024)}
+    for label, (path, limit) in paths.items():
+        records[label] = observed_input(path, limit)
+    files = []
+    total = 0
+    entries = 0
+    pending = [package]
+    while pending:
+        budget_seconds(900)
+        with os.scandir(pending.pop()) as scanner:
+            while True:
+                budget_seconds(900)
+                try:
+                    entry = next(scanner)
+                except StopIteration:
+                    break
+                entries += 1
+                if entries > 5000:
+                    raise RuntimeError("Candidate source entry bound exceeded")
+                budget_seconds(900)
+                info = entry.stat(follow_symlinks=False)
+                path = Path(entry.path)
+                if stat.S_ISDIR(info.st_mode):
+                    budget_seconds(900)
+                    pending.append(path)
+                    continue
+                if len(files) >= 5000:
+                    raise RuntimeError("Candidate source entry bound exceeded")
+                if total + info.st_size > 32 * 1024 * 1024:
+                    raise RuntimeError("Candidate source handoff byte bound exceeded")
+                observed = observed_input(path, 8 * 1024 * 1024, expected=info)
+                total += observed["size"]
+                budget_seconds(900)
+                files.append({"path": str(path.relative_to(package)), **observed})
+    files.sort(key=lambda item: item["path"])
+    if file_identity(ROOT.lstat()) != file_identity(root_identity) or file_identity(package.lstat()) != file_identity(package_identity):
+        raise RuntimeError("Handoff source directory identity changed")
+    records["candidateSources"] = files
+    return records
+
+
+def publish_handoff(nonce, evidence):
+    payload = {"formatVersion": 1, "phase": "new-login-required", "nonce": nonce, "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "uid": os.getuid(), "guestDeadlineMonotonic": GUEST_DEADLINE, "artifacts": handoff_artifacts(), "report": evidence}
+    if not re.fullmatch(r"[a-f0-9-]{36}", payload["bootId"]):
+        raise RuntimeError("Guest boot identity is unavailable")
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    if len(body) > 2 * 1024 * 1024 - 65536:
+        raise RuntimeError("Enrollment checkpoint exceeds the bounded report allowance")
+    directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        observed = os.fstat(directory)
+        def check_root():
+            current = ROOT.lstat()
+            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (observed.st_dev, observed.st_ino):
+                raise RuntimeError("Enrollment checkpoint lab pathname changed")
+        if observed.st_uid != os.getuid() or observed.st_mode & 0o077:
+            raise RuntimeError("Enrollment checkpoint requires the private owned lab")
+        check_root()
+        descriptor = os.open("fresh-linux-state.json", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+        with os.fdopen(descriptor, "w+b") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fsync(directory)
+            check_root()
+            before = os.fstat(stream.fileno())
+            stream.seek(0)
+            retained = stream.read(2 * 1024 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+            published = os.stat("fresh-linux-state.json", dir_fd=directory, follow_symlinks=False)
+            if (not stat.S_ISREG(after.st_mode) or after.st_uid != os.getuid() or stat.S_IMODE(after.st_mode) != 0o600 or after.st_nlink != 1 or retained != body
+                    or file_identity(before) != file_identity(after) or file_identity(published) != file_identity(after)):
+                raise RuntimeError("Retained checkpoint bytes or published identity changed")
+            check_root()
+    finally:
+        os.close(directory)
+    return {"sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+
+
+def enrollment_handoff(nonce):
+    plan = checked_enrollment_plan(REPORT["reprobe"])
+    before = access_observation(plan)
+    gid = plan["group"]["gid"]
+    if gid in before["accountGroups"] or gid in before["sessionGroups"] or plan["user"]["name"] in before["members"]:
+        raise RuntimeError("Fresh enrollment requires the account and session to lack Docker membership")
+    unchanged = snapshot()
+    REPORT["separateEnrollmentSetup"] = setup_pty("once", expected_prompt=plan)
+    if REPORT["separateEnrollmentSetup"]["exitCode"] != 3 or REPORT["separateEnrollmentSetup"]["promptsAnswered"] != 1:
+        raise RuntimeError("Separate enrollment did not finish at its new-login boundary")
+    REPORT["staleLoginReprobes"] = []
+    for _ in range(2):
+        observed = command_json("setup")
+        envelope = observed["result"]
+        if observed["exitCode"] != 3 or envelope.get("ok") is not False or envelope.get("error", {}).get("code") != "HUMAN_ACTION_REQUIRED" or envelope.get("data", {}).get("access", {}).get("state") != "new-login-required":
+            raise RuntimeError("The original login did not retain its explicit new-login requirement")
+        REPORT["staleLoginReprobes"].append(observed)
+    after = access_observation(plan)
+    if (snapshot() != unchanged or after["user"] != before["user"] or after["group"] != before["group"] or after["socket"] != before["socket"] or after["sessionGroups"] != before["sessionGroups"]
+            or set(after["accountGroups"]) != set(before["accountGroups"]) | {gid} or after["members"] != sorted(before["members"] + [plan["user"]["name"]])):
+        raise RuntimeError("Enrollment changed unrelated identity, membership or installed state")
+    REPORT["accessHandoff"] = {"plan": plan, "before": before, "after": after}
+    pending = dict(REPORT)
+    pending["phase"] = "new-login-required"
+    checkpoint = publish_handoff(nonce, pending)
+    REPORT["phase"] = "new-login-required"
+    REPORT["checkpoint"] = checkpoint
 
 
 def main():
+    global GUEST_DEADLINE
+    GUEST_DEADLINE = time.monotonic() + 900
     nonce = sys.argv[1] if len(sys.argv) == 2 else ""
     if not re.fullmatch(r"[a-f0-9-]{36}", nonce) or Path("/etc/fleur-owned-guest").read_text().strip() != nonce:
         raise RuntimeError("Owned guest identity is absent")
     if os.getuid() == 0 or Path("/proc/1/comm").read_text().strip() != "systemd":
         raise RuntimeError("Ordinary guest account and its own systemd are required")
+    try:
+        (ROOT / "fresh-linux-state.json").lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise RuntimeError("An existing enrollment checkpoint requires explicit resume; initial authority was refused")
     os_release = Path("/etc/os-release").read_text()
     if 'ID=ubuntu\n' not in os_release or 'VERSION_ID="24.04"' not in os_release or run(["uname", "-m"])[1].strip() != "x86_64":
         raise RuntimeError("Guest differs from frozen Ubuntu24 amd64 tuple")
@@ -158,7 +363,7 @@ def main():
     REPORT["ordinaryUserDoctor"] = command_json("doctor")
     state = REPORT["ordinaryUserDoctor"]["result"].get("data", {}).get("components", {})
     if state.get("daemon", {}).get("state") == "denied":
-        REPORT["error"] = {"code": "USER_ACCESS_REQUIRED", "message": "The ordinary account has no scoped Docker access. No membership or root-readiness substitution was performed."}
+        enrollment_handoff(nonce)
         return
     if state.get("daemon", {}).get("state") != "ready":
         REPORT["error"] = {"code": "NATIVE_SETUP_INCOMPLETE", "message": "Inspect actual setup transcript, package state and signed repository evidence. No dependency preinstallation was performed."}
@@ -245,4 +450,4 @@ except Exception as error:
     REPORT["error"] = {"code": "GUEST_VERIFICATION_FAILED", "message": str(error)}
 finally:
     print(json.dumps(REPORT, separators=(",", ":")))
-    sys.exit(0 if REPORT["ok"] else 4)
+    sys.exit(0 if REPORT["ok"] else 3 if REPORT.get("phase") == "new-login-required" and REPORT.get("checkpoint") and "error" not in REPORT else 4)

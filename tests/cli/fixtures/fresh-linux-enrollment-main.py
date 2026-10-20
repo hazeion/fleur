@@ -51,7 +51,7 @@ if name=='bun':
  if args==['--version']:print('1.4.3');sys.exit(0)
  command=args[1]
  if command=='doctor':
-  ready=s['installed'];envelope(command,{'components':{'cli':{'state':'ready' if ready else 'missing'},'daemon':{'state':'denied' if ready else 'missing'},'compose':{'state':'ready' if ready else 'missing'},'smoke':{'state':'missing'},'release':{'state':'unverified'}}},4,'PREREQUISITE_UNAVAILABLE')
+  ready=s['installed'];envelope(command,{'components':{'cli':{'state':'ready' if ready else 'missing'},'daemon':{'state':'denied' if ready and s['scenario']!='apt-index-incomplete' else 'missing'},'compose':{'state':'ready' if ready else 'missing'},'smoke':{'state':'missing'},'release':{'state':'unverified'}}},4,'PREREQUISITE_UNAVAILABLE')
  if command!='setup':raise RuntimeError('Unexpected fake CLI command')
  if '--json' in args:
   if not s['installed']:envelope(command,{'plan':{'action':'install','checksum':package_checksum}},3,'AUTHORITY_REQUIRED')
@@ -103,6 +103,31 @@ for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "
 
 if scenario == "existing-checkpoint":
     (lab / "fresh-linux-state.json").write_text("foreign checkpoint must survive")
+
+apt_lists = root / "apt-lists"
+apt_lists.mkdir()
+if scenario.startswith("apt-index-"):
+    (apt_lists / "lock").write_bytes(b"")
+    (apt_lists / "lock").chmod(0o640)
+    (apt_lists / "partial").mkdir(mode=0o700)
+    (apt_lists / "auxfiles").mkdir(mode=0o755)
+    (apt_lists / "auxfiles").chmod(0o755)
+    (apt_lists / "archive.ubuntu.com_ubuntu_dists_noble_InRelease").write_bytes(b"owned authenticated InRelease fixture\n")
+    (apt_lists / "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages").write_bytes(b"Package: fixture\nVersion: 1\n")
+    index_file = apt_lists / "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages"
+    if scenario == "apt-index-symlink":
+        index_file.unlink()
+        (root / "foreign-index").write_bytes(b"foreign index must survive")
+        index_file.symlink_to(root / "foreign-index")
+    if scenario == "apt-index-nonregular":
+        index_file.unlink()
+        os.mkfifo(index_file)
+    if scenario == "apt-index-oversize":
+        with index_file.open("r+b") as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+    if scenario == "apt-index-entry-bound":
+        for index in range(1020):
+            (apt_lists / ("extra-%04d" % index)).write_bytes(b"")
 
 original_scandir = os.scandir
 original_rglob = Path.rglob
@@ -182,7 +207,12 @@ def scandir(path):
 def lstat(path, *args, **kwargs):
     if scenario == "directory-bound" and bounded_directory(path):
         directory_metadata_observed()
-    return original_lstat(path, *args, **kwargs)
+    observed = original_lstat(path, *args, **kwargs)
+    if scenario.startswith("apt-index-") and path == apt_lists / "lock":
+        fields = list(observed)
+        fields[4] = fields[5] = 0
+        return os.stat_result(fields)
+    return observed
 
 original_open = os.open
 original_fsync = os.fsync
@@ -209,11 +239,30 @@ def source_fault(path):
             (root / "foreign-source").write_text("foreign source must survive".ljust(original_size, "!"))
             entry.symlink_to(root / "foreign-source")
 
+def apt_open_witness(path):
+    if scenario.startswith("apt-index-") and Path(path).parent == apt_lists:
+        state = json.loads(state_path.read_text())
+        state.setdefault("aptReads", []).append(Path(path).name)
+        state_path.write_text(json.dumps(state))
+        if Path(path).name == "lock" or scenario == "apt-index-unreadable" and Path(path).name.endswith("_Packages"):
+            raise PermissionError(13, "Permission denied", "/var/lib/apt/lists/" + Path(path).name)
+        if scenario == "apt-index-race" and Path(path).name.endswith("_Packages") and "apt-race" not in injected:
+            injected.add("apt-race")
+            Path(path).rename(apt_lists / "parked-index")
+            Path(path).write_bytes(b"replacement must survive")
+
 def path_open(path, *args, **kwargs):
+    apt_open_witness(path)
     source_fault(path)
     return original_path_open(path, *args, **kwargs)
 
 def descriptor_open(path, *args, **kwargs):
+    if path == "/var/lib/apt/lists":
+        return original_open(apt_lists, *args, **kwargs)
+    if scenario.startswith("apt-index-") and kwargs.get("dir_fd") is not None and isinstance(path, str) and "/" not in path:
+        apt_open_witness(apt_lists / path)
+    if isinstance(path, (str, os.PathLike)):
+        apt_open_witness(path)
     source_fault(path)
     fd = original_open(path, *args, **kwargs)
     if scenario == "root-replacement" and "root" not in injected and isinstance(path, (str, os.PathLike)) and Path(path) == lab:
@@ -235,6 +284,18 @@ def fsync(fd):
             stream.flush()
     return value
 
+original_stat = os.stat
+
+def apt_stat(path, *args, **kwargs):
+    if path == "/var/lib/apt/lists":
+        return original_stat(apt_lists, *args, **kwargs)
+    observed = original_stat(path, *args, **kwargs)
+    if scenario.startswith("apt-index-") and path == "lock" and kwargs.get("dir_fd") is not None:
+        fields = list(observed)
+        fields[4] = fields[5] = 0
+        return os.stat_result(fields)
+    return observed
+
 original_read_text = Path.read_text
 original_glob = Path.glob
 original_popen = __import__("subprocess").Popen
@@ -245,7 +306,9 @@ def read_text(path, *args, **kwargs):
     return known[str(path)] if str(path) in known else original_read_text(path, *args, **kwargs)
 
 def local_glob(path, pattern, *args, **kwargs):
-    return iter(()) if str(path) == "/var/lib/apt/lists" else original_glob(path, pattern, *args, **kwargs)
+    if str(path) == "/var/lib/apt/lists":
+        return original_glob(apt_lists, pattern, *args, **kwargs) if scenario.startswith("apt-index-") else iter(())
+    return original_glob(path, pattern, *args, **kwargs)
 
 def popen(args, *positional, **kwargs):
     executable = Path(args[0])
@@ -261,7 +324,7 @@ def popen(args, *positional, **kwargs):
 
 os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/usr/bin:/bin")
 sys.argv = [str(source), nonce]
-with patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
+with patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
         runpy.run_path(str(source), run_name="__main__")
     finally:

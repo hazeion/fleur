@@ -150,8 +150,9 @@ async function build(output: string) {
     const entry = await readFile(entryPath, "utf8");
     const anchor = "const handlers = [...projectCommands, ...setupCommands()];";
     if (entry.split(anchor).length !== 2) throw new Error("Unexpected release entry shape; candidate injection refused.");
-    const injected = `import { productionHost } from "../src/setup/host.ts";\nimport { candidateProfiles } from "./native-candidate-catalog.ts";\nprocess.stderr.write(${JSON.stringify(disclosure)});\nconst handlers = [...projectCommands, ...setupCommands(productionHost(), candidateProfiles)];`;
+    const injected = `import { productionHost } from "../src/setup/host.ts";\nimport { observeCandidateCommands } from "./candidate-command-observer.ts";\nimport { candidateProfiles } from "./native-candidate-catalog.ts";\nprocess.stderr.write(${JSON.stringify(disclosure)});\nconst handlers = [...projectCommands, ...setupCommands(observeCandidateCommands(productionHost()), candidateProfiles)];`;
     await writeFile(entryPath, entry.replace(anchor, injected));
+    await writeFile(join(staged, "bin", "candidate-command-observer.ts"), await readFile(join(repository, "scripts", "candidate-command-observer.ts")));
     await writeFile(join(staged, "bin", "native-candidate-catalog.ts"), `// Internal immutable source-owned catalog; verified means admission only.\nconst profile = ${JSON.stringify(profile, null, 2)} as const;\nObject.freeze(profile.packages);\nfor (const artifact of Object.values(profile.artifacts)) Object.freeze(artifact);\nObject.freeze(profile.artifacts);\nexport const candidateProfiles = Object.freeze([Object.freeze(profile)]);\n`);
     const manifest = JSON.parse(await readFile(join(staged, "package.json"), "utf8"));
     manifest.name = "fleur-internal-native-candidate";

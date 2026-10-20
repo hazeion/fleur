@@ -161,7 +161,8 @@ guidance without another prompt or membership change. If the session already
 has the group but access is denied, setup preserves the account and reports an
 OS access-policy action. Missing membership requires a separately matching
 `docker-access` grant. Setup rechecks identities and authority before a bounded,
-noninteractive additive `usermod` operation, preserves all other memberships,
+noninteractive additive `usermod` operation targeting the validated `docker`
+group name, preserves all other memberships,
 and still requires a new login. It never invokes root Docker or a replacement
 shell, changes socket ownership/mode, or starts/enables a service as part of
 enrollment. A fresh session must prove its own ordinary-user access.

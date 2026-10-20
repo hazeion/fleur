@@ -27,7 +27,7 @@ test("missing membership requires a separate scoped privilege grant and authoriz
     expect(changed.result.data).toMatchObject({ access: { state: "new-login-required" } });
     expect(fixture.prompts).toEqual(["docker-access"]);
     expect(fixture.confirmations[0]?.target).toContain("root-equivalent daemon access");
-    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toEqual([["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "60000", "--", "alice"]]);
+    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toEqual([["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", "alice"]]);
     const rerun = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
     expect(rerun.exitCode).toBe(3);
     expect(fixture.prompts).toEqual(["docker-access"]);
@@ -160,5 +160,29 @@ test.each(["install-action", "wrong-method", "changed-checksum", "revoked"] as c
     expect(result.result.error?.code).toBe("AUTHORITY_REQUIRED");
     expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toHaveLength(1);
     expect(fixture.prompts).toEqual(["docker-access"]);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+test("a duplicate numeric GID cannot redirect enrollment away from the named Docker group", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run; let otherGroupChanged = false;
+  fixture.host.run = async (args) => {
+    if (args[0] === "/usr/bin/getent" && args.includes("group") && args.at(-1) === "60000") return { status: "completed", exitCode: 0, stdout: "other:x:60000:bob\n", stderr: "" };
+    if (args[0] === "/usr/bin/sudo") {
+      fixture.calls.push([...args]);
+      const selected = args[args.indexOf("--groups") + 1];
+      // Shadow resolves numeric input by GID; that reverse lookup may name another group.
+      if (selected === "60000") otherGroupChanged = true;
+      if (selected === "docker") fixture.state.enrolled = true;
+      return { status: "completed", exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (otherGroupChanged && args[0] === "/usr/bin/id" && args.includes("alice")) return { status: "completed", exitCode: 0, stdout: "60001 60002 60000\n", stderr: "" };
+    return run(args);
+  };
+  try {
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(otherGroupChanged).toBe(false);
+    expect(result.exitCode).toBe(3);
+    expect(result.result.data).toMatchObject({ access: { state: "new-login-required" } });
+    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toEqual([["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", "alice"]]);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });

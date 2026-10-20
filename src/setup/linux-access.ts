@@ -66,7 +66,7 @@ export async function setupLinuxAccess(input: CommandInput, host: SetupHost, ide
     const sync = () => (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
     await sync();
     if (remaining() <= 0) throw new Error("Enrollment deadline");
-    const outcome = await host.run(["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", group[2]!, "--", user[0]!], remaining());
+    const outcome = await host.run(["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", user[0]!], remaining());
     if (outcome.status !== "completed" || outcome.terminationUnconfirmed) throw new Error("Membership outcome is uncertain");
     const after = await inspect();
     // Only this user's addition to the one Docker group may change.

@@ -485,3 +485,20 @@ test("an unrelated running socket remains compatible with an already running Doc
     expect(fixture.prompts).toEqual([]);
   } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("a running Docker socket paired with an inactive service cannot offer or execute startup", async () => {
+  const fixture = await aptServiceFixture();
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "docker.socket" && args.some((arg) => arg.startsWith("--property=") && arg.includes("UnitFileState"))) return { ...result, stdout: result.stdout.replace("ActiveState=inactive", "ActiveState=active").replace("SubState=dead", "SubState=running") };
+    return result;
+  };
+  try {
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("HUMAN_ACTION_REQUIRED");
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.state.active).toBe(false);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});

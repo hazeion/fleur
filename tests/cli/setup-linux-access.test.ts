@@ -186,3 +186,59 @@ test("a duplicate numeric GID cannot redirect enrollment away from the named Doc
     expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toEqual([["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", "alice"]]);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("a coherently running Docker socket permits separately authorized user enrollment", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    return args[0] === "/usr/bin/systemctl" && args.at(-1) === "docker.socket" ? { ...result, stdout: result.stdout.replace("SubState=listening", "SubState=running") } : result;
+  };
+  try {
+    const plan = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(plan.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(plan.result.data).toMatchObject({ plan: { action: "docker-access", method: "docker-official-apt" } });
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.data).toMatchObject({ access: { state: "new-login-required" } });
+    expect(fixture.prompts).toEqual(["docker-access"]);
+    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toEqual([["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", "alice"]]);
+    expect(fixture.calls.some((args) => args.includes("start") || args.includes("enable") || args.includes("restart"))).toBe(false);
+    const retried = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(retried.result.data).toMatchObject({ access: { state: "new-login-required" } });
+    expect(fixture.prompts).toEqual(["docker-access"]);
+    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toHaveLength(1);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+
+test.each(["socket-transition", "inactive-service", "service-transition", "service-exited", "custom-socket", "wrong-provenance", "wrong-group"] as const)("running-socket enrollment still refuses %s evidence", async (mode) => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    const full = args.some((arg) => arg.startsWith("--property=") && arg.includes("UnitFileState"));
+    if (args[0] === "/usr/bin/systemctl" && args.at(-1) === "docker.socket") {
+      let stdout = result.stdout.replace("SubState=listening", "SubState=running");
+      if (full && mode === "socket-transition") stdout = stdout.replace("ActiveState=active", "ActiveState=activating").replace("SubState=running", "SubState=start-chown");
+      if (full && mode === "custom-socket") stdout = stdout.replace("DropInPaths=", "DropInPaths=/etc/systemd/system/docker.socket.d/custom.conf");
+      return { ...result, stdout };
+    }
+    if (full && args.at(-1) === "docker.service") {
+      if (mode === "inactive-service") return { ...result, stdout: result.stdout.replace("ActiveState=active", "ActiveState=inactive").replace("SubState=running", "SubState=dead") };
+      if (mode === "service-transition") return { ...result, stdout: result.stdout.replace("ActiveState=active", "ActiveState=activating").replace("SubState=running", "SubState=start") };
+      if (mode === "service-exited") return { ...result, stdout: result.stdout.replace("SubState=running", "SubState=exited") };
+    }
+    if (mode === "wrong-provenance" && args[0] === "/usr/bin/sha256sum") return { ...result, stdout: `wrong  ${args.at(-1)}\n` };
+    if (mode === "wrong-group" && args.includes("--format=%d|%i|%F|%u|%g|%a")) return { ...result, stdout: "1|500|socket|0|60001|660\n" };
+    return result;
+  };
+  try {
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("PREREQUISITE_UNAVAILABLE");
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.state.enrolled).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});

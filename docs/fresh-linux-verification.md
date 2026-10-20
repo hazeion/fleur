@@ -7,7 +7,7 @@ The command has two modes:
 ```sh
 bun scripts/verify-fresh-linux.ts --observe
 
-# Run only on an explicitly authorized, disposable Linux x64 host.
+# Run only on an explicitly authorized disposable Linux x64 host or Darwin x64 TCG verification host.
 FLEUR_OWNED_DISPOSABLE_HOST=yes bun scripts/verify-fresh-linux.ts \
   --run --image /owned-input/ubuntu-24.04-server-cloudimg-amd64.img \
   --candidate source-owned --bun-archive /owned-input/bun-linux-x64.zip
@@ -15,7 +15,7 @@ FLEUR_OWNED_DISPOSABLE_HOST=yes bun scripts/verify-fresh-linux.ts \
 
 Both commands emit one JSON result. Observation returns exit 4 because tool discovery does not establish executable infrastructure. Execution returns 4 for missing authority, bad artifacts, unavailable infrastructure or incomplete guest proof, and 5 when cleanup cannot be established. A successful verification can return 0 only after the real guest path passes. Such a report still says `runtimeSupport: unverified`; release admission requires independent review and a later source change.
 
-No host package installation, KVM permission changes, Docker commands, global SSH configuration, host bind mounts, Docker sockets or credentials are used. QEMU, qemu-img, cloud-localds, SSH, SCP, ssh-keygen, unzip, Python and Git must already be available. This script does not install them. `FLEUR_GUEST_ACCELERATOR` selects exactly `tcg` or `kvm`, defaulting to TCG. It never silently falls back after KVM fails. Successful full-system TCG execution is guest functional evidence, not native CPU performance evidence.
+No host package installation, KVM permission changes, Docker commands, global SSH configuration, host bind mounts, Docker sockets or credentials are used. QEMU, qemu-img, SSH, SCP, ssh-keygen, unzip, Python and Git must already be available. Linux uses cloud-localds; Darwin x64 uses the existing hdiutil command and admits only TCG. This script does not install them. `FLEUR_GUEST_ACCELERATOR` selects exactly `tcg` or `kvm`, defaulting to TCG. It never silently falls back after KVM fails. Darwin rejects KVM and HVF. The report preserves actual host OS and guest OS separately. Successful full-system TCG execution is guest functional evidence, not native CPU performance evidence.
 
 ## Artifact and transport identities
 
@@ -26,6 +26,16 @@ The Bun 1.4.3 Linux x64 ZIP uses the already pinned compatibility bootstrap hash
 The verifier builds the internal native candidate from the current source with `build-native-candidate.ts`. It refuses caller-supplied candidate archives or runtime profile overrides. It records the builder's archive and source-file identities. The existing runtime probe comes from a separately recorded exact Git commit and archive hash. Uncommitted experiment edits do not enter that archive.
 
 The private NoCloud seed creates a nonce-marked test account with passwordless guest sudo, ephemeral SSH transport keys and a pre-generated guest host key. This is fixture preparation, not evidence of a user's consent. It installs no Docker packages or dependency closure. SSH is bound to loopback, uses a fixed known-host key, ignores personal SSH configuration and agents, and requires public-key authentication. The only mutable disk is an owned qcow2 overlay. No host data directories are shared.
+
+## Owned NoCloud media on Darwin
+
+`prepare-nocloud-seed.py` is an internal verification command invoked by the Darwin branch. It reads exactly two regular owned files through retained directory/file descriptors, bounded to 64 KiB user-data and 16 KiB meta-data. It stages those bytes in a new private directory and runs hdiutil makehybrid with ISO9660/Joliet labels cidata, without attach, mount or overwrite options. The tool inherits the retained staging directory as cwd. Its output/deadline and owned process group are bounded; a surviving tool group remains a failure.
+
+The command inspects the actual image through a retained descriptor, at most 8 MiB. It validates CD001 descriptor/version fields, matching numeric encodings and volume bounds, the primary CIDATA/cidata and Joliet labels, the root directory, exact required filenames and nonoverlapping in-volume extents, and both recorded file bodies. Final output bytes and inode/path identities are checked after exclusive hard-link publication. Unknown partial artifacts remain in private staging with cleanup-unconfirmed status; existing output is preserved. The harness compares the reported input hashes to the exact generated cloud-init content before QEMU can use the seed.
+
+Tests on macOS construct and inspect a real hdiutil ISO. Other test hosts use an explicitly identified owned ISO command-protocol fixture for portable artifact validation; that is not evidence hdiutil ran there. Neither path mounts media or boots a guest. These media checks establish construction and content identity only. Actual cloud-init consumption and pinned SSH readiness remain later execution proof.
+
+Primary format references: [Canonical NoCloud source documentation](https://github.com/canonical/cloud-init/blob/main/doc/rtd/reference/datasources/nocloud.rst), [ECMA-119](https://ecma-international.org/publications-and-standards/standards/ecma-119/), [Microsoft disc formats](https://learn.microsoft.com/en-us/windows/win32/imapi/disc-formats), and the installed hdiutil makehybrid help.
 
 ## Guest proof and honest failures
 

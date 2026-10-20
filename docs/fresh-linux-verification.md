@@ -75,7 +75,13 @@ If ordinary-user readiness becomes available through supported setup, the verifi
 
 The host requests QMP powerdown, then terminates and reaps only its owned QEMU child if needed. Owned temporary disks, seed and keys are removed after termination. The JSON report carries guest diagnostics and bounded serial output. There is no CI job or automatic infrastructure provisioning in this change.
 
-Further work remains before release support: actual full-system execution, authenticated dependency closure from the real guest, scoped ordinary-user access, failure/interruption/revocation cases on separate fresh overlays, and other Linux/macOS tuples. The existing runtime probe is a scoped experiment and cannot set the aggregate v1 compatibility gate true.
+On 2026-10-20, an actual Ubuntu 24.04 amd64 TCG guest ran an internal candidate whose product-source and CLI provenance matched commit `982263f4072ad5d6e9e2617d46a4929d2d100319`. It installed all five frozen Docker packages, completed separate user enrollment, returned `new-login-required` on two unchanged stale-session probes, and resumed through a fresh ordinary-user SSH login. Separate digest-image authority then enabled smoke readiness. Both final doctor runs reported CLI, daemon, Compose and smoke ready with smoke cleanup true, while retaining exit 4 and release unverified. The verifier confirmed preservation of the unrelated stopped container and global context, then owned VM reaping and credential removal.
+
+This execution used a private harness variant containing a failure-only read-only access survey. Product source was unchanged, and the survey was not invoked: `accessSurvey` is absent from the report. PTY replies remained automated fixture inputs, not human-consent evidence; TCG supplied no native CPU performance proof.
+
+The restriction probe then exited 1 with `gcc prerequisite missing; nothing installed`. Its worker container and image were never created, so the later restriction, resource, GC/idle and runtime-profile gates were not exercised. The combined report correctly remained `ok: false`, `installationEvidence: pending` and `runtimeSupport: unverified`, with `RESTRICTION_EVIDENCE_REQUIRED`.
+
+Remaining release work includes the restriction-probe prerequisites and subsequent runtime isolation, resource, GC/idle and cleanup evidence; failure, interruption, revocation and recovery cases on separate fresh overlays; and the other Linux/macOS tuples. The existing runtime probe is a scoped experiment and cannot set the aggregate v1 compatibility gate true.
 
 References: [QEMU invocation](https://www.qemu.org/docs/master/system/invocation.html), [NoCloud](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html), [Ubuntu cloud image](https://cloud-images.ubuntu.com/releases/noble/release-20261017/), [Canonical checksum verification](https://ubuntu.com/docs/public-images/public-images-how-to/verify-image-checksum/).
 

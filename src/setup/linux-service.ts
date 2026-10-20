@@ -54,14 +54,14 @@ export async function observeLinuxService(host: SetupHost, remaining: () => numb
   const observed: Record<string, Record<string, string>> = {};
   for (const unit of units) {
     const value = parseProperties(await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "show", "--all", "--no-pager", `--property=${properties.join(",")}`, unit]), unit);
-    if (value.LoadState !== "loaded" || !["enabled", "disabled"].includes(value.UnitFileState!) || !policy.fragmentPaths(unit).includes(value.FragmentPath!) || value.DropInPaths !== "" || value.Transient !== "no" || value.NeedDaemonReload !== "no" || value.Job !== "0") throw new Error("Custom, masked or changing unit");
+    if (value.LoadState !== "loaded" || !["enabled", "disabled"].includes(value.UnitFileState!) || !policy.fragmentPaths(unit).includes(value.FragmentPath!) || value.DropInPaths !== "" || value.Transient !== "no" || value.NeedDaemonReload !== "no" || (value.Job !== "" && value.Job !== "0")) throw new Error("Custom, masked or changing unit");
     if (["Requisite", "BindsTo", "Upholds", "OnSuccess", "OnFailure"].some((key) => value[key] !== "") || value.CanStart !== "yes" || value.RefuseManualStart !== "no") throw new Error("Unreviewed activation or manual-start policy");
     const state = `${value.ActiveState}/${value.SubState}`;
     if (!(unit.endsWith(".socket") ? ["inactive/dead", "active/listening", "active/running"] : ["inactive/dead", "active/running"]).includes(state)) throw new Error("Service state requires human action");
     const wants = value.Wants!.split(/\s+/).filter(Boolean);
     const requires = value.Requires!.split(/\s+/).filter(Boolean);
     const allowedWants = unit === "docker.service" ? ["network-online.target", "containerd.service"] : [];
-    const allowedRequires = unit === "docker.service" ? ["docker.socket", "sysinit.target", "system.slice"] : unit === "containerd.service" ? ["sysinit.target", "system.slice"] : ["sysinit.target"];
+    const allowedRequires = unit === "docker.service" ? ["docker.socket", "sysinit.target", "system.slice"] : ["sysinit.target", "system.slice"];
     if (wants.some((name) => !allowedWants.includes(name)) || requires.some((name) => !allowedRequires.includes(name)) || (unit === "docker.service" && (allowedWants.some((name) => !wants.includes(name)) || !requires.includes("docker.socket")))) throw new Error("Unreviewed service dependency");
     observed[unit] = value;
   }

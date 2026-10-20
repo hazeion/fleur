@@ -242,3 +242,94 @@ test.each(["socket-transition", "inactive-service", "service-transition", "servi
     expect(fixture.state.enrolled).toBe(false);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
+
+test("present empty systemd Job metadata permits a separately authorized enrollment plan", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    return args[0] === "/usr/bin/systemctl" && args.some((arg) => arg.startsWith("--property=") && arg.includes("Job")) ? { ...result, stdout: result.stdout.replace("Job=0", "Job=") } : result;
+  };
+  try {
+    const result = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(result.result.data).toMatchObject({ plan: { action: "docker-access", method: "docker-official-apt" } });
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.state.enrolled).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("the implicit system.slice Docker socket dependency permits an enrollment plan", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    return args[0] === "/usr/bin/systemctl" && args.at(-1) === "docker.socket" && args.some((arg) => arg.startsWith("--property=") && arg.includes("Requires")) ? { ...result, stdout: result.stdout.replace("Requires=sysinit.target", "Requires=sysinit.target system.slice") } : result;
+  };
+  try {
+    const result = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(result.result.data).toMatchObject({ plan: { action: "docker-access", method: "docker-official-apt" } });
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("combined v255 idle jobs, implicit slice and running socket preserve scoped enrollment", async () => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] !== "/usr/bin/systemctl") return result;
+    let stdout = result.stdout.replace("Job=0", "Job=");
+    if (args.at(-1) === "docker.socket") stdout = stdout.replace("Requires=sysinit.target", "Requires=sysinit.target system.slice").replace("SubState=listening", "SubState=running");
+    return { ...result, stdout };
+  };
+  try {
+    const plan = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(plan.result.error?.code).toBe("AUTHORITY_REQUIRED");
+    expect(plan.result.data).toMatchObject({ plan: { action: "docker-access" } });
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.data).toMatchObject({ access: { state: "new-login-required" } });
+    expect(fixture.prompts).toEqual(["docker-access"]);
+    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toEqual([["/usr/bin/sudo", "-n", "/usr/sbin/usermod", "--append", "--groups", "docker", "--", "alice"]]);
+    expect(fixture.calls.some((args) => args.includes("start") || args.includes("enable") || args.includes("restart"))).toBe(false);
+    const again = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(again.result.data).toMatchObject({ access: { state: "new-login-required" } });
+    expect(fixture.prompts).toEqual(["docker-access"]);
+    expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toHaveLength(1);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test.each(["missing-job", "positive-job", "job-whitespace", "malformed-job", "duplicate-job", "foreign-slice", "extra-require", "socket-wants", "static-unit", "runtime-enabled-unit"] as const)("v255 metadata still refuses %s before enrollment authority", async (mode) => {
+  const fixture = await aptAccessFixture(); fixture.state.enrolled = false;
+  const run = fixture.host.run;
+  fixture.host.run = async (args) => {
+    const result = await run(args);
+    if (args[0] !== "/usr/bin/systemctl" || !args.some((arg) => arg.startsWith("--property=") && arg.includes("Job"))) return result;
+    let stdout = result.stdout.replace("Job=0", "Job=");
+    if (args.at(-1) === "docker.socket") {
+      stdout = stdout.replace("Requires=sysinit.target", "Requires=sysinit.target system.slice").replace("SubState=listening", "SubState=running");
+      if (mode === "missing-job") stdout = stdout.split("\n").filter((line) => line !== "Job=").join("\n");
+      if (mode === "positive-job") stdout = stdout.replace("Job=", "Job=12");
+      if (mode === "job-whitespace") stdout = stdout.replace("Job=", "Job=0 ");
+      if (mode === "malformed-job") stdout = stdout.replace("Job=", "Job=none");
+      if (mode === "duplicate-job") stdout = stdout.replace("Job=", "Job=\nJob=0");
+      if (mode === "foreign-slice") stdout = stdout.replace("Requires=sysinit.target system.slice", "Requires=sysinit.target other.slice");
+      if (mode === "extra-require") stdout = stdout.replace("Requires=sysinit.target system.slice", "Requires=sysinit.target system.slice other.service");
+      if (mode === "socket-wants") stdout = stdout.replace("Wants=", "Wants=system.slice");
+      if (mode === "static-unit") stdout = stdout.replace("UnitFileState=disabled", "UnitFileState=static");
+      if (mode === "runtime-enabled-unit") stdout = stdout.replace("UnitFileState=disabled", "UnitFileState=enabled-runtime");
+    }
+    return { ...result, stdout };
+  };
+  try {
+    const result = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(result.result.error?.code).toBe("PREREQUISITE_UNAVAILABLE");
+    expect(fixture.prompts).toEqual([]);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    expect(fixture.state.enrolled).toBe(false);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});

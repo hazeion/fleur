@@ -12,6 +12,7 @@ import type { HostCommandResult, HostIdentity, SetupHost } from "./commands.ts";
 export interface LinuxServicePolicy {
   readonly method: "arch-official-pacman" | "docker-official-apt";
   readonly label: string;
+  readonly targetDescription?: string;
   readonly binding: unknown;
   readonly hashes: Readonly<Record<string, string>>;
   readonly pendingPath: (host: SetupHost) => string;
@@ -86,8 +87,8 @@ export async function setupLinuxService(input: CommandInput, host: SetupHost, id
     await policy.provenance(host, remaining);
     for (const unit of externalDependencies) await serviceObservation(host, remaining, ["/usr/bin/systemctl", "--system", "is-active", "--quiet", unit]);
     const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify({ formatVersion: 1, profile: binding, ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), endpoint, canonicalEndpoint: "unix:///run/docker.sock", user: process.getuid!(), machine: identity.machineId, hashes, externalDependencies, enablement: Object.fromEntries(units.map((unit) => [unit, observed[unit]!.UnitFileState])), effects: { action: "service-start", units, enable: false, membership: "unchanged", configuration: "unchanged" } }), "hex");
-    const target = `Docker ${policy.label} service-start plan ${checksum}`;
-    const plan = { ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), action: "service-start", method: method, endpoint, units, externalDependencies, checksum };
+    const target = `Docker ${policy.label} service-start plan ${checksum}${policy.targetDescription ? `; ${policy.targetDescription}` : ""}`;
+    const plan = { ...(policy.prestartEffects ? { prestartEffects: policy.prestartEffects } : {}), action: "service-start", method: method, endpoint, units, externalDependencies, checksum, ...(policy.targetDescription ? { target } : {}) };
     const authority = () => failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Starting Docker and its declared containerd/socket dependencies needs a separate matching service-start grant. Boot enablement and user access are unchanged.", actions: [{ command: "fleur setup", description: "Inspect this exact service-start action interactively." }] }, { plan, resumable: true });
     const specified = input.args[0] === "--grant" ? input.args[1] : undefined;
     const matches = (grant: Grant) => !grant.revoked && (!specified || grant.id === specified) && grant.action === "service-start" && grant.method === method && grant.target === target && grant.planChecksum === checksum && grant.machine === identity.machineId && grant.user === process.getuid?.();

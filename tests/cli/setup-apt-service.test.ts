@@ -300,10 +300,10 @@ for (const mode of ["install-only", "revoked", "other-machine"] as const) test(`
   const fixture = await aptServiceFixture();
   try {
     const plan = await runCli(["setup", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
-    const checksum = (plan.result.data as { plan: { checksum: string } }).plan.checksum;
+    const { checksum, target } = (plan.result.data as { plan: { checksum: string; target: string } }).plan;
     const id = "00000000-0000-0000-0000-000000000001";
     const { writeFile } = await import("node:fs/promises");
-    await writeFile(`${fixture.host.stateDirectory}/grants.json`, JSON.stringify({ formatVersion: 1, grants: [{ id, action: mode === "install-only" ? "install" : "service-start", method: "docker-official-apt", target: `Docker APT service-start plan ${checksum}`, planChecksum: checksum, machine: mode === "other-machine" ? "b".repeat(64) : "a".repeat(64), user: process.getuid!(), mode: "remembered", revoked: mode === "revoked" }] }), { mode: 0o600 });
+    await writeFile(`${fixture.host.stateDirectory}/grants.json`, JSON.stringify({ formatVersion: 1, grants: [{ id, action: mode === "install-only" ? "install" : "service-start", method: "docker-official-apt", target, planChecksum: checksum, machine: mode === "other-machine" ? "b".repeat(64) : "a".repeat(64), user: process.getuid!(), mode: "remembered", revoked: mode === "revoked" }] }), { mode: 0o600 });
     const outcome = await runCli(["setup", "--grant", id], { cwd: fixture.root, handlers: fixture.handlers });
     expect(outcome.exitCode).toBe(3);
     expect(outcome.result.error?.code).toBe("AUTHORITY_REQUIRED");
@@ -358,5 +358,23 @@ test("a terminal APT start exit alone cannot replace actual cold-containerd serv
     expect(fixture.prompts).toEqual(["service-start"]);
     expect((await runCli(["doctor", "--json"], { cwd: fixture.root, handlers: fixture.handlers })).exitCode).toBe(5);
     expect(fixture.calls.filter((args) => args[0] === "/usr/bin/sudo")).toHaveLength(1);
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("interactive APT startup discloses named units and vendor pre-start effects before human consent", async () => {
+  const fixture = await aptServiceFixture();
+  fixture.state.containerdActive = false;
+  let target = "";
+  const host = { ...fixture.host, confirmHuman: async (plan: { readonly target: string }) => { target = plan.target; return "deny" as const; } };
+  try {
+    const outcome = await runCli(["setup"], { cwd: fixture.root, handlers: setupCommands(host, [aptProfile]) });
+    expect(outcome.exitCode).toBe(3);
+    expect(target).toContain("docker.service");
+    expect(target).toContain("containerd.service");
+    expect(target).toContain("docker.socket");
+    expect(target).toContain("-/sbin/modprobe overlay");
+    expect(target).toContain("may load the overlay kernel module");
+    expect(target.length).toBeLessThanOrEqual(512);
+    expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
   } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
 });

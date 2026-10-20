@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises"
 import { arch, platform, release, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
+import { observeBoot } from "./observe-fresh-linux-boot.ts";
 
 // Internal verification only. The source-owned ordinary production catalog stays empty.
 const imagePin = { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 };
@@ -107,7 +108,7 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");
@@ -146,17 +147,22 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const bootDeadline = performance.now() + 180000;
   while (true) {
     if (vm.exitCode !== null) fail("BOOT_FAILED", "Owned QEMU exited before guest readiness.");
-    if ((await ssh("cloud-init status --wait >/dev/null && test \"$(cat /etc/fleur-owned-guest)\" = " + nonce)).exitCode === 0) break;
     if (performance.now() >= bootDeadline) fail("BOOT_TIMEOUT", "Guest did not become ready within three minutes.");
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const observation = await observeBoot({ port, identity: clientKey, knownHosts, nonce }, bootDeadline - performance.now());
+    if (performance.now() >= bootDeadline) fail("BOOT_TIMEOUT", "Guest did not become ready within three minutes.");
+    if (observation.state === "failed") fail(observation.error?.code ?? "BOOT_FAILED", observation.error?.message ?? "Guest boot observation failed.");
+    if (observation.state === "ready") break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, bootDeadline - performance.now()))));
   }
   report.boot = { hostKeyPinnedBeforeBoot: true, cloudInitComplete: true, scope: "full-system-qemu", accelerator: selectedAccelerator };
   await ssh("mkdir -m 700 lab");
   const restrictionArchive = join(scratch, "runtime-probe.tar");
   const sourceCommit = (await command(["git", "-C", repository, "rev-parse", "HEAD"])).stdout.trim();
   if (!/^[a-f0-9]{40}$/.test(sourceCommit)) fail("ARTIFACT_MISMATCH", "Runtime probe source revision is malformed.");
-  await command(["git", "-C", repository, "archive", "--format=tar", `--output=${restrictionArchive}`, sourceCommit, "experiments/compatibility/runtime-probe"]);
-  report.restrictionSource = { commit: sourceCommit, sha256: Bun.CryptoHasher.hash("sha256", await readFile(restrictionArchive), "hex") };
+  const restriction = JSON.parse((await command([process.execPath, join(repository, "scripts/archive-fresh-linux-probe.ts"), "--repository", repository, "--commit", sourceCommit, "--out", restrictionArchive])).stdout);
+  const restrictionSha256 = Bun.CryptoHasher.hash("sha256", await readFile(restrictionArchive), "hex");
+  if (restriction.formatVersion !== 1 || restriction.scope !== "fresh-linux-restriction-archive" || restriction.ok !== true || restriction.commit !== sourceCommit || restriction.sha256 !== restrictionSha256) fail("ARTIFACT_MISMATCH", "Restriction archive did not establish its exact tracked source identity.");
+  report.restrictionSource = restriction;
   const guestFiles = [archive, runtime, restrictionArchive, join(repository, "scripts/fresh-linux-guest.py"), join(repository, "scripts/prepare-fresh-linux-guest.py")];
   await command(["scp", ...sshOptions, "-P", String(port), ...guestFiles, "fleur@127.0.0.1:lab/"], 120000);
   const prepare = await ssh("cd lab && python3 -I prepare-fresh-linux-guest.py && tar -xzf fleur-internal-native-candidate.tgz && tar -xf runtime-probe.tar");

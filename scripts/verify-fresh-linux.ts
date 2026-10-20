@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises"
 import { arch, platform, release, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
+import { observeGuestSessions } from "./observe-fresh-linux-session.ts";
 import { observeBoot } from "./observe-fresh-linux-boot.ts";
 
 // Internal verification only. The source-owned ordinary production catalog stays empty.
@@ -15,6 +16,8 @@ let vm: ReturnType<typeof Bun.spawn> | undefined;
 let vmOutput: Promise<string[]> | undefined;
 let qmpPath: string | undefined;
 let stopped = true;
+const sessionAbort = new AbortController();
+let sessionOperation: ReturnType<typeof observeGuestSessions> | undefined;
 const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
 const tools = ["qemu-img", "qemu-system-x86_64", "cloud-localds", "ssh", "ssh-keygen", "scp", "unzip", "python3", "git", "hdiutil"];
 function accelerator(): "tcg" | "kvm" {
@@ -108,7 +111,7 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");
@@ -170,13 +173,18 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const preparation = JSON.parse(prepare.stdout);
   if (preparation.formatVersion !== 1 || preparation.scope !== "guest-bun-preparation" || preparation.ok !== true || preparation.archiveSha256 !== bunPin.sha256 || !Number.isSafeInteger(preparation.executableBytes) || preparation.executableBytes <= 0 || preparation.executableBytes > 256 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(preparation.executableSha256)) fail("GUEST_REPORT_INVALID", "Guest Bun preparation did not establish its authenticated output identity.");
   report.guestPreparation = preparation;
-  const observed = await command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", `python3 lab/fresh-linux-guest.py ${nonce}`], 900000, [0, 3, 4]);
-  const guest = JSON.parse(observed.stdout); report.guest = guest;
-  if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false) fail("GUEST_REPORT_INVALID", "Guest proof metadata differs from its declared scope.");
-  if (observed.exitCode === 3 || guest.phase !== undefined) {
-    if (observed.exitCode !== 3 || guest.phase !== "new-login-required" || guest.ok !== false || !/^[a-f0-9]{64}$/.test(guest.checkpoint?.sha256 ?? "") || !guest.baseline) fail("GUEST_REPORT_INVALID", "Intermediate guest phase lacks its exact incomplete checkpoint envelope.");
-    fail("NEW_LOGIN_REQUIRED", "The ordinary account requires a genuinely new login. No resumed or final installation proof is claimed by this verifier yet.");
-  }
+  const cancelSession = () => sessionAbort.abort();
+  process.once("SIGINT", cancelSession); process.once("SIGTERM", cancelSession);
+  let sessions;
+  try {
+    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce }, sessionAbort.signal);
+    sessions = await sessionOperation;
+  } finally { process.removeListener("SIGINT", cancelSession); process.removeListener("SIGTERM", cancelSession); }
+  report.sessions = sessions;
+  // Parse the scoped transport observation as data, retaining the original proof checks below.
+  const guest = JSON.parse(JSON.stringify(sessions.guest ?? {})); report.guest = guest;
+  if (sessions.error) fail(sessions.error.code, sessions.error.message);
+  if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false || guest.phase !== undefined) fail("GUEST_REPORT_INVALID", "Guest proof metadata differs from its declared terminal scope.");
   if (guest.ok !== true) fail(guest.error?.code ?? "NATIVE_SETUP_INCOMPLETE", guest.error?.message ?? "Guest setup proof is incomplete.");
   if (guest.installationEvidence !== "verified-full-system-guest" || guest.runs?.length !== 2 || guest.sentinelCleanup !== true || guest.restrictionProbe?.exitCode !== 0 || guest.restrictionProbe?.result?.bounded_probe_passed !== true || guest.restrictionProbe?.result?.cleanup_complete !== true) fail("GUEST_REPORT_INVALID", "Successful guest report lacks completed repeat, restriction or cleanup evidence.");
   // Admission is always an independently reviewed later source change.
@@ -199,6 +207,8 @@ try {
   report.error = { code: (error as { code?: string }).code ?? "VERIFICATION_FAILED", message: error instanceof Error ? error.message : "Verification failed" };
   process.exitCode = 4;
 } finally {
+  sessionAbort.abort();
+  await sessionOperation;
   if (vm) {
     try {
       if (vm.exitCode === null) { try { await poweroff(); } catch { /* Owned child is still reaped below. */ } await Promise.race([vm.exited, new Promise((resolve) => setTimeout(resolve, 10000))]); }

@@ -53,20 +53,25 @@ After setup, the report captures actual dependency simulation and signed-index b
 
 The guest then emits `ok: false`, phase `new-login-required` and exit 3. A private exclusively created checkpoint retains the original pristine baseline, complete initial phase evidence, nonce, boot ID, ordinary account/group identities, candidate/source/archive byte identities and the original guest deadline. Candidate inventory checks time and counts every file and directory during incremental enumeration, at most 5,000 entries, before inspecting or queuing the entry. It retains the 8 MiB source-file and 32 MiB source-total ceilings and sorts only admitted bounded records. Retained descriptors and final byte/path/root checks precede publication; malformed inputs, preexisting state, changed bytes, symlinks and replaced lab directories fail closed. Partial or uncertain state is retained and blocks a new initial workflow. This state assumes the owned verification lab has one trusted writer; it does not contain unrestricted same-user interference. Automated replies remain fixture authority, not real human consent.
 
-The host validates and records this incomplete checkpoint envelope, then stops with `NEW_LOGIN_REQUIRED` and exit 4 even though the guest handoff exits 3. The guest retains `ok: false`, installation evidence pending, runtime support unverified and `humanConsentProof: false`; the host also remains incomplete and unverified. A genuine new pinned SSH login consumer is not implemented in this milestone, so enrollment cannot become successful installation evidence. Future resume must disable SSH multiplexing, retain the original host 900-second aggregate clock and consume this exact baseline/checkpoint once. No resumed or native-release support is claimed here. A host-report excerpt is:
+The host retains that first report and its checkpoint digest, completely reaps the old SSH workflow, and opens at most one fresh ordinary-user connection using the same pinned key and client identity. Both workflows explicitly set `ControlMaster=no` and `ControlPath=none`. Each connection must emit its exact nonce-bound session-start frame within 10 seconds, retaining the 3-second connection ceiling; that frame establishes transport start only and cannot replace guest proof. Missing, malformed, duplicate or wrong-nonce framing fails closed. The internal session command is imported directly by the verifier; cancellation aborts and awaits its owned process-group cleanup before VM disposal. Its scoped protocol result does not authenticate images or admit native support: the parent retains the frozen artifact and final-proof gates.
+
+Resume accepts only the anchored checkpoint, original boot/nonce/UID and matching candidate/source/archive bytes. It retains the original baseline and guest deadline, requires the new numeric session groups to equal the recorded post-enrollment account groups, checks unchanged socket and installed state, and claims the checkpoint once through an exclusive private marker. Stale login, replay, changed bytes, path or identity, expired budget and uncertain state stay incomplete; resume never repeats installation or enrollment. The original and fresh-login snapshots remain separately recorded: human `id` text gains Docker membership, while exact numeric memberships and every package/service/source field are checked independently. Both SSH workflows share one original host 900-second budget, while guest subprocesses retain their existing individual ceilings and the original guest aggregate deadline.
+
+A valid new login alone does not establish readiness. For example, an unavailable daemon after resume returns host and guest exit 4, installation evidence pending, runtime support unverified and `humanConsentProof: false`. A successful native guest execution has not been demonstrated by protocol fixtures. An incomplete host-report excerpt is:
 
 ```json
 {
   "ok": false,
-  "installationEvidence": "pending",
   "runtimeSupport": "unverified",
-  "error": { "code": "NEW_LOGIN_REQUIRED" },
-  "guest": { "ok": false, "phase": "new-login-required" }
+  "installationEvidence": "pending",
+  "sessions": {
+    "initialGuest": { "ok": false, "phase": "new-login-required" },
+    "guest": { "ok": false, "error": { "code": "NATIVE_SETUP_INCOMPLETE" } }
+  }
 }
 ```
 
-
-If ordinary-user readiness becomes available through supported setup, the verifier uses separate image-acquisition authority, runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready, smoke cleanup to succeed, and the exact pending-release doctor envelope with exit 4. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
+If ordinary-user readiness becomes available through supported setup, the verifier inspects the separate digest-image acquisition plan and answers exactly one matching image/endpoint/checksum prompt. Package installation or account-access prompts at that boundary are rejected without a reply. It then runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready, smoke cleanup to succeed, and the exact pending-release doctor envelope with exit 4. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
 
 The host requests QMP powerdown, then terminates and reaps only its owned QEMU child if needed. Owned temporary disks, seed and keys are removed after termination. The JSON report carries guest diagnostics and bounded serial output. There is no CI job or automatic infrastructure provisioning in this change.
 

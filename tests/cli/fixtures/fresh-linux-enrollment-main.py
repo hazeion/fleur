@@ -2,6 +2,8 @@
 No production function is replaced. Native account/services/packages never run.
 """
 import glob
+import contextlib
+import io
 import hashlib
 import json
 import os
@@ -9,6 +11,7 @@ from pathlib import Path
 import runpy
 import sys
 import stat
+import time
 from unittest.mock import patch
 
 source = Path(__file__).resolve().parents[3] / "scripts/fresh-linux-guest.py"
@@ -41,23 +44,35 @@ def plan():
  result={'action':'docker-access','method':'docker-official-apt','privilege':'root-equivalent daemon access','user':{'name':'fleur','uid':uid},'group':{'name':'docker','gid':997},'endpoint':'unix:///var/run/docker.sock','checksum':checksum,'target':'Add fleur to Docker group 997: root-equivalent daemon access; plan '+checksum}
  if s['scenario']=='plan-method':result['method']='arch-official-pacman'
  return result
-def ask(action,target,checksum,enrollment=False):
+def ask(action,target,checksum,enrollment=False,method="docker-official-apt"):
  if enrollment:
   s.setdefault('enrollmentOffers',[]).append({'action':action,'target':target,'checksum':checksum});save()
   if s['scenario']=='prompt-checksum':checksum='f'*64
- print('Authorize '+action+' using docker-official-apt for '+target+'\nPlan '+checksum+"\nType 'once', 'remember', or 'deny': ",end='',flush=True)
+ print('Authorize '+action+' using '+method+' for '+target+'\nPlan '+checksum+"\nType 'once', 'remember', or 'deny': ",end='',flush=True)
  reply=sys.stdin.readline().strip();s['enrollmentPrompts' if enrollment else 'installPrompts'].append({'action':action,'target':target,'checksum':checksum,'reply':reply});save();return reply
 if name=='bun':
  if args==['--version']:print('1.4.3');sys.exit(0)
  command=args[1]
  if command=='doctor':
+  if s.get('freshSession') and s['scenario'].startswith('resume-smoke-'):
+   envelope(command,{'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'image-required','image':'oven/bun@sha256:'+'c'*64}}},3,'AUTHORITY_REQUIRED')
   ready=s['installed'];envelope(command,{'components':{'cli':{'state':'ready' if ready else 'missing'},'daemon':{'state':'denied' if ready and s['scenario']!='apt-index-incomplete' else 'missing'},'compose':{'state':'ready' if ready else 'missing'},'smoke':{'state':'missing'},'release':{'state':'unverified'}}},4,'PREREQUISITE_UNAVAILABLE')
  if command!='setup':raise RuntimeError('Unexpected fake CLI command')
  if '--json' in args:
+  if s.get('freshSession') and s['scenario'].startswith('resume-smoke-'):
+   envelope(command,{'plan':{'action':'image-acquire','method':'docker-digest-pull','image':'oven/bun@sha256:'+'c'*64,'checksum':'d'*64},'resumable':True,'grantsCreated':False},3,'AUTHORITY_REQUIRED')
   if not s['installed']:envelope(command,{'plan':{'action':'install','checksum':package_checksum}},3,'AUTHORITY_REQUIRED')
   if not s['enrolled']:envelope(command,{'plan':plan(),'resumable':True},3,'AUTHORITY_REQUIRED')
   if s['scenario']=='stale-replayed-plan':envelope(command,{'plan':plan()},3,'AUTHORITY_REQUIRED')
   s['staleReprobes']+=1;envelope(command,{'access':{'state':'new-login-required'},'resumable':True},3,'HUMAN_ACTION_REQUIRED')
+ if s.get('freshSession') and s['scenario'].startswith('resume-smoke-'):
+  action={'resume-smoke-install':'install','resume-smoke-access':'docker-access','resume-smoke-image':'image-acquire'}[s['scenario']]
+  method='docker-digest-pull' if action=='image-acquire' else 'docker-official-apt'
+  target='oven/bun@sha256:'+'c'*64+' via unix:///var/run/docker.sock' if action=='image-acquire' else 'Unexpected package or account action'
+  checksum='d'*64 if action=='image-acquire' else 'e'*64
+  s.setdefault('smokeOffers',[]).append({'action':action,'method':method,'target':target,'checksum':checksum});save()
+  reply=ask(action,target,checksum,method=method)
+  s.setdefault('smokeReplies',[]).append({'action':action,'method':method,'target':target,'checksum':checksum,'reply':reply});save();sys.exit(3)
  if not s['installed']:
   for action in ['repository-configuration','install','configuration','docker-access','service-start','service-enable']:
    if ask(action,'Docker fixture package-side-effect plan',package_checksum)!='once':sys.exit(3)
@@ -82,21 +97,29 @@ if name=='systemctl':
 if name=='id':
  if args in (['-un'],['--user','--name'],['--name','--user']):print('fleur')
  elif args in (['-u'],['--user']):print(uid)
- elif args and args[0] in ('--groups','-G'):print(str(uid)+' 27'+(' 997' if s['enrolled'] and 'fleur' in args else ''))
- else:print('uid='+str(uid)+'(fleur) gid='+str(uid)+'(fleur) groups='+str(uid)+'(fleur),27(sudo)')
+ elif args and args[0] in ('--groups','-G'):
+  groups=str(uid)+' 27'+(' 997' if s['enrolled'] and ('fleur' in args or s.get('freshSession',False)) else '')
+  if s['scenario']=='resume-reordered-groups' and s.get('freshSession') and 'fleur' not in args:groups='997 27 '+str(uid);s['reorderedSessionGroups']=True;save()
+  if s['scenario']=='resume-lost-group' and s.get('freshSession'):groups=str(uid)+' 997'
+  print(groups)
+ else:print('uid='+str(uid)+'(fleur) gid='+str(uid)+'(fleur) groups='+str(uid)+'(fleur),27(sudo)'+(',997(docker)' if s.get('freshSession') else ''))
  sys.exit(0)
 if name=='getent':
  if 'passwd' in args:print('fleur:x:'+str(uid)+':'+str(uid)+':Fixture:'+str(root)+':/bin/bash')
  elif 'group' in args:print('docker:x:997:'+('fleur' if s['enrolled'] else ''))
  else:raise RuntimeError('Unexpected directory lookup')
  sys.exit(0)
-if name=='stat':print('1|2|socket|0|997|660');sys.exit(0)
+if name=='stat':print('1|'+('3' if s.get('freshSession') and s['scenario']=='resume-socket-change' else '2')+'|socket|0|997|660');sys.exit(0)
+if name=='docker':
+ if args==['context','show']:print('default');sys.exit(0)
+ if args==['context','inspect','default','--format','{{json .Endpoints.docker}}']:print(json.dumps({'Host':'unix:///var/run/docker.sock'}));sys.exit(0)
+ raise RuntimeError('No Docker mutation in smoke-authority fixture')
 if name=='apt-get':
  if '--simulate' not in args:raise RuntimeError('No direct package mutation in fixture')
  print('0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.');sys.exit(0)
 s['unexpected'].append({'tool':name,'args':args});save();raise RuntimeError('Unknown fixture command')
 '''
-for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "id", "getent", "apt-get", "stat"]:
+for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "id", "getent", "apt-get", "stat", "docker"]:
     target = lab / name if name == "bun" else tools / name
     target.write_text("#!" + sys.executable + " -S\n" + TOOL)
     target.chmod(0o700)
@@ -265,6 +288,13 @@ def descriptor_open(path, *args, **kwargs):
         apt_open_witness(path)
     source_fault(path)
     fd = original_open(path, *args, **kwargs)
+    if scenario == "resume-checkpoint-change" and "resume-checkpoint" not in injected and isinstance(path, (str, os.PathLike)) and Path(path) == lab / "package/bin/fleur.ts" and (lab / "fresh-linux-state.json").exists():
+        record_fault("resume-checkpoint")
+        with original_path_open(lab / "fresh-linux-state.json", "r+b") as stream:
+            body = stream.read()
+            stream.seek(0)
+            stream.write(b"X" * len(body))
+            stream.flush()
     if scenario == "root-replacement" and "root" not in injected and isinstance(path, (str, os.PathLike)) and Path(path) == lab:
         record_fault("root")
         lab.rename(root / "parked-lab")
@@ -279,6 +309,14 @@ def fsync(fd):
         record_fault("checkpoint")
         with original_path_open(target, "r+b") as stream:
             body = stream.read(2 * 1024 * 1024 + 1)
+            stream.seek(0)
+            stream.write(b"X" * len(body))
+            stream.flush()
+    target = lab / "fresh-linux-resume-started.json"
+    if scenario == "resume-marker-mutation" and "resume-marker" not in injected and stat.S_ISREG(os.fstat(fd).st_mode) and target.exists() and os.fstat(fd).st_ino == target.lstat().st_ino:
+        record_fault("resume-marker")
+        with original_path_open(target, "r+b") as stream:
+            body = stream.read()
             stream.seek(0)
             stream.write(b"X" * len(body))
             stream.flush()
@@ -299,6 +337,8 @@ def apt_stat(path, *args, **kwargs):
 original_read_text = Path.read_text
 original_glob = Path.glob
 original_popen = __import__("subprocess").Popen
+original_monotonic = time.monotonic
+clock_advance = 0
 original_glob_glob = glob.glob
 known = {"/etc/fleur-owned-guest": nonce + "\n", "/proc/1/comm": "systemd\n", "/etc/os-release": 'ID=ubuntu\nVERSION_ID="24.04"\n', "/proc/sys/kernel/random/boot_id": boot + "\n"}
 
@@ -324,8 +364,46 @@ def popen(args, *positional, **kwargs):
 
 os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/usr/bin:/bin")
 sys.argv = [str(source), nonce]
-with patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
+with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
+        if scenario in ("fresh-resume", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+            first_output = io.StringIO()
+            with contextlib.redirect_stdout(first_output):
+                try:
+                    runpy.run_path(str(source), run_name="__main__")
+                except SystemExit as first_exit:
+                    if first_exit.code != 3:
+                        raise RuntimeError("Fixture initial workflow did not reach its genuine handoff")
+            initial = json.loads(first_output.getvalue())
+            (root / "first-session-report.json").write_text(json.dumps(initial))
+            state = json.loads(state_path.read_text())
+            state["freshSession"] = scenario != "resume-stale-session"
+            state_path.write_text(json.dumps(state))
+            if scenario == "resume-boot-change":
+                known["/proc/sys/kernel/random/boot_id"] = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee\n"
+            if scenario == "resume-artifact-change":
+                (lab / "package/bin/fleur.ts").write_text("Changed owned candidate after initial handoff\n")
+            if scenario == "resume-state-symlink":
+                (lab / "fresh-linux-state.json").rename(root / "retained-original-checkpoint")
+                (lab / "fresh-linux-state.json").symlink_to(root / "retained-original-checkpoint")
+            if scenario == "resume-state-hardlink":
+                os.link(lab / "fresh-linux-state.json", root / "retained-checkpoint-link")
+            if scenario == "resume-state-oversize":
+                with original_path_open(lab / "fresh-linux-state.json", "r+b") as stream:
+                    stream.truncate(2 * 1024 * 1024 + 1)
+            if scenario == "resume-deadline-expired":
+                clock_advance = 901
+            state = json.loads(state_path.read_text())
+            state["resumeFixtureTransition"] = scenario
+            state_path.write_text(json.dumps(state))
+            sys.argv = [str(source), nonce, "--resume", "0" * 64 if scenario == "resume-wrong-digest" else initial["checkpoint"]["sha256"]]
+            if scenario == "resume-replay":
+                with contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        runpy.run_path(str(source), run_name="__main__")
+                    except SystemExit as resume_exit:
+                        if resume_exit.code != 4 or not (lab / "fresh-linux-resume-started.json").is_file():
+                            raise RuntimeError("Fixture first resume did not claim its once-only boundary")
         runpy.run_path(str(source), run_name="__main__")
     finally:
         if scenario == "directory-bound":

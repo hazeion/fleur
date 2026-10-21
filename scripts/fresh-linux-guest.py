@@ -851,7 +851,9 @@ def observe_ordinary_daemon(docker):
         if type(raw_info.get(key)) is not bool:
             raise RuntimeError('Ordinary daemon capability field is invalid')
         info[key] = raw_info[key]
-    allowed_security = {'name=apparmor', 'name=selinux', 'name=cgroupns', 'name=rootless', 'name=userns', 'name=seccomp,profile=builtin'}
+    allowed_security = {'name=apparmor': 'apparmor', 'name=apparmor,profile=default': 'apparmor',
+                        'name=selinux': 'selinux', 'name=cgroupns': 'cgroupns', 'name=rootless': 'rootless',
+                        'name=userns': 'userns', 'name=seccomp,profile=builtin': 'seccomp'}
     raw_security = raw_info.get('SecurityOptions')
     security = {'state': 'unavailable', 'category': 'malformed', 'knownOptions': []}
     if type(raw_security) is list and len(raw_security) <= 16:
@@ -861,7 +863,7 @@ def observe_ordinary_daemon(docker):
             security['category'] = 'malformed'
         elif len(known) != len(raw_security):
             security['category'] = 'unknown'
-        elif len(set(known)) != len(known):
+        elif len({allowed_security[entry] for entry in known}) != len(known):
             security['category'] = 'duplicate'
         else:
             info['SecurityOptions'] = list(raw_security)

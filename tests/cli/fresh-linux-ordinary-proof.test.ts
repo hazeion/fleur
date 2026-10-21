@@ -93,12 +93,12 @@ test("ordinary proof records bounded daemon capability version and driver fields
     const state = await Bun.file(join(root, "protocol-state.json")).json();
     expect(state.ordinaryDaemonQueries).toEqual([["info", "--format", "{{json .}}"], ["version", "--format", "{{json .Server}}"]]);
     const observation = JSON.parse(stdout).ordinaryDaemonObservation;
-    expect(observation).toMatchObject({ scope: "ordinary-daemon-readiness-observation", runtimeAdmission: false, info: { ServerVersion: "29.9.1", Driver: "overlayfs", SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, PidsLimit: true }, server: { Version: "29.9.1", GitCommit: "b26fb77", Platform: { Name: "Docker Engine - Community" } } });
+    expect(observation).toMatchObject({ scope: "ordinary-daemon-readiness-observation", runtimeAdmission: false, info: { ServerVersion: "29.9.1", Driver: "overlayfs", SecurityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, PidsLimit: true }, server: { Version: "29.9.1", GitCommit: "b26fb77", Platform: { Name: "Docker Engine - Community" } } });
     expect(JSON.stringify(observation)).not.toContain("private-fixture");
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
 
-for (const category of ["duplicate", "malformed", "unknown"]) {
+for (const category of ["duplicate", "mixed", "malformed", "unknown", "apparmor-custom", "apparmor-unconfined", "apparmor-docker-default"]) {
   test(`ordinary daemon ${category} security options remain unavailable and redacted`, async () => {
     const root = await mkdtemp(join(tmpdir(), "fleur-ordinary-security-"));
     try {
@@ -108,7 +108,7 @@ for (const category of ["duplicate", "malformed", "unknown"]) {
       expect(exit, stderr + stdout).toBe(4);
       const report = JSON.parse(stdout);
       expect(report.error.message).toContain("security option observation is unavailable");
-      expect(report.ordinaryDaemonObservation).toMatchObject({ runtimeAdmission: false, info: { Driver: "overlayfs" }, server: { Version: "29.9.1" }, securityOptionsEvidence: { state: "unavailable", category } });
+      expect(report.ordinaryDaemonObservation).toMatchObject({ runtimeAdmission: false, info: { Driver: "overlayfs" }, server: { Version: "29.9.1" }, securityOptionsEvidence: { state: "unavailable", category: category === "mixed" ? "duplicate" : category.startsWith("apparmor-") ? "unknown" : category } });
       expect(report.ordinaryDaemonObservation.info.SecurityOptions).toBeUndefined();
       expect(JSON.stringify(report.ordinaryDaemonObservation)).not.toContain("private-fixture");
       expect((await Bun.file(join(root, "protocol-state.json")).json()).restrictionCalls).toBeUndefined();
@@ -124,7 +124,7 @@ test("known daemon security observations survive a later Doctor release refusal"
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exit, stderr + stdout).toBe(4);
     const report = JSON.parse(stdout);
-    expect(report.ordinaryDaemonObservation).toMatchObject({ info: { SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"] }, securityOptionsEvidence: { state: "recorded", operatingMode: "rootful" } });
+    expect(report.ordinaryDaemonObservation).toMatchObject({ info: { SecurityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"] }, securityOptionsEvidence: { state: "recorded", operatingMode: "rootful" } });
     expect(report.error.message).toContain("Repeat ordinary-user smoke");
     expect(report.sentinelCleanup).toBe(true);
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -166,10 +166,14 @@ if name=='docker':
   if query in (['info','--format','{{json .}}'],['version','--format','{{json .Server}}']):
    s.setdefault('ordinaryDaemonQueries',[]).append(query);save()
    if query[0]=='info':
-    info={'ServerVersion':'29.9.1','KernelVersion':'6.8.0-147-generic','OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
+    info={'ServerVersion':'29.9.1','KernelVersion':'6.8.0-147-generic','OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor,profile=default','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
     if s['scenario']=='ordinary-admitted-security-duplicate':info['SecurityOptions']=['name=apparmor','name=apparmor']
+    if s['scenario']=='ordinary-admitted-security-mixed':info['SecurityOptions']=['name=apparmor','name=apparmor,profile=default']
     if s['scenario']=='ordinary-admitted-security-malformed':info['SecurityOptions']=[True]
     if s['scenario']=='ordinary-admitted-security-unknown':info['SecurityOptions']=['name=apparmor','name=seccomp,profile=/private-fixture/custom.json']
+    if s['scenario']=='ordinary-admitted-security-apparmor-custom':info['SecurityOptions']=['name=apparmor,profile=/private-fixture/custom.json']
+    if s['scenario']=='ordinary-admitted-security-apparmor-unconfined':info['SecurityOptions']=['name=apparmor,profile=unconfined']
+    if s['scenario']=='ordinary-admitted-security-apparmor-docker-default':info['SecurityOptions']=['name=apparmor,profile=docker-default']
     print(json.dumps(info))
    else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':'6.8.0-147-generic','Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
    sys.exit(0)

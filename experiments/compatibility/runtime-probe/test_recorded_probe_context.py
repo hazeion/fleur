@@ -107,6 +107,94 @@ class RecordedContext(unittest.TestCase):
                 (context_path/'filter.so').unlink()
                 context_path.rmdir()
 
+    def test_owned_materialization_under_inherited_group_write_umask_seals(self):
+        for mask in (0o002, 0o077):
+            report = {}
+            context_path = None
+            with tempfile.TemporaryDirectory(prefix='fleur-recorded-materialize-') as fixture:
+                source = Path(fixture)/'inputs'
+                source.mkdir(mode=0o700)
+                for name, body in [('filter.so', b'abc'), ('abuse', b'hello')]:
+                    (source/name).write_bytes(body)
+                    (source/name).chmod(0o600)
+                # Text-only lower-artifact fixtures, never compiled-policy proof.
+                previous = os.umask(mask)
+                try:
+                    with run.recorded_probe_context(report, time.monotonic()+5) as context:
+                        context_path = Path(context)
+                        staged = stage_pair(source, context_path, TEXT_PAIR, time.monotonic()+5)
+                        names = ('bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js',
+                                 'busy-application.js', 'profile.json', 'package.json', 'bun.lock', 'Dockerfile')
+                        for name in names:
+                            context.write_input(name, b'owned context input')
+                        context.seal(staged)
+                        context.revalidate()
+                        self.assertEqual(set(os.listdir(context_path)), set(names)|{'filter.so', 'abuse'})
+                        for name in names:
+                            self.assertEqual((context_path/name).stat().st_mode & 0o777, 0o644)
+                        self.assertTrue(report['helper_artifact_context']['ledger_verified'])
+                finally:
+                    os.umask(previous)
+                    if context_path is not None:
+                        for name in os.listdir(context_path):
+                            (context_path/name).unlink()
+                        context_path.rmdir()
+
+    def test_owned_input_creation_preserves_an_occupied_foreign_name(self):
+        report = {}
+        context_path = None
+        try:
+            with self.assertRaises(FileExistsError):
+                with run.recorded_probe_context(report, time.monotonic()+5) as context:
+                    context_path = Path(context)
+                    target = context_path/'application.js'
+                    target.write_bytes(b'foreign bytes')
+                    target.chmod(0o600)
+                    identity = target.stat()
+                    context.write_input('application.js', b'owned replacement refused')
+            self.assertEqual(target.read_bytes(), b'foreign bytes')
+            self.assertEqual(target.stat().st_ino, identity.st_ino)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(report['helper_artifact_context']['ledger_verified'])
+        finally:
+            if context_path is not None:
+                target.unlink()
+                context_path.rmdir()
+
+    def test_created_descriptor_does_not_chmod_or_overwrite_a_replacement(self):
+        report = {}
+        context_path = None
+        original = None
+        actual_open = os.open
+        fired = False
+        def replaced_open(name, flags, *args, **kwargs):
+            nonlocal fired, original
+            fd = actual_open(name, flags, *args, **kwargs)
+            if name == 'application.js' and flags & os.O_EXCL and not fired:
+                fired = True
+                original = context_path.with_name(context_path.name+'-original-input')
+                (context_path/name).rename(original)
+                (context_path/name).write_bytes(b'foreign bytes')
+                (context_path/name).chmod(0o600)
+            return fd
+        try:
+            with self.assertRaisesRegex(ValueError, 'input custody changed'):
+                with run.recorded_probe_context(report, time.monotonic()+5) as context:
+                    context_path = Path(context)
+                    with patch.object(os, 'open', side_effect=replaced_open):
+                        context.write_input('application.js', b'owned context bytes')
+            self.assertTrue(fired)
+            self.assertEqual((context_path/'application.js').read_bytes(), b'foreign bytes')
+            self.assertEqual((context_path/'application.js').stat().st_mode & 0o777, 0o600)
+            self.assertEqual(original.read_bytes(), b'owned context bytes')
+            self.assertFalse(report['helper_artifact_context']['ledger_verified'])
+        finally:
+            if context_path is not None:
+                (context_path/'application.js').unlink()
+                context_path.rmdir()
+            if original is not None:
+                original.unlink()
+
     def test_sealing_cannot_adopt_replaced_staged_helper_inode(self):
         with tempfile.TemporaryDirectory(prefix='fleur-recorded-seal-test-') as fixture:
             source = Path(fixture)/'input'

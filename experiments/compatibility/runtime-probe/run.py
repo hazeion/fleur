@@ -84,6 +84,7 @@ class RecordedBuildContext:
             try:
                 before = os.fstat(fd)
                 if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or before.st_mode & 0o022 or before.st_size > 8*1024*1024:
+                    self.observation['rejected_entry'] = {'name': name, 'mode': stat.S_IMODE(before.st_mode)}
                     raise ValueError('recorded helper context entries changed')
                 digest = hashlib.sha256()
                 count = 0
@@ -115,6 +116,40 @@ class RecordedBuildContext:
             raise ValueError('recorded helper context custody changed')
         self._remaining()
         return snapshot
+
+    def write_input(self, name, body):
+        if name not in self.NAMES - {'filter.so', 'abuse'} or type(body) is not bytes or len(body) > 8*1024*1024:
+            raise ValueError('recorded helper context input differs')
+        expected = (self.identity.st_dev, self.identity.st_ino, self.identity.st_uid, self.identity.st_mode)
+        def parent_current():
+            self._remaining()
+            for info in (os.fstat(self.directory), os.stat(self.path, follow_symlinks=False)):
+                if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino, info.st_uid, info.st_mode) != expected:
+                    raise ValueError('recorded helper context custody changed')
+        parent_current()
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644, dir_fd=self.directory)
+        try:
+            created = os.fstat(fd)
+            if not stat.S_ISREG(created.st_mode) or created.st_uid != os.getuid() or created.st_nlink != 1:
+                raise ValueError('recorded helper context input custody changed')
+            # The exclusive newly-created descriptor is ours even if its name is replaced.
+            # Explicit mode also supports restrictive inherited umasks without pathname chmod.
+            os.fchmod(fd, 0o644)
+            offset = 0
+            while offset < len(body):
+                self._remaining()
+                written = os.write(fd, body[offset:offset+65536])
+                if written <= 0:
+                    raise OSError('recorded helper context write made no progress')
+                offset += written
+            os.fsync(fd)
+            after = os.fstat(fd)
+            named = os.stat(name, dir_fd=self.directory, follow_symlinks=False)
+            if (after.st_dev, after.st_ino) != (created.st_dev, created.st_ino) or self._file_identity(after) != self._file_identity(named) or after.st_size != len(body) or stat.S_IMODE(after.st_mode) != 0o644 or after.st_nlink != 1:
+                raise ValueError('recorded helper context input custody changed')
+            parent_current()
+        finally:
+            os.close(fd)
 
     def seal(self, staged_helpers=None):
         if self.ledger is not None:
@@ -243,12 +278,21 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         with context_lifetime as directory:
             context = Path(directory)
             for name in ('bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js', 'busy-application.js'):
-                shutil.copyfile(HERE / name, context / name)
-            (context / 'profile.json').write_text(json.dumps({'architecture':architecture,
-                                                             'negative_controls':CONTROLS[architecture]}))
+                if recorded:
+                    directory.write_input(name, (HERE / name).read_bytes())
+                else:
+                    shutil.copyfile(HERE / name, context / name)
+            profile_text = json.dumps({'architecture':architecture, 'negative_controls':CONTROLS[architecture]})
+            if recorded:
+                directory.write_input('profile.json', profile_text.encode())
+            else:
+                (context / 'profile.json').write_text(profile_text)
             dependencies = HERE.parent / 'rendering'
             for name in ('package.json', 'bun.lock'):
-                shutil.copyfile(dependencies / name, context / name)
+                if recorded:
+                    directory.write_input(name, (dependencies / name).read_bytes())
+                else:
+                    shutil.copyfile(dependencies / name, context / name)
             if recorded:
                 host_context.verify(host_context.deadline-time.monotonic())
                 staged_helpers = stage_recorded_helpers(recorded_helper_artifacts, context, architecture, base, host_context.deadline)
@@ -262,7 +306,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
             REPORT['abuse_elf'] = native_elf_identity((context / 'abuse').read_bytes()[:64], architecture)
             REPORT['abuse_sha256'] = hashlib.sha256((context / 'abuse').read_bytes()).hexdigest()
             REPORT['helper_sha256'] = hashlib.sha256((context / 'filter.so').read_bytes()).hexdigest()
-            (context / 'Dockerfile').write_text(f'''FROM {base} AS prepare
+            dockerfile_text = f'''FROM {base} AS prepare
 WORKDIR /probe
 COPY package.json bun.lock ./
 RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
@@ -280,7 +324,11 @@ ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 \
     BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
-''')
+'''
+            if recorded:
+                directory.write_input('Dockerfile', dockerfile_text.encode())
+            else:
+                (context / 'Dockerfile').write_text(dockerfile_text)
             if recorded:
                 host_context.verify(host_context.deadline-time.monotonic())
                 revalidate_recorded_helpers(context, staged_helpers, host_context.deadline)

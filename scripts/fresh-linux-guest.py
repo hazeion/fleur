@@ -1082,13 +1082,13 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         REPORT["restrictionProbe"] = {"exitCode": code, "result": json.loads(text)}
         if RECORDED_HELPERS:
             proof = REPORT['restrictionProbe']['result']
-            original = proof.get('owned_host_control', {})
+            owned_control = proof.get('owned_host_control', {})
             context = proof.get('helper_artifact_context', {})
             if (not _recorded_helper_module().accept_helper_origin(proof, True, restriction_deadline)
                     or proof.get('owned_artifact_disposal_scope_verified') is not True
-                    or type(original.get('uid')) is not int or original.get('fixtureCustodyValidated') is not True
-                    or original.get('hostControlScope') != 'owned-guest' or original.get('runtimeAdmission') is not False
-                    or tuple(original.get(field) for field in owned_binding._fields) != tuple(owned_binding)
+                    or type(owned_control.get('uid')) is not int or owned_control.get('fixtureCustodyValidated') is not True
+                    or owned_control.get('hostControlScope') != 'owned-guest' or owned_control.get('runtimeAdmission') is not False
+                    or tuple(owned_control.get(field) for field in owned_binding._fields) != tuple(owned_binding)
                     or context.get('state') != 'retained-for-owned-guest-disposal'
                     or context.get('disposal_scope') != 'owned-full-system-guest-filesystem'
                     or context.get('local_disposal') != 'pending' or context.get('cleanup_confirmed') is not False

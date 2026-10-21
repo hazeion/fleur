@@ -1,3 +1,4 @@
+import { nativeReadinessProfiles, snapshotReadinessProfiles, type VerifiedReadinessProfile } from "./readiness.ts";
 import { permitsArchSystemStart } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
 import { setupNativeArch } from "./native-arch.ts";
@@ -13,16 +14,17 @@ import { readGrants, stateDirectory, writeGrants, type Grant } from "./grants.ts
 import { withSetupLock, SetupBusy } from "./lock.ts";
 function diagnostic(data: Json): Readonly<Record<string, Json>> { return data !== null && typeof data === "object" && !Array.isArray(data) ? data as Readonly<Record<string, Json>> : {}; }
 function reframe(outcome: CliOutcome, extra: Readonly<Record<string, Json>> = {}): CliOutcome { return { ...outcome, result: { ...outcome.result, command: "setup", data: outcome.result.data === null && Object.keys(extra).length === 0 ? null : { ...diagnostic(outcome.result.data), ...extra } } }; }
-export async function setup(input: CommandInput, host: SetupHost, profiles: readonly NativeInstallProfile[] = []): Promise<CliOutcome> {
+export async function setup(input: CommandInput, host: SetupHost, profiles: readonly NativeInstallProfile[] = [], readinessProfiles: readonly VerifiedReadinessProfile[] = nativeReadinessProfiles): Promise<CliOutcome> {
   const invalid = validateSetupArguments("setup", input.args);
   if (invalid) return invalid;
   const deadline = performance.now() + input.timeoutSeconds * 1000;
+  const policy = snapshotReadinessProfiles(readinessProfiles);
   const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
   const identity = await host.host();
   const method = installationMethod(identity);
   if (identity.translated !== false || !method) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Assisted setup requires a supported native platform.", actions: [{ command: "fleur doctor", description: "Inspect native platform compatibility." }] });
   let endpoint: string | undefined;
-  const probe = () => doctor({ ...input, args: [], timeoutSeconds: remaining() / 1000 }, host, (local) => { endpoint = local; });
+  const probe = () => doctor({ ...input, args: [], timeoutSeconds: remaining() / 1000 }, host, (local) => { endpoint = local; }, policy);
   const observed = await probe();
   if (observed.result.ok) return reframe(observed);
   const imageNeeded = (outcome: CliOutcome) => outcome.result.error?.code === "AUTHORITY_REQUIRED";

@@ -194,6 +194,14 @@ The unchanged 38-package compiler closure and exact GCC pin compiled the origina
 
 The private Darwin x64 HVF diagnostic used explicit host CPU selection without fallback; it supplies no native CPU performance proof. Its outer result intentionally remained exit `4`, `ok: false`, `DIAGNOSTIC_ONLY`, `gateProof: false` and `v1_gate_passed: false`, even after guest success. Runtime support remains unverified and the ordinary catalog stays disabled. Human-consent proof is false. The hosted matrix is still blocked; this run does not establish hosted CI, another OS/architecture tuple, release admission or completed issue #24 acceptance.
 
+## Intel Desktop existing-installation observation, 2026-10-21
+
+On native Intel macOS 15.7.7 with Bun 1.4.3, the packed ordinary CLI observed an existing Docker Desktop 4.96.1 (244132), Docker CLI 29.9.2/a82e528, Linux Engine 29.9.2/0367cbe and Compose 5.6.0. Source commit: `aa43191a559b1514477b93f7928920a5aed65d5c`. Report SHA256: `904097eb3d1b3bbf3a655375c4cb139a4844145e70efc0fc30e3819312269b56`; verifier SHA256: `635c919556868182406fdf26b053441d95df7aad73d5e6446fef6b9d2ca9cbcb`.
+
+The operator completed Desktop startup. A separately authorized one-time Fleur setup action acquired the exact x64 smoke digest. The existing-only verifier performed no acquisition, installation, startup or configuration change. Both packed doctor rounds reported CLI, daemon, Compose and owned smoke ready with cleanup confirmed. The stopped sentinel remained unchanged, and final cleanup restored the original container inventory and context. An independent reviewer checked the source/report pins and scoped result.
+
+Both doctor results honestly retained exit 4 and release state unverified. This proves repeated existing-tool readiness and preservation for the observed tuple, not assisted DMG installation, human legal acceptance, Desktop application-runtime isolation, Apple Silicon or other release admission. The compiled readiness policy must not infer support from this observation alone.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.

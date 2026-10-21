@@ -46,3 +46,13 @@ process.stdout.write(JSON.stringify(await operation));`);
     expect(calls[1]).toEndWith(`python3 lab/fresh-linux-guest.py ${nonce} --resume ${"b".repeat(64)}${suffix}`);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 15000);
+
+test("guest original binding and absolute deadline caller contracts remain in the CLI suite", async () => {
+  const { resolve } = await import("node:path");
+  const python = Bun.which("python3");
+  if (!python) throw new Error("Existing Python required for guest command protocol tests");
+  const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/guest-owned-binding.py"), resolve(import.meta.dir, "../../scripts/fresh-linux-guest.py")], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit, stdout + stderr).toBe(0);
+  expect(stderr).toContain("OK");
+}, 15000);

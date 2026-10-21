@@ -130,3 +130,24 @@ test("unknown state in the retained SSH group still refuses cleanup evidence", a
     expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining("inventory owned state") } });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
+
+
+test("retired pipeholding members do not receive a queued KILL while fresh inventory is delayed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-ssh-slow-retirement-inventory-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    await writeFile(join(tools, "ssh"), `#!${python}\nimport os,time\npid=os.fork()\nif pid==0:\n time.sleep(10);os._exit(0)\nos.write(1,b'FLEUR_SESSION_READY=${nonce}\\n{}')\nos._exit(4)\n`, { mode: 0o700 });
+    // Delay only the external cleanup-inventory command. The first real ps
+    // snapshot discovers the live descendant; TERM delivery is never replaced.
+    await writeFile(join(tools, "python3"), `#!${python}\nimport subprocess,sys,runpy,time,pathlib,os\noriginal=subprocess.Popen\ncalls=0\ndef popen(args,*positional,**kwargs):\n global calls\n if args[:2]==['/bin/ps','-axo']:\n  calls+=1\n  if calls==2:\n   pathlib.Path(os.environ['FIXTURE_ROOT']+'/slow-inventory').write_text('started')\n   time.sleep(0.25)\n return original(args,*positional,**kwargs)\nsubprocess.Popen=popen\nrunpy.run_path(sys.argv[2],run_name='__main__')\n`, { mode: 0o700 });
+    await writeFile(join(root, "signals.ts"), `import {appendFileSync} from 'node:fs';const original=process.kill.bind(process);process.kill=((pid,signal)=>{try{const result=original(pid,signal);if(pid<0&&signal!==0)appendFileSync(process.env.FIXTURE_ROOT+'/signals',JSON.stringify({signal,status:'delivered'})+'\\n');return result;}catch(error){if(pid<0&&signal!==0)appendFileSync(process.env.FIXTURE_ROOT+'/signals',JSON.stringify({signal,status:error.code})+'\\n');throw error;}});\n`);
+    const child = Bun.spawn([process.execPath, "--preload", join(root, "signals.ts"), resolve(import.meta.dir, "../../scripts/observe-fresh-linux-session.ts"), "--port", "2222", "--identity", join(root, "key"), "--known-hosts", join(root, "hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(4);
+    expect(await Bun.file(join(root, "slow-inventory")).text()).toBe("started");
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { message: expect.stringContaining("surviving owned SSH process group") } });
+    const signals = (await Bun.file(join(root, "signals")).text()).trim().split("\n").map((line) => JSON.parse(line) as { signal: string; status: string });
+    expect(signals).toEqual([{ signal: "SIGTERM", status: "delivered" }]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);

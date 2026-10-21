@@ -106,6 +106,9 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
       if (code === undefined || survivor) requestTermination();
       if (attempted && !killed) forceKill();
       await within(Promise.all([finished, closedPipes]));
+      // Leader and inherited pipes have ended. Fresh inventory, not an overdue
+      // escalation timer, decides whether any closed-pipe members still live.
+      clearTimeout(escalation);
       while (await inspect()) { forceKill(); await within(new Promise((resolve) => setTimeout(resolve, 10))); }
       clearTimeout(escalation);
       owned = false; write({ kind: "release" }); relay.stdin!.end();

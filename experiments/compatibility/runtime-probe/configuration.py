@@ -357,7 +357,7 @@ def inspect_containerd_control(*, probe_first_use=False, host_context=None, with
         from privileged_control import HostDaemonBinding, daemon_identity
         retained_binding=HostDaemonBinding(host_context,daemon_identity(address,'/usr/bin/ctr'),default_id)
     startup_started=time.monotonic()
-    phases={} 
+    phases={}
     probes={}
     prefix=['/usr/bin/sudo','-n','/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin',
             'CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true','/usr/bin/timeout',

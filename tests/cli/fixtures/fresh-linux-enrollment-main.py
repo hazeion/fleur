@@ -30,7 +30,7 @@ metadata = {"formatVersion": 1, "internalArtifact": True, "catalogId": "owned-pr
 (lab / "package/bin").mkdir(parents=True)
 (lab / "package/bin/fleur.ts").write_text("// Owned protocol fixture, never the real runtime\n")
 (lab / "package/internal-native-candidate.json").write_text(json.dumps(metadata))
-if scenario == "ordinary-handoff":
+if scenario.startswith("ordinary-"):
     (lab / "package/internal-native-candidate.json").unlink()
     (lab / "package/package.json").write_text(json.dumps({"name":"fleur"}))
     catalog=json.loads((source.parent/'native-candidate-ubuntu24-amd64.json').read_text())
@@ -39,6 +39,8 @@ if scenario == "ordinary-handoff":
              "artifacts":{item['name']:{"architecture":"amd64",**{key:item[key] for key in ("name","version","url","sha256","size")}} for item in catalog['artifacts']}}
     target=lab / "package/src/setup/verified-apt-profiles.json";target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(json.dumps({"formatVersion":1,"entries":[{"evidence":{"reportSha256":"75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2","sourceCommit":"a9606d74fd55b252c0aab8432ff72ec513457a5e","artifactCatalogSha256":"540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58"},"profile":profile}]}))
+    if scenario == "ordinary-invalid-evidence":
+        value=json.loads(target.read_text());value['entries'][0]['evidence']['sourceCommit']='0'*40;target.write_text(json.dumps(value))
 for name in ["fleur-internal-native-candidate.tgz", "runtime-probe.tar", "bun.zip"]:
     (lab / name).write_bytes(("owned fixture " + name).encode())
 

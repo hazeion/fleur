@@ -690,6 +690,11 @@ def main():
         pass
     else:
         raise RuntimeError("An existing enrollment checkpoint requires explicit resume; initial authority was refused")
+    ordinary_packages = None
+    try:
+        (ROOT / "package/internal-native-candidate.json").lstat()
+    except FileNotFoundError:
+        ordinary_packages = installation_packages()
     os_release = Path("/etc/os-release").read_text()
     if 'ID=ubuntu\n' not in os_release or 'VERSION_ID="24.04"' not in os_release or run(["uname", "-m"])[1].strip() != "x86_64":
         raise RuntimeError("Guest differs from frozen Ubuntu24 amd64 tuple")
@@ -710,7 +715,7 @@ def main():
         raise RuntimeError("Denied setup altered baseline or did not preserve authority boundary")
     REPORT["authorizedFixtureSetup"] = setup_pty("once")
     REPORT["afterSetup"] = snapshot()
-    packages = installation_packages()
+    packages = ordinary_packages if ordinary_packages is not None else installation_packages()
     simulation = run(["apt-get", "--simulate", "--no-install-recommends", "--no-remove", "--no-upgrade", "install"] + packages, allowed=(0, 100))
     REPORT["actualDependencySimulation"] = {"exitCode": simulation[0], "stdout": simulation[1], "stderr": simulation[2]}
     capture_signed_indexes()

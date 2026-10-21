@@ -39,10 +39,13 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>): void 
 /** Own the guest workflow transport; artifact authentication remains the caller's gate. */
 export async function observeGuestSessions(target: SessionTarget, signal?: AbortSignal): Promise<SessionObservation> {
   if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !/^[a-f0-9-]{36}$/.test(target.nonce) || !target.identity || !target.knownHosts) return failure("ARGUMENT_INVALID", "An exact pinned loopback guest target is required.");
+  let ownedBinding: Readonly<OwnedGuestBinding> | undefined;
   if (target.ownedGuestBinding !== undefined) {
-    try { copyOwnedGuestBinding(target.ownedGuestBinding, target.nonce); }
+    try { ownedBinding = copyOwnedGuestBinding(target.ownedGuestBinding, target.nonce); }
     catch { return failure("ARGUMENT_INVALID", "Complete canonical original owned guest binding required."); }
   }
+  target = Object.freeze({ ...target, ownedGuestBinding: ownedBinding });
+  const ownedArguments = ownedBinding ? ` --owned-guest-boot-id ${ownedBinding.bootId} --owned-guest-uid ${ownedBinding.uid} --owned-guest-manifest-sha256 ${ownedBinding.manifestSha256}` : "";
   const deadline = performance.now() + 900000;
   const remaining = () => { const value = deadline - performance.now(); if (value <= 0 || signal?.aborted) throw new Error("Guest session aggregate deadline expired or was cancelled"); return Math.ceil(value); };
   // At most one resume connection is possible. Its idle helper owns no SSH.
@@ -80,7 +83,7 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
   const observe = async (): Promise<SessionObservation> => {
     let initialGuest: Record<string, unknown> | undefined;
     try {
-      const observed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce}`);
+      const observed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce}${ownedArguments}`);
       const guest = observed.guest; initialGuest = guest;
       if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false) throw new Error("Guest metadata differs from its declared scope");
       if (observed.code === 3 || guest.phase !== undefined) {
@@ -92,7 +95,7 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
             || after?.user?.name !== "fleur" || typeof after.user.uid !== "number" || !Number.isSafeInteger(after.user.uid) || after.user.uid <= 0 || typeof after.group?.gid !== "number"
             || !numericGroups(after.accountGroups) || !numericGroups(after.sessionGroups) || !after.accountGroups.includes(after.group.gid) || after.sessionGroups.includes(after.group.gid)) throw new Error("Intermediate guest handoff is invalid");
         const expectedGroups = after.accountGroups;
-        const resumed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce} --resume ${checkpoint.sha256}`);
+        const resumed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce} --resume ${checkpoint.sha256}${ownedArguments}`);
         const final = resumed.guest;
         const access = final.accessResume as { checkpointSha256?: unknown; sessionGroups?: unknown } | undefined;
         if (resumed.code === 3 || final.phase !== undefined || final.formatVersion !== 1 || final.runtimeSupport !== "unverified" || final.humanConsentProof !== false || !isDeepStrictEqual(final.baseline, guest.baseline)

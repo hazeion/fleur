@@ -81,3 +81,21 @@ test("an exited SSH leader with inherited pipes cannot stretch the preparation d
     expect(observed.result.transport.elapsedMs).toBeLessThan(1500);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
+
+test("real Bun preparation keeps its default result and emits only opt-in authentication-stage evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-real-preparation-events-"));
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
+    await writeFile(join(root, "bun.zip"), "corrupted archive fixture");
+    for (const enabled of [false, true]) {
+      const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "../../scripts/prepare-fresh-linux-guest.py")], { cwd: root, env: { HOME: root, PATH: process.env.PATH, ...(enabled ? { FLEUR_GUEST_PREPARATION_EVENTS: "yes" } : {}) }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exit).toBe(4); expect(stderr).toBe("");
+      const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
+      expect(frames.at(-1)).toMatchObject({ formatVersion: 1, scope: "guest-bun-preparation", ok: false, error: { code: "PREPARATION_FAILED" } });
+      expect(frames).toHaveLength(enabled ? 2 : 1);
+      if (enabled) expect(frames[0]).toMatchObject({ scope: "guest-bun-preparation-event", stage: "archive-authentication", state: "started", elapsedMs: expect.any(Number) });
+      expect(await Bun.file(join(root, "bun")).exists()).toBe(false);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

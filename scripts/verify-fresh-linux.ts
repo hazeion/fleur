@@ -211,6 +211,28 @@ async function poweroff(): Promise<void> {
     });
   });
 }
+/** Final recorded-input acceptance: guest success cannot substitute for owned VM disposal. */
+export async function disposeRecordedGuestArtifacts(result: Record<string, unknown>, directory: string | undefined, vmReaped: boolean, recoveryRequired: boolean): Promise<0 | 5> {
+  const disposal = { scope: "owned-full-system-guest-filesystem", vmReaped, removalAttempted: false, scratchRemoved: null as boolean | null, overlayRemoved: null as boolean | null, complete: false };
+  result.artifactDisposal = disposal;
+  result.cleanup = { ownedVmReaped: vmReaped, credentialsRemoved: false };
+  if (directory && vmReaped && !recoveryRequired) {
+    try {
+      disposal.removalAttempted = true;
+      await rm(directory, { recursive: true, force: true });
+      const absent = async (path: string) => { try { await lstat(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
+      disposal.scratchRemoved = await absent(directory);
+      disposal.overlayRemoved = await absent(join(directory, "overlay.qcow2"));
+      disposal.complete = disposal.scratchRemoved && disposal.overlayRemoved;
+      if (disposal.complete) result.cleanup = { ownedVmReaped: true, credentialsRemoved: true };
+      else result.cleanupError = "Recorded helper VM filesystem disposal is unconfirmed.";
+    } catch { result.cleanupError = "Owned guest scratch cleanup failed."; }
+  }
+  if (disposal.complete) return 0;
+  result.ok = false;
+  result.error ??= { code: "ARTIFACT_DISPOSAL_UNCONFIRMED", message: "Recorded helper acceptance requires actual owned VM and filesystem disposal." };
+  return 5;
+}
 /** Fixed two-file verification input only; callers cannot choose pins or origin policy. */
 export async function stageRecordedHelperInputs(input: string, output: string) {
   const source = `import json, pathlib, sys, time
@@ -407,21 +429,12 @@ try {
     } catch { report.ok = false; report.cleanupError = "Owned VM termination or serial evidence could not be confirmed."; process.exitCode = 5; }
   }
   report.cleanup = { ownedVmReaped: stopped, credentialsRemoved: false };
-  if (scratch && stopped && !artifactRecoveryRequired) {
-    try { await rm(scratch, { recursive: true, force: true });
-      if (report.helperMode === "recorded-prebuilt") {
-        const absent = async (path: string) => { try { await lstat(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
-        const scratchRemoved = await absent(scratch); const overlayRemoved = await absent(join(scratch, "overlay.qcow2"));
-        report.artifactDisposal = { scope: "owned-full-system-guest-filesystem", vmReaped: stopped, scratchRemoved, overlayRemoved, complete: stopped && scratchRemoved && overlayRemoved };
-        if (!scratchRemoved || !overlayRemoved) { report.ok = false; report.cleanupError = "Recorded helper VM filesystem disposal is unconfirmed."; process.exitCode = 5; }
-      }
-      if (report.helperMode !== "recorded-prebuilt" || (report.artifactDisposal as { complete?: unknown } | undefined)?.complete === true) report.cleanup = { ownedVmReaped: true, credentialsRemoved: true }; }
+  if (report.helperMode === "recorded-prebuilt") {
+    const disposalExit = await disposeRecordedGuestArtifacts(report, scratch, stopped, artifactRecoveryRequired);
+    if (disposalExit !== 0) process.exitCode = process.exitCode || disposalExit;
+  } else if (scratch && stopped && !artifactRecoveryRequired) {
+    try { await rm(scratch, { recursive: true, force: true }); report.cleanup = { ownedVmReaped: true, credentialsRemoved: true }; }
     catch { report.ok = false; report.cleanupError = "Owned guest scratch cleanup failed."; process.exitCode = 5; }
-  }
-  if (report.helperMode === "recorded-prebuilt" && (report.artifactDisposal as { complete?: unknown } | undefined)?.complete !== true) {
-    report.ok = false; report.artifactDisposal ??= { scope: "owned-full-system-guest-filesystem", complete: false };
-    report.error ??= { code: "ARTIFACT_DISPOSAL_UNCONFIRMED", message: "Recorded helper acceptance requires actual owned VM and filesystem disposal." };
-    process.exitCode = process.exitCode || 5;
   }
   process.stdout.write(JSON.stringify(report) + "\n");
 }

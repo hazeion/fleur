@@ -34,13 +34,45 @@ test("selected session refuses a report that drops its immutable helper inputs",
   expect(observed.result.error?.message).toContain("recorded helper input binding");
 }, 15000);
 
-test("recorded terminal proof cannot borrow the legacy local compiler claim", async () => {
+// Schema data only. This contains no generated ELF bytes and proves no native execution.
+function terminalSchema() {
   const round = { exitCode: 4, result: { formatVersion: 1, command: "doctor", ok: false, truncated: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "ready", cleanup: true }, release: { state: "unverified" } } } } };
-  const guest = { ...pending, ok: true, installationEvidence: "verified-full-system-guest", baseline: { original: true }, runs: [round, round], sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: { bounded_probe_passed: true, cleanup_complete: true, compiler_pin_verified: true } } };
+  const proof: Record<string, unknown> = {
+    bounded_probe_passed: true, cleanup_complete: true, compiler_status: "prebuilt-origin", compiler_pin_verified: false,
+    expected_gcc: origin.producer.compiler.version, expected_gcc_binary_sha256: origin.producer.compiler.sha256,
+    architecture: origin.architecture, base_image: origin.baseImage,
+    helper_origin: { mode: "recorded-prebuilt", manifest_sha256: inputs.manifestSha256, architecture: origin.architecture, base_image: origin.baseImage, local_compiler_executed: false, producer: structuredClone(origin.producer), source_sha256: Object.fromEntries(origin.sources.map((item) => [item.file, item.sha256])), helpers: origin.helpers },
+    source_sha256: Object.fromEntries(origin.sources.map((item) => [item.file, item.sha256])),
+    helper_sha256: origin.helpers[0]!.sha256, abuse_sha256: origin.helpers[1]!.sha256,
+    helper_elf: { class: 64, endianness: "little", machine: 62 }, abuse_elf: { class: 64, endianness: "little", machine: 62 },
+    helper_origin_verified: true, owned_artifact_disposal_scope_verified: true,
+    owned_host_control: { ...binding, fixtureCustodyValidated: true, hostControlScope: "owned-guest", runtimeAdmission: false },
+    helper_artifact_context: { state: "retained-for-owned-guest-disposal", disposal_scope: "owned-full-system-guest-filesystem", local_disposal: "pending", cleanup_confirmed: false, retained: true, ledger_verified: true },
+  };
+  return { ...pending, ok: true, installationEvidence: "verified-full-system-guest", baseline: { original: true }, runs: [round, round], sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: proof } };
+}
+test("complete recorded report schema passes the protocol parser without claiming native evidence", async () => {
+  const guest = terminalSchema();
+  const observed = await observe(true, guest);
+  expect(observed.result).toMatchObject({ ok: true, guest });
+  expect(observed.result.error).toBeUndefined();
+}, 15000);
+test("recorded terminal proof cannot borrow the legacy local compiler claim", async () => {
+  const guest = terminalSchema();
+  guest.restrictionProbe.result.compiler_pin_verified = true;
   const observed = await observe(true, guest);
   expect(observed.result.ok).toBe(false);
   expect(observed.result.error?.message).toContain("recorded helper origin");
 }, 15000);
+for (const [field, value] of [["compiler_status", "executed-pin"], ["gcc", { version: origin.producer.compiler.version }], ["expected_gcc_binary_sha256", "0".repeat(64)], ["helper_origin", null], ["owned_host_control", { ...binding, bootId: nonce, fixtureCustodyValidated: true, hostControlScope: "owned-guest", runtimeAdmission: false }], ["helper_artifact_context", { state: "removed", local_disposal: "complete" }]] as const) {
+  test(`complete recorded report refuses only changed ${field}`, async () => {
+    const guest = terminalSchema();
+    guest.restrictionProbe.result[field] = value;
+    const observed = await observe(true, guest);
+    expect(observed.result.ok).toBe(false);
+    expect(observed.result.error?.message).toContain("recorded helper origin");
+  }, 15000);
+}
 
 for (const [selection, owned] of [[false, true], ["true", true], [true, false]] as const) {
   test(`recorded selection ${selection}/owned=${owned} refuses before SSH startup`, async () => {

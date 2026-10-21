@@ -28,7 +28,7 @@ Official method references: [macOS](https://docs.docker.com/desktop/setup/instal
 
 ### Native apt adapter checkpoint
 
-The compiled native profile catalog now proposes the exact Ubuntu row described
+The compiled native profile catalog includes the admitted exact Ubuntu row described
 above. Research candidate metadata cannot authorize execution. The apt
 adapter handles the compatible missing subset of an exact package set against
 the exact official Docker repository. Fully configured exact versions with a
@@ -145,7 +145,7 @@ packages can be preserved and missing packages resumed with fresh authority.
 Fence creation and removal both require file/directory durability. Unknown or
 modified private entries are retained rather than recursively deleted. None of
 these fixture checks alone admits a native platform. The separately recorded
-Ubuntu guest execution and pending ordinary admission proof remain distinct.
+Ubuntu guest execution and completed ordinary packed qualification apply only to the exact admitted row.
 
 See [Linux service startup](setup-arch-services.md) for the separate startup
 authority and the native verification still required before profile admission.

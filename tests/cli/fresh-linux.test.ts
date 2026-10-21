@@ -117,3 +117,19 @@ test("source-owned compiler input is accepted only as a directory of pinned payl
     expect(JSON.parse(result.stdout)).toMatchObject({ executed: false, error: { code: "ARTIFACT_MISMATCH" } });
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
+
+
+test("restriction failure after compiler verification reports the nested evidence without inventing missing prerequisites", async () => {
+  const python = Bun.which("python3"); expect(python).not.toBeNull();
+  const child = Bun.spawn([python!, resolve(import.meta.dir, "fixtures/fresh-linux-repeat.py"), "restriction-host-ineligible"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit, stderr).toBe(0);
+  const proof = JSON.parse(stdout);
+  expect(proof.report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified", sentinelCleanup: true, error: { code: "RESTRICTION_EVIDENCE_REQUIRED" }, restrictionProbe: { exitCode: 1, result: { bounded_probe_passed: false, cleanup_complete: true, compiler_pin_verified: true } } });
+  expect(proof.report.error.message).not.toContain("Missing compiler/dependencies");
+  expect(proof.report.error.message).toContain("restrictionProbe");
+  expect(proof.report.error.message).not.toContain("private-fixture-canary");
+  expect(proof.restrictionCalls).toBe(1);
+  expect(proof.doctorCalls).toBe(2);
+  expect(proof.report.runs).toHaveLength(2);
+});

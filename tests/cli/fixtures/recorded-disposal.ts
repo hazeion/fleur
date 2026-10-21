@@ -17,7 +17,7 @@ try {
     await actualWrite(join(path, "overlay.qcow2"), "replacement retained");
   } }));
   if (mode === "unknown") mock.module("node:fs/promises", () => ({ ...fs, rm: async () => { throw Object.assign(new Error("fixture removal uncertainty"), { code: "EIO" }); } }));
-  if (mode === "unreaped") owned = Bun.spawn([process.execPath, "-e", "setInterval(()=>{},1000)"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  if (mode === "unreaped") owned = Bun.spawn([process.execPath, "-e", "setTimeout(()=>process.exit(0),5000);setInterval(()=>{},1000)"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   const { disposeRecordedGuestArtifacts } = await import(resolve(import.meta.dir, "../../../scripts/verify-fresh-linux.ts"));
   const result: Record<string, unknown> = { ok: true, guest: { ok: true }, helperMode: "recorded-prebuilt" };
   const exit = await disposeRecordedGuestArtifacts(result, scratch, owned ? owned.exitCode !== null : true, mode === "recovery");

@@ -48,6 +48,30 @@ def same_user_stat(path,*args,**kwargs):
     return os.stat_result(values)
 os.stat=same_user_stat
 os.geteuid=lambda:0
+# Explicit Darwin OS seam for Linux-root capability; never native proof.
+import subprocess,signal,sys
+native_killpg=os.killpg
+def linux_root_killpg(pid,sig):
+    try:return native_killpg(pid,sig)
+    except PermissionError:
+        if sys.platform!='darwin' or not sig:raise
+        status=os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+        if status is None or status.si_pid!=pid:raise
+        inventory=subprocess.run(['/bin/ps','-axo','pid=,pgid=,stat='],stdin=subprocess.DEVNULL,capture_output=True,timeout=.2,check=True,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+        if len(inventory.stdout)>2*1024*1024 or inventory.stderr:raise PermissionError('ambiguous group inventory')
+        leader=False;seen=set()
+        for line in inventory.stdout.decode('ascii').splitlines():
+            fields=line.split()
+            if len(fields)!=3 or not fields[0].isdigit() or not fields[1].isdigit():raise PermissionError('malformed group inventory')
+            member,group=map(int,fields[:2])
+            if member in seen:raise PermissionError('duplicate group inventory')
+            seen.add(member)
+            if group==pid:
+                if not fields[2].startswith('Z'):raise PermissionError('owned group still has live or unknown members')
+                if member==pid:leader=True
+        if not leader:raise PermissionError('retained leader absent from inventory')
+        return
+os.killpg=linux_root_killpg
 """
         observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
             launcher=[sys.executable,'-I','-u','-c',adapter+adapter_extra+SUPERVISOR,

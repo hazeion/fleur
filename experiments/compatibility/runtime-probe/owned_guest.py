@@ -173,7 +173,7 @@ def validate(nonce, *, deadline=None, ordinary_uid=None):
         if uid <= 0:
             raise ValueError('ordinary guest identity required')
     else:
-        if os.getuid() != 0 or type(ordinary_uid) is not int or not 0 < ordinary_uid < 2**31:
+        if os.getuid() != 0 or os.geteuid() != 0 or type(ordinary_uid) is not int or not 0 < ordinary_uid < 2**31:
             raise ValueError('root validator and original ordinary UID required')
         uid = ordinary_uid
     boot_id = environment(deadline)
@@ -200,7 +200,7 @@ def validate(nonce, *, deadline=None, ordinary_uid=None):
 
 def create(nonce, *, deadline=None):
     deadline = operation_deadline(deadline)
-    if os.getuid() != 0 or type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
+    if os.getuid() != 0 or os.geteuid() != 0 or type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('root boot producer and canonical nonce required')
     boot_id = environment(deadline)
     if protected_read(MARKER, 36, 0o444, deadline=deadline)[0] != nonce.encode():
@@ -239,7 +239,7 @@ def create(nonce, *, deadline=None):
 
 
 def verify_root_control(text, *, deadline):
-    if os.getuid() != 0 or type(text) is not str or len(text.encode()) > 2048:
+    if os.getuid() != 0 or os.geteuid() != 0 or type(text) is not str or len(text.encode()) > 2048:
         raise ValueError('fixed root validation invocation required')
     value = json.loads(text, object_pairs_hook=object_pairs)
     if (type(value) is not dict or set(value) != {'formatVersion', 'nonce', 'bootId', 'uid', 'manifestSha256', 'custodySha256', 'deadlineMonotonic'}

@@ -9,7 +9,7 @@ test("missing Docker exposes repository configuration separately from package in
   const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands({
     host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
     run: async (args) => { calls.push([...args]); return { status: "missing", stdout: "", stderr: "" }; },
-  }) });
+  }, []) });
   expect(outcome.exitCode).toBe(3);
   expect(outcome.result.data).toMatchObject({ plan: { steps: [
     { action: "repository-configuration", method: "docker-official-apt", state: "unverified" },

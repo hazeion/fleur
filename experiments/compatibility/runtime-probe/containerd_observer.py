@@ -9,12 +9,12 @@ import selectors
 import subprocess
 import time
 from daemon_trace import parse_stacks, PREFIXES, STATES, NAME
-from registration_canary import register_canary
+from registration_canary import register_canary, retained_exit
 
 # Reuse the existing bounded stack grammar inside the isolated root process.
 ROOT_PARSER = ('import json,re\nINPUT_LIMIT=65536\nOUTPUT_LIMIT=4096\n'
                +'PREFIXES='+repr(PREFIXES)+'\nSTATES='+repr(STATES)+'\nNAME='+repr(NAME)+'\n'
-               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(register_canary))
+               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(retained_exit)+"\n"+inspect.getsource(register_canary))
 
 # The privileged supervisor owns the child process group. Control EOF and the
 # original absolute time allowance both cause root to terminate and reap it.
@@ -60,7 +60,7 @@ try:
     selector.register(p.stderr,selectors.EVENT_READ,'err')
     phase=1
     while time.monotonic()<deadline:
-        if p.poll() is not None: phase=2; break
+        if retained_exit(p) is not None: phase=2; break
         stop=False
         for key,_ in selector.select(min(0.025,max(0,deadline-time.monotonic()))):
             chunk=os.read(key.fileobj.fileno(),4096)
@@ -87,7 +87,7 @@ try:
         if stop: break
     # At the operation deadline only failure cleanup may continue. Give the
     # failed caller a bounded control window before retiring the root child.
-    if not diagnostic and time.monotonic()>=deadline and p.poll() is None:
+    if not diagnostic and time.monotonic()>=deadline and retained_exit(p) is None:
         phase=5
         control_deadline=time.monotonic()+0.2
         while time.monotonic()<control_deadline:
@@ -103,9 +103,9 @@ try:
 finally:
     try:
         if p is not None:
-            pre_retirement_returncode=p.poll()
+            pre_retirement_returncode=retained_exit(p)
             try:
-                if diagnostic and p.poll() is None:
+                if diagnostic and retained_exit(p) is None:
                     try: os.kill(p.pid,signal.SIGQUIT)
                     except ProcessLookupError: pass
                     capture_deadline=time.monotonic()+0.2
@@ -117,8 +117,9 @@ finally:
                             raw_stack.extend(chunk)
                         except BlockingIOError: time.sleep(0.005)
             finally:
-                p.poll() # retire a child that already exited during trace capture
-                try: os.killpg(p.pid,signal.SIGKILL)
+                retained_exit(p) # retire a child that already exited during trace capture
+                try:
+                    if p.returncode is None:os.killpg(p.pid,signal.SIGKILL)
                 except ProcessLookupError: pass
                 try: p.wait(timeout=0.4 if diagnostic else 0.75) # failure-only reap grace, never operation success
                 except subprocess.TimeoutExpired: sys.exit(74)
@@ -223,7 +224,7 @@ class ContainerdObserver:
             owned_source=owned_source.replace('    p=subprocess.Popen([ctr,','    verify_owned(deadline)\n    p=subprocess.Popen([ctr,',1)
             owned_source=owned_source.replace('canary_owner,forward,record_error)','canary_owner,forward,record_error,verify_owned)')
             owned_source=owned_source.replace('                    try: os.kill(p.pid,signal.SIGQUIT)','                    verify_owned(deadline)\n                    try: os.kill(p.pid,signal.SIGQUIT)')
-            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',ROOT_BINDING_SOURCE+owned_source,ctr,address,namespace,str(self.deadline),*host_binding.root_arguments()]
+            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',ROOT_BINDING_SOURCE+owned_source,ctr,address,namespace,str(self.deadline),*host_binding.root_arguments(self.deadline)]
         try:
             self.selector = selectors.DefaultSelector()
         except OSError:

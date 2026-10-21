@@ -29,7 +29,7 @@ class ObserverTests(unittest.TestCase):
         self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(0.5))
         return observer
 
-    def supervised_observer(self, source, timeout=3):
+    def supervised_observer(self, source, timeout=3, adapter_extra=""):
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         ctr=pathlib.Path(directory.name)/'ctr'
@@ -50,7 +50,7 @@ os.stat=same_user_stat
 os.geteuid=lambda:0
 """
         observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
-            launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+            launcher=[sys.executable,'-I','-u','-c',adapter+adapter_extra+SUPERVISOR,
                       str(ctr),address,'moby',str(time.monotonic()+timeout)])
         def cleanup_supervisor():
             try: observer.close(1)
@@ -60,6 +60,55 @@ os.geteuid=lambda:0
                 if not observer.snapshot()['reaped'] or observer.process.poll() is None: raise
         self.addCleanup(cleanup_supervisor)
         return observer
+
+    def retained_signal_adapter(self, witness):
+        return """import subprocess,signal,pathlib,time
+released=set()
+real_popen=subprocess.Popen
+class WitnessPopen(real_popen):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs);time.sleep(.1)
+    def poll(self):
+        code=super().poll()
+        if code is not None:released.add(self.pid)
+        return code
+    def wait(self,*args,**kwargs):
+        code=super().wait(*args,**kwargs);released.add(self.pid);return code
+subprocess.Popen=WitnessPopen
+real_killpg=os.killpg
+def witnessed_killpg(pid,sig):
+    if sig and pid in released:
+        pathlib.Path(WITNESS).write_text('destructive signal after leader reaped')
+        return # Intercept unsafe signal; never target an unrelated reused group.
+    if sig and os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None:
+        # These two fixtures have no descendants. Model Linux root group signal
+        # success for its retained zombie; Darwin same-user kill returns EPERM.
+        return
+    return real_killpg(pid,sig)
+os.killpg=witnessed_killpg
+""".replace('WITNESS',repr(str(witness)))
+
+    def test_exited_subscriber_is_never_destructively_signaled_after_reap(self):
+        with tempfile.TemporaryDirectory() as name:
+            witness=pathlib.Path(name)/'unsafe'
+            exited=pathlib.Path(name)/'exiting'
+            observer=self.supervised_observer('from pathlib import Path\nPath('+repr(str(exited))+').touch()\nraise SystemExit(0)\n',adapter_extra=self.retained_signal_adapter(witness))
+            limit=time.monotonic()+2
+            while not exited.exists() and time.monotonic()<limit:time.sleep(.005)
+            self.assertTrue(exited.exists());time.sleep(.1)
+            try:observer.close(1)
+            except ObserverUnverified:
+                self.assertTrue(observer.snapshot()['reaped'])
+            self.assertEqual(observer.snapshot().get('root_supervisor',{}).get('child_returncode'),0,observer.snapshot())
+            self.assertFalse(witness.exists(),'root supervisor signaled a released numeric process group')
+
+    def test_canary_commands_are_never_destructively_signaled_after_reap(self):
+        with tempfile.TemporaryDirectory() as name:
+            witness=pathlib.Path(name)/'unsafe'
+            observer,state=self.canary_observer(adapter_extra=self.retained_signal_adapter(witness))
+            self.assertEqual(observer.ready(4),{'ready':True})
+            self.assertTrue(observer.close(1))
+            self.assertFalse(witness.exists(),'canary cleanup signaled a released numeric process group')
 
     def test_subscriber_arguments_preserve_literal_equality_value_quotes(self):
         # Literal quotes are required by the pinned containerd filter parser:
@@ -87,7 +136,7 @@ os.geteuid=lambda:0
             self.assertTrue(observer.close(1))
             self.assertEqual(observer.snapshot()['root_supervisor']['child_returncode'],7)
 
-    def canary_observer(self, mode="valid", timeout=5):
+    def canary_observer(self, mode="valid", timeout=5, adapter_extra=""):
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         state=pathlib.Path(directory.name)
@@ -135,7 +184,7 @@ elif verb=='remove':
 else: sys.exit(18)
 rows_path.write_text(json.dumps(rows))
 """.replace('STATE',repr(str(state))).replace('MODE',repr(mode))
-        return self.supervised_observer(source,timeout=timeout),state
+        return self.supervised_observer(source,timeout=timeout,adapter_extra=adapter_extra),state
 
     def test_delayed_subscription_requires_echo_and_namespace_cleanup_before_ready(self):
         observer,state=self.canary_observer()
@@ -500,8 +549,6 @@ selectors.DefaultSelector=FailingSelector
         self.assertEqual(observer.completion(1),{'completed':True,'exit_code':0,'source':'containerd-init-exit'})
         self.assertTrue(observer.close(1))
 
-if __name__ == '__main__': unittest.main()
-
 
 class ExplicitOwnedObserverBoundary(unittest.TestCase):
     def test_data_only_binding_refuses_before_new_privileged_subscriber(self):
@@ -510,3 +557,6 @@ class ExplicitOwnedObserverBoundary(unittest.TestCase):
         with patch('subprocess.Popen',side_effect=AssertionError('untyped binding started privilege')):
             with self.assertRaisesRegex(ValueError,'typed host daemon binding'):
                 ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',1,host_binding={'ok':True})
+
+if __name__ == '__main__':
+    unittest.main()

@@ -24,7 +24,9 @@ def daemon_identity(address, ctr):
         return path,value
     def row(value):return [value.st_dev,value.st_ino,value.st_uid,value.st_gid,value.st_mode]
     def bounded(path,limit):
-        with open(path,'rb') as stream:data=stream.read(limit+1)
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        try:data=os.read(fd,limit+1)
+        finally:os.close(fd)
         if len(data)>limit:raise ValueError('host control metadata bound')
         return data
     pidfile,pidinfo=trusted('/var/run/docker.pid',stat.S_ISREG)
@@ -49,6 +51,8 @@ def verify_root_binding(payload, binding, deadline):
     remaining=min(10,deadline-time.monotonic())
     millis=math.floor(remaining*1000)
     if millis<=0:raise ValueError('root control deadline expired')
+    clipped=json.loads(payload);clipped['deadlineMonotonic']=min(clipped['deadlineMonotonic'],deadline)
+    payload=json.dumps(clipped,sort_keys=True,separators=(',',':'),allow_nan=False)
     process=subprocess.run(['/usr/bin/python3','-I','/usr/local/lib/fleur-owned-guest.py','--verify-control',payload,'--budget-seconds',format(millis/1000,'.3f')],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=millis/1000,env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},check=False)
     if process.returncode or len(process.stdout)>4096 or len(process.stderr)>1024:raise ValueError('root fixture custody refused')
     expected=json.loads(payload);value=json.loads(process.stdout)
@@ -87,5 +91,5 @@ class HostDaemonBinding:
         if active.returncode or len(active.stdout)>4096 or len(active.stderr)>4096 or active.stdout!=(self.engine_id+'\n').encode():raise ValueError('ambient daemon association changed')
         if time.monotonic()>=deadline or daemon_identity(self.identity['address'],self.identity['ctr'])!=self.identity:raise ValueError('host control changed during validation')
 
-    def root_arguments(self):
-        return [self.context.root_payload(),json.dumps({'address':self.identity['address'],'ctr':self.identity['ctr'],'identity':self.identity,'engineId':self.engine_id},sort_keys=True,separators=(',',':'))]
+    def root_arguments(self, deadline):
+        return [self.context.root_payload(deadline=deadline),json.dumps({'address':self.identity['address'],'ctr':self.identity['ctr'],'identity':self.identity,'engineId':self.engine_id},sort_keys=True,separators=(',',':'))]

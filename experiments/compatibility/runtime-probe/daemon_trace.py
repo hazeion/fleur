@@ -124,7 +124,7 @@ def capture_daemon_trace(remaining, *, host_binding=None):
         if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
         host_binding.verify(deadline-time.monotonic())
         signal_source=ROOT_BINDING_SOURCE+"\nimport sys,signal\npayload=sys.argv[1];binding=json.loads(sys.argv[2]);deadline=min(float(sys.argv[3]),json.loads(payload)['deadlineMonotonic'])\nverify_root_binding(payload,binding,deadline)\nfd=os.pidfd_open(binding['identity']['pid'],0)\ntry:\n    if daemon_identity(binding['address'],binding['ctr'])!=binding['identity'] or time.monotonic()>=deadline:raise ValueError('trace daemon changed')\n    signal.pidfd_send_signal(fd,signal.SIGUSR1)\nfinally:os.close(fd)\n"
-        invocation=shlex.join(['/usr/bin/python3','-I','-c',signal_source,*host_binding.root_arguments(),str(deadline)])
+        invocation=shlex.join(['/usr/bin/python3','-I','-c',signal_source,*host_binding.root_arguments(deadline),str(deadline)])
         owned_trace=TRACE_COMMAND.replace('kill -USR1 "$daemon"',invocation)
         supervisor=ROOT_SUPERVISOR.replace(shlex.quote(TRACE_COMMAND),shlex.quote(owned_trace))
         budget=deadline-time.monotonic()

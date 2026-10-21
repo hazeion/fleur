@@ -136,7 +136,7 @@ class HostDeadlineGuard:
             if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
             host_binding.verify(deadline-time.monotonic())
             owned_guard=ROOT_GUARD.replace('container_id, pid, deadline = sys.argv[1:]','container_id, pid, deadline = sys.argv[1:4]\n        payload=sys.argv[4];binding=json.loads(sys.argv[5])\n        verify_root_binding(payload,binding,min(float(deadline),json.loads(payload)["deadlineMonotonic"]))')
-            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',ROOT_BINDING_SOURCE+owned_guard,container_id,str(pid),str(deadline),*host_binding.root_arguments()]
+            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',ROOT_BINDING_SOURCE+owned_guard,container_id,str(pid),str(deadline),*host_binding.root_arguments(deadline)]
 
         try:
             self.process = (launcher or subprocess.Popen)(command, stdin=subprocess.PIPE,

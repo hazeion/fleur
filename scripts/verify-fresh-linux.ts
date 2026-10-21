@@ -162,6 +162,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
     if (vm.exitCode !== null) fail("BOOT_FAILED", "Owned QEMU exited before guest readiness.");
     if (performance.now() >= bootDeadline) fail("BOOT_TIMEOUT", "Guest did not become ready within three minutes.");
     const observation = await observeBoot({ port, identity: clientKey, knownHosts, nonce }, bootDeadline - performance.now());
+    report.lastBootObservation = observation;
     if (performance.now() >= bootDeadline) fail("BOOT_TIMEOUT", "Guest did not become ready within three minutes.");
     if (observation.state === "failed") fail(observation.error?.code ?? "BOOT_FAILED", observation.error?.message ?? "Guest boot observation failed.");
     if (observation.state === "ready") break;

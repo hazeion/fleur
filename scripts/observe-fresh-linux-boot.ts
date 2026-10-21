@@ -1,16 +1,24 @@
 import { startRetainedSsh } from "./retained-ssh.ts";
 import type { Readable } from "node:stream";
 export interface BootTarget { port: number; identity: string; knownHosts: string; nonce: string }
-export interface BootObservation { formatVersion: 1; scope: "fresh-linux-boot-observation"; ok: boolean; state: "ready" | "pending" | "failed"; cloudInitComplete?: boolean; nonceMatched?: boolean; error?: { code: string; message: string } }
+export interface BootTransport {
+  timeoutMs: number; elapsedMs: number; deadlineFired: boolean;
+  /** A host request, not proof of signal delivery or its effect on SSH. */
+  terminationRequested: boolean;
+  exitCode: number | null; signal: string | null; stdoutBytes: number; stderrBytes: number; cleanupConfirmed: boolean;
+}
+export interface BootObservation { formatVersion: 1; scope: "fresh-linux-boot-observation"; ok: boolean; state: "ready" | "pending" | "failed"; cloudInitComplete?: boolean; nonceMatched?: boolean; transport?: BootTransport; error?: { code: string; message: string } }
 const result = (state: BootObservation["state"], error?: BootObservation["error"]): BootObservation => ({ formatVersion: 1, scope: "fresh-linux-boot-observation", ok: state === "ready", state, ...(error ? { error } : {}) });
-async function bounded(stream: Readable): Promise<string> {
+async function bounded(stream: Readable, counted: (bytes: number) => void): Promise<string> {
   const parts: Buffer[] = []; let size = 0;
-  for await (const chunk of stream) { const part = Buffer.from(chunk); size += part.length; if (size > 2 * 1024 * 1024) throw new Error("Boot observation output exceeded its limit"); parts.push(part); }
+  for await (const chunk of stream) { const part = Buffer.from(chunk); size += part.length; counted(size); if (size > 2 * 1024 * 1024) throw new Error("Boot observation output exceeded its limit"); parts.push(part); }
   return Buffer.concat(parts).toString("utf8");
 }
 /** One bounded observation of an owned guest through its pinned loopback SSH transport. */
 export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000): Promise<BootObservation> {
   if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !/^[a-f0-9-]{36}$/.test(target.nonce) || !target.identity || !target.knownHosts) return result("failed", { code: "ARGUMENT_INVALID", message: "A pinned loopback transport and exact guest nonce are required." });
+  const started = performance.now();
+  const transport: BootTransport = { timeoutMs: Math.max(1, Math.min(10000, remainingBudgetMs)), elapsedMs: 0, deadlineFired: false, terminationRequested: false, exitCode: null, signal: null, stdoutBytes: 0, stderrBytes: 0, cleanupConfirmed: false };
   const remote = [
     "if ! test -f /var/lib/cloud/instance/boot-finished; then exit 75; fi",
     "cloud-init status --format=json",
@@ -19,11 +27,11 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000)
     "cat /etc/fleur-owned-guest",
   ].join("; ");
   const child = startRetainedSsh(["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remote]);
-  const timer = setTimeout(child.requestTermination, Math.max(1, Math.min(10000, remainingBudgetMs)));
+  const timer = setTimeout(() => { transport.deadlineFired = true; child.requestTermination(); }, transport.timeoutMs);
   const finished = child.finished;
   const observe = async (): Promise<BootObservation> => {
   try {
-    const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!), bounded(child.stderr!), finished]), child.signalFailed]);
+    const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!, (bytes) => { transport.stdoutBytes = bytes; }), bounded(child.stderr!, (bytes) => { transport.stderrBytes = bytes; }), finished]), child.signalFailed]);
     if (code === 75) return result("pending");
     const preAuthenticationReset = `kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port ${target.port}\r\n`;
     if (code === 255 && stdout === "" && (stderr === preAuthenticationReset || stderr === preAuthenticationReset.replaceAll("\r\n", "\n"))) return result("pending");
@@ -46,11 +54,14 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000)
     return { ...result("ready"), cloudInitComplete: true, nonceMatched: true };
   } catch (error) { return result("failed", { code: "BOOT_OBSERVATION_FAILED", message: error instanceof Error ? error.message : "Boot observation failed" }); }
   };
-  const observed = await observe();
+  let observed = await observe();
   clearTimeout(timer);
-  try { await child.cleanup(); }
-  catch (error) { return result("failed", { code: "BOOT_OBSERVATION_FAILED", message: error instanceof Error ? error.message : "Boot cleanup is unconfirmed" }); }
-  return observed;
+  try { await child.cleanup(); transport.cleanupConfirmed = true; }
+  catch (error) { observed = result("failed", { code: "BOOT_OBSERVATION_FAILED", message: error instanceof Error ? error.message : "Boot cleanup is unconfirmed" }); }
+  transport.exitCode = child.exitCode; transport.signal = child.signal;
+  transport.terminationRequested = child.terminationRequested;
+  transport.elapsedMs = Math.round(performance.now() - started);
+  return { ...observed, transport };
 }
 if (import.meta.main) {
   const args = process.argv.slice(2);

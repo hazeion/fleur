@@ -128,5 +128,5 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
       throw error;
     } finally { clearTimeout(escalation); clearTimeout(retirement); }
   }
-  return { get signal() { return exitSignal; }, stdout: relay.stdout!, stderr: relay.stderr!, finished, pidReady, signalFailed, requestTermination, cleanup };
+  return { get exitCode() { return code ?? null; }, get terminationRequested() { return requested; }, get signal() { return exitSignal; }, stdout: relay.stdout!, stderr: relay.stderr!, finished, pidReady, signalFailed, requestTermination, cleanup };
 }

@@ -100,3 +100,54 @@ test("owned loopback pre-authentication reset accepts ordinary LF transport diag
     expect(await observe()).toMatchObject({ exit: 3, stderr: "", result: { state: "pending", ok: false } });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+
+test("an immediate unknown empty 255 exit remains failed and records no local deadline or termination", async () => {
+  const { root, observe } = await fixture();
+  try {
+    await writeFile(join(root, "ssh-exit"), "255");
+    const observed = await observe();
+    expect(observed).toMatchObject({ exit: 4, stderr: "", result: { ok: false, state: "failed", error: { code: "SSH_FAILED" }, transport: { timeoutMs: 10000, deadlineFired: false, terminationRequested: false, exitCode: 255, signal: null, stdoutBytes: 0, stderrBytes: 0, cleanupConfirmed: true } } });
+    const transport = observed.result.transport as { elapsedMs: number };
+    expect(transport.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(transport.elapsedMs).toBeLessThan(2000);
+    expect(observed.result.cloudInitComplete).not.toBe(true);
+    expect(observed.result.nonceMatched).not.toBe(true);
+    expect(await Bun.file(join(root, "cloud-init-calls")).exists()).toBe(false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 15000);
+
+
+test("a local deadline followed by empty SSH 255 remains failed with distinct bounded transport evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-boot-local-deadline-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.on('SIGTERM',async()=>{await Bun.write(process.env.FIXTURE_ROOT+'/term-received','TERM');process.exit(255);});await Bun.write(process.env.FIXTURE_ROOT+'/started','ready');setTimeout(()=>process.exit(255),8000);\n`, { mode: 0o700 });
+    const target = { port: 2222, identity: join(root, "private-key-canary"), knownHosts: join(root, "private-hosts-canary"), nonce };
+    const entry = `const {observeBoot}=await import(${JSON.stringify(script)});console.log(JSON.stringify(await observeBoot(${JSON.stringify(target)},1000)));`;
+    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 6000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(0);
+    expect(await Bun.file(join(root, "term-received")).text()).toBe("TERM");
+    const observed = JSON.parse(stdout);
+    expect(observed).toMatchObject({ ok: false, state: "failed", error: { code: "SSH_FAILED" }, transport: { timeoutMs: 1000, deadlineFired: true, terminationRequested: true, exitCode: 255, signal: null, stdoutBytes: 0, stderrBytes: 0, cleanupConfirmed: true } });
+    expect(observed.transport.elapsedMs).toBeGreaterThanOrEqual(1000);
+    expect(observed.transport.elapsedMs).toBeLessThan(4500);
+    expect(JSON.stringify(observed.transport)).not.toContain(root);
+    expect(JSON.stringify(observed.transport)).not.toContain(nonce);
+    expect(observed.cloudInitComplete).not.toBe(true);
+    expect(observed.nonceMatched).not.toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 8000);
+
+test("malformed cloud-init output retains byte counts and exit evidence without declaring readiness", async () => {
+  const { root, observe } = await fixture();
+  try {
+    await writeFile(join(root, "finished"), "finished");
+    await writeFile(join(root, "status.json"), "not-json");
+    const observed = await observe();
+    expect(observed).toMatchObject({ exit: 4, result: { ok: false, state: "failed", error: { code: "BOOT_OBSERVATION_FAILED" }, transport: { deadlineFired: false, terminationRequested: false, exitCode: 0, signal: null, stdoutBytes: Buffer.byteLength("not-json\nFLEUR_OWNED_GUEST_NONCE=" + nonce + "\n"), stderrBytes: 0, cleanupConfirmed: true } } });
+    expect(observed.result.cloudInitComplete).not.toBe(true);
+    expect(observed.result.nonceMatched).not.toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 15000);

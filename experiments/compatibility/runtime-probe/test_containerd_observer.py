@@ -501,3 +501,12 @@ selectors.DefaultSelector=FailingSelector
         self.assertTrue(observer.close(1))
 
 if __name__ == '__main__': unittest.main()
+
+
+class ExplicitOwnedObserverBoundary(unittest.TestCase):
+    def test_data_only_binding_refuses_before_new_privileged_subscriber(self):
+        from unittest.mock import patch
+        from containerd_observer import ContainerdObserver
+        with patch('subprocess.Popen',side_effect=AssertionError('untyped binding started privilege')):
+            with self.assertRaisesRegex(ValueError,'typed host daemon binding'):
+                ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',1,host_binding={'ok':True})

@@ -182,8 +182,13 @@ def _object(pairs):
 
 class ContainerdObserver:
     """Prepare before Docker run; bind an already host-verified owned CID/PID."""
-    def __init__(self, ctr, address, namespace, timeout, launcher=None):
+    def __init__(self, ctr, address, namespace, timeout, launcher=None, *, host_binding=None):
         self.deadline = time.monotonic()+_budget(timeout)
+        self.host_binding=host_binding
+        if host_binding is not None:
+            from privileged_control import HostDaemonBinding
+            if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
+            host_binding.verify(self.deadline-time.monotonic())
         if (type(ctr) is not str or not os.path.isabs(ctr)
                 or type(address) is not str or not os.path.isabs(address)
                 or namespace != 'moby'):
@@ -212,6 +217,13 @@ class ContainerdObserver:
         command = launcher if launcher is not None else [
             '/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',SUPERVISOR,
             ctr,address,namespace,str(self.deadline)]
+        if host_binding is not None:
+            from privileged_control import ROOT_BINDING_SOURCE
+            owned_source=SUPERVISOR.replace('ctr,address,namespace,absolute_deadline=sys.argv[1:]','ctr,address,namespace,absolute_deadline=sys.argv[1:5]\npayload=sys.argv[5];binding=json.loads(sys.argv[6])\ndef verify_owned(limit):\n    verify_root_binding(payload,binding,min(limit,float(absolute_deadline),json.loads(payload)["deadlineMonotonic"]))')
+            owned_source=owned_source.replace('    p=subprocess.Popen([ctr,','    verify_owned(deadline)\n    p=subprocess.Popen([ctr,',1)
+            owned_source=owned_source.replace('canary_owner,forward,record_error)','canary_owner,forward,record_error,verify_owned)')
+            owned_source=owned_source.replace('                    try: os.kill(p.pid,signal.SIGQUIT)','                    verify_owned(deadline)\n                    try: os.kill(p.pid,signal.SIGQUIT)')
+            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',ROOT_BINDING_SOURCE+owned_source,ctr,address,namespace,str(self.deadline),*host_binding.root_arguments()]
         try:
             self.selector = selectors.DefaultSelector()
         except OSError:
@@ -239,6 +251,7 @@ class ContainerdObserver:
             raise ObserverUnverified('readiness-order')
         self.ready_requested=True
         limit=self._limit(remaining)
+        if self.host_binding is not None:self.host_binding.verify(limit-time.monotonic())
         self.process.stdin.write(b'prepare-registration\n')
         self.process.stdin.flush()
         while True:
@@ -336,6 +349,7 @@ class ContainerdObserver:
                 or type(host_pid) is not int or not 0 < host_pid <= 2**32-1):
             raise ObserverUnverified('identity-invalid')
         limit=self._limit(remaining)
+        if self.host_binding is not None:self.host_binding.verify(limit-time.monotonic())
         try:
             while True:
                 namespace,topic,event,seconds,nanos=self._event(limit)
@@ -355,6 +369,7 @@ class ContainerdObserver:
         if not self.registration_failed or self.container is not None or self.diagnostic_requested:
             raise ObserverUnverified('diagnostic-order')
         self.diagnostic_requested = True
+        if self.host_binding is not None:self.host_binding.verify(self.deadline-time.monotonic())
         try:
             self.process.stdin.write(b'diagnose-registration\n')
             self.process.stdin.flush()

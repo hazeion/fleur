@@ -31,7 +31,9 @@ def safe_worker_state(state):
 
 
 def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
-                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False, inspect_worker_state=None, broker_ack_delay=0):
+                  timeout=30, docker='docker', containerd_control=None, deadline_factory=None, create_worker=None, aggregate_preparation_budget=False, inspect_worker_state=None, broker_ack_delay=0, host_binding=None):
+    def trace(remaining):
+        return capture_daemon_trace(remaining,host_binding=host_binding) if host_binding is not None else capture_daemon_trace(remaining)
     if type(image_id) is not str or not re.fullmatch('sha256:[0-9a-f]{64}',image_id):
         raise ValueError('lifecycle immutable image invalid')
     if type(aggregate_preparation_budget) is not bool or (aggregate_preparation_budget and create_worker is None):
@@ -114,7 +116,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             observed[name] = evidence
             if name == busy_name:
                 guard = (deadline_factory or HostDeadlineGuard)(
-                    configuration.get('container_id'), configuration.get('host_init_pid'), started+timeout)
+                    configuration.get('container_id'), configuration.get('host_init_pid'), started+timeout,**({'host_binding':host_binding} if host_binding is not None else {}))
             return evidence.get('descriptor_audit')
         def dispatch(request):
             response = fixture_dispatch(request)
@@ -220,7 +222,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                                    timeout=remaining_budget,docker=docker)
             def prepare_healthy_observer(remaining_budget):
                 return ContainerdObserver(containerd_control['ctr'],containerd_control['address'],
-                                          containerd_control['namespace'],remaining_budget)
+                                          containerd_control['namespace'],remaining_budget,**({'host_binding':host_binding} if host_binding is not None else {}))
             def bind_healthy_observer(observer,remaining_budget):
                 configuration = observed[healthy_name]['configuration']
                 return observer.bind(configuration['container_id'],configuration['host_init_pid'],remaining_budget)
@@ -235,7 +237,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                 guard_process=getattr(guard,'process',None)
                 if guard_process is not None and guard_process.poll() is not None:
                     return {'outcome':'busy-worker-inactive'}
-                return capture_daemon_trace(min(remaining_budget,left))
+                return trace(min(remaining_budget,left))
             active_role = 'healthy'
             try:
                 healthy = json.loads(run_container(start_args(healthy_name), timeout=remaining,
@@ -243,7 +245,7 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
                     environment=environment,diagnostics=healthy_diagnostics,completion_observer=completed_healthy,completion_start=start_healthy_waiter if containerd_control is None else None,
                     completion_prepare=prepare_healthy_observer if containerd_control is not None else None,
                     completion_bind=bind_healthy_observer if containerd_control is not None else None,
-                    completion_stall=capture_daemon_trace,startup_stall=stalled_healthy_startup))
+                    completion_stall=trace,startup_stall=stalled_healthy_startup))
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as failure:
                 # Capture this actual worker before finally removes it. Do
                 # not ask the outer driver to inspect the exited primary.

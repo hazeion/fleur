@@ -1,5 +1,5 @@
 """Trusted host-only event echo; no measured task starts before this proof."""
-def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error):
+def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error, verify_control=None):
     import json
     import os
     import selectors
@@ -74,6 +74,7 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
     def call(arguments, limit, cleanup=False):
         nonlocal count,children_reaped
         if time.monotonic()>=limit: raise Failed('canary-timeout')
+        if not cleanup and verify_control is not None:verify_control(limit)
         child=None
         captured={'canary-out':bytearray(),'canary-err':bytearray()}
         try:

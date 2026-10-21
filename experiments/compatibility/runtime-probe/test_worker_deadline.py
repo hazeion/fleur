@@ -173,3 +173,13 @@ class GuardProtocolTests(unittest.TestCase):
         self.assertTrue(guard.closed)
 
 if __name__ == '__main__': unittest.main()
+
+
+class ExplicitOwnedDeadlineBoundary(unittest.TestCase):
+    def test_observation_dictionary_cannot_arm_a_privileged_guard(self):
+        from unittest.mock import patch
+        from worker_deadline import HostDeadlineGuard
+        import time
+        with patch('subprocess.Popen',side_effect=AssertionError('untyped binding armed privilege')):
+            with self.assertRaisesRegex(ValueError,'typed host daemon binding'):
+                HostDeadlineGuard('a'*64,47,time.monotonic()+5,host_binding={'ok':True})

@@ -264,14 +264,15 @@ def read_default_docker_control(socket_path, *, timeout):
         if root_fd is not None:os.close(root_fd)
 
 
-def inspect_containerd_control(*, probe_first_use=False):
+def inspect_containerd_control(*, probe_first_use=False, host_context=None, with_binding=False):
     """Linux CI host infrastructure only; no socket/privilege reaches a worker."""
     import hashlib
     from pathlib import Path
     import stat
     import time
-    from daemon_trace import eligible_host
-    if not eligible_host(): raise RuntimeError('containerd proof host ineligible')
+    from host_control import authorize_host_control
+    authority_started=time.monotonic()
+    host_scope=authorize_host_control(host_context,remaining=15)
     def trusted(path, kind, socket=False):
         real=Path(path).resolve(strict=True);info=real.stat()
         if info.st_uid != 0 or info.st_mode & (0o002 if socket else 0o022) or not kind(info.st_mode):
@@ -283,6 +284,10 @@ def inspect_containerd_control(*, probe_first_use=False):
         return real
     def command(args,environment=None,category='host-command',timeout=5):
         started=time.monotonic()
+        if host_context is not None and args[0]=='/usr/bin/sudo':
+            authorize_host_control(host_context,remaining=timeout)
+            timeout-=time.monotonic()-started
+            if timeout<=0:raise ContainerdControlUnverified(category,{'timed_out':True})
         try:
             result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=timeout,
                                   env=environment,check=False)
@@ -347,8 +352,12 @@ def inspect_containerd_control(*, probe_first_use=False):
     if type(address) is not str or not address.startswith('/') or namespace!='moby':
         raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
     trusted(address,stat.S_ISSOCK,socket=True)
+    retained_binding=None
+    if host_context is not None:
+        from privileged_control import HostDaemonBinding, daemon_identity
+        retained_binding=HostDaemonBinding(host_context,daemon_identity(address,'/usr/bin/ctr'),default_id)
     startup_started=time.monotonic()
-    phases={}
+    phases={} 
     probes={}
     prefix=['/usr/bin/sudo','-n','/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin',
             'CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS=true','/usr/bin/timeout',
@@ -362,6 +371,10 @@ def inspect_containerd_control(*, probe_first_use=False):
                  'host_startup_budget_seconds':15,'host_startup_phases_ms':dict(phases),
                  'host_startup_probes':dict(probes)})
         return remaining
+    if retained_binding is not None:
+        from privileged_control import ROOT_BINDING_SOURCE
+        root_version=ROOT_BINDING_SOURCE+"\nimport sys\npayload=sys.argv[1];binding=json.loads(sys.argv[2]);deadline=min(float(sys.argv[3]),json.loads(payload)['deadlineMonotonic'])\nverify_root_binding(payload,binding,deadline)\nleft=math.floor((deadline-time.monotonic())*1000)/1000\nif left<=1:raise ValueError('root version budget expired')\nos.execv('/usr/bin/timeout',['/usr/bin/timeout','--signal=TERM','--kill-after=1s',str(left-1)+'s',*sys.argv[5:]])\n"
+        prefix=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',root_version,*retained_binding.root_arguments(),str(authority_started+15)]
     if probe_first_use:
         # Diagnostic benchmark only: isolate sudo/session startup, then cold ctr
         # loading without any server RPC. Each still consumes the same 15s fence.
@@ -386,13 +399,18 @@ def inspect_containerd_control(*, probe_first_use=False):
             probes[phase]['duration_ms']=phases[phase]
     version_started=time.monotonic()
     remaining=remaining_budget() if probe_first_use else 15
-    inner_timeout=str(remaining-1)+'s' if probe_first_use else '14s'
+    if host_context is not None:
+        remaining=min(remaining,15-(time.monotonic()-authority_started))
+        authorize_host_control(host_context,remaining=remaining)
+        remaining=min(remaining,15-(time.monotonic()-authority_started))
+        if remaining<=1:raise ContainerdControlUnverified('ctr-startup-deadline',{'timed_out':True})
+    inner_timeout=str(remaining-1)+'s' if probe_first_use or host_context is not None else '14s'
     version_completed=None
     try:
         detail=command(prefix+[inner_timeout,str(ctr),'--address',address,'--namespace',namespace,'version'],
                        environment,category='ctr-version-command',timeout=remaining)
         version_completed=time.monotonic()
-        control=audit_containerd_control(arguments,config,server,detail)
+        control=audit_containerd_control(arguments,config,server,detail,host_scope=host_scope)
     except ContainerdControlUnverified as error:
         failure_observed=time.monotonic()
         completed=version_completed if version_completed is not None else failure_observed
@@ -427,4 +445,6 @@ def inspect_containerd_control(*, probe_first_use=False):
                                           'identity_audit':round(1000*(audit_completed-version_completed)),
                                           'binary_sha256':round(1000*(hash_completed-audit_completed))},
                    optional_deprecation_rpc=False)
+    if with_binding:
+        return control,retained_binding
     return control

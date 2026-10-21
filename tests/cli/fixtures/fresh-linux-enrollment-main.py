@@ -83,7 +83,15 @@ if name=='bun':
   s.setdefault('smokeReplies',[]).append({'action':action,'method':method,'target':target,'checksum':checksum,'reply':reply});save();sys.exit(3)
  if not s['installed']:
   for action in ['repository-configuration','install','configuration','docker-access','service-start','service-enable']:
-   if ask(action,'Docker fixture package-side-effect plan',package_checksum)!='once':sys.exit(3)
+   if ask(action,'Docker fixture package-side-effect plan',package_checksum)!='once':
+    if s['scenario']=='pty-orphan':
+     import time
+     pid=os.fork()
+     if pid:
+      (root/'orphan-pid').write_text(str(pid));time.sleep(0.1);sys.exit(3)
+     while True:
+      (root/'orphan-heartbeat').write_text(str(time.monotonic()));time.sleep(0.02)
+    sys.exit(3)
   s['installed']=True;save();print('Exact verified packages are installed; run doctor');sys.exit(4)
  if not s['enrolled']:
   requested=plan()
@@ -91,6 +99,16 @@ if name=='bun':
   if s['scenario']=='denied-enrollment-outcome':print('Enrollment authority was refused');sys.exit(3)
   s['enrolled']=True;save();print('Enrollment complete. Start a new login.');sys.exit(3)
  print('Start a new login; membership was not repeated');sys.exit(3)
+if name=='uname' and s['scenario'] in ('command-orphan','command-orphan-timeout'):
+ import time
+ pid=os.fork()
+ if pid:
+  (root/'orphan-pid').write_text(str(pid));sys.exit(0)
+ time.sleep(0.2)
+ (root/'orphan-heartbeat').write_text(str(time.monotonic()))
+ if s['scenario']=='command-orphan':os.write(1,b'x'*(2*1024*1024+1))
+ while True:
+  (root/'orphan-heartbeat').write_text(str(time.monotonic()));time.sleep(0.02)
 if name=='uname':print('x86_64' if args==['-m'] else 'Linux 6.8.0-fixture x86_64 GNU/Linux');sys.exit(0)
 if name=='systemd-detect-virt':print('qemu');sys.exit(0)
 if name=='dpkg-query':
@@ -372,7 +390,7 @@ def popen(args, *positional, **kwargs):
 
 os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/usr/bin:/bin")
 sys.argv = [str(source), nonce]
-with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
+with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance + (61 if scenario == "command-orphan-timeout" and (root / "orphan-heartbeat").exists() else 0)), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
         if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()

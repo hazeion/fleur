@@ -7,7 +7,7 @@ import { observeGuestSessions } from "./observe-fresh-linux-session.ts";
 import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
 import { observePreparation } from "./observe-fresh-linux-preparation.ts";
 import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
-import { ownedGuestSeed } from "./owned-guest-seed.ts";
+import { ownedGuestSeed, attestOwnedGuestBoot } from "./owned-guest-seed.ts";
 
 // Internal verification only. The source-owned ordinary production catalog stays empty.
 const imagePin = { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 };
@@ -167,9 +167,8 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   if (vm.exitCode !== null) fail("BOOT_FAILED", "Owned QEMU exited before guest readiness.");
   if (!readiness.ok) fail(readiness.error?.code ?? "BOOT_FAILED", readiness.error?.message ?? "Guest boot observation failed.");
   report.boot = { hostKeyPinnedBeforeBoot: true, cloudInitComplete: true, scope: "full-system-qemu", accelerator: selectedAccelerator };
-  const custodyCommand = await ssh(`python3 -I /usr/local/lib/fleur-owned-guest.py --owned-guest-nonce ${nonce}`);
-  const custody = JSON.parse(custodyCommand.stdout);
-  if (custodyCommand.exitCode !== 0 || custody.formatVersion !== 1 || custody.scope !== "owned-guest-custody-validation" || custody.ok !== true || custody.fixtureCustodyValidated !== true || custody.nonce !== nonce || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(custody.bootId) || !Number.isSafeInteger(custody.uid) || custody.uid <= 0 || !/^[a-f0-9]{64}$/.test(custody.manifestSha256) || custody.runtimeSupport !== "unverified" || custody.runtimeAdmission !== false || custody.humanConsentProof !== false || custody.nativeCpuPerformanceProof !== false) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Pinned guest transport did not establish its explicit boot manifest binding.");
+  const custody = await attestOwnedGuestBoot({ nonce, deadline: bootDeadline,
+    query: (remote, timeoutMs) => command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", remote], timeoutMs, [0, 255]) });
   report.ownedGuestCustody = custody;
   await ssh("mkdir -m 700 lab");
   const restrictionArchive = join(scratch, "runtime-probe.tar");

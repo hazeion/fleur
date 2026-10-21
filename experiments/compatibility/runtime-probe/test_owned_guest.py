@@ -4,12 +4,14 @@ Root ownership is supplied by the OS seam, not established on this Mac. The
 validator, descriptor traversal, bytes, inodes, links and mutations remain real.
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import stat
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -20,7 +22,7 @@ BOOT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
 
 class OwnedGuestCustody(unittest.TestCase):
-    def observe(self, scenario='valid', arguments=None):
+    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             bodies = {'etc/fleur-owned-guest': NONCE,
@@ -72,15 +74,35 @@ class OwnedGuestCustody(unittest.TestCase):
                     file=root/'etc/fleur-owned-guest.json';file.chmod(0o644);file.write_text(bodies['etc/fleur-owned-guest.json'].replace('1000','1001'));file.chmod(0o444)
                 return value
             virtualization_calls=0
+            clock=[100.0]
+            self.virtualization_timeouts=[]
             def virtualized(*args,**kwargs):
                 nonlocal virtualization_calls
                 virtualization_calls+=1
+                self.virtualization_timeouts.append(kwargs['timeout'])
+                if scenario=='late-virtualization':clock[0]=111.0
                 if scenario=='unrelated-parent-update' and virtualization_calls==2:
                     (root/'etc/unrelated-service-state').write_text('separate root-owned host state')
                 return SimpleNamespace(returncode=0,stdout=b'qemu\n',stderr=b'')
             output=io.StringIO()
-            with patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',return_value=0 if scenario.startswith('produce') else 1000),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
-                code=owned_guest.main(['--owned-guest-nonce',NONCE] if arguments is None else arguments)
+            with patch('time.monotonic',side_effect=lambda:clock[0]),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',return_value=0 if scenario.startswith('produce') else 1000),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
+                if control_binding is None:
+                    code=owned_guest.main(['--owned-guest-nonce',NONCE] if arguments is None else arguments)
+                else:
+                    from host_control import select_owned_context
+                    values={**control_binding}
+                    if values.get('manifest_sha256')=='fixture':values['manifest_sha256']=hashlib.sha256(bodies['etc/fleur-owned-guest.json'].encode()).hexdigest()
+                    try:
+                        context=select_owned_context(**values,remaining=1)
+                        if revalidate=='expired':
+                            from host_control import authorize_host_control
+                            clock[0]=102.0
+                            authorize_host_control(context,remaining=1)
+                        report={'ok':context is not None, 'context':context.report() if context is not None else None}
+                        code=0 if context is not None else 4
+                    except (OSError,ValueError,RuntimeError):
+                        report={'ok':False};code=4
+                    print(json.dumps(report))
             if scenario.startswith('produce'): self.produced_manifest=json.loads((root/'etc/fleur-owned-guest.json').read_text())
             return code,json.loads(output.getvalue())
 
@@ -109,6 +131,11 @@ class OwnedGuestCustody(unittest.TestCase):
             code,report=self.observe()
         self.assertEqual(code,4);self.assertFalse(report['ok'])
 
+    def test_partial_hosted_metadata_also_refuses_explicit_owned_selection(self):
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true'},clear=True):
+            code,report=self.observe()
+        self.assertEqual(code,4);self.assertFalse(report['ok'])
+
     def test_boot_producer_writes_exclusive_root_manifest_with_original_identity(self):
         code,report=self.observe('produce',['--create',NONCE])
         self.assertEqual(code,0);self.assertTrue(report['manifestCreated'])
@@ -118,6 +145,51 @@ class OwnedGuestCustody(unittest.TestCase):
     def test_unrelated_directory_contents_do_not_change_retained_manifest_identity(self):
         code,report=self.observe('unrelated-parent-update')
         self.assertEqual(code,0);self.assertTrue(report['fixtureCustodyValidated'])
+
+    def test_late_virtualization_cannot_publish_custody_after_aggregate_budget(self):
+        code,report=self.observe('late-virtualization')
+        self.assertEqual(code,4);self.assertFalse(report['ok'])
+        self.assertNotIn('fixtureCustodyValidated',report)
+
+    def test_explicit_relative_budget_narrows_all_virtualization_commands(self):
+        code,report=self.observe(arguments=['--owned-guest-nonce',NONCE,'--budget-seconds','0.25'])
+        self.assertEqual(code,0);self.assertTrue(report['ok'])
+        self.assertTrue(self.virtualization_timeouts)
+        self.assertTrue(all(0<value<=0.25 for value in self.virtualization_timeouts))
+
+    def test_budget_override_cannot_expand_or_make_deadline_nonfinite(self):
+        for budget in ('0','-1','11','nan','inf','1e3'):
+            with self.subTest(budget=budget):
+                code,report=self.observe(arguments=['--owned-guest-nonce',NONCE,'--budget-seconds',budget])
+                self.assertEqual(code,4);self.assertFalse(report['ok'])
+                self.assertEqual(self.virtualization_timeouts,[])
+
+    def test_runtime_mode_verifies_original_complete_binding_against_real_manifest(self):
+        code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'})
+        self.assertEqual(code,0);self.assertTrue(report['ok'])
+        self.assertEqual(report['context']['nonce'],NONCE)
+        self.assertEqual((report['context']['bootId'],report['context']['uid']),(BOOT,1000))
+
+    def test_runtime_original_binding_mismatch_is_refused(self):
+        valid={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'}
+        for field,value in (('nonce','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),('boot_id','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),('uid',1001),('manifest_sha256','0'*64),('uid',True)):
+            with self.subTest(field=field):
+                code,report=self.observe(control_binding={**valid,field:value})
+                self.assertEqual(code,4);self.assertFalse(report['ok'])
+
+    def test_partial_runtime_binding_is_refused_before_guest_commands(self):
+        valid={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'}
+        for missing in valid:
+            with self.subTest(missing=missing):
+                code,report=self.observe(control_binding={key:value for key,value in valid.items() if key!=missing})
+                self.assertEqual(code,4);self.assertFalse(report['ok']);self.assertEqual(self.virtualization_timeouts,[])
+        code,report=self.observe(control_binding={'nonce':NONCE})
+        self.assertEqual(code,4);self.assertFalse(report['ok']);self.assertEqual(self.virtualization_timeouts,[])
+
+    def test_runtime_revalidation_cannot_reset_original_context_deadline(self):
+        code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},revalidate='expired')
+        self.assertEqual(code,4);self.assertFalse(report['ok'])
+        self.assertEqual(len(self.virtualization_timeouts),1)
 
     def test_boot_producer_never_replaces_an_existing_manifest(self):
         code,report=self.observe('produce-existing',['--create',NONCE])

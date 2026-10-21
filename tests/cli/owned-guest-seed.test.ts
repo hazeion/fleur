@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ownedGuestSeed } from "../../scripts/owned-guest-seed.ts";
+import { ownedGuestSeed, attestOwnedGuestBoot } from "../../scripts/owned-guest-seed.ts";
 
 const nonce = "12345678-1234-4234-8234-123456789abc";
 
@@ -16,3 +16,33 @@ for (const invalid of ["", "12345678-1234-1234-1234-123456789abc", nonce.toUpper
     await expect(ownedGuestSeed(invalid)).rejects.toThrow("canonical guest nonce");
   });
 }
+
+const custodyReply = { exitCode: 0, stdout: JSON.stringify({ formatVersion: 1, scope: "owned-guest-custody-validation", ok: true, fixtureCustodyValidated: true, nonce, bootId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", uid: 1000, manifestSha256: "a".repeat(64), runtimeSupport: "unverified", runtimeAdmission: false, humanConsentProof: false, nativeCpuPerformanceProof: false }) };
+
+test("post-readiness custody consumes only the original boot remainder", async () => {
+  let receivedBudget = 0;
+  await attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => 179975,
+    query: async (_remote, timeout) => { receivedBudget = timeout; return custodyReply; } });
+  expect(receivedBudget).toBe(25);
+});
+
+test("completed custody cannot extend the original boot deadline", async () => {
+  let clock = 179975;
+  const operation = attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => clock,
+    query: async () => { clock = 180001; return custodyReply; } });
+  await expect(operation).rejects.toMatchObject({ code: "BOOT_TIMEOUT" });
+});
+
+test("expired boot custody starts no new transport", async () => {
+  let started = false;
+  await expect(attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => 180000,
+    query: async () => { started = true; return custodyReply; } })).rejects.toMatchObject({ code: "BOOT_TIMEOUT" });
+  expect(started).toBe(false);
+});
+
+test("guest custody receives only the remaining transport allocation", async () => {
+  let command = "";
+  await attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => 179975,
+    query: async (remote) => { command = remote; return custodyReply; } });
+  expect(command).toBe(`python3 -I /usr/local/lib/fleur-owned-guest.py --owned-guest-nonce ${nonce} --budget-seconds 0.025`);
+});

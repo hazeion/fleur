@@ -6,6 +6,7 @@ are not proof against a privileged adversary, human consent or CPU performance.
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 import platform
 import pwd
@@ -13,6 +14,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 
 MARKER = '/etc/fleur-owned-guest'
 MANIFEST = '/etc/fleur-owned-guest.json'
@@ -32,8 +34,24 @@ def identity(value):
     return tuple(getattr(value, key) for key in fields)
 
 
-def protected_read(path, maximum, exact_mode=None):
+def budget_remaining(deadline, maximum=None):
+    if type(deadline) not in (int, float) or not math.isfinite(deadline):
+        raise ValueError('owned guest deadline required')
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise ValueError('owned guest custody deadline expired')
+    return min(maximum, left) if maximum is not None else left
+
+
+def operation_deadline(deadline):
+    value = time.monotonic() + 10 if deadline is None else deadline
+    budget_remaining(value)
+    return value
+
+
+def protected_read(path, maximum, exact_mode=None, *, deadline=None):
     """Traverse without symlinks, retain descriptors, compare published identities."""
+    deadline = operation_deadline(deadline)
     descriptors = []
     identities = []
     try:
@@ -58,6 +76,7 @@ def protected_read(path, maximum, exact_mode=None):
             raise ValueError('protected file')
         body = bytearray()
         while len(body) <= maximum:
+            budget_remaining(deadline)
             chunk = os.read(fd, min(4096, maximum + 1 - len(body)))
             if not chunk:
                 break
@@ -68,16 +87,18 @@ def protected_read(path, maximum, exact_mode=None):
         for name, expected in identities:
             if identity(os.stat(name or '/', follow_symlinks=False)) != expected:
                 raise ValueError('changed custody')
+        budget_remaining(deadline)
         return bytes(body), tuple(identities)
     finally:
         for fd in reversed(descriptors):
             os.close(fd)
 
 
-def environment():
+def environment(deadline=None):
+    deadline = operation_deadline(deadline)
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         raise ValueError('guest platform')
-    release = protected_read('/usr/lib/os-release', 16384)[0].decode()
+    release = protected_read('/usr/lib/os-release', 16384, deadline=deadline)[0].decode()
     fields = {}
     for line in release.splitlines():
         if '=' in line:
@@ -87,15 +108,16 @@ def environment():
             fields[key] = value.strip('"')
     if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') != '24.04':
         raise ValueError('guest distribution')
-    if protected_read('/proc/1/comm', 64)[0] != b'systemd\n':
+    if protected_read('/proc/1/comm', 64, deadline=deadline)[0] != b'systemd\n':
         raise ValueError('guest init')
-    protected_read('/usr/bin/systemd-detect-virt', 8 * 1024 * 1024)
+    protected_read('/usr/bin/systemd-detect-virt', 8 * 1024 * 1024, deadline=deadline)
     virtualization = subprocess.run(['/usr/bin/systemd-detect-virt'], stdin=subprocess.DEVNULL,
-        capture_output=True, timeout=3, check=False, env={'PATH': '/usr/bin:/bin'})
+        capture_output=True, timeout=budget_remaining(deadline, 3), check=False, env={'PATH': '/usr/bin:/bin'})
+    budget_remaining(deadline)
     if (virtualization.returncode != 0 or len(virtualization.stdout) > 64
             or len(virtualization.stderr) > 512 or virtualization.stdout not in (b'qemu\n', b'kvm\n')):
         raise ValueError('guest virtualization')
-    boot_id = protected_read('/proc/sys/kernel/random/boot_id', 64)[0].decode().rstrip('\n')
+    boot_id = protected_read('/proc/sys/kernel/random/boot_id', 64, deadline=deadline)[0].decode().rstrip('\n')
     if re.fullmatch(BOOT, boot_id) is None:
         raise ValueError('guest boot identity')
     return boot_id
@@ -118,26 +140,31 @@ class OwnedGuestContext:
     manifest_sha256: str
     files: tuple
 
-    def verify(self):
-        if validate(self.nonce) != self:
+    def verify(self, remaining=None):
+        if remaining is not None and (type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0):
+            raise ValueError('owned guest remaining budget required')
+        deadline = time.monotonic() + (10 if remaining is None else min(10, remaining))
+        if validate(self.nonce, deadline=deadline) != self:
             raise ValueError('owned guest context changed')
+        budget_remaining(deadline)
 
     def report(self):
         return {'nonce': self.nonce, 'bootId': self.boot_id, 'uid': self.uid,
                 'manifestSha256': self.manifest_sha256, 'fixtureCustodyValidated': True}
 
 
-def validate(nonce):
+def validate(nonce, *, deadline=None):
+    deadline = operation_deadline(deadline)
     if type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('explicit canonical owned nonce required')
-    if all(os.environ.get(key) == value for key, value in HOSTED.items()):
+    if any(key in os.environ for key in HOSTED):
         raise ValueError('ambiguous hosted and owned scope')
     uid = os.getuid()
     if uid <= 0:
         raise ValueError('ordinary guest identity required')
-    boot_id = environment()
-    marker, marker_identity = protected_read(MARKER, 36, 0o444)
-    manifest, manifest_identity = protected_read(MANIFEST, 2048, 0o444)
+    boot_id = environment(deadline)
+    marker, marker_identity = protected_read(MARKER, 36, 0o444, deadline=deadline)
+    manifest, manifest_identity = protected_read(MANIFEST, 2048, 0o444, deadline=deadline)
     parsed = json.loads(manifest, object_pairs_hook=object_pairs)
     if (marker != nonce.encode() or type(parsed) is not dict
             or set(parsed) != {'formatVersion', 'nonce', 'bootId', 'uid'}
@@ -145,15 +172,18 @@ def validate(nonce):
             or parsed['nonce'] != nonce or parsed['bootId'] != boot_id
             or type(parsed['uid']) is not int or parsed['uid'] != uid):
         raise ValueError('owned manifest binding')
-    return OwnedGuestContext(nonce, boot_id, uid, hashlib.sha256(manifest).hexdigest(),
-                             (marker_identity, manifest_identity))
+    context = OwnedGuestContext(nonce, boot_id, uid, hashlib.sha256(manifest).hexdigest(),
+                                (marker_identity, manifest_identity))
+    budget_remaining(deadline)
+    return context
 
 
-def create(nonce):
+def create(nonce, *, deadline=None):
+    deadline = operation_deadline(deadline)
     if os.getuid() != 0 or type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('root boot producer and canonical nonce required')
-    boot_id = environment()
-    if protected_read(MARKER, 36, 0o444)[0] != nonce.encode():
+    boot_id = environment(deadline)
+    if protected_read(MARKER, 36, 0o444, deadline=deadline)[0] != nonce.encode():
         raise ValueError('seed nonce differs')
     uid = pwd.getpwnam('fleur').pw_uid
     if type(uid) is not int or uid <= 0:
@@ -183,24 +213,38 @@ def create(nonce):
         os.fsync(directory)
     finally:
         os.close(directory)
+    budget_remaining(deadline)
     return {'nonce': nonce, 'bootId': boot_id, 'uid': uid,
             'manifestSha256': hashlib.sha256(body).hexdigest(), 'manifestCreated': True}
 
 
 def main(arguments):
+    started = time.monotonic()
+    deadline = started + 10
     result = {'formatVersion': 1, 'scope': 'owned-guest-custody-validation', 'ok': False,
               'runtimeSupport': 'unverified', 'runtimeAdmission': False,
               'humanConsentProof': False, 'nativeCpuPerformanceProof': False}
     try:
+        if len(arguments) == 4 and arguments[2] == '--budget-seconds':
+            raw_budget = arguments[3]
+            if type(raw_budget) is not str or re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', raw_budget) is None:
+                raise ValueError('finite positive owned budget required')
+            seconds = float(raw_budget)
+            if not math.isfinite(seconds) or not 0 < seconds <= 10:
+                raise ValueError('owned budget may only narrow ten seconds')
+            deadline = started + seconds
+            arguments = arguments[:2]
+        budget_remaining(deadline)
         if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create'):
             raise ValueError('explicit invocation required')
         if arguments[0] == '--create':
             result['scope'] = 'owned-guest-boot-manifest'
-            result.update(create(arguments[1]))
+            result.update(create(arguments[1], deadline=deadline))
         else:
-            context = validate(arguments[1])
-            context.verify()
+            context = validate(arguments[1], deadline=deadline)
+            context.verify(budget_remaining(deadline))
             result.update(context.report())
+        budget_remaining(deadline)
         result['ok'] = True
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired):
         result['error'] = {'code': 'OWNED_GUEST_CUSTODY_UNVERIFIED',

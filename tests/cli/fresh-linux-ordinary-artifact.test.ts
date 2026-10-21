@@ -115,6 +115,8 @@ for (const mode of ["private-parent-swap", "private-cleanup-swap"]) {
       const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect(exit, stderr + stdout).toBe(0);
       const proof = JSON.parse(stdout);
+      expect(proof.fired).toBe(false);
+      expect(proof.failed).toBe(false);
       if (mode === "private-parent-swap") expect(proof.foreignEntries).toEqual([]);
       else expect(proof.foreignCanaryPresent).toBe(true);
     });

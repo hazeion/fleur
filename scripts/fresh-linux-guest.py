@@ -851,6 +851,21 @@ def observe_ordinary_daemon(docker):
         if type(raw_info.get(key)) is not bool:
             raise RuntimeError('Ordinary daemon capability field is invalid')
         info[key] = raw_info[key]
+    allowed_security = {'name=apparmor', 'name=selinux', 'name=cgroupns', 'name=rootless', 'name=userns', 'name=seccomp,profile=builtin'}
+    raw_security = raw_info.get('SecurityOptions')
+    security = {'state': 'unavailable', 'category': 'malformed', 'knownOptions': []}
+    if type(raw_security) is list and len(raw_security) <= 16:
+        known = [entry for entry in raw_security if type(entry) is str and entry in allowed_security]
+        security['knownOptions'] = sorted(set(known))
+        if any(type(entry) is not str for entry in raw_security):
+            security['category'] = 'malformed'
+        elif len(known) != len(raw_security):
+            security['category'] = 'unknown'
+        elif len(set(known)) != len(known):
+            security['category'] = 'duplicate'
+        else:
+            info['SecurityOptions'] = list(raw_security)
+            security = {'state': 'recorded', 'operatingMode': 'rootless' if 'name=rootless' in known else 'rootful'}
     raw_server = object_result(['version', '--format', '{{json .Server}}'])
     server = {key: text(raw_server.get(key)) for key in ('Version', 'GitCommit', 'KernelVersion', 'Os', 'Arch')}
     platform = raw_server.get('Platform')
@@ -872,7 +887,7 @@ def observe_ordinary_daemon(docker):
         raise RuntimeError('Ordinary daemon component identity is incomplete')
     server['Components'] = [selected[name] for name in ('Engine', 'containerd', 'runc')]
     return {'formatVersion': 1, 'scope': 'ordinary-daemon-readiness-observation', 'runtimeAdmission': False,
-            'source': 'ordinary-user-local-docker-cli', 'info': info, 'server': server}
+            'source': 'ordinary-user-local-docker-cli', 'info': info, 'server': server, 'securityOptionsEvidence': security}
 
 
 def verify_smoke_and_restrictions(state, owned_binding=None):
@@ -883,6 +898,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
     docker = ["docker", "--host", endpoint]
     if REPORT.get('executionArtifact', {}).get('kind') == 'ordinary':
         REPORT['ordinaryDaemonObservation'] = observe_ordinary_daemon(docker)
+        if REPORT['ordinaryDaemonObservation']['securityOptionsEvidence']['state'] != 'recorded':
+            raise RuntimeError('Ordinary daemon security option observation is unavailable')
     image = run([BUN, "-e", "import {smokeImages} from " + json.dumps(str(ROOT / "package/src/setup/profiles.ts")) + ";process.stdout.write(smokeImages.x64)"])[1]
     if not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", image):
         raise RuntimeError("Smoke image is not digest-pinned")

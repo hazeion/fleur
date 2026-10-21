@@ -67,3 +67,24 @@ test("valid custody JSON cannot replace retired transport proof", async () => {
   await expect(attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => 100,
     query: async () => ({ ...custodyReply, ok: false, transport: { exitCode: 0, signal: null, deadlineFired: false, outputLimitExceeded: false }, localCleanup: { retired: false } }) })).rejects.toMatchObject({ code: "OWNED_GUEST_CUSTODY_UNVERIFIED" });
 });
+
+for (const [name, invalid] of [
+  ["nonzero exit", { ...custodyReply, transport: { ...custodyReply.transport, exitCode: 255 } }],
+  ["signal", { ...custodyReply, transport: { ...custodyReply.transport, signal: "SIGTERM" } }],
+  ["expired work", { ...custodyReply, transport: { ...custodyReply.transport, deadlineFired: true } }],
+  ["overflow", { ...custodyReply, transport: { ...custodyReply.transport, outputLimitExceeded: true } }],
+  ["survivor refusal", { ...custodyReply, localCleanup: { retired: true, error: "SURVIVING_GROUP_REFUSED" } }],
+  ["primary failure", { ...custodyReply, error: { code: "TRANSPORT_FAILED" } }],
+] as const) {
+  test(`custody JSON cannot hide ${name}`, async () => {
+    await expect(attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => 100,
+      query: async () => invalid })).rejects.toMatchObject({ code: "OWNED_GUEST_CUSTODY_UNVERIFIED" });
+  });
+}
+
+test("fractional boot remainder starts no custody helper", async () => {
+  let queried = false;
+  await expect(attestOwnedGuestBoot({ nonce, deadline: 100.75, now: () => 100,
+    query: async () => { queried = true; return custodyReply; } })).rejects.toMatchObject({ code: "BOOT_TIMEOUT" });
+  expect(queried).toBe(false);
+});

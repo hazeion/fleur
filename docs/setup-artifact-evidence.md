@@ -165,6 +165,35 @@ Preparation built but did not execute these outputs. The later unchanged restric
 
 The overall run still failed with `containerd proof host ineligible`: `bounded_probe_passed` and `v1_gate_passed` were false. Initial worker GC observed six collections, 128 retained objects and 16,384 retained bytes; CPU throttling, memory OOM and PID-limit observations were also reached. These are subsets, not complete GC/idle/trace/deadline or runtime-profile proof. The fixture remains diagnostic only, runtime support unverified and installation evidence pending; gate proof and native CPU performance proof remain false. It supplies no human-consent proof, hosted-CI pass or completed issue #24 acceptance criterion. The earlier emulated timing failures remain unresolved by this compiler milestone.
 
+## Owned-guest bounded restriction milestone, 2026-10-21
+
+An owned Ubuntu 24.04 amd64 full-system VM completed the bounded restriction probe at source `a9606d74fd55b252c0aab8432ff72ec513457a5e`. Report SHA256: `75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2`. This is a later successful owned-fixture observation; the failed compiler, emulated timing and host-eligibility history above remains unchanged. Independent review verified the exact source hashes and the scoped native and cleanup evidence.
+
+The original ordinary-account workflow reached a fresh login, two smoke/doctor rounds and `guest.ok: true`, with `installationEvidence: verified-full-system-guest`. The root-owned NoCloud fixture and original account/boot binding enabled only explicit internal host control. Observed server identity was Docker Engine `29.9.1`/`b26fb77`, containerd `2.4.2`/`b7a25261e029d68978bbf290df0a62fc819b3c51`, and runc `1.5.2`/`v1.5.2-0-g29dd3dc2`; ctr revision agreed and worker authority remained unchanged. The GitHub-hosted eligibility path and separate kernel/VFS profiles were not used to authorize this fixture.
+
+The probe reported `bounded_probe_passed: true` and `cleanup_complete: true`:
+
+- Normal and idle lifecycle groups each passed two repetitions under the original 30-second deadline. Healthy work completed while the restricted busy worker remained active. Both idle repetitions retained the registered broker request through the original 11-second acknowledgment pause (observed 11,001 and 11,000 ms).
+- Runtime GC observed six collections, 128 retained objects and 16,384 retained bytes; retained heap was verified before each CPU loop. CPU throttling, a memory OOM kill and the 64-PID limit were observed.
+- Descriptor/restriction checks, syscall negatives and the event probe completed. All twelve event negatives returned `-1`; the replacement-event negative was rejected as `class-mismatch` before application evaluation, event-probe execution or startup acknowledgment.
+- All four physical terminations were confirmed through Linux pidfds, with guards reaped. Physical-exit lateness was 35, 77, 34 and 13 ms. Worker/image/resource cleanup, original Docker inventory and sentinel cleanup, compiler package-stage removal, final VM reaping and credential removal were confirmed.
+
+The unchanged 38-package compiler closure and exact GCC pin compiled the original helper sources and flags. The preparer built without executing the outputs; the restriction probe subsequently used its ordinary build/execution path and recorded the same `filter.so` and `abuse` SHA256 values as the compiler milestone above. The following hashes bind the new observation to its verifier, archived probe and relevant sources:
+
+| Evidence | SHA256 |
+|---|---|
+| Full verifier source | `e621cedee5c454f8646fc30a561ac70a4667b4fd0d21473cddfbfe9e2915d2d3` |
+| Private HVF diagnostic script | `3f7c851f4c919d285bd6d6004f673805ab1cda0a10bdd767e4351c7d3e85d4c0` |
+| Tracked restriction archive | `0b2776a10ebbee0608a52d47acb530458390285bc91656b8cfcb213ad780e636` |
+| Compiler preparation source | `72ac71d3d06aafc263e5adf0ef5250036a44166867af84875144e403b0e887bd` |
+| `filter.c` | `533a20d7d4e151f023146a216cc802231669c08113533fde09253892030043dc` |
+| `abuse.c` | `610850ac43bff233b887e27626cee91f93fd2c74c98befe1f03ae92a7d7b179a` |
+| `owned_guest.py` | `989cd77bc9f513b6a4c3dfef8ae674e4fec16c3b061442207a0db7ce610153a0` |
+| `host_control.py` | `126a0a9f13a1c514a9d2db87b0f1bbbbb8c60879125edcfac8d58cdf9af9392d` |
+| `privileged_control.py` | `2bc3610d3ee103b7318284bc1a4251ad198b15105177d05147ca0574558b875f` |
+
+The private Darwin x64 HVF diagnostic used explicit host CPU selection without fallback; it supplies no native CPU performance proof. Its outer result intentionally remained exit `4`, `ok: false`, `DIAGNOSTIC_ONLY`, `gateProof: false` and `v1_gate_passed: false`, even after guest success. Runtime support remains unverified and the ordinary catalog stays disabled. Human-consent proof is false. The hosted matrix is still blocked; this run does not establish hosted CI, another OS/architecture tuple, release admission or completed issue #24 acceptance.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.

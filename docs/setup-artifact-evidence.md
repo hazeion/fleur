@@ -153,3 +153,27 @@ The [official installation method](https://docs.docker.com/desktop/setup/install
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.
+
+
+## Owned guest boot custody stage
+
+The internal fresh-guest verifier seeds a source-owned Python producer and a
+canonical random nonce through NoCloud. Cloud-init runs the producer as root to
+create one exclusive read-only manifest binding that nonce, the current kernel
+boot ID and the Fleur account UID. Producer failure makes cloud-init incomplete
+or degraded; it does not establish readiness.
+
+After completed boot, the host explicitly invokes the read-only custody command
+through its pre-pinned SSH transport. The command requires the nonce argument,
+Ubuntu24 amd64, a systemd PID1, QEMU/KVM virtualization, an ordinary caller UID,
+and protected non-symlink root-owned marker/manifest files and ancestors. It
+rechecks retained identities and manifest bytes. Hosted and owned selections
+cannot be combined. Environment variables and marker discovery do not activate
+owned runtime eligibility.
+
+This stage records fixture custody only. It grants no runtime profile admission,
+leaves runtime support unverified, and supplies neither real human consent nor
+native CPU performance evidence. The account has sudo; this is not a trust proof
+against a privileged adversary. Runtime observer/control integration and binding
+the later enrollment/resume chain to this context require separate review. The
+existing restriction, lifecycle and cleanup gates remain mandatory.

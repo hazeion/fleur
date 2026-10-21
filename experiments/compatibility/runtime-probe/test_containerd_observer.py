@@ -67,7 +67,7 @@ def linux_root_killpg(pid,sig):
             if member in seen:raise PermissionError('duplicate group inventory')
             seen.add(member)
             if group==pid:
-                if not fields[2].startswith('Z'):raise PermissionError('owned group still has live or unknown members')
+                if fields[2] not in ('Z','Z+','ZN','ZN+'):raise PermissionError('owned group still has live or unknown members')
                 if member==pid:leader=True
         if not leader:raise PermissionError('retained leader absent from inventory')
         return

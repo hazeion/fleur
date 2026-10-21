@@ -4,7 +4,7 @@ import { arch, platform, release, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { observeGuestSessions } from "./observe-fresh-linux-session.ts";
-import { observeBoot } from "./observe-fresh-linux-boot.ts";
+import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
 import { observePreparation } from "./observe-fresh-linux-preparation.ts";
 import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
 
@@ -158,16 +158,13 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const sshOptions = ["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-i", clientKey];
   const ssh = (...remote: string[]) => command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", ...remote], 10000, [0, 255]);
   const bootDeadline = performance.now() + 180000;
-  while (true) {
-    if (vm.exitCode !== null) fail("BOOT_FAILED", "Owned QEMU exited before guest readiness.");
-    if (performance.now() >= bootDeadline) fail("BOOT_TIMEOUT", "Guest did not become ready within three minutes.");
-    const observation = await observeBoot({ port, identity: clientKey, knownHosts, nonce }, bootDeadline - performance.now());
-    report.lastBootObservation = observation;
-    if (performance.now() >= bootDeadline) fail("BOOT_TIMEOUT", "Guest did not become ready within three minutes.");
-    if (observation.state === "failed") fail(observation.error?.code ?? "BOOT_FAILED", observation.error?.message ?? "Guest boot observation failed.");
-    if (observation.state === "ready") break;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, bootDeadline - performance.now()))));
-  }
+  const bootCancellation = new AbortController();
+  if (vm.exitCode !== null) bootCancellation.abort();
+  void vm.exited.then(() => bootCancellation.abort(), () => bootCancellation.abort());
+  const readiness = await waitForGuestBoot({ port, identity: clientKey, knownHosts, nonce }, { deadline: bootDeadline, signal: bootCancellation.signal });
+  report.lastBootObservation = readiness.lastBootObservation;
+  if (vm.exitCode !== null) fail("BOOT_FAILED", "Owned QEMU exited before guest readiness.");
+  if (!readiness.ok) fail(readiness.error?.code ?? "BOOT_FAILED", readiness.error?.message ?? "Guest boot observation failed.");
   report.boot = { hostKeyPinnedBeforeBoot: true, cloudInitComplete: true, scope: "full-system-qemu", accelerator: selectedAccelerator };
   await ssh("mkdir -m 700 lab");
   const restrictionArchive = join(scratch, "runtime-probe.tar");

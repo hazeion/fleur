@@ -30,7 +30,8 @@ class OwnedGuestCustody(unittest.TestCase):
                       'proc/sys/kernel/random/boot_id': BOOT+'\n',
                       'proc/1/comm': 'systemd\n',
                       'usr/lib/os-release': 'ID=ubuntu\nVERSION_ID="24.04"\n',
-                      'usr/bin/systemd-detect-virt': 'owned root tool protocol fixture'}
+                      'usr/bin/systemd-detect-virt': 'owned root tool protocol fixture',
+                      'usr/local/lib/fleur-owned-guest.py': Path(owned_guest.__file__).read_text()}
             if scenario=='wrong-boot': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace(BOOT,'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee')
             if scenario=='wrong-uid': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace('1000','1001')
             if scenario=='duplicate-key': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace('{','{"nonce":"wrong",',1)
@@ -47,6 +48,8 @@ class OwnedGuestCustody(unittest.TestCase):
                 (root/'etc').rename(root/'etc-original');(root/'etc').symlink_to('etc-original')
             if scenario == 'symlink':
                 manifest=root/'etc/fleur-owned-guest.json';manifest.rename(root/'etc/original');manifest.symlink_to('original')
+            if scenario=='validator-symlink':
+                file=root/'usr/local/lib/fleur-owned-guest.py';file.rename(file.with_name('producer-original'));file.symlink_to('producer-original')
             if scenario == 'writable': (root/'etc/fleur-owned-guest.json').chmod(0o666)
             original_open=os.open;original_stat=os.stat;original_fstat=os.fstat
             paths={}
@@ -221,6 +224,50 @@ class OwnedGuestCustody(unittest.TestCase):
         code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},revalidate='between-layers')
         self.assertEqual(code,4);self.assertFalse(report['ok'])
         self.assertEqual(self.revalidation_opens,0)
+
+    def test_fixed_root_control_cli_verifies_original_ordinary_uid_and_binding(self):
+        def action(fixture):
+            response=fixture.root_cli(['--verify-control',fixture.context.root_payload(deadline=103.0),'--budget-seconds','0.25'])
+            self.assertEqual(response.returncode,0,response.stdout)
+            result=json.loads(response.stdout)
+            self.assertEqual(result['scope'],'owned-guest-root-control-validation')
+            self.assertTrue(result['rootValidation']);self.assertFalse(result['runtimeAdmission'])
+            self.assertEqual((result['nonce'],result['bootId'],result['uid']),(NONCE,BOOT,1000))
+            self.assertEqual(result['deadlineMonotonic'],103.0)
+            self.assertTrue(all(value<=0.25 for value in self.virtualization_timeouts[1:]))
+        self.with_context(action)
+
+    def test_fixed_root_validator_file_must_have_protected_regular_custody(self):
+        code,report=self.observe('validator-symlink')
+        self.assertEqual(code,4);self.assertFalse(report['ok'])
+        self.assertNotIn('fixtureCustodyValidated',report)
+
+    def test_root_control_cli_rejects_crossed_identity_and_malformed_payload(self):
+        for field,value in (('nonce','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),('bootId','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),('uid',0),('uid',True),('uid',1001),('manifestSha256','0'*64),('custodySha256','0'*64),('formatVersion',True)):
+            with self.subTest(field=field):
+                def action(fixture):
+                    payload=json.loads(fixture.context.root_payload(deadline=103.0));payload[field]=value
+                    response=fixture.root_cli(['--verify-control',json.dumps(payload),'--budget-seconds','0.25'])
+                    self.assertEqual(response.returncode,4);self.assertFalse(json.loads(response.stdout)['ok'])
+                self.with_context(action)
+
+    def test_root_control_expired_or_expanded_absolute_end_refuses_before_files(self):
+        for end in (99.0,100.0,701.0,float('nan'),float('inf')):
+            with self.subTest(end=end):
+                def action(fixture):
+                    payload=json.loads(fixture.context.root_payload());payload['deadlineMonotonic']=end
+                    with patch('owned_guest.os.open',side_effect=AssertionError('invalid root deadline reached files')):
+                        response=fixture.root_cli(['--verify-control',json.dumps(payload),'--budget-seconds','0.25'])
+                    self.assertEqual(response.returncode,4);self.assertFalse(json.loads(response.stdout)['ok'])
+                self.with_context(action)
+
+    def test_root_control_cannot_run_with_ordinary_effective_uid(self):
+        def action(fixture):
+            captured=io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                code=owned_guest.main(['--verify-control',fixture.context.root_payload(),'--budget-seconds','0.25'])
+            self.assertEqual(code,4);self.assertFalse(json.loads(captured.getvalue())['ok'])
+        self.with_context(action)
 
     def test_boot_producer_never_replaces_an_existing_manifest(self):
         code,report=self.observe('produce-existing',['--create',NONCE])

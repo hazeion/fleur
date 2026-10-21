@@ -222,6 +222,24 @@ class PairArtifacts(unittest.TestCase):
         self.assertFalse(refused.exception.recovery_required)
         self.assertEqual(list(self.destination.iterdir()), [])
 
+    def test_prebuild_revalidation_reads_the_unchanged_pair(self):
+        from helper_artifacts import revalidate_pair
+        staged = stage_pair(self.source, self.destination, TEXT_PAIR, time.monotonic()+5)
+        self.assertTrue(revalidate_pair(self.destination, TEXT_PAIR, staged, time.monotonic()+5))
+        self.assertEqual((self.destination/'filter.so').read_bytes(), b'abc')
+        self.assertEqual((self.destination/'abuse').read_bytes(), b'hello')
+
+    def test_prebuild_revalidation_refuses_matching_byte_inode_replacement(self):
+        from helper_artifacts import revalidate_pair
+        staged = stage_pair(self.source, self.destination, TEXT_PAIR, time.monotonic()+5)
+        (self.destination/'filter.so').rename(self.destination/'retained-original')
+        (self.destination/'filter.so').write_bytes(b'abc')
+        (self.destination/'filter.so').chmod(0o600)
+        with self.assertRaisesRegex(ValueError, 'artifact output custody'):
+            revalidate_pair(self.destination, TEXT_PAIR, staged, time.monotonic()+5)
+        self.assertEqual((self.destination/'filter.so').read_bytes(), b'abc')
+        self.assertEqual((self.destination/'retained-original').read_bytes(), b'abc')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,12 +1,14 @@
 """Portable recorded-policy refusals; genuine compiled acceptance is a native run."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 BASE = 'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'
 
@@ -100,6 +102,22 @@ class RecordedPolicy(unittest.TestCase):
         observed = self.report_fixture()
         observed['abuse_sha256'] = observed['helper_sha256']
         self.assertFalse(self.module.accept_helper_origin(observed, True, time.monotonic()+5))
+
+    def test_origin_validation_cannot_accept_late_manifest_completion(self):
+        observed=self.report_fixture()
+        deadline=time.monotonic()+5
+        read=os.read
+        now=time.monotonic
+        late=False
+        def delayed_eof(fd, count):
+            nonlocal late
+            block=read(fd,count)
+            if not block:
+                late=True
+            return block
+        with patch.object(os, 'read', side_effect=delayed_eof), patch.object(time, 'monotonic', side_effect=lambda:deadline+1 if late else now()):
+            self.assertFalse(self.module.accept_helper_origin(observed, True, deadline))
+        self.assertTrue(late)
 
 
 if __name__ == '__main__':

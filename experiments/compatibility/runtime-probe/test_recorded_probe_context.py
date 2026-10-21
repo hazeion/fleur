@@ -86,14 +86,50 @@ class RecordedContext(unittest.TestCase):
                 (context_path/'foreign').unlink()
                 context_path.rmdir()
 
-    def test_normal_owned_context_cleanup_is_confirmed(self):
+    def test_normal_context_remains_pending_owned_vm_disposal(self):
         report={}
-        with run.recorded_probe_context(report, time.monotonic()+5) as context:
-            context_path=Path(context)
-            (context_path/'filter.so').write_bytes(b'context data')
-        self.assertFalse(context_path.exists())
-        self.assertTrue(report['helper_artifact_context']['cleanup_confirmed'])
-        self.assertFalse(report['helper_artifact_context']['retained'])
+        context_path=None
+        try:
+            with run.recorded_probe_context(report, time.monotonic()+5) as context:
+                context_path=Path(context)
+                (context_path/'filter.so').write_bytes(b'context data')
+                context.seal()
+            self.assertTrue(context_path.exists())
+            self.assertEqual((context_path/'filter.so').read_bytes(), b'context data')
+            observation=report['helper_artifact_context']
+            self.assertFalse(observation['cleanup_confirmed'])
+            self.assertTrue(observation['retained'])
+            self.assertEqual(observation['state'], 'retained-for-owned-guest-disposal')
+            self.assertEqual(observation['disposal_scope'], 'owned-full-system-guest-filesystem')
+            self.assertEqual(observation['local_disposal'], 'pending')
+        finally:
+            if context_path is not None and context_path.exists():
+                (context_path/'filter.so').unlink()
+                context_path.rmdir()
+
+    def test_sealed_allowed_name_replacement_invalidates_retained_context(self):
+        report={}
+        context_path=None
+        original=None
+        try:
+            with self.assertRaisesRegex(ValueError, 'recorded helper context inputs'):
+                with run.recorded_probe_context(report, time.monotonic()+5) as context:
+                    context_path=Path(context)
+                    (context_path/'filter.so').write_bytes(b'original')
+                    context.seal()
+                    original=context_path.with_name(context_path.name+'-original-file')
+                    (context_path/'filter.so').rename(original)
+                    (context_path/'filter.so').write_bytes(b'original')
+            self.assertEqual((context_path/'filter.so').read_bytes(), b'original')
+            self.assertEqual(original.read_bytes(), b'original')
+            self.assertFalse(report['helper_artifact_context']['ledger_verified'])
+            self.assertFalse(report['helper_artifact_context']['cleanup_confirmed'])
+        finally:
+            if context_path is not None and context_path.exists():
+                (context_path/'filter.so').unlink()
+                context_path.rmdir()
+            if original is not None and original.exists():
+                original.unlink()
 
 
 if __name__ == '__main__':

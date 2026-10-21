@@ -15,7 +15,7 @@ import tempfile
 import time
 from report import accept, accept_threads, CONTROLS
 from runtime_profile import select_profile, native_elf_identity
-from helper_artifacts import stage_recorded_helpers, accept_helper_origin
+from helper_artifacts import stage_recorded_helpers, revalidate_recorded_helpers, accept_helper_origin
 from protocol import run_container, StartupAuditRejected
 from resources import accept_resources
 from diagnostics import snapshot_worker
@@ -42,43 +42,126 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
+class RecordedBuildContext:
+    """One fixed probe context, retained until its owning VM is disposed."""
+    NAMES = {'bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js',
+             'busy-application.js', 'profile.json', 'package.json', 'bun.lock',
+             'filter.so', 'abuse', 'Dockerfile'}
+
+    def __init__(self, path, directory, identity, deadline, observation):
+        self.path, self.directory, self.identity = path, directory, identity
+        self.deadline, self.observation = deadline, observation
+        self.ledger = None
+        self.closed = False
+
+    def __fspath__(self):
+        return self.path
+
+    def _remaining(self):
+        if self.closed or time.monotonic() >= self.deadline:
+            raise ValueError('recorded helper context deadline expired')
+
+    @staticmethod
+    def _file_identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _snapshot(self):
+        self._remaining()
+        current = os.stat(self.path, follow_symlinks=False)
+        held = os.fstat(self.directory)
+        expected = (self.identity.st_dev, self.identity.st_ino, self.identity.st_uid, self.identity.st_mode)
+        if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != expected or (held.st_dev, held.st_ino, held.st_uid, held.st_mode) != expected:
+            raise ValueError('recorded helper context custody changed')
+        entries = os.listdir(self.directory)
+        if len(entries) > len(self.NAMES) or not set(entries).issubset(self.NAMES):
+            raise ValueError('recorded helper context entries changed')
+        snapshot = {}
+        total = 0
+        for name in sorted(entries):
+            self._remaining()
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.directory)
+            try:
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or before.st_mode & 0o022 or before.st_size > 8*1024*1024:
+                    raise ValueError('recorded helper context entries changed')
+                digest = hashlib.sha256()
+                count = 0
+                while True:
+                    self._remaining()
+                    block = os.read(fd, min(65536, before.st_size+1-count))
+                    if not block:
+                        break
+                    count += len(block)
+                    if count > before.st_size:
+                        raise ValueError('recorded helper context inputs changed')
+                    digest.update(block)
+                after = os.fstat(fd)
+                named = os.stat(name, dir_fd=self.directory, follow_symlinks=False)
+                if count != before.st_size or self._file_identity(before) != self._file_identity(after) or self._file_identity(after) != self._file_identity(named):
+                    raise ValueError('recorded helper context inputs changed')
+                total += count
+                if total > 32*1024*1024:
+                    raise ValueError('recorded helper context inputs exceed bound')
+                snapshot[name] = (self._file_identity(after), digest.hexdigest())
+            finally:
+                os.close(fd)
+        for name, (identity, _) in snapshot.items():
+            self._remaining()
+            if self._file_identity(os.stat(name, dir_fd=self.directory, follow_symlinks=False)) != identity:
+                raise ValueError('recorded helper context inputs changed')
+        named = os.stat(self.path, follow_symlinks=False)
+        if (named.st_dev, named.st_ino, named.st_uid, named.st_mode) != expected or set(os.listdir(self.directory)) != set(snapshot):
+            raise ValueError('recorded helper context custody changed')
+        self._remaining()
+        return snapshot
+
+    def seal(self):
+        if self.ledger is not None:
+            raise ValueError('recorded helper context already sealed')
+        self.ledger = self._snapshot()
+        self.observation['ledger_verified'] = True
+
+    def revalidate(self):
+        self.observation['ledger_verified'] = False
+        snapshot = self._snapshot()
+        if self.ledger is None or snapshot != self.ledger:
+            raise ValueError('recorded helper context inputs changed')
+        self.observation['ledger_verified'] = True
+
+
 @contextmanager
 def recorded_probe_context(report, absolute_deadline):
     if type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline) or time.monotonic() >= absolute_deadline:
         raise ValueError('recorded helper context deadline expired')
-    observation = {'retained': True, 'cleanup_confirmed': False, 'path': None}
+    observation = {'retained': True, 'cleanup_confirmed': False, 'path': None,
+                   'state': 'retained-for-owned-guest-disposal',
+                   'disposal_scope': 'owned-full-system-guest-filesystem',
+                   'local_disposal': 'pending', 'ledger_verified': False}
     report['helper_artifact_context'] = observation
     temporary = tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-', delete=False)
     observation['path'] = temporary.name
     directory = os.open(temporary.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    context = None
     try:
         before = os.fstat(directory)
         if not stat.S_ISDIR(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
             raise ValueError('recorded helper context custody differs')
+        context = RecordedBuildContext(temporary.name, directory, before, absolute_deadline, observation)
         try:
-            yield temporary.name
+            yield context
         except BaseException:
-            # Includes cancellation/SystemExit that staging does not normalize.
+            observation['ledger_verified'] = False
             raise
         else:
-            current = os.stat(temporary.name, follow_symlinks=False)
-            held = os.fstat(directory)
-            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != (before.st_dev, before.st_ino, before.st_uid, before.st_mode) or (held.st_dev, held.st_ino, held.st_uid, held.st_mode) != (before.st_dev, before.st_ino, before.st_uid, before.st_mode):
-                raise ValueError('recorded helper context custody changed')
-            allowed = {'bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js',
-                       'busy-application.js', 'profile.json', 'package.json', 'bun.lock',
-                       'filter.so', 'abuse', 'Dockerfile'}
-            entries = os.listdir(directory)
-            if len(entries) > len(allowed) or not set(entries).issubset(allowed):
-                raise ValueError('recorded helper context entries changed')
-            for name in entries:
-                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o022:
-                    raise ValueError('recorded helper context entries changed')
-            temporary.cleanup()
-            observation.update(retained=False, cleanup_confirmed=True)
+            if context.ledger is not None:
+                context.revalidate()
+            else:
+                context._snapshot()
     finally:
+        if context is not None:context.closed = True
         os.close(directory)
+
 
 
 def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False, *, owned_guest_nonce=None, owned_guest_boot_id=None, owned_guest_uid=None, owned_guest_manifest_sha256=None, owned_guest_deadline=None, recorded_helper_artifacts=None):
@@ -193,6 +276,11 @@ ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 \
 USER 65534:65534
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 ''')
+            if recorded:
+                host_context.verify(host_context.deadline-time.monotonic())
+                revalidate_recorded_helpers(context, staged_helpers, host_context.deadline)
+                directory.seal()
+                directory.revalidate()
             build_started = True
             command(['docker', 'build', *(['--network=host'] if trusted_build_network == 'host' else []), '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
             build_finished = True
@@ -401,9 +489,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         # A timed-out Docker build command can leave daemon work running after
         # its CLI has died. Removing a current tag does not cancel that work.
         REPORT['daemon_build_may_be_pending'] = build_started and not build_finished
-        artifact_context = REPORT.get('helper_artifact_context')
-        artifact_cleanup = artifact_context is None or artifact_context.get('cleanup_confirmed') is True
-        REPORT['cleanup_complete'] = (artifact_cleanup and all(item['outcome'] != 'failed' for item in cleanup)
+        REPORT['cleanup_complete'] = (all(item['outcome'] != 'failed' for item in cleanup)
                                       and not REPORT['daemon_build_may_be_pending']
                                       and ('lifecycle_failure' not in REPORT or
                                            REPORT['lifecycle_failure'].get('cleanup_verified') is True)
@@ -411,9 +497,17 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                                               for protocol in (REPORT.get('worker_protocol',{}),
                                                   REPORT.get('lifecycle_failure',{}).get('protocol',{}))))
         evidence = REPORT.get('evidence')
+        artifact_context = REPORT.get('helper_artifact_context', {})
+        disposal_scope_verified = not recorded or (host_context is not None and not kernel_private_network
+            and artifact_context.get('state') == 'retained-for-owned-guest-disposal'
+            and artifact_context.get('disposal_scope') == 'owned-full-system-guest-filesystem'
+            and artifact_context.get('local_disposal') == 'pending'
+            and artifact_context.get('ledger_verified') is True
+            and artifact_context.get('cleanup_confirmed') is False and artifact_context.get('retained') is True)
+        if recorded:REPORT['owned_artifact_disposal_scope_verified'] = disposal_scope_verified
         origin_verified = accept_helper_origin(REPORT, recorded, host_context.deadline if host_context is not None else None)
         if recorded:REPORT['helper_origin_verified'] = origin_verified
-        REPORT['bounded_probe_passed'] = (origin_verified and result_code == 0 and isinstance(evidence, dict)
+        REPORT['bounded_probe_passed'] = (disposal_scope_verified and origin_verified and result_code == 0 and isinstance(evidence, dict)
             and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']), architecture)
             and accept_resources(REPORT.get('trusted_cgroup_abuse'))
             and type(REPORT.get('worker_configuration')) is dict

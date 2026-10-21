@@ -66,3 +66,19 @@ test("ordinary ready setup reprobes perform no new authority or package work", a
     for (const proof of report.readySetupReprobes) expect(proof).toMatchObject({ exitCode: 0, snapshotPreserved: true, grantsPreserved: true, result: { command: "setup", ok: true, error: null } });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+test("ready setup grant mutation invalidates proof and preserves the changed file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-ordinary-grant-change-"));
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "ordinary-admitted-grant-change"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(4);
+    const report = JSON.parse(stdout);
+    expect(report.error.message).toContain("ready setup reprobe changed state");
+    expect(report.readySetupReprobes[0]).toMatchObject({ exitCode: 0, snapshotPreserved: true, grantsPreserved: false });
+    expect(report.sentinelCleanup).toBe(true);
+    expect(await Bun.file(join(root, ".local/state/fleur/setup/grants.json")).text()).toBe('{"fixtureForeignGrant":true}');
+    expect((await Bun.file(join(root, "protocol-state.json")).json()).restrictionCalls).toBeUndefined();
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);

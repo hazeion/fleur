@@ -53,6 +53,8 @@ def envelope(command,data,code,error):
 def admitted(command):
  if command=='doctor':s['ordinaryDoctorCalls']=s.get('ordinaryDoctorCalls',0)+1
  else:s['ordinaryReadySetupCalls']=s.get('ordinaryReadySetupCalls',0)+1
+ if command=='setup' and s.get('ordinaryReadySetupCalls',0)>=2 and s['scenario']=='ordinary-admitted-grant-change':
+  grant=root/'.local/state/fleur/setup/grants.json';grant.parent.mkdir(parents=True,exist_ok=True);grant.write_text('{"fixtureForeignGrant":true}');grant.chmod(0o600)
  data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
  print(json.dumps({'formatVersion':1,'command':command,'ok':True,'data':data,'error':None,'truncated':False}));save();sys.exit(0)
 def plan():

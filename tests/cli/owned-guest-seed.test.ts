@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ownedGuestSeed, attestOwnedGuestBoot } from "../../scripts/owned-guest-seed.ts";
+import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding } from "../../scripts/owned-guest-seed.ts";
 
 const nonce = "12345678-1234-4234-8234-123456789abc";
 
@@ -45,4 +45,20 @@ test("guest custody receives only the remaining transport allocation", async () 
   await attestOwnedGuestBoot({ nonce, deadline: 180000, now: () => 179975,
     query: async (remote) => { command = remote; return custodyReply; } });
   expect(command).toBe(`python3 -I /usr/local/lib/fleur-owned-guest.py --owned-guest-nonce ${nonce} --budget-seconds 0.025`);
+});
+
+test("owned session binding copies immutable original identity claims", () => {
+  const input = { nonce, bootId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", uid: 1000, manifestSha256: "a".repeat(64) };
+  const binding = copyOwnedGuestBinding(input, nonce);
+  input.uid = 1001;
+  expect(binding.uid).toBe(1000);
+  expect(Reflect.set(binding, "uid", 0)).toBe(false);
+  expect(binding).toEqual({ nonce, bootId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", uid: 1000, manifestSha256: "a".repeat(64) });
+});
+
+test("owned binding refuses partial, foreign, coerced or profile fields", () => {
+  const valid = { nonce, bootId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", uid: 1000, manifestSha256: "a".repeat(64) };
+  for (const invalid of [null, [], { nonce }, { ...valid, extra: "29.9.1" }, { ...valid, uid: "1000" }, { ...valid, uid: true }, { ...valid, uid: 2 ** 31 }, { ...valid, bootId: [valid.bootId] }, { ...valid, manifestSha256: [valid.manifestSha256] }, { ...valid, nonce: "b".repeat(32) }, { ...valid, nonce: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }]) {
+    expect(() => copyOwnedGuestBinding(invalid, nonce)).toThrow("original owned guest binding");
+  }
 });

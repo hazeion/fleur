@@ -1,7 +1,8 @@
+import { copyOwnedGuestBinding, type OwnedGuestBinding } from "./owned-guest-seed.ts";
 import { isDeepStrictEqual } from "node:util";
 import { prepareRetainedSsh, startRetainedSsh } from "./retained-ssh.ts";
 import type { Readable } from "node:stream";
-export interface SessionTarget { port: number; identity: string; knownHosts: string; nonce: string }
+export interface SessionTarget { port: number; identity: string; knownHosts: string; nonce: string; ownedGuestBinding?: OwnedGuestBinding }
 export interface SessionObservation { formatVersion: 1; scope: "fresh-linux-session-observation"; ok: boolean; guest?: Record<string, unknown>; initialGuest?: Record<string, unknown>; error?: { code: string; message: string } }
 const failure = (code: string, message: string): SessionObservation => ({ formatVersion: 1, scope: "fresh-linux-session-observation", ok: false, error: { code, message } });
 async function bounded(stream: Readable, prefix = "", started?: () => void): Promise<string> {
@@ -38,6 +39,10 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>): void 
 /** Own the guest workflow transport; artifact authentication remains the caller's gate. */
 export async function observeGuestSessions(target: SessionTarget, signal?: AbortSignal): Promise<SessionObservation> {
   if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !/^[a-f0-9-]{36}$/.test(target.nonce) || !target.identity || !target.knownHosts) return failure("ARGUMENT_INVALID", "An exact pinned loopback guest target is required.");
+  if (target.ownedGuestBinding !== undefined) {
+    try { copyOwnedGuestBinding(target.ownedGuestBinding, target.nonce); }
+    catch { return failure("ARGUMENT_INVALID", "Complete canonical original owned guest binding required."); }
+  }
   const deadline = performance.now() + 900000;
   const remaining = () => { const value = deadline - performance.now(); if (value <= 0 || signal?.aborted) throw new Error("Guest session aggregate deadline expired or was cancelled"); return Math.ceil(value); };
   // At most one resume connection is possible. Its idle helper owns no SSH.

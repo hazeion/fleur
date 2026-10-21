@@ -148,6 +148,9 @@ class OwnedGuestContext:
             raise ValueError('owned guest context changed')
         budget_remaining(deadline)
 
+    def custody_digest(self):
+        return hashlib.sha256(json.dumps(self.files, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
     def report(self):
         return {'nonce': self.nonce, 'bootId': self.boot_id, 'uid': self.uid,
                 'manifestSha256': self.manifest_sha256, 'fixtureCustodyValidated': True}

@@ -32,3 +32,22 @@ class ExplicitHostMode(unittest.TestCase):
         with patch('platform.system',return_value='Linux'),patch('platform.machine',return_value='x86_64'),patch('os.getuid',return_value=1000),patch('os.open',side_effect=AssertionError('missing budget reached filesystem')):
             with self.assertRaisesRegex(ValueError,'remaining budget'):
                 authorize_host_control(context,remaining=None)
+
+    def test_root_payload_is_opaque_original_identity_data_with_absolute_deadline(self):
+        import json
+        from host_control import HostControlContext
+        custody=OwnedGuestContext('12345678-1234-4234-8234-123456789abc','aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',1000,'a'*64,())
+        context=HostControlContext(custody,(custody.nonce,custody.boot_id,custody.uid,custody.manifest_sha256),123.0)
+        value=json.loads(context.root_payload())
+        self.assertEqual(set(value),{'formatVersion','nonce','bootId','uid','manifestSha256','custodySha256','deadlineMonotonic'})
+        self.assertEqual((value['nonce'],value['bootId'],value['uid'],value['manifestSha256']),context.original)
+        self.assertEqual(value['formatVersion'],1);self.assertEqual(value['deadlineMonotonic'],123.0)
+        self.assertRegex(value['custodySha256'],r'^[a-f0-9]{64}$')
+        value['uid']=0
+        self.assertEqual(json.loads(context.root_payload())['uid'],1000)
+
+    def test_explicit_control_requires_original_nonexpanded_absolute_deadline_before_io(self):
+        valid={'nonce':'12345678-1234-4234-8234-123456789abc','boot_id':'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee','uid':1000,'manifest_sha256':'a'*64}
+        for deadline in (None,100,102,float('nan'),float('inf')):
+            with self.subTest(deadline=deadline),patch('time.monotonic',return_value=100),patch('os.open',side_effect=AssertionError('invalid absolute deadline reached files')):
+                with self.assertRaisesRegex(ValueError,'original.*deadline'):select_owned_context(**valid,remaining=1,deadline=deadline)

@@ -1,9 +1,12 @@
 """Explicit host-only owned fixture context; no worker or release admission."""
 from dataclasses import dataclass
+import json
 import math
 import re
 import time
 from owned_guest import BOOT, NONCE, OwnedGuestContext, validate
+
+ROOT_VALIDATOR = '/usr/local/lib/fleur-owned-guest.py'
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,17 @@ class HostControlContext:
         self.custody.verify(min(remaining, left))
         if time.monotonic() >= self.deadline:
             raise ValueError('original owned host deadline expired')
+
+    def root_payload(self):
+        # Data only: the fixed root NoCloud CLI must freshly verify this payload.
+        if (type(self.custody) is not OwnedGuestContext
+                or self.original != (self.custody.nonce, self.custody.boot_id, self.custody.uid, self.custody.manifest_sha256)
+                or type(self.deadline) not in (int, float) or not math.isfinite(self.deadline) or self.deadline <= 0):
+            raise ValueError('original owned host context required')
+        return json.dumps({'formatVersion': 1, 'nonce': self.custody.nonce, 'bootId': self.custody.boot_id,
+                           'uid': self.custody.uid, 'manifestSha256': self.custody.manifest_sha256,
+                           'custodySha256': self.custody.custody_digest(), 'deadlineMonotonic': self.deadline},
+                          sort_keys=True, separators=(',', ':'), allow_nan=False)
 
     def report(self):
         return {**self.custody.report(), 'hostControlScope': 'owned-guest', 'runtimeAdmission': False}
@@ -54,10 +68,10 @@ def select_owned_context(nonce=None, boot_id=None, uid=None, manifest_sha256=Non
             or type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0):
         raise ValueError('canonical original owned guest binding and budget required')
     started = time.monotonic()
-    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+    if type(deadline) not in (int, float) or not math.isfinite(deadline):
         raise ValueError('original owned host deadline required')
-    end = min(started + remaining, deadline) if deadline is not None else started + remaining
-    if end <= started:
+    end = deadline
+    if end <= started or end > started + min(600, remaining):
         raise ValueError('original owned host deadline expired')
     context = validate(nonce, deadline=min(end, started + 10))
     if (context.boot_id, context.uid, context.manifest_sha256) != (boot_id, uid, manifest_sha256):

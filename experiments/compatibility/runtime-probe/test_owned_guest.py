@@ -93,7 +93,7 @@ class OwnedGuestCustody(unittest.TestCase):
                     values={**control_binding}
                     if values.get('manifest_sha256')=='fixture':values['manifest_sha256']=hashlib.sha256(bodies['etc/fleur-owned-guest.json'].encode()).hexdigest()
                     try:
-                        context=select_owned_context(**values,remaining=1)
+                        context=select_owned_context(**values,remaining=1,deadline=101.0)
                         if revalidate=='expired':
                             from host_control import authorize_host_control
                             clock[0]=102.0

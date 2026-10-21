@@ -395,3 +395,66 @@ for (const scenario of ["stale-data-null", "stale-data-scalar", "resume-doctor-d
     else { expect(state.resumeFixtureTransition).toBe(scenario); expect(await Bun.file(join(root, "lab/fresh-linux-resume-started.json")).exists()).toBe(true); }
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+
+test("a guest command's exited leader cannot leave its pipe-holding descendant alive after output refusal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-guest-orphan-"));
+  let pid: number | undefined;
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "command-orphan"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    pid = Number(await Bun.file(join(root, "orphan-pid")).text());
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, installationEvidence: "pending", error: { message: expect.stringContaining("output exceeded") } });
+    const first = await Bun.file(join(root, "orphan-heartbeat")).text();
+    await Bun.sleep(150);
+    expect(await Bun.file(join(root, "orphan-heartbeat")).text()).toBe(first);
+  } finally {
+    if (!pid && await Bun.file(join(root, "orphan-pid")).exists()) pid = Number(await Bun.file(join(root, "orphan-pid")).text());
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* The owned fixture was already reaped. */ } }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);
+
+
+test("a completed denied PTY command cannot leave its descendant running during later verification", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-guest-pty-orphan-"));
+  let pid: number | undefined;
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "pty-orphan"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    pid = Number(await Bun.file(join(root, "orphan-pid")).text());
+    expect(exit, stderr + stdout).toBe(3);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, phase: "new-login-required", installationEvidence: "pending" });
+    const first = await Bun.file(join(root, "orphan-heartbeat")).text();
+    await Bun.sleep(150);
+    expect(await Bun.file(join(root, "orphan-heartbeat")).text()).toBe(first);
+  } finally {
+    if (!pid && await Bun.file(join(root, "orphan-pid")).exists()) pid = Number(await Bun.file(join(root, "orphan-pid")).text());
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* The owned fixture was already reaped. */ } }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);
+
+
+test("a guest command deadline cleans a descendant whose leader already exited", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-guest-deadline-orphan-"));
+  let pid: number | undefined;
+  try {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "command-orphan-timeout"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    pid = Number(await Bun.file(join(root, "orphan-pid")).text());
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, installationEvidence: "pending", error: { message: expect.stringContaining("command deadline expired") } });
+    const first = await Bun.file(join(root, "orphan-heartbeat")).text();
+    await Bun.sleep(150);
+    expect(await Bun.file(join(root, "orphan-heartbeat")).text()).toBe(first);
+  } finally {
+    if (!pid && await Bun.file(join(root, "orphan-pid")).exists()) pid = Number(await Bun.file(join(root, "orphan-pid")).text());
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* The owned fixture was already reaped. */ } }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);

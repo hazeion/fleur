@@ -80,3 +80,31 @@ for (const scenario of ["failed-smoke", "missing-compose", "denied-daemon", "mis
     }
   });
 }
+
+
+test("a nonzero restriction process cannot be promoted by successful proof fields", async () => {
+  const python = Bun.which("python3"); expect(python).not.toBeNull();
+  const child = Bun.spawn([python!, resolve(import.meta.dir, "fixtures/fresh-linux-repeat.py"), "restriction-exit"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit, stderr).toBe(0);
+  const proof = JSON.parse(stdout);
+  expect(proof.report).toMatchObject({ ok: false, installationEvidence: "pending", sentinelCleanup: true, error: { code: "RESTRICTION_EVIDENCE_REQUIRED" }, restrictionProbe: { exitCode: 1 } });
+  expect(proof.restrictionCalls).toBe(1);
+  expect(proof.doctorCalls).toBe(2);
+});
+
+
+for (const scenario of ["restriction-false", "restriction-missing", "restriction-malformed", "restriction-cleanup"]) {
+  test(`restriction proof must contain true bounded and cleanup results: ${scenario}`, async () => {
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    const child = Bun.spawn([python!, resolve(import.meta.dir, "fixtures/fresh-linux-repeat.py"), scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr).toBe(0);
+    const proof = JSON.parse(stdout);
+    expect(proof.report).toMatchObject({ ok: false, installationEvidence: "pending", sentinelCleanup: true });
+    expect(proof.report.error).toBeDefined();
+    expect(proof.restrictionCalls).toBe(1);
+    expect(proof.doctorCalls).toBe(2);
+    expect(proof.report.runs).toHaveLength(2);
+  });
+}

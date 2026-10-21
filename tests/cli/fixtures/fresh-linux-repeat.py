@@ -44,7 +44,7 @@ elif scenario == "wrong-ok":
     result["result"]["ok"] = True
 elif scenario == "wrong-release":
     components["release"]["state"] = "ready"
-elif scenario != "ready":
+elif scenario not in ("ready", "restriction-exit", "restriction-false", "restriction-missing", "restriction-malformed", "restriction-cleanup"):
     raise AssertionError("Unknown fixture scenario")
 # Fail the second repeat. The first successful result must not mask it.
 calls = 0
@@ -77,13 +77,21 @@ def run(args, **kwargs):
         return 0, json.dumps([identity]), ""
     if args[0] == "python3":
         restriction_calls += 1
-        return 0, json.dumps({"bounded_probe_passed": True, "cleanup_complete": True}), ""
+        evidence = {"bounded_probe_passed": True, "cleanup_complete": True}
+        if scenario == "restriction-false":
+            evidence["bounded_probe_passed"] = False
+        if scenario == "restriction-missing":
+            del evidence["bounded_probe_passed"]
+        if scenario == "restriction-cleanup":
+            evidence["cleanup_complete"] = False
+        text = "{invalid-json" if scenario == "restriction-malformed" else json.dumps(evidence)
+        return (1 if scenario == "restriction-exit" else 0), text, ""
     if "-e" in args:
         return 0, "oven/bun@sha256:" + "c" * 64, ""
     raise AssertionError(args)
 namespace["run"] = run
 try:
     namespace["verify_smoke_and_restrictions"]({})
-except RuntimeError as error:
+except (RuntimeError, ValueError) as error:
     namespace["REPORT"]["error"] = str(error)
 print(json.dumps({"report": namespace["REPORT"], "restrictionCalls": restriction_calls, "doctorCalls": calls}))

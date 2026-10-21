@@ -79,7 +79,14 @@ export async function waitForGuestBoot(target: BootTarget, options: BootReadines
   while (true) {
     if (options.signal?.aborted) return finish({ code: "BOOT_FAILED", message: "Owned QEMU exited or boot observation was cancelled." });
     if (performance.now() >= deadline) return finish({ code: "BOOT_TIMEOUT", message: "Guest did not become ready within its original boot deadline." });
-    lastBootObservation = await observeBoot(target, Math.min(attemptTimeoutMs, deadline - performance.now()), options.signal);
+    // Timers may wake before a fractional deadline. Do not round the remaining
+    // work budget up to observeBoot's one-millisecond minimum or replace evidence.
+    const remainingBudgetMs = Math.floor(deadline - performance.now());
+    if (remainingBudgetMs <= 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      continue;
+    }
+    lastBootObservation = await observeBoot(target, Math.min(attemptTimeoutMs, remainingBudgetMs), options.signal);
     if (options.signal?.aborted) return finish({ code: "BOOT_FAILED", message: "Owned QEMU exited or boot observation was cancelled." });
     if (performance.now() >= deadline) return finish({ code: "BOOT_TIMEOUT", message: "Guest did not become ready within its original boot deadline." });
     const transport = lastBootObservation.transport;

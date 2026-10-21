@@ -1,7 +1,7 @@
 import { constants, closeSync, fstatSync, fsyncSync, readSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, rm, writeFile, lstat } from "node:fs/promises";
 import { arch, platform, release, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { observeGuestSessions } from "./observe-fresh-linux-session.ts";
 import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
@@ -20,6 +20,7 @@ let vm: ReturnType<typeof Bun.spawn> | undefined;
 let vmOutput: Promise<string[]> | undefined;
 let qmpPath: string | undefined;
 let stopped = true;
+let artifactRecoveryRequired = false;
 const sessionAbort = new AbortController();
 let sessionOperation: ReturnType<typeof observeGuestSessions> | undefined;
 const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
@@ -77,10 +78,11 @@ export async function selectVerificationArtifact(directory: string, built: { can
   }
   if (process.platform !== "darwin" && process.platform !== "linux") fail("INFRASTRUCTURE_UNAVAILABLE", "Descriptor-relative artifact publication is unavailable.");
   const { dlopen, FFIType, ptr } = await import("bun:ffi");
+  const renameSymbol = process.platform === "darwin" ? "renameatx_np" : "renameat2";
   const library = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
     mkdirat: { args: [FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
     openat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
-    linkat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+    [renameSymbol]: { args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
     mkstemp: { args: [FFIType.ptr], returns: FFIType.i32 },
   });
   const retained: { path: string; handle: Awaited<ReturnType<typeof open>>; dev: number; ino: number }[] = [];
@@ -95,15 +97,21 @@ export async function selectVerificationArtifact(directory: string, built: { can
   };
   const outputDirectory = join(stagingRoot, "ordinary-execution"); const archive = join(outputDirectory, "fleur-internal-native-candidate.tgz");
   const directoryName = Buffer.from("ordinary-execution\0"); const outputName = Buffer.from("fleur-internal-native-candidate.tgz\0");
-  let outputFd = -1; let copyFd = -1; let publishedFd = -1;
-  let copyDirectory: string | undefined; let copyParent: Awaited<ReturnType<typeof open>> | undefined;
-  let copyIdentity: { dev: number; ino: number } | undefined; let directoryCreated = false; let privateCopyRetired = true;
-  const removePrivateCopy = async () => {
-    if (!copyDirectory) { if (!privateCopyRetired) throw new Error("Private copy allocation is unconfirmed"); return; }
-    if (!copyIdentity || !copyParent) throw new Error("Private copy custody is unconfirmed");
-    const current = await lstat(copyDirectory); const bound = await copyParent.stat();
-    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== copyIdentity.dev || current.ino !== copyIdentity.ino || bound.dev !== current.dev || bound.ino !== current.ino) throw new Error("Private copy directory custody changed");
-    await rm(copyDirectory, { recursive: true }); copyDirectory = undefined; privateCopyRetired = true;
+  let outputFd = -1; let copyFd = -1; let publishedFd = -1; let namedCopyFd = -1;
+  let tempParent: Awaited<ReturnType<typeof open>> | undefined; let copyPath: string | undefined;
+  let directoryCreated = false; let copyAllocationAttempted = false; let copyMoved = false;
+  const tempRoot = process.platform === "darwin" ? "/private/tmp" : "/tmp";
+  const verifyTemporaryRoot = async () => {
+    if (!tempParent) throw new Error("System temporary parent is not retained");
+    const bound = await tempParent.stat(); const visible = await lstat(tempRoot);
+    if (!bound.isDirectory() || bound.uid !== 0 || visible.isSymbolicLink() || visible.dev !== bound.dev || visible.ino !== bound.ino
+        || ((bound.mode & 0o022) !== 0 && (bound.mode & 0o1000) === 0)) fail("INFRASTRUCTURE_UNAVAILABLE", "System temporary parent custody is invalid.");
+    for (let path = dirname(tempRoot);;) {
+      const parent = await lstat(path);
+      if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== 0 || (parent.mode & 0o022) !== 0) fail("INFRASTRUCTURE_UNAVAILABLE", "System temporary ancestor is not protected.");
+      const next = dirname(path); if (next === path) break; path = next;
+    }
+    if (bound.dev !== retained[1]!.dev) fail("INFRASTRUCTURE_UNAVAILABLE", "Atomic artifact publication requires one filesystem.");
   };
   try {
     for (const path of [directory, stagingRoot]) {
@@ -113,15 +121,15 @@ export async function selectVerificationArtifact(directory: string, built: { can
     await verifyParents();
     const source = join(directory, "fleur-ordinary.tgz");
     await authenticate(source, { sha256: built.ordinary.sha256, maxBytes: 8 * 1024 * 1024 });
-    privateCopyRetired = false;
-    copyDirectory = await mkdtemp(join(tmpdir(), "fleur-ordinary-copy-"));
-    copyParent = await open(copyDirectory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const privateStat = await copyParent.stat(); copyIdentity = { dev: privateStat.dev, ino: privateStat.ino };
-    const template = Buffer.from(join(copyDirectory, "archive-XXXXXX") + "\0"); copyFd = library.symbols.mkstemp(ptr(template));
+    tempParent = await open(tempRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    await verifyTemporaryRoot();
+    const template = Buffer.from(join(tempRoot, "fleur-ordinary-copy-XXXXXX") + "\0");
+    copyAllocationAttempted = true; copyFd = library.symbols.mkstemp(ptr(template));
     if (copyFd < 0) throw new Error("Exclusive private copy creation failed");
+    copyPath = template.toString().split("\0")[0]!;
     const privateFile = fstatSync(copyFd);
     if (!privateFile.isFile() || privateFile.uid !== process.getuid?.() || privateFile.nlink !== 1 || privateFile.size !== 0 || (privateFile.mode & 0o077) !== 0) fail("ARTIFACT_MISMATCH", "Private copy file custody is invalid.");
-    const copyName = Buffer.from(template.toString().split("\0")[0]!.slice(copyDirectory.length + 1) + "\0");
+    const copyName = Buffer.from(copyPath.slice(tempRoot.length + 1) + "\0");
     const input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const before = await input.stat(); const hash = new Bun.CryptoHasher("sha256"); const buffer = Buffer.alloc(65536); let count = 0;
@@ -144,12 +152,17 @@ export async function selectVerificationArtifact(directory: string, built: { can
     if (outputFd < 0) throw new Error("Owned ordinary staging could not be retained");
     const ownedDirectory = fstatSync(outputFd); const visibleDirectory = await lstat(outputDirectory);
     if (!ownedDirectory.isDirectory() || ownedDirectory.uid !== process.getuid?.() || (ownedDirectory.mode & 0o077) !== 0 || visibleDirectory.dev !== ownedDirectory.dev || visibleDirectory.ino !== ownedDirectory.ino || visibleDirectory.isSymbolicLink()) fail("ARTIFACT_MISMATCH", "Ordinary staging identity changed.");
-    if (library.symbols.linkat(copyParent.fd, ptr(copyName), outputFd, ptr(outputName), 0) !== 0) throw new Error("Exclusive descriptor-relative publication failed");
+    await verifyTemporaryRoot();
+    namedCopyFd = library.symbols.openat(tempParent.fd, ptr(copyName), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (namedCopyFd < 0 || !same(identity(fstatSync(namedCopyFd)), identity(fstatSync(copyFd)))) fail("ARTIFACT_MISMATCH", "Named temporary copy no longer matches its held descriptor.");
+    // macOS SDK sys/stdio.h: RENAME_EXCL=4; Linux stdio.h: RENAME_NOREPLACE=1.
+    const exclusive = process.platform === "darwin" ? 4 : 1;
+    if (library.symbols[renameSymbol]!(tempParent.fd, ptr(copyName), outputFd, ptr(outputName), exclusive) !== 0) throw new Error("Exclusive descriptor-relative publication failed");
+    copyMoved = true;
     publishedFd = library.symbols.openat(outputFd, ptr(outputName), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     if (publishedFd < 0) throw new Error("Published artifact could not be retained");
     const copied = fstatSync(copyFd); const published = fstatSync(publishedFd);
-    if (!published.isFile() || published.dev !== copied.dev || published.ino !== copied.ino || published.nlink !== 2) fail("ARTIFACT_MISMATCH", "Published copy inode changed.");
-    await removePrivateCopy();
+    if (!published.isFile() || published.dev !== copied.dev || published.ino !== copied.ino || published.nlink !== 1) fail("ARTIFACT_MISMATCH", "Published copy inode changed.");
     await verifyParents();
     const visible = await lstat(archive); const directoryAfter = await lstat(outputDirectory);
     if (directoryAfter.isSymbolicLink() || directoryAfter.dev !== ownedDirectory.dev || directoryAfter.ino !== ownedDirectory.ino || !visible.isFile() || visible.isSymbolicLink() || visible.dev !== published.dev || visible.ino !== published.ino) fail("ARTIFACT_MISMATCH", "Published ordinary path custody changed.");
@@ -159,13 +172,15 @@ export async function selectVerificationArtifact(directory: string, built: { can
     if (offset !== beforeRead.size || digest.digest("hex") !== built.ordinary.sha256 || !same(identity(beforeRead), identity(fstatSync(publishedFd)))) fail("ARTIFACT_MISMATCH", "Published ordinary bytes changed.");
     return { kind: "ordinary" as const, path: archive, sha256: built.ordinary.sha256 };
   } catch (error) {
-    let privateCopyRemoved = true;
-    try { await removePrivateCopy(); } catch { privateCopyRemoved = false; }
-    // Never unlink a published or replaced staging name on uncertain custody.
-    throw Object.assign(error instanceof Error ? error : new Error("Ordinary artifact staging failed"), { artifactCleanupConfirmed: !directoryCreated && privateCopyRemoved });
+    // Do not delete named copies, published entries or replaced directories on uncertainty.
+    throw Object.assign(error instanceof Error ? error : new Error("Ordinary artifact staging failed"), {
+      artifactCleanupConfirmed: !directoryCreated && !copyAllocationAttempted,
+      artifactRetainedCopyCandidate: copyMoved ? undefined : copyPath,
+      artifactStagingRetained: directoryCreated,
+    });
   } finally {
-    for (const fd of [publishedFd, copyFd, outputFd]) if (fd >= 0) closeSync(fd);
-    await copyParent?.close(); await Promise.all(retained.map((parent) => parent.handle.close())); library.close();
+    for (const fd of [publishedFd, namedCopyFd, copyFd, outputFd]) if (fd >= 0) closeSync(fd);
+    await tempParent?.close(); await Promise.all(retained.map((parent) => parent.handle.close())); library.close();
   }
 }
 
@@ -341,6 +356,12 @@ try {
   }
   await execute(resolve(args[2]!), resolve(args[6]!), args.length === 9 ? resolve(args[8]!) : undefined, args[4] === "ordinary-source-owned" ? "ordinary-source-owned" : "source-owned");
 } catch (error) {
+  const recovery = error as { artifactCleanupConfirmed?: boolean; artifactRetainedCopyCandidate?: string; artifactStagingRetained?: boolean };
+  if (recovery.artifactCleanupConfirmed === false) {
+    artifactRecoveryRequired = true;
+    report.artifactRecovery = { cleanupConfirmed: false, stagingRetained: recovery.artifactStagingRetained === true,
+      retainedCopyCandidate: recovery.artifactRetainedCopyCandidate ?? null };
+  }
   report.error = { code: (error as { code?: string }).code ?? "VERIFICATION_FAILED", message: error instanceof Error ? error.message : "Verification failed" };
   process.exitCode = 4;
 } finally {
@@ -357,7 +378,7 @@ try {
     } catch { report.ok = false; report.cleanupError = "Owned VM termination or serial evidence could not be confirmed."; process.exitCode = 5; }
   }
   report.cleanup = { ownedVmReaped: stopped, credentialsRemoved: false };
-  if (scratch && stopped) {
+  if (scratch && stopped && !artifactRecoveryRequired) {
     try { await rm(scratch, { recursive: true, force: true }); report.cleanup = { ownedVmReaped: true, credentialsRemoved: true }; }
     catch { report.ok = false; report.cleanupError = "Owned guest scratch cleanup failed."; process.exitCode = 5; }
   }

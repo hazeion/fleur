@@ -106,3 +106,17 @@ for (const mode of ["directory-swap", "copied-byte-change"]) {
     });
   });
 }
+
+for (const mode of ["private-parent-swap", "private-cleanup-swap"]) {
+  test(`ordinary copy allocation and cleanup preserve foreign state during ${mode}`, async () => {
+    const { resolve } = await import("node:path");
+    await artifactFixture(async ({ root }) => {
+      const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "fixtures/ordinary-artifact-faults.ts"), mode, root], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exit, stderr + stdout).toBe(0);
+      const proof = JSON.parse(stdout);
+      if (mode === "private-parent-swap") expect(proof.foreignEntries).toEqual([]);
+      else expect(proof.foreignCanaryPresent).toBe(true);
+    });
+  });
+}

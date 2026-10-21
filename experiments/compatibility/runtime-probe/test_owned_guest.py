@@ -22,7 +22,7 @@ BOOT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
 
 class OwnedGuestCustody(unittest.TestCase):
-    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None):
+    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             bodies = {'etc/fleur-owned-guest': NONCE,
@@ -50,7 +50,10 @@ class OwnedGuestCustody(unittest.TestCase):
             if scenario == 'writable': (root/'etc/fleur-owned-guest.json').chmod(0o666)
             original_open=os.open;original_stat=os.stat;original_fstat=os.fstat
             paths={}
+            revalidating=[False]
+            self.revalidation_opens=0
             def opened(path, flags, mode=0o777, *, dir_fd=None):
+                if revalidating[0]:self.revalidation_opens+=1
                 text=str(path)
                 translated=str(root/text.lstrip('/')) if text.startswith('/') else text
                 fd=original_open(translated,flags,mode,dir_fd=dir_fd)
@@ -75,6 +78,11 @@ class OwnedGuestCustody(unittest.TestCase):
                 return value
             virtualization_calls=0
             clock=[100.0]
+            clock_script=[]
+            uid_state=[0 if scenario.startswith('produce') else 1000]
+            def monotonic():
+                if clock_script:clock[0]=clock_script.pop(0)
+                return clock[0]
             self.virtualization_timeouts=[]
             def virtualized(*args,**kwargs):
                 nonlocal virtualization_calls
@@ -85,7 +93,7 @@ class OwnedGuestCustody(unittest.TestCase):
                     (root/'etc/unrelated-service-state').write_text('separate root-owned host state')
                 return SimpleNamespace(returncode=0,stdout=b'qemu\n',stderr=b'')
             output=io.StringIO()
-            with patch('time.monotonic',side_effect=lambda:clock[0]),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',return_value=0 if scenario.startswith('produce') else 1000),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
+            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
                 if control_binding is None:
                     code=owned_guest.main(['--owned-guest-nonce',NONCE] if arguments is None else arguments)
                 else:
@@ -93,11 +101,23 @@ class OwnedGuestCustody(unittest.TestCase):
                     values={**control_binding}
                     if values.get('manifest_sha256')=='fixture':values['manifest_sha256']=hashlib.sha256(bodies['etc/fleur-owned-guest.json'].encode()).hexdigest()
                     try:
-                        context=select_owned_context(**values,remaining=1,deadline=101.0)
+                        context=select_owned_context(**values,remaining=context_deadline-clock[0],deadline=context_deadline)
                         if revalidate=='expired':
                             from host_control import authorize_host_control
                             clock[0]=102.0
                             authorize_host_control(context,remaining=1)
+                        if revalidate=='between-layers':
+                            from host_control import authorize_host_control
+                            revalidating[0]=True;clock_script[:]=[100.0,102.0]
+                            authorize_host_control(context,remaining=1)
+                        if action is not None:
+                            def root_cli(argv):
+                                previous=uid_state[0];uid_state[0]=0;captured=io.StringIO()
+                                try:
+                                    with contextlib.redirect_stdout(captured):status=owned_guest.main(argv)
+                                finally:uid_state[0]=previous
+                                return SimpleNamespace(returncode=status,stdout=captured.getvalue().encode(),stderr=b'')
+                            action(SimpleNamespace(context=context,root=root,clock=clock,uid=uid_state,virtualized=virtualized,root_cli=root_cli))
                         report={'ok':context is not None, 'context':context.report() if context is not None else None}
                         code=0 if context is not None else 4
                     except (OSError,ValueError,RuntimeError):
@@ -190,6 +210,17 @@ class OwnedGuestCustody(unittest.TestCase):
         code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},revalidate='expired')
         self.assertEqual(code,4);self.assertFalse(report['ok'])
         self.assertEqual(len(self.virtualization_timeouts),1)
+
+    def with_context(self, action, *, deadline=700.0):
+        # Callback runs while real fixture files and external metadata seams exist.
+        code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},action=action,context_deadline=deadline)
+        self.assertEqual(code,0,report)
+        return report
+
+    def test_between_layer_delay_refuses_before_any_new_file_access(self):
+        code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},revalidate='between-layers')
+        self.assertEqual(code,4);self.assertFalse(report['ok'])
+        self.assertEqual(self.revalidation_opens,0)
 
     def test_boot_producer_never_replaces_an_existing_manifest(self):
         code,report=self.observe('produce-existing',['--create',NONCE])

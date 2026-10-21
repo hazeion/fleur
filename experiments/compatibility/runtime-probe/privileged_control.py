@@ -13,22 +13,54 @@ from host_control import authorize_host_control
 from configuration import read_default_docker_control, ContainerdControlUnverified
 
 
-def daemon_identity(address, ctr):
+def hash_control_file(path, *, deadline, maximum=32*1024**2):
+    """Complete advisory provenance hash, bounded by bytes and caller's clock."""
+    def budget():
+        if type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic()>=deadline:raise ValueError('host control hash deadline expired')
+    def identity(value):
+        return (value.st_dev,value.st_ino,value.st_uid,value.st_gid,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+    budget();fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        before=os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0<before.st_size<=maximum:raise ValueError('host control binary size bound')
+        checksum=hashlib.sha256();count=0
+        while True:
+            budget();chunk=os.read(fd,min(1024*1024,maximum-count+1))
+            if not chunk:break
+            count+=len(chunk)
+            if count>maximum or count>before.st_size:raise ValueError('host control binary grew')
+            checksum.update(chunk)
+        budget()
+        if count!=before.st_size or identity(os.fstat(fd))!=identity(before) or identity(os.stat(path,follow_symlinks=False))!=identity(before):raise ValueError('host control binary custody changed')
+        budget();return checksum.hexdigest()
+    finally:os.close(fd)
+
+
+def daemon_identity(address, ctr, *, deadline):
     """Bounded fixed-host metadata, shared verbatim with isolated root helpers."""
+    def budget():
+        if time.monotonic()>=deadline:raise ValueError('host daemon identity deadline expired')
+    budget()
     def trusted(path, kind, socket=False):
+        budget()
         path=Path(path).resolve(strict=True);value=path.stat()
         if value.st_uid!=0 or value.st_mode&(0o002 if socket else 0o022) or not kind(value.st_mode):raise ValueError('host control ownership changed')
         for parent in path.parents:
-            info=parent.stat()
+            budget();info=parent.stat()
             if info.st_uid!=0 or info.st_mode&0o022:raise ValueError('host control ancestor changed')
         return path,value
     def row(value):return [value.st_dev,value.st_ino,value.st_uid,value.st_gid,value.st_mode]
     def bounded(path,limit):
         fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
-        try:data=os.read(fd,limit+1)
+        try:
+            data=bytearray()
+            while len(data)<=limit:
+                budget();chunk=os.read(fd,min(65536,limit-len(data)+1))
+                if not chunk:break
+                data.extend(chunk)
         finally:os.close(fd)
         if len(data)>limit:raise ValueError('host control metadata bound')
-        return data
+        budget();return bytes(data)
     pidfile,pidinfo=trusted('/var/run/docker.pid',stat.S_ISREG)
     raw=bounded(pidfile,16).strip()
     if not raw.isdigit() or not 1<int(raw)<=2**31-1:raise ValueError('host daemon PID invalid')
@@ -63,7 +95,7 @@ def daemon_identity(address, ctr):
     default,defaultinfo=trusted('/var/run/docker.sock',stat.S_ISSOCK,True)
     endpoint,endpointinfo=trusted(address,stat.S_ISSOCK,True)
     executable,ctrinfo=trusted(ctr,stat.S_ISREG)
-    return {'pid':pid,'startTime':start.decode(),'procIdentity':row(proc.stat()),'pidfileIdentity':row(pidinfo),'pidfileSha256':hashlib.sha256(raw).hexdigest(),'commandSha256':hashlib.sha256(command).hexdigest(),'defaultSocket':str(default),'defaultSocketIdentity':row(defaultinfo),'defaultParentIdentity':row(default.parent.stat()),'address':str(endpoint),'endpointIdentity':row(endpointinfo),'endpointParentIdentity':row(endpoint.parent.stat()),'ctr':ctr,'ctrResolved':str(executable),'ctrIdentity':row(ctrinfo),'ctrSize':ctrinfo.st_size,'ctrCtimeNs':ctrinfo.st_ctime_ns,'ctrSha256':hashlib.sha256(bounded(executable,8*1024*1024)).hexdigest(),'configuration':config_identity}
+    return {'pid':pid,'startTime':start.decode(),'procIdentity':row(proc.stat()),'pidfileIdentity':row(pidinfo),'pidfileSha256':hashlib.sha256(raw).hexdigest(),'commandSha256':hashlib.sha256(command).hexdigest(),'defaultSocket':str(default),'defaultSocketIdentity':row(defaultinfo),'defaultParentIdentity':row(default.parent.stat()),'address':str(endpoint),'endpointIdentity':row(endpointinfo),'endpointParentIdentity':row(endpoint.parent.stat()),'ctr':ctr,'ctrResolved':str(executable),'ctrIdentity':row(ctrinfo),'ctrSize':ctrinfo.st_size,'ctrCtimeNs':ctrinfo.st_ctime_ns,'ctrSha256':hash_control_file(executable,deadline=deadline),'configuration':config_identity}
 
 
 def verify_root_binding(payload, binding, deadline, ctr=None, address=None, namespace=None):
@@ -85,7 +117,7 @@ def verify_root_binding(payload, binding, deadline, ctr=None, address=None, name
     expected=json.loads(payload);value=json.loads(process.stdout,object_pairs_hook=unique)
     required={**expected,'scope':'owned-guest-root-control-validation','ok':True,'fixtureCustodyValidated':True,'rootValidation':True,'runtimeSupport':'unverified','runtimeAdmission':False,'humanConsentProof':False,'nativeCpuPerformanceProof':False}
     if (type(value) is not dict or value!=required or type(value.get('formatVersion')) is not int or type(value.get('uid')) is not int or any(type(value.get(key)) is not bool for key in ('ok','fixtureCustodyValidated','rootValidation','runtimeAdmission','humanConsentProof','nativeCpuPerformanceProof'))):raise ValueError('root fixture validation invalid')
-    if time.monotonic()>=deadline or daemon_identity(binding['address'],binding['ctr'])!=binding['identity']:raise ValueError('root daemon binding changed')
+    if time.monotonic()>=deadline or daemon_identity(binding['address'],binding['ctr'],deadline=deadline)!=binding['identity']:raise ValueError('root daemon binding changed')
     # Reuse the deadline-fenced fixed Engine API transport, including trickle protection.
     left=deadline-time.monotonic()
     if left<=0:raise ValueError('root control deadline expired')
@@ -101,7 +133,7 @@ def exec_root_version(arguments, deadline):
     os.execve('/usr/bin/timeout',['/usr/bin/timeout','--signal=TERM','--kill-after=0.2s',str(remaining-1)+'s',*arguments],environment)
 
 
-ROOT_BINDING_SOURCE=('import hashlib,json,math,os,stat,subprocess,time\nfrom pathlib import Path\n'+inspect.getsource(ContainerdControlUnverified)+'\n'+inspect.getsource(read_default_docker_control)+'\n'+inspect.getsource(daemon_identity)+'\n'+inspect.getsource(verify_root_binding)+'\n'+inspect.getsource(exec_root_version)+'\n')
+ROOT_BINDING_SOURCE=('import hashlib,json,math,os,stat,subprocess,time\nfrom pathlib import Path\n'+inspect.getsource(ContainerdControlUnverified)+'\n'+inspect.getsource(read_default_docker_control)+'\n'+inspect.getsource(hash_control_file)+'\n'+inspect.getsource(daemon_identity)+'\n'+inspect.getsource(verify_root_binding)+'\n'+inspect.getsource(exec_root_version)+'\n')
 
 
 @dataclass(frozen=True,init=False)
@@ -124,7 +156,7 @@ class HostDaemonBinding:
         if type(remaining) not in (int,float) or not math.isfinite(remaining) or remaining<=0:raise ValueError('host control remaining budget required')
         deadline=time.monotonic()+remaining
         authorize_host_control(self.context,remaining=remaining)
-        if daemon_identity(self.identity['address'],self.identity['ctr'])!=self.identity:raise ValueError('host daemon binding changed')
+        if daemon_identity(self.identity['address'],self.identity['ctr'],deadline=deadline)!=self.identity:raise ValueError('host daemon binding changed')
         from configuration import read_default_docker_control
         left=deadline-time.monotonic()
         if left<=0:raise ValueError('host control deadline expired')
@@ -134,7 +166,7 @@ class HostDaemonBinding:
         if left<=0:raise ValueError('host control deadline expired')
         active=subprocess.run(['docker','info','--format','{{.ID}}'],stdin=subprocess.DEVNULL,capture_output=True,timeout=left,check=False)
         if active.returncode or len(active.stdout)>4096 or len(active.stderr)>4096 or active.stdout!=(self.engine_id+'\n').encode():raise ValueError('ambient daemon association changed')
-        if time.monotonic()>=deadline or daemon_identity(self.identity['address'],self.identity['ctr'])!=self.identity:raise ValueError('host control changed during validation')
+        if time.monotonic()>=deadline or daemon_identity(self.identity['address'],self.identity['ctr'],deadline=deadline)!=self.identity:raise ValueError('host control changed during validation')
 
     def verify_operation(self, ctr, address, namespace, remaining):
         started=time.monotonic()

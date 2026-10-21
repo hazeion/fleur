@@ -355,7 +355,7 @@ def inspect_containerd_control(*, probe_first_use=False, host_context=None, with
     retained_binding=None
     if host_context is not None:
         from privileged_control import HostDaemonBinding, daemon_identity
-        retained_binding=HostDaemonBinding(host_context,daemon_identity(address,'/usr/bin/ctr'),default_id)
+        retained_binding=HostDaemonBinding(host_context,daemon_identity(address,'/usr/bin/ctr',deadline=min(authority_started+15,host_context.deadline)),default_id)
     startup_started=time.monotonic()
     phases={}
     probes={}

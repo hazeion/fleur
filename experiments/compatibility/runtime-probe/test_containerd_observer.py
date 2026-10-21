@@ -17,6 +17,32 @@ START = STAMP+'/tasks/start '+json.dumps({'container_id':CID,'pid':421})+'\n'
 EXIT_STAMP = STAMP.replace('20:00:00','20:00:02')
 EXIT = EXIT_STAMP+'/tasks/exit '+json.dumps({'container_id':CID,'id':CID,'pid':421,'exited_at':{'seconds':1791921601}})+'\n'
 
+LINUX_ROOT_SIGNAL_ADAPTER = r'''# Explicit Darwin OS seam for Linux-root capability; never native proof.
+import subprocess,signal,sys
+native_killpg=os.killpg
+def linux_root_killpg(pid,sig):
+    try:return native_killpg(pid,sig)
+    except PermissionError:
+        if sys.platform!='darwin' or not sig:raise
+        status=os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+        if status is None or status.si_pid!=pid:raise
+        inventory=subprocess.run(['/bin/ps','-axo','pid=,pgid=,stat='],stdin=subprocess.DEVNULL,capture_output=True,timeout=.2,check=True,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+        if len(inventory.stdout)>2*1024*1024 or inventory.stderr:raise PermissionError('ambiguous group inventory')
+        leader=False;seen=set()
+        for line in inventory.stdout.decode('ascii').splitlines():
+            fields=line.split()
+            if len(fields)!=3 or not fields[0].isdigit() or not fields[1].isdigit():raise PermissionError('malformed group inventory')
+            member,group=map(int,fields[:2])
+            if member in seen:raise PermissionError('duplicate group inventory')
+            seen.add(member)
+            if group==pid:
+                if fields[2] not in ('Z','Z+','ZN','ZN+'):raise PermissionError('owned group still has live or unknown members')
+                if member==pid:leader=True
+        if not leader:raise PermissionError('retained leader absent from inventory')
+        return
+os.killpg=linux_root_killpg
+'''
+
 class ObserverTests(unittest.TestCase):
     def observer(self, frames, delay=0, timeout=2, startup_delay=0):
         directory=tempfile.TemporaryDirectory()
@@ -48,33 +74,9 @@ def same_user_stat(path,*args,**kwargs):
     return os.stat_result(values)
 os.stat=same_user_stat
 os.geteuid=lambda:0
-# Explicit Darwin OS seam for Linux-root capability; never native proof.
-import subprocess,signal,sys
-native_killpg=os.killpg
-def linux_root_killpg(pid,sig):
-    try:return native_killpg(pid,sig)
-    except PermissionError:
-        if sys.platform!='darwin' or not sig:raise
-        status=os.waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
-        if status is None or status.si_pid!=pid:raise
-        inventory=subprocess.run(['/bin/ps','-axo','pid=,pgid=,stat='],stdin=subprocess.DEVNULL,capture_output=True,timeout=.2,check=True,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
-        if len(inventory.stdout)>2*1024*1024 or inventory.stderr:raise PermissionError('ambiguous group inventory')
-        leader=False;seen=set()
-        for line in inventory.stdout.decode('ascii').splitlines():
-            fields=line.split()
-            if len(fields)!=3 or not fields[0].isdigit() or not fields[1].isdigit():raise PermissionError('malformed group inventory')
-            member,group=map(int,fields[:2])
-            if member in seen:raise PermissionError('duplicate group inventory')
-            seen.add(member)
-            if group==pid:
-                if fields[2] not in ('Z','Z+','ZN','ZN+'):raise PermissionError('owned group still has live or unknown members')
-                if member==pid:leader=True
-        if not leader:raise PermissionError('retained leader absent from inventory')
-        return
-os.killpg=linux_root_killpg
 """
         observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',timeout,
-            launcher=[sys.executable,'-I','-u','-c',adapter+adapter_extra+SUPERVISOR,
+            launcher=[sys.executable,'-I','-u','-c',adapter+LINUX_ROOT_SIGNAL_ADAPTER+adapter_extra+SUPERVISOR,
                       str(ctr),address,'moby',str(time.monotonic()+timeout)])
         def cleanup_supervisor():
             try: observer.close(1)
@@ -339,7 +341,7 @@ os.geteuid=lambda:0
             with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as server:
                 server.bind(address)
                 observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',3,
-                    launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                    launcher=[sys.executable,'-I','-u','-c',adapter+LINUX_ROOT_SIGNAL_ADAPTER+SUPERVISOR,
                               str(ctr),address,'moby',str(time.monotonic()+3)])
                 self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(1))
                 with self.assertRaisesRegex(ObserverUnverified,'stream-ended'): observer.bind(CID,421,2)
@@ -375,7 +377,7 @@ os.geteuid=lambda:0
                 server.bind(address)
                 allowance=1.5 if expired else 3
                 observer=ContainerdObserver('/usr/bin/ctr','/run/containerd/containerd.sock','moby',allowance,
-                    launcher=[sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                    launcher=[sys.executable,'-I','-u','-c',adapter+LINUX_ROOT_SIGNAL_ADAPTER+SUPERVISOR,
                               str(ctr),address,'moby',str(time.monotonic()+allowance)])
                 self.addCleanup(lambda: None if observer.snapshot()['cleanup_verified'] else observer.close(1))
                 deadline=time.monotonic()+1
@@ -433,7 +435,7 @@ class FailingSelector(selectors.DefaultSelector):
         return super().register(fileobj,events,data)
 selectors.DefaultSelector=FailingSelector
 """.replace('PID_FILE',repr(str(pid_file)))
-                process=subprocess.Popen([sys.executable,'-I','-u','-c',adapter+SUPERVISOR,
+                process=subprocess.Popen([sys.executable,'-I','-u','-c',adapter+LINUX_ROOT_SIGNAL_ADAPTER+SUPERVISOR,
                     str(ctr),address,'moby',str(time.monotonic()+3)],
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 process.communicate(timeout=4)

@@ -110,7 +110,7 @@ class LongOwnedPhaseBudget(unittest.TestCase):
                 return fixture.virtualized(args,**kwargs)
             try:
                 with patch.object(Path,'resolve',lambda value,**kwargs:value),patch.object(socket.socket,'connect',connect),patch('subprocess.run',side_effect=commands):
-                    identity=daemon_identity('/run/containerd.sock','/usr/bin/ctr')
+                    identity=daemon_identity('/run/containerd.sock','/usr/bin/ctr',deadline=fixture.clock[0]+30)
                     binding=HostDaemonBinding(fixture.context,identity,'owned-engine')
                     try:binding.verify(30)
                     except (ValueError,OSError,RuntimeError) as error:raise AssertionError("valid owned phase refused: "+repr(error)) from error

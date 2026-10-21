@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { startRetainedSsh } from "./retained-ssh.ts";
 import type { Readable } from "node:stream";
 export interface BootTarget { port: number; identity: string; knownHosts: string; nonce: string }
 export interface BootObservation { formatVersion: 1; scope: "fresh-linux-boot-observation"; ok: boolean; state: "ready" | "pending" | "failed"; cloudInitComplete?: boolean; nonceMatched?: boolean; error?: { code: string; message: string } }
@@ -18,12 +18,12 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000)
     "printf '\\nFLEUR_OWNED_GUEST_NONCE='",
     "cat /etc/fleur-owned-guest",
   ].join("; ");
-  const child = spawn("ssh", ["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remote], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SSH_AUTH_SOCK: undefined, SSH_ASKPASS: undefined, DISPLAY: undefined } });
-  const kill = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } } };
-  const timer = setTimeout(kill, Math.max(1, Math.min(10000, remainingBudgetMs)));
-  const finished = new Promise<number>((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve(code ?? (signal === "SIGKILL" ? 137 : 1))); });
+  const child = startRetainedSsh(["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remote]);
+  const timer = setTimeout(child.requestTermination, Math.max(1, Math.min(10000, remainingBudgetMs)));
+  const finished = child.finished;
+  const observe = async (): Promise<BootObservation> => {
   try {
-    const [stdout, stderr, code] = await Promise.all([bounded(child.stdout!), bounded(child.stderr!), finished]);
+    const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!), bounded(child.stderr!), finished]), child.signalFailed]);
     if (code === 75) return result("pending");
     const preAuthenticationReset = `kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port ${target.port}\r\n`;
     if (code === 255 && stdout === "" && (stderr === preAuthenticationReset || stderr === preAuthenticationReset.replaceAll("\r\n", "\n"))) return result("pending");
@@ -45,7 +45,12 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000)
     if (fields.status !== "done" || (fields.extended_status !== undefined && fields.extended_status !== "done")) return result("failed", { code: "CLOUD_INIT_FAILED", message: "Cloud-init did not report an exact completed, non-degraded state." });
     return { ...result("ready"), cloudInitComplete: true, nonceMatched: true };
   } catch (error) { return result("failed", { code: "BOOT_OBSERVATION_FAILED", message: error instanceof Error ? error.message : "Boot observation failed" }); }
-  finally { clearTimeout(timer); kill(); await finished.catch(() => {}); }
+  };
+  const observed = await observe();
+  clearTimeout(timer);
+  try { await child.cleanup(); }
+  catch (error) { return result("failed", { code: "BOOT_OBSERVATION_FAILED", message: error instanceof Error ? error.message : "Boot cleanup is unconfirmed" }); }
+  return observed;
 }
 if (import.meta.main) {
   const args = process.argv.slice(2);

@@ -624,6 +624,19 @@ def verify_smoke_and_restrictions(state):
             if not ready or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
                 raise RuntimeError("Repeat ordinary-user smoke or host state preservation failed")
             REPORT["runs"].append(observed)
+        # Advisory identity evidence cannot admit a profile or replace the gate.
+        probe_directory = ROOT / "experiments/compatibility/runtime-probe"
+        sys.path.insert(0, str(probe_directory))
+        try:
+            from candidate_identity import observe_candidate_identity
+            REPORT["runtimeCandidateObservation"] = observe_candidate_identity(run)
+        except (ImportError, OSError, RuntimeError, ValueError):
+            REPORT["runtimeCandidateObservation"] = {
+                "formatVersion": 1, "scope": "runtime-profile-candidate-observation",
+                "accepted": False, "custodyVerified": False, "runtimeSupport": "unverified",
+                "outcome": "unavailable", "failureCategory": "observer-unavailable"}
+        finally:
+            sys.path.pop(0)
         # Execute the existing gate without skipping any GC, idle, resource or deadline assertion.
         probe = ROOT / "experiments/compatibility/runtime-probe/run.py"
         code, text, _ = run(["python3", str(probe), "--architecture", "amd64", "--healthy-containerd-exit", "--idle-runtime-stress"], timeout=600, allowed=(0, 1))

@@ -89,7 +89,7 @@ def inventory(pid):
     found = False
     live = 0
     for line in data.decode("ascii").splitlines():
-        match = re.fullmatch(r"\s*([0-9]+)\s+([0-9]+)\s+([RSDTtXZIUW][<NnLl+sSAEVWXCTJP-]*)\s*", line)
+        match = re.fullmatch(r"\s*([0-9]+)\s+([0-9]+)\s+([RSDTtXZIUW][<>NnLl+sSAEVWXCTJP-]*)\s*", line)
         if not match:
             raise RuntimeError("inventory schema")
         member, group, state = int(match[1]), int(match[2]), match[3]

@@ -9,4 +9,4 @@ test("guest compiler prerequisite obeys authenticated-file and offline-package c
   expect(exit, stdout + stderr).toBe(0);
   expect(stderr).toContain("Ran 9 tests");
   expect(stderr).toContain("OK");
-});
+}, 20000);

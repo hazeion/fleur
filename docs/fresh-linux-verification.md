@@ -111,7 +111,7 @@ and allowlisted phase events with host elapsed times. The opt-in Bun events
 identify archive authentication, entry validation, executable extraction,
 retained-output authentication, archive reauthentication and output custody.
 Candidate and restriction archive commands have separate start/completion events.
-A valid Bun result is retained even if a later archive command fails. Raw stdout,
+Successful Bun evidence requires each start/completion pair in the producer order inside the Bun phase, followed by one validated Bun result. Missing, duplicate, crossed, out-of-scope and post-completion events are rejected. Guest elapsed values are nondecreasing relative integer milliseconds within the applicable work budget; no guest epoch is compared to a host timestamp. A failed run retains only its valid observed prefix, including a valid extraction-cleanup prefix. A valid Bun result is retained even if a later archive command fails. Raw stdout,
 raw stderr, arbitrary JSON fields and transport diagnostic text are omitted.
 An exit 137 alone remains a transport-or-remote-command failure; it does not prove
 that the host timer fired or that any particular guest stage completed.

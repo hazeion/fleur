@@ -70,6 +70,9 @@ export async function observePreparation(target: BootTarget, remainingBudgetMs =
       kill();
     }
   }
+  const bunSequence = bunStages.filter((stage) => stage !== "cleanup").flatMap((stage) => [`${stage}:started`, `${stage}:completed`]);
+  const artifactSequence = ["bun-preparation:started", "bun-preparation:completed", "candidate-extraction:started", "candidate-extraction:completed", "restriction-extraction:started", "restriction-extraction:completed", "complete:completed"];
+  let bunPosition = 0; let artifactPosition = 0; let cleanupPosition = 0; let guestElapsed = -1;
   function frame(line: string) {
     if (line.length > 65536) throw new Error("protocol");
     const value: unknown = JSON.parse(line);
@@ -77,6 +80,7 @@ export async function observePreparation(target: BootTarget, remainingBudgetMs =
     const record = value as Record<string, unknown>;
     if (record.formatVersion !== 1) throw new Error("protocol");
     if (record.scope === "guest-bun-preparation" && typeof record.ok === "boolean" && !result.bun) {
+      if (artifactPosition !== 1 || (record.ok && (bunPosition !== bunSequence.length || cleanupPosition !== 0))) throw new Error("protocol");
       const bun: Record<string, unknown> = { formatVersion: 1, scope: "guest-bun-preparation", ok: record.ok };
       if (typeof record.ownedPartialRemoved === "boolean") bun.ownedPartialRemoved = record.ownedPartialRemoved;
       if (record.ok) {
@@ -88,6 +92,23 @@ export async function observePreparation(target: BootTarget, remainingBudgetMs =
     }
     const allowed = record.scope === "guest-bun-preparation-event" ? bunStages : record.scope === "guest-artifact-preparation-event" ? artifactStages : [];
     if (typeof record.stage !== "string" || !allowed.includes(record.stage) || !["started", "completed"].includes(String(record.state)) || result.stages.length >= 32 || (record.elapsedMs !== undefined && (!Number.isSafeInteger(record.elapsedMs) || Number(record.elapsedMs) < 0 || Number(record.elapsedMs) > 24 * 60 * 60 * 1000))) throw new Error("protocol");
+    const key = `${record.stage}:${record.state}`;
+    if (record.scope === "guest-bun-preparation-event") {
+      // Source producer elapsed times are relative integer milliseconds. Compare
+      // their order/budget only, never guest clock epochs with host timestamps.
+      if (artifactPosition !== 1 || result.bun || !Number.isSafeInteger(record.elapsedMs) || Number(record.elapsedMs) < guestElapsed || Number(record.elapsedMs) > timeoutMs) throw new Error("protocol");
+      if (record.stage === "cleanup") {
+        if (bunPosition < 5 || cleanupPosition >= 2 || key !== ["cleanup:started", "cleanup:completed"][cleanupPosition]) throw new Error("protocol");
+        cleanupPosition++;
+      } else {
+        if (cleanupPosition !== 0 || key !== bunSequence[bunPosition]) throw new Error("protocol");
+        bunPosition++;
+      }
+      guestElapsed = Number(record.elapsedMs);
+    } else {
+      if (record.elapsedMs !== undefined || key !== artifactSequence[artifactPosition] || (artifactPosition === 1 && result.bun?.ok !== true)) throw new Error("protocol");
+      artifactPosition++;
+    }
     const stage: Stage = { stage: record.stage, state: record.state as Stage["state"], hostElapsedMs: Math.round(performance.now() - started), ...(record.elapsedMs === undefined ? {} : { guestElapsedMs: Number(record.elapsedMs) }) };
     result.stages.push(stage); result.lastStage = stage;
   }
@@ -114,9 +135,7 @@ export async function observePreparation(target: BootTarget, remainingBudgetMs =
   finally { clearTimeout(timer); result.transport.elapsedMs = Math.round(performance.now() - started); }
   if (result.transport.deadlineFired && result.error?.code !== "PREPARATION_CLEANUP_UNCONFIRMED") result.error = { code: "PREPARATION_HOST_DEADLINE", message: "The unchanged host preparation deadline expired; guest completion is unconfirmed." };
   else if (!result.error && result.transport.exitCode !== 0) fail("PREPARATION_COMMAND_EXIT", "Preparation transport or remote command exited unsuccessfully; stage evidence identifies only the last observed work.");
-  const expected = ["bun-preparation:started", "bun-preparation:completed", "candidate-extraction:started", "candidate-extraction:completed", "restriction-extraction:started", "restriction-extraction:completed", "complete:completed"];
-  const observed = result.stages.filter((item) => artifactStages.includes(item.stage)).map((item) => `${item.stage}:${item.state}`);
-  if (!result.error && (result.bun?.ok !== true || result.lastStage?.stage !== "complete" || result.lastStage.state !== "completed" || JSON.stringify(observed) !== JSON.stringify(expected))) fail("PREPARATION_INCOMPLETE", "Preparation success lacks Bun identity or both complete archive operations.");
+  if (!result.error && (result.bun?.ok !== true || result.lastStage?.stage !== "complete" || result.lastStage.state !== "completed" || artifactPosition !== artifactSequence.length || bunPosition !== bunSequence.length || cleanupPosition !== 0)) fail("PREPARATION_INCOMPLETE", "Preparation success lacks Bun identity or both complete archive operations.");
   result.ok = !result.error; return result;
 }
 if (import.meta.main) {

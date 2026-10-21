@@ -11,7 +11,7 @@ async function fixture(scenario: string) {
   await writeFile(join(root, "nonce"), nonce);
   const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
   await symlink(python, join(tools, "python3"));
-  await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;const remote=process.argv.at(-1);await Bun.write(root+'/remote',remote);if(scenario==='early-ssh137')process.exit(137);if(scenario==='host-key'){process.stderr.write('SECRET transport material');process.exit(255);}const prefix=${JSON.stringify("cd() { command cd \"$FIXTURE_ROOT/lab\"; }\ncat() { command cat \"$FIXTURE_ROOT/nonce\"; }\npython3() { \"$FIXTURE_ROOT/tools/guest-python3\" \"$@\"; }\n")};const child=Bun.spawn(['/bin/sh','-c',prefix+remote],{stdin:'ignore',stdout:'inherit',stderr:'inherit',env:process.env});process.exit(await child.exited);\n`, { mode: 0o700 });
+  await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;const remote=process.argv.at(-1);await Bun.write(root+'/remote',remote);if(scenario==='early-ssh137')process.exit(137);if(scenario==='bun-slow'){for(const frame of [{formatVersion:1,scope:'guest-artifact-preparation-event',stage:'bun-preparation',state:'started'},{formatVersion:1,scope:'guest-bun-preparation-event',stage:'archive-authentication',state:'started',elapsedMs:0}])process.stdout.write(JSON.stringify(frame)+'\\n');await Bun.sleep(20000);process.exit(0);}if(scenario==='host-key'){process.stderr.write('SECRET transport material');process.exit(255);}const prefix=${JSON.stringify("cd() { command cd \"$FIXTURE_ROOT/lab\"; }\ncat() { command cat \"$FIXTURE_ROOT/nonce\"; }\npython3() { \"$FIXTURE_ROOT/tools/guest-python3\" \"$@\"; }\n")};const child=Bun.spawn(['/bin/sh','-c',prefix+remote],{stdin:'ignore',stdout:'inherit',stderr:'inherit',env:process.env});process.exit(await child.exited);\n`, { mode: 0o700 });
   await writeFile(join(tools, "guest-python3"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;await Bun.write(root+'/python-called','yes');const frame=(stage,state)=>process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation-event',stage,state,elapsedMs:1})+'\\n');frame('archive-authentication','started');if(scenario==='bun-slow')await Bun.sleep(20000);if(scenario==='bun-killed')process.exit(137);if(scenario==='unknown-stage'){frame('SECRET','completed');process.exit(137);}if(scenario==='overflow'){process.stdout.write('SECRET'.repeat(400000));process.exit(137);}if(scenario==='bun-failed'){process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:false,error:{code:'PREPARATION_FAILED',message:'SECRET'}})+'\\n');process.exit(4);}for(const stage of ['archive-authentication','zip-entry-validation','executable-extraction','retained-output-authentication','archive-reauthentication','output-custody']){if(stage!=='archive-authentication')frame(stage,'started');frame(stage,'completed');}process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:true,archiveSha256:${JSON.stringify(archiveSha256)},archiveBytes:50000000,executableBytes:100000000,executableSha256:'a'.repeat(64)})+'\\n');\n`, { mode: 0o700 });
   await writeFile(join(tools, "tar"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const name=process.argv.at(-1);await Bun.write(root+'/tar-calls',(await Bun.file(root+'/tar-calls').exists()?await Bun.file(root+'/tar-calls').text():'')+name+'\\n');if(process.env.FIXTURE_SCENARIO==='candidate-failed'&&name==='fleur-internal-native-candidate.tgz')process.exit(2);if(process.env.FIXTURE_SCENARIO==='restriction-killed'&&name==='runtime-probe.tar')process.exit(137);\n`, { mode: 0o700 });
   const observe = async (budget = 10000) => {
@@ -97,5 +97,55 @@ test("real Bun preparation keeps its default result and emits only opt-in authen
       if (enabled) expect(frames[0]).toMatchObject({ scope: "guest-bun-preparation-event", stage: "archive-authentication", state: "started", elapsedMs: expect.any(Number) });
       expect(await Bun.file(join(root, "bun")).exists()).toBe(false);
     }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const malformed of ["only-final-bun-phase", "missing-pair", "duplicate", "reordered", "outside-bun", "regressing-time", "oversized-time", "missing-time", "early-result", "duplicate-result", "after-complete"] as const) {
+  test(`a successful transcript requires the real producer's nested phase sequence: ${malformed}`, async () => {
+    const { root, observe } = await fixture("success");
+    try {
+      const outer = (stage: string, state: string) => ({ formatVersion: 1, scope: "guest-artifact-preparation-event", stage, state });
+      // Specification oracle: the actual preparer authenticates the archive,
+      // validates entries, extracts, authenticates retained output, reauthenticates
+      // the archive and checks output custody, in that order.
+      const producerPhases = ["archive-authentication", "zip-entry-validation", "executable-extraction", "retained-output-authentication", "archive-reauthentication", "output-custody"];
+      const phases: Record<string, unknown>[] = producerPhases.flatMap((stage, index) => ["started", "completed"].map((state, offset) => ({ formatVersion: 1, scope: "guest-bun-preparation-event", stage, state, elapsedMs: 2 * index + offset })));
+      const bun = { formatVersion: 1, scope: "guest-bun-preparation", ok: true, archiveSha256, archiveBytes: 50000000, executableBytes: 100000000, executableSha256: "a".repeat(64) };
+      if (malformed === "only-final-bun-phase") phases.splice(0, phases.length, { formatVersion: 1, scope: "guest-bun-preparation-event", stage: "output-custody", state: "completed", elapsedMs: 999999 });
+      if (malformed === "missing-pair") phases.splice(2, 2);
+      if (malformed === "duplicate") phases.splice(2, 0, structuredClone(phases[1]!));
+      if (malformed === "reordered") phases.splice(2, 4, ...phases.slice(4, 6), ...phases.slice(2, 4));
+      if (malformed === "regressing-time") phases[2]!.elapsedMs = 0;
+      if (malformed === "oversized-time") phases.at(-1)!.elapsedMs = 999999;
+      if (malformed === "missing-time") delete phases[1]!.elapsedMs;
+      const transcript: Record<string, unknown>[] = [outer("bun-preparation", "started"), ...phases, bun, outer("bun-preparation", "completed"), outer("candidate-extraction", "started"), outer("candidate-extraction", "completed"), outer("restriction-extraction", "started"), outer("restriction-extraction", "completed"), outer("complete", "completed")];
+      if (malformed === "outside-bun") transcript.unshift(transcript.splice(1, 1)[0]!);
+      if (malformed === "early-result") transcript.splice(1, 0, transcript.splice(transcript.indexOf(bun), 1)[0]!);
+      if (malformed === "duplicate-result") transcript.splice(transcript.indexOf(bun), 0, structuredClone(bun));
+      if (malformed === "after-complete") transcript.push(structuredClone(phases[0]!));
+      await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(transcript.map((frame) => JSON.stringify(frame)).join("\n") + "\n")});process.exit(0);\n`, { mode: 0o700 });
+      const observed = await observe();
+      expect(observed.exit).toBe(4);
+      expect(observed.result).toMatchObject({ ok: false, error: { code: "PREPARATION_PROTOCOL_INVALID" } });
+      if (malformed === "only-final-bun-phase") {
+        expect(observed.result.lastStage).toMatchObject({ stage: "bun-preparation", state: "started" });
+        expect(observed.result.bun).toBeUndefined();
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test("a valid extraction-failure prefix retains its cleanup evidence without inventing completion", async () => {
+  const { root, observe } = await fixture("success");
+  try {
+    const frames = [
+      { formatVersion: 1, scope: "guest-artifact-preparation-event", stage: "bun-preparation", state: "started" },
+      ...["archive-authentication:started", "archive-authentication:completed", "zip-entry-validation:started", "zip-entry-validation:completed", "executable-extraction:started", "cleanup:started", "cleanup:completed"].map((key, elapsedMs) => { const [stage, state] = key.split(":"); return { formatVersion: 1, scope: "guest-bun-preparation-event", stage, state, elapsedMs }; }),
+      { formatVersion: 1, scope: "guest-bun-preparation", ok: false, ownedPartialRemoved: true },
+    ];
+    await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(frames.map((frame) => JSON.stringify(frame)).join("\n") + "\n")});process.exit(4);\n`, { mode: 0o700 });
+    const observed = await observe();
+    expect(observed).toMatchObject({ exit: 4, result: { ok: false, lastStage: { stage: "cleanup", state: "completed" }, bun: { ok: false, ownedPartialRemoved: true }, error: { code: "PREPARATION_COMMAND_EXIT" } } });
+    expect(observed.result.stages.some((stage: { stage: string }) => stage.stage === "complete")).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

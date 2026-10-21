@@ -30,6 +30,15 @@ metadata = {"formatVersion": 1, "internalArtifact": True, "catalogId": "owned-pr
 (lab / "package/bin").mkdir(parents=True)
 (lab / "package/bin/fleur.ts").write_text("// Owned protocol fixture, never the real runtime\n")
 (lab / "package/internal-native-candidate.json").write_text(json.dumps(metadata))
+if scenario == "ordinary-handoff":
+    (lab / "package/internal-native-candidate.json").unlink()
+    (lab / "package/package.json").write_text(json.dumps({"name":"fleur"}))
+    catalog=json.loads((source.parent/'native-candidate-ubuntu24-amd64.json').read_text())
+    profile={"method":"docker-official-apt","verified":True,**catalog['profile'],
+             "repositoryFingerprint":catalog['authentication']['repositoryFingerprint'],
+             "artifacts":{item['name']:{"architecture":"amd64",**{key:item[key] for key in ("name","version","url","sha256","size")}} for item in catalog['artifacts']}}
+    target=lab / "package/src/setup/verified-apt-profiles.json";target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_text(json.dumps({"formatVersion":1,"entries":[{"evidence":{"reportSha256":"75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2","sourceCommit":"a9606d74fd55b252c0aab8432ff72ec513457a5e","artifactCatalogSha256":"540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58"},"profile":profile}]}))
 for name in ["fleur-internal-native-candidate.tgz", "runtime-probe.tar", "bun.zip"]:
     (lab / name).write_bytes(("owned fixture " + name).encode())
 
@@ -141,6 +150,7 @@ if name=='docker':
  if args==['context','inspect','default','--format','{{json .Endpoints.docker}}']:print(json.dumps({'Host':'unix:///var/run/docker.sock'}));sys.exit(0)
  raise RuntimeError('No Docker mutation in smoke-authority fixture')
 if name=='apt-get':
+ s['simulationArguments']=args;save()
  if '--simulate' not in args:raise RuntimeError('No direct package mutation in fixture')
  print('0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.');sys.exit(0)
 s['unexpected'].append({'tool':name,'args':args});save();raise RuntimeError('Unknown fixture command')

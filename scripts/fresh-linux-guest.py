@@ -611,6 +611,66 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
     return binding
 
 
+def installation_packages():
+    marker = ROOT / "package/internal-native-candidate.json"
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        # Preserve the existing internal-candidate artifact contract.
+        metadata = json.loads(marker.read_text())
+        REPORT['executionArtifact'] = {'kind': 'internal-candidate'}
+        return [item['name'] + '=' + item['version'] for item in metadata['artifacts']]
+    package = json.loads((ROOT / 'package/package.json').read_text())
+    if type(package) is not dict or package.get('name') != 'fleur' or 'fleurInternalNativeCandidate' in package:
+        raise RuntimeError('Ordinary verification requires the real Fleur package without an internal marker')
+    path = ROOT / 'package/src/setup/verified-apt-profiles.json'
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= 65536:
+            raise RuntimeError('Compiled ordinary profile metadata custody is invalid')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            body = stream.read(65537)
+        after = os.fstat(fd)
+        if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
+            raise RuntimeError('Compiled ordinary profile metadata changed')
+    finally:
+        os.close(fd)
+    value = json.loads(body)
+    evidence = {'reportSha256': '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
+                'sourceCommit': 'a9606d74fd55b252c0aab8432ff72ec513457a5e',
+                'artifactCatalogSha256': '540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'}
+    if (type(value) is not dict or set(value) != {'formatVersion', 'entries'} or type(value['formatVersion']) is not int
+            or value['formatVersion'] != 1 or type(value['entries']) is not list or len(value['entries']) != 1):
+        raise RuntimeError('Exact compiled ordinary profile record required')
+    entry = value['entries'][0]
+    if type(entry) is not dict or set(entry) != {'evidence', 'profile'} or entry['evidence'] != evidence:
+        raise RuntimeError('Compiled ordinary profile evidence differs')
+    profile = entry['profile']
+    expected = {'docker-ce': '5:29.9.1-1~ubuntu.24.04~noble', 'docker-ce-cli': '5:29.9.1-1~ubuntu.24.04~noble',
+                'containerd.io': '2.4.2-2~ubuntu.24.04~noble', 'docker-buildx-plugin': '0.38.0-1~ubuntu.24.04~noble',
+                'docker-compose-plugin': '5.6.0-1~ubuntu.24.04~noble'}
+    if (type(profile) is not dict or set(profile) != {'method', 'verified', 'distribution', 'release', 'architecture', 'repositoryFingerprint', 'packages', 'artifacts'}
+            or profile['method'] != 'docker-official-apt' or profile['verified'] is not True or profile['distribution'] != 'ubuntu'
+            or profile['release'] != '24.04' or profile['architecture'] != 'x64'
+            or profile['repositoryFingerprint'] != '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' or profile['packages'] != expected
+            or type(profile['artifacts']) is not dict or set(profile['artifacts']) != set(expected)):
+        raise RuntimeError('Compiled ordinary profile tuple differs')
+    for name, version in expected.items():
+        item = profile['artifacts'][name]
+        if (type(item) is not dict or set(item) != {'name', 'version', 'architecture', 'url', 'sha256', 'size'}
+                or item['name'] != name or item['version'] != version or item['architecture'] != 'amd64'
+                or type(item['url']) is not str or not item['url'].startswith('https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/')
+                or type(item['sha256']) is not str or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])
+                or type(item['size']) is not int or item['size'] <= 0):
+            raise RuntimeError('Compiled ordinary profile artifact differs')
+    REPORT['executionArtifact'] = {'kind': 'ordinary', 'packageName': 'fleur', 'admissionMetadataSha256': hashlib.sha256(body).hexdigest(),
+                                  'artifactCatalogSha256': evidence['artifactCatalogSha256']}
+    return [name + '=' + version for name, version in expected.items()]
+
+
 def main():
     global GUEST_DEADLINE
     GUEST_DEADLINE = time.monotonic() + 900
@@ -650,8 +710,7 @@ def main():
         raise RuntimeError("Denied setup altered baseline or did not preserve authority boundary")
     REPORT["authorizedFixtureSetup"] = setup_pty("once")
     REPORT["afterSetup"] = snapshot()
-    metadata = json.loads((ROOT / "package/internal-native-candidate.json").read_text())
-    packages = [item["name"] + "=" + item["version"] for item in metadata["artifacts"]]
+    packages = installation_packages()
     simulation = run(["apt-get", "--simulate", "--no-install-recommends", "--no-remove", "--no-upgrade", "install"] + packages, allowed=(0, 100))
     REPORT["actualDependencySimulation"] = {"exitCode": simulation[0], "stdout": simulation[1], "stderr": simulation[2]}
     capture_signed_indexes()

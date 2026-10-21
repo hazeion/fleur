@@ -229,3 +229,10 @@ native CPU performance evidence. The account has sudo; this is not a trust proof
 against a privileged adversary. Runtime observer/control integration and binding
 the later enrollment/resume chain to this context require separate review. The
 existing restriction, lifecycle and cleanup gates remain mandatory.
+
+
+## Ubuntu ordinary-catalog admission candidate
+
+The exact Ubuntu 24.04 x64 prerequisite and official APT records now map the reviewed report `75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2` to source commit `a9606d74fd55b252c0aab8432ff72ec513457a5e` and artifact catalog `540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58`. The older diagnostic catalog and its historical pending labels are preserved. This source change proposes one prerequisite tuple; it does not promote the global runtime gate or other platforms.
+
+The ordinary Doctor contract additionally binds current daemon resource flags, cgroup driver, rootful/rootless mode and exact security options. The proposed Ubuntu systemd/rootful/AppArmor tuple must be captured and checked in the new ordinary packed VM run; those complete metadata fields were not directly retained by the older report. Focused synthetic OS fixtures verify selection and rejection behavior, not native execution. Fresh ordinary setup, ready reprobes, exact metadata and cleanup remain required before this candidate can ship. Existing enrollment resume is not evidence of termination during a privileged package transaction; interruption and recovery contracts require their separate tests.

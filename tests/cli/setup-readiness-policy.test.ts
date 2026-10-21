@@ -213,3 +213,51 @@ test("nested security policy arrays are copied before command execution", async 
   expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
   expect(fixture.containers.size).toBe(0);
 });
+
+function ubuntuFixture() {
+  const fixture = desktopFixture();
+  Object.assign(fixture.info, { ServerVersion: "29.9.1", KernelVersion: "6.8.0-147-generic", CgroupDriver: "systemd", SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"] });
+  Object.assign(fixture.server, { Version: "29.9.1", GitCommit: "b26fb77", KernelVersion: "6.8.0-147-generic", Platform: { Name: "Docker Engine - Community" } });
+  fixture.server.Components[0]!.Version = "29.9.1";
+  fixture.server.Components[0]!.Details.GitCommit = "b26fb77";
+  const host: SetupHost = {
+    ...fixture.host,
+    host: async () => ({ system: "linux", distribution: "ubuntu", architecture: "x64", translated: false, release: "24.04", machineId: "c".repeat(64) }),
+    run: async (args, timeout, context) => args.join(" ") === "docker --version"
+      ? { status: "completed", exitCode: 0, stdout: "Docker version 29.9.1, build dfc520d", stderr: "" }
+      : fixture.host.run(args, timeout, context),
+  };
+  return { ...fixture, host };
+}
+
+test("ordinary doctor recognizes only the source-mapped Ubuntu qualification without a profile override", async () => {
+  const fixture = ubuntuFixture();
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2", isolationSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+
+
+test("ordinary setup exposes the source-mapped Ubuntu plan but never installs without separate human grants", async () => {
+  const { mkdtemp, rm, readdir } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-source-owned-apt-");
+  const commands: string[][] = [];
+  try {
+    const host: SetupHost = {
+      stateDirectory: directory,
+      host: async () => ({ system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64", translated: false, machineId: "c".repeat(64) }),
+      run: async (args) => {
+        commands.push([...args]);
+        if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
+        if (args[0] === "dpkg-query") return { status: "completed", exitCode: 1, stdout: "", stderr: "" };
+        throw new Error("Unexpected host operation without human grants");
+      },
+    };
+    const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+    expect(outcome.exitCode).toBe(3);
+    expect(outcome.result).toMatchObject({ error: { code: "AUTHORITY_REQUIRED" }, data: { plan: { verified: true, requiredAuthorities: ["install", "configuration", "docker-access", "service-start", "service-enable"] } } });
+    expect(commands.map((args) => args[0])).toEqual(["docker", "dpkg-query"]);
+    expect(await readdir(directory)).toEqual(["setup.lock"]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

@@ -1,3 +1,4 @@
+import { verifiedInstallProfiles } from "./verified-install-profiles.ts";
 import type { ArchInstallProfile } from "./native-arch.ts";
 import { inspectAptPackageState } from "./native-state.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
@@ -37,8 +38,8 @@ export interface DesktopInstallProfile {
   readonly teamId: string;
 }
 export type NativeInstallProfile = AptInstallProfile | ArchInstallProfile | DesktopInstallProfile;
-/** No native profile is admitted until release artifact/native verification is recorded. */
-export const nativeInstallProfiles: readonly NativeInstallProfile[] = [];
+/** Only source-owned exact records with recorded artifact/native evidence are admitted. */
+export const nativeInstallProfiles: readonly NativeInstallProfile[] = verifiedInstallProfiles;
 export function selectNativeProfile(identity: HostIdentity, profiles: readonly NativeInstallProfile[]): NativeInstallProfile | undefined {
   return profiles.find((profile) => (profile.method === "docker-desktop-official-dmg" ? identity.system === "darwin" && profile.artifactAuthentication === "authenticated" : identity.system === "linux" && profile.verified === true && profile.distribution === identity.distribution) && profile.release === identity.release && profile.architecture === identity.architecture);
 }

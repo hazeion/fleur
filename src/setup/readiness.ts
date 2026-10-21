@@ -1,4 +1,5 @@
 import { smokeImages } from "./profiles.ts";
+import { verifiedReadinessProfiles } from "./verified-readiness-profiles.ts";
 import type { HostIdentity } from "./commands.ts";
 
 type RecordValue = Record<string, unknown>;
@@ -17,7 +18,7 @@ export interface VerifiedReadinessProfile {
 }
 
 /** Reviewed release authority only. Observations and installer grants do not add entries. */
-export const nativeReadinessProfiles: readonly VerifiedReadinessProfile[] = Object.freeze([]);
+export const nativeReadinessProfiles: readonly VerifiedReadinessProfile[] = snapshotReadinessProfiles(verifiedReadinessProfiles);
 
 function object(value: unknown): value is RecordValue { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function shape(value: unknown, keys: readonly string[]): value is RecordValue { return object(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }

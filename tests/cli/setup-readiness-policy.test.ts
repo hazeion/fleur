@@ -216,7 +216,7 @@ test("nested security policy arrays are copied before command execution", async 
 
 function ubuntuFixture() {
   const fixture = desktopFixture();
-  Object.assign(fixture.info, { ServerVersion: "29.9.1", KernelVersion: "6.8.0-147-generic", CgroupDriver: "systemd", SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"] });
+  Object.assign(fixture.info, { ServerVersion: "29.9.1", KernelVersion: "6.8.0-147-generic", CgroupDriver: "systemd", SecurityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"] });
   Object.assign(fixture.server, { Version: "29.9.1", GitCommit: "b26fb77", KernelVersion: "6.8.0-147-generic", Platform: { Name: "Docker Engine - Community" } });
   fixture.server.Components[0]!.Version = "29.9.1";
   fixture.server.Components[0]!.Details.GitCommit = "b26fb77";
@@ -260,4 +260,37 @@ test("ordinary setup exposes the source-mapped Ubuntu plan but never installs wi
     expect(commands.map((args) => args[0])).toEqual(["docker", "dpkg-query"]);
     expect(await readdir(directory)).toEqual(["setup.lock"]);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test("ordinary doctor recognizes the exact default AppArmor descriptor emitted by the recorded Engine build", async () => {
+  const fixture = ubuntuFixture();
+  fixture.info.SecurityOptions = ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"];
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1" } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+
+
+for (const descriptor of ["name=apparmor", "name=apparmor,profile=unconfined", "name=apparmor,profile=docker-default", "name=apparmor,profile=/private/custom-profile"]) {
+  test(`the exact Ubuntu default profile cannot admit a different AppArmor descriptor: ${descriptor}`, async () => {
+    const fixture = ubuntuFixture();
+    fixture.info.SecurityOptions[0] = descriptor;
+    const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+    expect(outcome.exitCode).toBe(4);
+    expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+    expect(fixture.containers.size).toBe(0);
+  });
+}
+
+test("legacy and default-profile AppArmor descriptors cannot become two distinct mechanisms in a trusted policy", async () => {
+  const fixture = desktopFixture();
+  const descriptors = ["name=apparmor", "name=apparmor,profile=default"];
+  fixture.info.SecurityOptions.push(...descriptors);
+  const duplicated = { ...policy, engine: { ...policy.engine, securityOptions: [...policy.engine.securityOptions, ...descriptors] } };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [duplicated]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
 });

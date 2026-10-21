@@ -28,7 +28,7 @@ function hash(value: unknown): value is string { return typeof value === "string
 function build(value: unknown): value is RecordValue { return shape(value, ["version", "commit"]) && typeof value.version === "string" && /^v?\d+\.\d+\.\d+$/.test(value.version) && revision(value.commit); }
 function securityOptions(value: unknown): { readonly operatingMode: "rootful" | "rootless"; readonly entries: readonly string[] } | undefined {
   if (!Array.isArray(value) || value.length > 16) return undefined;
-  const known = new Map([["name=apparmor", "apparmor"], ["name=selinux", "selinux"], ["name=cgroupns", "cgroupns"], ["name=rootless", "rootless"], ["name=userns", "userns"], ["name=seccomp,profile=builtin", "seccomp"]]);
+  const known = new Map([["name=apparmor", "apparmor"], ["name=apparmor,profile=default", "apparmor"], ["name=selinux", "selinux"], ["name=cgroupns", "cgroupns"], ["name=rootless", "rootless"], ["name=userns", "userns"], ["name=seccomp,profile=builtin", "seccomp"]]);
   const names = new Set<string>();
   for (const entry of value) {
     if (typeof entry !== "string" || !known.has(entry)) return undefined;

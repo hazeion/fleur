@@ -9,12 +9,12 @@ import selectors
 import subprocess
 import time
 from daemon_trace import parse_stacks, PREFIXES, STATES, NAME
-from registration_canary import register_canary, retained_exit
+from registration_canary import register_canary, retained_exit, retire_owned_group
 
 # Reuse the existing bounded stack grammar inside the isolated root process.
 ROOT_PARSER = ('import json,re\nINPUT_LIMIT=65536\nOUTPUT_LIMIT=4096\n'
                +'PREFIXES='+repr(PREFIXES)+'\nSTATES='+repr(STATES)+'\nNAME='+repr(NAME)+'\n'
-               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(retained_exit)+"\n"+inspect.getsource(register_canary))
+               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(retained_exit)+"\n"+inspect.getsource(retire_owned_group)+"\n"+inspect.getsource(register_canary))
 
 # The privileged supervisor owns the child process group. Control EOF and the
 # original absolute time allowance both cause root to terminate and reap it.
@@ -117,12 +117,8 @@ finally:
                             raw_stack.extend(chunk)
                         except BlockingIOError: time.sleep(0.005)
             finally:
-                retained_exit(p) # retire a child that already exited during trace capture
-                try:
-                    if p.returncode is None:os.killpg(p.pid,signal.SIGKILL)
-                except ProcessLookupError: pass
-                try: p.wait(timeout=0.4 if diagnostic else 0.75) # failure-only reap grace, never operation success
-                except subprocess.TimeoutExpired: sys.exit(74)
+                try:retire_owned_group(p,0.4 if diagnostic else 0.75)
+                except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired):sys.exit(74)
     finally:
         if p is not None:
             # Count any final stderr bytes without retaining raw diagnostics.
@@ -434,6 +430,7 @@ class ContainerdObserver:
                 remaining=0
             success_limit=min(success_limit,now+remaining)
         limit=success_limit
+        self.cleanup_late=self.cleanup_late or now>=success_limit
         grace=False
         self.process.stdin.close() # root supervisor owns child kill and reap
         try:
@@ -470,15 +467,20 @@ class ContainerdObserver:
             if not self.cleanup_verified:
                 self.phase='closed-cleanup-unverified'
                 raise ObserverUnverified('observer-cleanup',self.snapshot())
-            self.cleanup_late=grace or time.monotonic()>=success_limit
+            self.cleanup_late=self.cleanup_late or grace or time.monotonic()>=success_limit
             self.phase='closed-after-deadline' if self.cleanup_late else 'closed'
             if self.cleanup_late:
                 raise ObserverUnverified('observer-cleanup-deadline',self.snapshot())
             return True
         except (subprocess.TimeoutExpired,OSError,ObserverUnverified) as error:
-            if isinstance(error,ObserverUnverified) and error.category=='observer-cleanup-deadline': raise
-            raise ObserverUnverified('observer-cleanup',self.snapshot()) from None
+            self.cleanup_late=self.cleanup_late or grace or time.monotonic()>=success_limit
+            category='observer-cleanup-deadline' if self.cleanup_late else 'observer-cleanup'
+            self.phase='closed-after-deadline' if self.cleanup_verified and self.cleanup_late else 'closed-cleanup-unverified'
+            raise ObserverUnverified(category,self.snapshot()) from None
         finally:
             if self.closed or self.process.poll() is not None:
+                # Terminal transport without a verified retirement ACK remains
+                # unconfirmed; repeated close must not touch a closed selector.
+                self.closed=True
                 self.selector.close()
                 self.process.stdout.close()

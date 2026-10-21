@@ -9,6 +9,27 @@ def retained_exit(child):
     return value.si_status if value.si_code==os.CLD_EXITED else -value.si_status
 
 
+def retire_owned_group(child, allowance):
+    """Signal while reserved, then prove disappearance within one old grace."""
+    import os
+    import signal
+    import time
+    end=time.monotonic()+allowance
+    retained_exit(child)  # Successful ownership observation, including pending.
+    if time.monotonic()>=end:raise RuntimeError('owned group retirement deadline')
+    try:os.killpg(child.pid,signal.SIGKILL)
+    except ProcessLookupError:pass
+    child.wait(timeout=max(0,end-time.monotonic()))
+    # The leader is now reaped. Only observation is safe from this point.
+    while True:
+        try:os.killpg(child.pid,0)
+        except ProcessLookupError:return
+        except PermissionError:raise RuntimeError('owned group disappearance unconfirmed') from None
+        remaining=end-time.monotonic()
+        if remaining<=0:raise RuntimeError('owned group remains after retirement')
+        time.sleep(min(.005,remaining))
+
+
 def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error, verify_control=None, verify_cleanup=None):
     import json
     import os
@@ -101,28 +122,16 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
             return captured['canary-out'].decode('utf-8')
         finally:
             if child is not None:
-                # WNOWAIT proof must still exist immediately before signaling;
-                # returncode=None alone does not exclude an external reap.
-                reserved=False
                 try:
-                    try:
-                        retained_exit(child)
-                        reserved=True
-                    except (OSError,RuntimeError,AttributeError):
+                    try:retire_owned_group(child,.2)
+                    except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired):
                         children_reaped=False
-                    if reserved:
-                        try:os.killpg(child.pid,signal.SIGKILL)
-                        except ProcessLookupError:pass
-                        try:child.wait(timeout=.2)
-                        except subprocess.TimeoutExpired:
-                            children_reaped=False
-                            raise
+                        raise Failed('canary-child-retirement') from None
                 finally:
                     for stream in (child.stdout,child.stderr):
                         try:selector.unregister(stream)
                         except KeyError:pass
                         stream.close()
-                if not reserved:raise Failed('canary-child-reservation')
 
     def owned(labels):
         for line in labels.splitlines():

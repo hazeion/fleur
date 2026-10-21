@@ -8,7 +8,7 @@ const policy = {
   host: { system: "darwin", distribution: null, release: "15.7.7", architecture: "x64" },
   bun: "1.4.3",
   cli: { version: "29.9.2", commit: "a82e528" },
-  engine: { version: "29.9.2", commit: "0367cbe", kernel: "7.0.14-linuxkit", platform: "Docker Desktop 4.96.1 (244132)" },
+  engine: { version: "29.9.2", commit: "0367cbe", kernel: "7.0.14-linuxkit", platform: "Docker Desktop 4.96.1 (244132)", cgroupDriver: "cgroupfs", cgroupVersion: "2", operatingMode: "rootful", securityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] },
   containerd: { version: "v2.4.2", commit: "b7a25261e029d68978bbf290df0a62fc819b3c51" },
   runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" },
   compose: "5.6.0", image,
@@ -21,7 +21,7 @@ function desktopFixture() {
   const containers = new Map<string, { name: string; owner: string; finished: boolean }>();
   const id = "a".repeat(64);
   const imageId = "sha256:" + "b".repeat(64);
-  const info = { ID: "fixture-engine-identity", KernelVersion: "7.0.14-linuxkit", ServerVersion: "29.9.2", OSType: "linux", Architecture: "x86_64" };
+  const info = { CgroupVersion: "2", CgroupDriver: "cgroupfs", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], ID: "fixture-engine-identity", KernelVersion: "7.0.14-linuxkit", ServerVersion: "29.9.2", OSType: "linux", Architecture: "x86_64" };
   const server = {
     Version: "29.9.2", GitCommit: "0367cbe", KernelVersion: "7.0.14-linuxkit", Os: "linux", Arch: "amd64",
     Platform: { Name: "Docker Desktop 4.96.1 (244132)" },
@@ -170,4 +170,94 @@ test("decoding final daemon metadata still consumes the original deadline", asyn
     expect(outcome.result).toMatchObject({ error: { code: "READINESS_TIMEOUT" }, data: { components: { smoke: { cleanup: true }, release: { state: "unverified" } } } });
     expect(fixture.containers.size).toBe(0);
   } finally { clock.mockRestore(); }
+});
+
+
+test("qualified versions cannot hide disabled daemon memory enforcement", async () => {
+  const fixture = desktopFixture();
+  fixture.info.MemoryLimit = false;
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("an unqualified rootless daemon cannot inherit a rootful runtime policy", async () => {
+  const fixture = desktopFixture();
+  fixture.info.SecurityOptions.push("name=rootless");
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("a separately qualified rootless runtime can match its own exact policy", async () => {
+  const fixture = desktopFixture();
+  fixture.info.SecurityOptions.push("name=rootless");
+  const rootless = { ...policy, id: "synthetic-qualified-rootless", engine: { ...policy.engine, operatingMode: "rootless" as const, securityOptions: [...policy.engine.securityOptions, "name=rootless"] } };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [rootless]) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "synthetic-qualified-rootless" } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("nested security policy arrays are copied before command execution", async () => {
+  const fixture = desktopFixture();
+  const options: string[] = [...policy.engine.securityOptions];
+  const mutable = { ...policy, engine: { ...policy.engine, securityOptions: options } };
+  const handlers = setupCommands(fixture.host, [], [mutable]);
+  options.push("name=userns");
+  fixture.info.SecurityOptions.push("name=userns");
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+function ubuntuFixture() {
+  const fixture = desktopFixture();
+  Object.assign(fixture.info, { ServerVersion: "29.9.1", KernelVersion: "6.8.0-147-generic", CgroupDriver: "systemd", SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"] });
+  Object.assign(fixture.server, { Version: "29.9.1", GitCommit: "b26fb77", KernelVersion: "6.8.0-147-generic", Platform: { Name: "Docker Engine - Community" } });
+  fixture.server.Components[0]!.Version = "29.9.1";
+  fixture.server.Components[0]!.Details.GitCommit = "b26fb77";
+  const host: SetupHost = {
+    ...fixture.host,
+    host: async () => ({ system: "linux", distribution: "ubuntu", architecture: "x64", translated: false, release: "24.04", machineId: "c".repeat(64) }),
+    run: async (args, timeout, context) => args.join(" ") === "docker --version"
+      ? { status: "completed", exitCode: 0, stdout: "Docker version 29.9.1, build dfc520d", stderr: "" }
+      : fixture.host.run(args, timeout, context),
+  };
+  return { ...fixture, host };
+}
+
+test("ordinary doctor recognizes only the source-mapped Ubuntu qualification without a profile override", async () => {
+  const fixture = ubuntuFixture();
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2", isolationSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+
+
+test("ordinary setup exposes the source-mapped Ubuntu plan but never installs without separate human grants", async () => {
+  const { mkdtemp, rm, readdir } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-source-owned-apt-");
+  const commands: string[][] = [];
+  try {
+    const host: SetupHost = {
+      stateDirectory: directory,
+      host: async () => ({ system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64", translated: false, machineId: "c".repeat(64) }),
+      run: async (args) => {
+        commands.push([...args]);
+        if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
+        if (args[0] === "dpkg-query") return { status: "completed", exitCode: 1, stdout: "", stderr: "" };
+        throw new Error("Unexpected host operation without human grants");
+      },
+    };
+    const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+    expect(outcome.exitCode).toBe(3);
+    expect(outcome.result).toMatchObject({ error: { code: "AUTHORITY_REQUIRED" }, data: { plan: { verified: true, requiredAuthorities: ["install", "configuration", "docker-access", "service-start", "service-enable"] } } });
+    expect(commands.map((args) => args[0])).toEqual(["docker", "dpkg-query"]);
+    expect(await readdir(directory)).toEqual(["setup.lock"]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

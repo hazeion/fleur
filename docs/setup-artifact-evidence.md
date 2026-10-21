@@ -202,6 +202,8 @@ The operator completed Desktop startup. A separately authorized one-time Fleur s
 
 Both doctor results honestly retained exit 4 and release state unverified. This proves repeated existing-tool readiness and preservation for the observed tuple, not assisted DMG installation, human legal acceptance, Desktop application-runtime isolation, Apple Silicon or other release admission. The compiled readiness policy must not infer support from this observation alone.
 
+Repeating the existing-only verifier against ordinary-catalog candidate `37513637b2c6b7e264edfcc36cd02181fc859c1d` produced report `1b5e9ee287d063a0e4d5f48fa325d87280755f0a90ac863eb4b49ad66586d21e`. Both packed rounds again completed smoke cleanup and retained unverified release state. The verifier acquired no image, preserved the stopped sentinel and restored the original container inventory and context. Its wrapper completed in 13.78 seconds without timeout. This confirms that the Ubuntu candidate does not qualify the observed Desktop tuple.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.
@@ -229,3 +231,10 @@ native CPU performance evidence. The account has sudo; this is not a trust proof
 against a privileged adversary. Runtime observer/control integration and binding
 the later enrollment/resume chain to this context require separate review. The
 existing restriction, lifecycle and cleanup gates remain mandatory.
+
+
+## Ubuntu ordinary-catalog admission candidate
+
+The exact Ubuntu 24.04 x64 prerequisite and official APT records now map the reviewed report `75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2` to source commit `a9606d74fd55b252c0aab8432ff72ec513457a5e` and artifact catalog `540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58`. The older diagnostic catalog and its historical pending labels are preserved. This source change proposes one prerequisite tuple; it does not promote the global runtime gate or other platforms.
+
+The ordinary Doctor contract additionally binds current daemon resource flags, cgroup driver, rootful/rootless mode and exact security options. The proposed Ubuntu systemd/rootful/AppArmor tuple must be captured and checked in the new ordinary packed VM run; those complete metadata fields were not directly retained by the older report. Focused synthetic OS fixtures verify selection and rejection behavior, not native execution. Fresh ordinary setup, ready reprobes, exact metadata and cleanup remain required before this candidate can ship. Existing enrollment resume is not evidence of termination during a privileged package transaction; interruption and recovery contracts require their separate tests.

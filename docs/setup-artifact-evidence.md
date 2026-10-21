@@ -150,6 +150,21 @@ Separate deep application validation, explicit app certificate-anchor assessment
 
 The [official installation method](https://docs.docker.com/desktop/setup/install/mac-install/) involves application placement and configuration. Actual legal acceptance remains a human action; no --accept-license flag or automated acceptance was performed. Default CLI PATH configuration and privileged helpers must be covered separately where exercised. No app launch or Desktop installation/readiness proof occurred.
 
+## Compiler prerequisite milestone, 2026-10-20
+
+A separate owned Ubuntu 24.04 amd64 diagnostic fixture compiled both restriction helpers using the tracked [compiler prerequisite preparation](../scripts/prepare-guest-compiler.py). The source was `91ca8da5584200f8266d2dc0fff21f07a59892f2`; integration merge `e0fceab421876837c404ea0eb6e768a7e5fe2d8f` has the same source tree. The independently checked report SHA256 is `3d029c70f29cddfd8c05d4d3fc07915a9459788f291dd589c55972624d5ce44e`. This adds compiler execution evidence to the earlier artifact authentication; it does not change the historical results above.
+
+The earlier compiler failure came from missing generic `as` and `ld` names after extracting the authenticated qualified binutils executables. The fix creates only guarded aliases to those real binaries, refuses existing names, validates target identity/hash/ELF and compiler search results, and checks custody around compilation. It preserves foreign entries and reports uncertain rollback rather than claiming cleanup. The [source-owned manifest](../scripts/guest-compiler-ubuntu24-amd64.json), all 38 package tuples (59,127,120 bytes), GCC 13.3.0 pin, helper sources, compile flags and deadlines remain unchanged. Manifest SHA256: `11127a1f28b3bac544f79d0f0bc4f91a68afec74568c342bc4bb7c773dcf00d7`; compiler SHA256: `1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26`.
+
+| Helper | Native output | SHA256 |
+|---|---|---|
+| `filter.so` | ELF machine 62, 30,648 bytes | `99e38df6acbde709100bfcf80c02eee49d364abd8b89838c006e572344da7ab4` |
+| `abuse` | ELF machine 62, 16,928 bytes | `67e15a766caaae73f1068cec21150160c8d9d80fcdf527e461d3ed35fae4a1c8` |
+
+Preparation built but did not execute these outputs. The later unchanged restriction probe independently verified the compiler pin and produced matching helper hashes through its ordinary compilation path. Successful aliases were retained for that probe; their `cleanupConfirmed: null` records that rollback was not performed on success. The owned package/build stage was removed. Restriction cleanup, sentinel restoration, final VM reaping and credential removal were confirmed, and two doctor rounds were recorded.
+
+The overall run still failed with `containerd proof host ineligible`: `bounded_probe_passed` and `v1_gate_passed` were false. Initial worker GC observed six collections, 128 retained objects and 16,384 retained bytes; CPU throttling, memory OOM and PID-limit observations were also reached. These are subsets, not complete GC/idle/trace/deadline or runtime-profile proof. The fixture remains diagnostic only, runtime support unverified and installation evidence pending; gate proof and native CPU performance proof remain false. It supplies no human-consent proof, hosted-CI pass or completed issue #24 acceptance criterion. The earlier emulated timing failures remain unresolved by this compiler milestone.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.

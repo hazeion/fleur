@@ -30,7 +30,7 @@ GUEST_DEADLINE = None
 def budget_seconds(limit):
     remaining = limit if GUEST_DEADLINE is None else min(limit, GUEST_DEADLINE - time.monotonic())
     if remaining < 1:
-        raise RuntimeError("Guest aggregate verification deadline expired")
+        raise TimeoutError("Guest aggregate verification deadline expired")
     return remaining
 
 

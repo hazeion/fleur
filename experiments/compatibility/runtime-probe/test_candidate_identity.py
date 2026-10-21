@@ -1,5 +1,5 @@
 """Candidate observations through filesystem and bounded command protocols."""
-import ast,io,json,stat,subprocess,sys,unittest
+import ast,io,json,stat,subprocess,sys,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -93,4 +93,15 @@ class CandidateObservation(unittest.TestCase):
  def test_non_timeout_command_refusal_is_not_reported_as_timeout(self):
   result=self.observe(command_error=RuntimeError('Guest command output exceeded evidence limit'))
   self.assertEqual(result['outcome'],'unavailable');self.assertFalse(result['timedOut'])
+ def test_real_guest_exhausted_aggregate_budget_is_timeout_without_spawn(self):
+  source=Path(__file__).resolve().parents[3]/'scripts/fresh-linux-guest.py'
+  tree=ast.parse(source.read_text());tree.body=[node for node in tree.body if not isinstance(node,ast.Try)]
+  namespace={};exec(compile(tree,str(source),'exec'),namespace)
+  namespace['GUEST_DEADLINE']=time.monotonic()-1
+  def runner(args,**kwargs):return namespace['run']([sys.executable,'-c','raise AssertionError("must not execute")'],timeout=5)
+  with patch('subprocess.Popen') as launched:
+   result=self.observe(runner=runner)
+  launched.assert_not_called()
+  self.assertEqual(result['outcome'],'unavailable');self.assertTrue(result['timedOut'])
+  self.assertFalse(result['accepted'])
 if __name__=='__main__':unittest.main()

@@ -6,10 +6,11 @@ export const verifiedReadinessProfiles = [{
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64" },
   bun: "1.4.3",
   cli: { version: "29.9.1", commit: "dfc520d" },
+  // This Engine build reports its default AppArmor template as profile=default.
   engine: {
     version: "29.9.1", commit: "b26fb77", kernel: "6.8.0-147-generic",
     platform: "Docker Engine - Community", cgroupDriver: "systemd", cgroupVersion: "2",
-    operatingMode: "rootful", securityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"],
+    operatingMode: "rootful", securityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"],
   },
   containerd: { version: "v2.4.2", commit: "b7a25261e029d68978bbf290df0a62fc819b3c51" },
   runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" },

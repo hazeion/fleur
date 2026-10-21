@@ -96,7 +96,7 @@ class OwnedGuestCustody(unittest.TestCase):
                     (root/'etc/unrelated-service-state').write_text('separate root-owned host state')
                 return SimpleNamespace(returncode=0,stdout=b'qemu\n',stderr=b'')
             output=io.StringIO()
-            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
+            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.os.geteuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
                 if control_binding is None:
                     code=owned_guest.main(['--owned-guest-nonce',NONCE] if arguments is None else arguments)
                 else:
@@ -267,6 +267,13 @@ class OwnedGuestCustody(unittest.TestCase):
             with contextlib.redirect_stdout(captured):
                 code=owned_guest.main(['--verify-control',fixture.context.root_payload(),'--budget-seconds','0.25'])
             self.assertEqual(code,4);self.assertFalse(json.loads(captured.getvalue())['ok'])
+        self.with_context(action)
+
+    def test_root_control_refuses_real_root_without_effective_root_before_io(self):
+        def action(fixture):
+            with patch('owned_guest.os.geteuid',return_value=1000),patch('owned_guest.os.open',side_effect=AssertionError('nonprivileged root validation reached files')):
+                response=fixture.root_cli(['--verify-control',fixture.context.root_payload(),'--budget-seconds','0.25'])
+            self.assertEqual(response.returncode,4);self.assertFalse(json.loads(response.stdout)['ok'])
         self.with_context(action)
 
     def test_boot_producer_never_replaces_an_existing_manifest(self):

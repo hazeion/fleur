@@ -1,0 +1,106 @@
+import { validateSetupArguments } from "./syntax.ts";
+import { withSetupLock, SetupBusy, syncStateDirectory } from "./lock.ts";
+import { constants } from "node:fs";
+import { lstat, open, rename, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { failure, success, type CliOutcome } from "../cli/result.ts";
+import type { CommandInput } from "../cli/catalog.ts";
+import type { SetupHost } from "./commands.ts";
+export interface Grant {
+  readonly id: string;
+  readonly action: string;
+  readonly method: string;
+  readonly target: string;
+  readonly planChecksum: string;
+  readonly machine: string;
+  readonly user: number;
+  readonly mode: "once" | "remembered";
+  readonly revoked: boolean;
+}
+export function stateDirectory(host: SetupHost): string { return host.stateDirectory ?? join(homedir(), ".local", "state", "fleur", "setup"); }
+function isGrant(value: unknown): value is Grant {
+  if (value === null || typeof value !== "object") return false;
+  const grant = value as Record<string, unknown>;
+  const fields = ["id", "action", "method", "target", "planChecksum", "machine", "user", "mode", "revoked"];
+  return !Array.isArray(value)
+    && Object.keys(grant).length === fields.length
+    && Object.keys(grant).every((key) => fields.includes(key))
+    && typeof grant.id === "string" && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(grant.id)
+    && typeof grant.action === "string" && ["install", "service-start", "service-enable", "docker-access", "configuration", "repository-configuration", "image-acquire"].includes(grant.action)
+    && typeof grant.method === "string" && ["docker-desktop-official-dmg", "docker-official-apt", "arch-official-pacman", "docker-digest-pull"].includes(grant.method)
+    && typeof grant.target === "string" && grant.target.length > 0 && grant.target.length <= 512 && [...grant.target].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+    && typeof grant.planChecksum === "string" && /^[a-f0-9]{64}$/.test(grant.planChecksum)
+    && typeof grant.machine === "string" && /^[a-f0-9]{64}$/.test(grant.machine)
+    && typeof grant.user === "number" && Number.isSafeInteger(grant.user) && grant.user >= 0 && grant.user === process.getuid?.()
+    && typeof grant.mode === "string" && ["once", "remembered"].includes(grant.mode)
+    && typeof grant.revoked === "boolean";
+}
+function validateStore(value: unknown): readonly Grant[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid grant store");
+  const store = value as Record<string, unknown>;
+  if (Object.keys(store).length !== 2 || !Object.keys(store).every((key) => ["formatVersion", "grants"].includes(key)) || store.formatVersion !== 1 || !Array.isArray(store.grants) || store.grants.length > 100 || !store.grants.every(isGrant) || new Set(store.grants.map((grant) => grant.id)).size !== store.grants.length) throw new Error("Invalid grant store");
+  return store.grants;
+}
+export async function readGrants(host: SetupHost): Promise<readonly Grant[]> {
+  const directory = stateDirectory(host);
+  let info;
+  try { info = await lstat(directory); } catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new Error("Unsafe setup state directory");
+  let file;
+  try { file = await open(join(directory, "grants.json"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (error) { if ((error as { code?: string }).code === "ENOENT") return []; throw error; }
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o077) !== 0 || metadata.size > 65536) throw new Error("Unsafe setup grant file");
+    // Bound bytes even if a regular file grows after its initial stat.
+    const bytes = Buffer.alloc(65537);
+    let used = 0;
+    while (used < bytes.length) {
+      const result = await file.read(bytes, used, bytes.length - used, used);
+      if (result.bytesRead === 0) break;
+      used += result.bytesRead;
+    }
+    if (used > 65536) throw new Error("Grant file exceeded the bounded read");
+    const value: unknown = JSON.parse(bytes.subarray(0, used).toString("utf8"));
+    return validateStore(value);
+  } finally { await file.close(); }
+}
+export async function listGrants(input: CommandInput, host: SetupHost): Promise<CliOutcome> {
+  const invalid = validateSetupArguments("setup grants list", input.args);
+  if (invalid) return invalid;
+  try { return success("setup grants list", { grants: (await readGrants(host)).map(({ id, action, method, target, mode, revoked }) => ({ id, action, method, target, mode, revoked })) }); }
+  catch { return failure("setup grants list", 5, { code: "RECOVERY_REQUIRED", message: "The private grant store is malformed or unsafe; no authority was used.", actions: [] }); }
+}
+
+export async function revokeGrant(input: CommandInput, host: SetupHost): Promise<CliOutcome> {
+  const id = input.args[0] ?? "";
+  const invalid = validateSetupArguments("setup grants revoke", input.args);
+  if (invalid) return invalid;
+  try {
+    return await withSetupLock(stateDirectory(host), async () => {
+      const grants = await readGrants(host);
+      if (!grants.some((grant) => grant.id === id)) return failure("setup grants revoke", 1, { code: "ARGUMENT_INVALID", message: "The setup grant does not exist.", actions: [{ command: "fleur setup grants list", description: "Inspect available grant IDs." }] });
+      await writeGrants(host, grants.map((grant) => grant.id === id ? { ...grant, revoked: true } : grant));
+      return success("setup grants revoke", { id, revoked: true });
+    }, host.syncDirectory);
+  } catch (error) { return failure("setup grants revoke", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Grant revocation is blocked by concurrent setup or unsafe state; no machine action was performed.", actions: [] }); }
+}
+
+/** Caller holds the setup lock across validation, consumption and the external action. */
+export async function writeGrants(host: SetupHost, grants: readonly Grant[]): Promise<void> {
+  const store = { formatVersion: 1, grants };
+  validateStore(store);
+  const encoded = JSON.stringify(store) + "\n";
+  if (Buffer.byteLength(encoded, "utf8") > 65536) throw new Error("Grant store exceeds encoded byte limit");
+  // Validate the exact payload before publishing authority, not merely the in-memory inputs.
+  validateStore(JSON.parse(encoded));
+  const temporary = join(stateDirectory(host), `grants-${crypto.randomUUID()}.tmp`);
+  try {
+    const file = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+    try { await file.writeFile(encoded); await file.sync(); }
+    finally { await file.close(); }
+    await rename(temporary, join(stateDirectory(host), "grants.json"));
+    // A rename is not durable authority until its directory entry is flushed.
+    await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
+  } finally { await unlink(temporary).catch(() => {}); }
+}

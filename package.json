@@ -1,0 +1,31 @@
+{
+  "name": "fleur",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "fleur": "./bin/fleur.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "docs/cli.md",
+    "docs/project-creation.md",
+    "docs/setup.md",
+    "docs/setup-arch-services.md",
+    "docs/setup-desktop.md",
+    "docs/setup-artifact-evidence.md"
+  ],
+  "engines": {
+    "bun": "1.4.3"
+  },
+  "scripts": {
+    "test": "bun test tests/cli",
+    "types": "bun ./node_modules/typescript/bin/tsc --noEmit",
+    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli scripts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "typescript": "7.0.2",
+    "oxlint": "1.87.0"
+  }
+}

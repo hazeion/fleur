@@ -112,6 +112,15 @@ CONTAINERD_BUILDS = {
     'v2.4.2':'b7a25261e029d68978bbf290df0a62fc819b3c51',
 }
 
+# Internal infrastructure identity audit only; not production runtime admission.
+CONTROL_PROFILES = {
+    'github-hosted': {'docker': ('28.0.4', '6430e49'), 'containerd': CONTAINERD_BUILDS,
+                      'runc': ('1.5.2', 'v1.5.2-0-g29dd3dc2')},
+    'owned-guest': {'docker': ('29.9.1', 'b26fb77'),
+                    'containerd': {'v2.4.2': 'b7a25261e029d68978bbf290df0a62fc819b3c51'},
+                    'runc': ('1.5.2', 'v1.5.2-0-g29dd3dc2')},
+}
+
 
 def _option(arguments, name):
     values = []
@@ -131,23 +140,25 @@ class ContainerdControlUnverified(ValueError):
         super().__init__('host containerd prerequisite unverified ('+category+')')
 
 
-def audit_containerd_control(arguments, config, server, ctr_detail):
+def audit_containerd_control(arguments, config, server, ctr_detail, *, host_scope='github-hosted'):
     facts={}
     def require(condition,category):
         if not condition: raise ContainerdControlUnverified(category,facts)
+    profile = CONTROL_PROFILES.get(host_scope) if type(host_scope) is str else None
+    require(profile is not None, 'host-profile')
     require(type(arguments) is list and all(type(value) is str for value in arguments)
             and type(config) is dict and type(server) is dict,'input-shape')
     address = _option(arguments,'--containerd') or config.get('containerd')
     namespace = _option(arguments,'--containerd-namespace') or config.get('containerd-namespace','moby')
     facts.update(address_configured=type(address) is str and address.startswith('/'),namespace_moby=namespace=='moby')
     require(facts['address_configured'] and facts['namespace_moby'],'address-namespace')
-    facts.update(docker_version_match=server.get('Version')=='28.0.4',docker_commit_match=server.get('GitCommit')=='6430e49')
+    facts.update(docker_version_match=server.get('Version')==profile['docker'][0],docker_commit_match=server.get('GitCommit')==profile['docker'][1])
     require(facts['docker_version_match'] and facts['docker_commit_match'] and type(server.get('Components')) is list,'docker-version')
     components=[row for row in server['Components'] if type(row) is dict and row.get('Name')=='containerd']
     facts['containerd_component_count']=len(components)
     require(len(components)==1,'containerd-component')
     containerd_version=components[0].get('Version')
-    containerd_commit=CONTAINERD_BUILDS.get(containerd_version) if type(containerd_version) is str else None
+    containerd_commit=profile['containerd'].get(containerd_version) if type(containerd_version) is str else None
     facts.update(containerd_version_match=containerd_commit is not None,
                  containerd_commit_match=containerd_commit is not None and type(components[0].get('Details')) is dict
                  and components[0]['Details'].get('GitCommit')==containerd_commit)
@@ -155,9 +166,9 @@ def audit_containerd_control(arguments, config, server, ctr_detail):
     runtimes=[row for row in server['Components'] if type(row) is dict and row.get('Name')=='runc']
     facts['runc_component_count']=len(runtimes)
     require(len(runtimes)==1,'runc-component')
-    facts.update(runc_version_match=runtimes[0].get('Version')=='1.5.2',
+    facts.update(runc_version_match=runtimes[0].get('Version')==profile['runc'][0],
                  runc_commit_match=type(runtimes[0].get('Details')) is dict and
-                 runtimes[0]['Details'].get('GitCommit')=='v1.5.2-0-g29dd3dc2')
+                 runtimes[0]['Details'].get('GitCommit')==profile['runc'][1])
     require(facts['runc_version_match'] and facts['runc_commit_match'],'runc-version')
     require(type(ctr_detail) is str and len(ctr_detail.encode())<=65536,'ctr-version-detail')
     sections={};current=None
@@ -175,8 +186,8 @@ def audit_containerd_control(arguments, config, server, ctr_detail):
         facts[prefix+'_revision_match']=sections[section].get('Revision')==containerd_commit
         require(facts[prefix+'_version_match'],prefix+'-version')
         require(facts[prefix+'_revision_match'],prefix+'-revision')
-    return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':'28.0.4','docker_commit':'6430e49',
-            'runc_version':'1.5.2','runc_commit':'v1.5.2-0-g29dd3dc2',
+    return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':profile['docker'][0],'docker_commit':profile['docker'][1],
+            'runc_version':profile['runc'][0],'runc_commit':profile['runc'][1],
             'containerd_version':containerd_version[1:],'containerd_commit':containerd_commit,'ctr_revision_verified':True,'version_evidence':'single-client-server-query',
             'prerequisite_observations':facts,
             'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}
@@ -253,14 +264,15 @@ def read_default_docker_control(socket_path, *, timeout):
         if root_fd is not None:os.close(root_fd)
 
 
-def inspect_containerd_control(*, probe_first_use=False):
+def inspect_containerd_control(*, probe_first_use=False, host_context=None, with_binding=False):
     """Linux CI host infrastructure only; no socket/privilege reaches a worker."""
     import hashlib
     from pathlib import Path
     import stat
     import time
-    from daemon_trace import eligible_host
-    if not eligible_host(): raise RuntimeError('containerd proof host ineligible')
+    from host_control import authorize_host_control
+    authority_started=time.monotonic()
+    host_scope=authorize_host_control(host_context,remaining=15)
     def trusted(path, kind, socket=False):
         real=Path(path).resolve(strict=True);info=real.stat()
         if info.st_uid != 0 or info.st_mode & (0o002 if socket else 0o022) or not kind(info.st_mode):
@@ -272,6 +284,10 @@ def inspect_containerd_control(*, probe_first_use=False):
         return real
     def command(args,environment=None,category='host-command',timeout=5):
         started=time.monotonic()
+        if host_context is not None and args[0]=='/usr/bin/sudo':
+            authorize_host_control(host_context,remaining=timeout)
+            timeout-=time.monotonic()-started
+            if timeout<=0:raise ContainerdControlUnverified(category,{'timed_out':True})
         try:
             result=subprocess.run(args,stdin=subprocess.DEVNULL,capture_output=True,timeout=timeout,
                                   env=environment,check=False)
@@ -336,6 +352,10 @@ def inspect_containerd_control(*, probe_first_use=False):
     if type(address) is not str or not address.startswith('/') or namespace!='moby':
         raise ContainerdControlUnverified('address-namespace',{'address_configured':type(address) is str and address.startswith('/'),'namespace_moby':namespace=='moby'})
     trusted(address,stat.S_ISSOCK,socket=True)
+    retained_binding=None
+    if host_context is not None:
+        from privileged_control import HostDaemonBinding, daemon_identity
+        retained_binding=HostDaemonBinding(host_context,daemon_identity(address,'/usr/bin/ctr',deadline=min(authority_started+15,host_context.deadline)),default_id)
     startup_started=time.monotonic()
     phases={}
     probes={}
@@ -351,6 +371,10 @@ def inspect_containerd_control(*, probe_first_use=False):
                  'host_startup_budget_seconds':15,'host_startup_phases_ms':dict(phases),
                  'host_startup_probes':dict(probes)})
         return remaining
+    if retained_binding is not None:
+        from privileged_control import ROOT_BINDING_SOURCE
+        root_version=ROOT_BINDING_SOURCE+"\nimport sys\npayload=sys.argv[1];binding=json.loads(sys.argv[2]);deadline=min(float(sys.argv[3]),json.loads(payload)['deadlineMonotonic'])\nverify_root_binding(payload,binding,deadline)\nexec_root_version(sys.argv[5:],deadline)\n"
+        prefix=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',root_version,*retained_binding.root_arguments(authority_started+15),str(authority_started+15)]
     if probe_first_use:
         # Diagnostic benchmark only: isolate sudo/session startup, then cold ctr
         # loading without any server RPC. Each still consumes the same 15s fence.
@@ -375,13 +399,18 @@ def inspect_containerd_control(*, probe_first_use=False):
             probes[phase]['duration_ms']=phases[phase]
     version_started=time.monotonic()
     remaining=remaining_budget() if probe_first_use else 15
-    inner_timeout=str(remaining-1)+'s' if probe_first_use else '14s'
+    if host_context is not None:
+        remaining=min(remaining,15-(time.monotonic()-authority_started))
+        authorize_host_control(host_context,remaining=remaining)
+        remaining=min(remaining,15-(time.monotonic()-authority_started))
+        if remaining<=1:raise ContainerdControlUnverified('ctr-startup-deadline',{'timed_out':True})
+    inner_timeout=str(remaining-1)+'s' if probe_first_use or host_context is not None else '14s'
     version_completed=None
     try:
         detail=command(prefix+[inner_timeout,str(ctr),'--address',address,'--namespace',namespace,'version'],
                        environment,category='ctr-version-command',timeout=remaining)
         version_completed=time.monotonic()
-        control=audit_containerd_control(arguments,config,server,detail)
+        control=audit_containerd_control(arguments,config,server,detail,host_scope=host_scope)
     except ContainerdControlUnverified as error:
         failure_observed=time.monotonic()
         completed=version_completed if version_completed is not None else failure_observed
@@ -416,4 +445,6 @@ def inspect_containerd_control(*, probe_first_use=False):
                                           'identity_audit':round(1000*(audit_completed-version_completed)),
                                           'binary_sha256':round(1000*(hash_completed-audit_completed))},
                    optional_deprecation_rpc=False)
+    if with_binding:
+        return control,retained_binding
     return control

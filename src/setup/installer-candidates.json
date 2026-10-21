@@ -1,0 +1,292 @@
+{
+  "noble-amd64": {
+    "source": "https://download.docker.com/linux/ubuntu/dists/noble/stable/binary-amd64/Packages.gz",
+    "packages": [
+      {
+        "Package": "docker-ce",
+        "Version": "5:29.9.1-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/amd64/docker-ce_29.9.1-1~ubuntu.24.04~noble_amd64.deb",
+        "SHA256": "463a666215797c9f9ea7d0ad1751de5b2b3806a1b539a3550e16822ef34ccbfd",
+        "Depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+      },
+      {
+        "Package": "docker-ce-cli",
+        "Version": "5:29.9.1-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/amd64/docker-ce-cli_29.9.1-1~ubuntu.24.04~noble_amd64.deb",
+        "SHA256": "961968342af4738eb5fb5fc03f9834106c1e454bd010d574cf1a6feae9905efc",
+        "Depends": "libc6 (>= 2.34)"
+      },
+      {
+        "Package": "containerd.io",
+        "Version": "2.4.2-2~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/amd64/containerd.io_2.4.2-2~ubuntu.24.04~noble_amd64.deb",
+        "SHA256": "7327ab23182425e94b46a91567e9ddf0183f9b3a5ed53d5e2489f000dbf9cfe2",
+        "Depends": "libc6 (>= 2.38), libseccomp2 (>= 2.5.0)"
+      },
+      {
+        "Package": "docker-compose-plugin",
+        "Version": "5.6.0-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/amd64/docker-compose-plugin_5.6.0-1~ubuntu.24.04~noble_amd64.deb",
+        "SHA256": "132266d499d9873aafcbe5b515997b8abd714914fa32a62ccac705c1ede7ca81",
+        "Depends": null
+      },
+      {
+        "Package": "docker-buildx-plugin",
+        "Version": "0.38.0-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~ubuntu.24.04~noble_amd64.deb",
+        "SHA256": "7094f8b50bc6b239292d475620424a531f7fa0763e466c52ffc3a4037e72bfc5",
+        "Depends": null
+      }
+    ],
+    "tested": false,
+    "signature_verified": false
+  },
+  "noble-arm64": {
+    "source": "https://download.docker.com/linux/ubuntu/dists/noble/stable/binary-arm64/Packages.gz",
+    "packages": [
+      {
+        "Package": "docker-ce",
+        "Version": "5:29.9.1-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/arm64/docker-ce_29.9.1-1~ubuntu.24.04~noble_arm64.deb",
+        "SHA256": "3f9affcfd066100a255dc7c42ab7afd1dafbeec1790c3fa0e82a4ff875334d03",
+        "Depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+      },
+      {
+        "Package": "docker-ce-cli",
+        "Version": "5:29.9.1-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/arm64/docker-ce-cli_29.9.1-1~ubuntu.24.04~noble_arm64.deb",
+        "SHA256": "e9cfb10f2b52fbf7e744791cdd2fcf6e183accc19d8b781dfab5c9c68f697c60",
+        "Depends": "libc6 (>= 2.34)"
+      },
+      {
+        "Package": "containerd.io",
+        "Version": "2.4.2-2~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/arm64/containerd.io_2.4.2-2~ubuntu.24.04~noble_arm64.deb",
+        "SHA256": "a24f7d5dbe60f7d6e76fccc9c9713609311ab61536a7a01ef858e7eccc698d92",
+        "Depends": "libc6 (>= 2.38), libseccomp2 (>= 2.5.0)"
+      },
+      {
+        "Package": "docker-compose-plugin",
+        "Version": "5.6.0-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/arm64/docker-compose-plugin_5.6.0-1~ubuntu.24.04~noble_arm64.deb",
+        "SHA256": "eda8bb0d68dbba07c38d810eff11b00377f8255db802c49707a2f137d219e9d6",
+        "Depends": null
+      },
+      {
+        "Package": "docker-buildx-plugin",
+        "Version": "0.38.0-1~ubuntu.24.04~noble",
+        "Filename": "dists/noble/pool/stable/arm64/docker-buildx-plugin_0.38.0-1~ubuntu.24.04~noble_arm64.deb",
+        "SHA256": "6329557882fa9cb3e00fdc2edbad1de891779f7805e211c05f15f319bf6b725a",
+        "Depends": null
+      }
+    ],
+    "tested": false,
+    "signature_verified": false
+  },
+  "resolute-amd64": {
+    "source": "https://download.docker.com/linux/ubuntu/dists/resolute/stable/binary-amd64/Packages.gz",
+    "packages": [
+      {
+        "Package": "docker-ce",
+        "Version": "5:29.9.1-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/amd64/docker-ce_29.9.1-1~ubuntu.26.04~resolute_amd64.deb",
+        "SHA256": "cb283f77ac1a9e010d1dbe656be58063617e1360ca9f48e5ebe61cf72d2ac96b",
+        "Depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+      },
+      {
+        "Package": "docker-ce-cli",
+        "Version": "5:29.9.1-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/amd64/docker-ce-cli_29.9.1-1~ubuntu.26.04~resolute_amd64.deb",
+        "SHA256": "3a72d12eccd38f5e0e7b4752ea1912ff36de7238acf7344badebe1c58ae36c82",
+        "Depends": "libc6 (>= 2.34)"
+      },
+      {
+        "Package": "containerd.io",
+        "Version": "2.4.2-2~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/amd64/containerd.io_2.4.2-2~ubuntu.26.04~resolute_amd64.deb",
+        "SHA256": "6bb52a00ac068d78f0fc090b69bb8e5efe355d2069b9f90d2ebbae23b9d5b36b",
+        "Depends": "libc6 (>= 2.38), libseccomp2 (>= 2.6.0)"
+      },
+      {
+        "Package": "docker-compose-plugin",
+        "Version": "5.6.0-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/amd64/docker-compose-plugin_5.6.0-1~ubuntu.26.04~resolute_amd64.deb",
+        "SHA256": "a0b9c82230ed64bed886f7ac569641fd6aa4e30598c72318ce3bf94cfbe884e6",
+        "Depends": null
+      },
+      {
+        "Package": "docker-buildx-plugin",
+        "Version": "0.38.0-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~ubuntu.26.04~resolute_amd64.deb",
+        "SHA256": "c1c3fe824d9425d247e99a61b0bb52e1d591fb4d95c5607563a857e7dd49b6be",
+        "Depends": null
+      }
+    ],
+    "tested": false,
+    "signature_verified": false
+  },
+  "resolute-arm64": {
+    "source": "https://download.docker.com/linux/ubuntu/dists/resolute/stable/binary-arm64/Packages.gz",
+    "packages": [
+      {
+        "Package": "docker-ce",
+        "Version": "5:29.9.1-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/arm64/docker-ce_29.9.1-1~ubuntu.26.04~resolute_arm64.deb",
+        "SHA256": "82dcc11c6804fb83c4b74c0aa0dc0cd5d2d1bd0fa7736e65454f3092ea94e01d",
+        "Depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+      },
+      {
+        "Package": "docker-ce-cli",
+        "Version": "5:29.9.1-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/arm64/docker-ce-cli_29.9.1-1~ubuntu.26.04~resolute_arm64.deb",
+        "SHA256": "446aa9d4cb6afd92ae60d947b53dca5c529f99f17e92d35a47907627489165aa",
+        "Depends": "libc6 (>= 2.34)"
+      },
+      {
+        "Package": "containerd.io",
+        "Version": "2.4.2-2~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/arm64/containerd.io_2.4.2-2~ubuntu.26.04~resolute_arm64.deb",
+        "SHA256": "aa0a07eb4faa4d037e0f6ce1402e5440a286a19d56b29b0bafd0f4b52f5ead42",
+        "Depends": "libc6 (>= 2.38), libseccomp2 (>= 2.6.0)"
+      },
+      {
+        "Package": "docker-compose-plugin",
+        "Version": "5.6.0-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/arm64/docker-compose-plugin_5.6.0-1~ubuntu.26.04~resolute_arm64.deb",
+        "SHA256": "54b87b4bf13de2bf80c07c9b0247da576003371d3113ee059eeccc6b4b15884d",
+        "Depends": null
+      },
+      {
+        "Package": "docker-buildx-plugin",
+        "Version": "0.38.0-1~ubuntu.26.04~resolute",
+        "Filename": "dists/resolute/pool/stable/arm64/docker-buildx-plugin_0.38.0-1~ubuntu.26.04~resolute_arm64.deb",
+        "SHA256": "c6334469343d0cf1f5e8c99e351fe33259dfaf3f2cd5394fec677d6cea51e6f5",
+        "Depends": null
+      }
+    ],
+    "tested": false,
+    "signature_verified": false
+  },
+  "trixie-amd64": {
+    "source": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages.gz",
+    "packages": [
+      {
+        "Package": "docker-ce",
+        "Version": "5:29.9.1-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/amd64/docker-ce_29.9.1-1~debian.13~trixie_amd64.deb",
+        "SHA256": "b33133205350e2765df0cc382f5a3ee44c2cfd4cdc3dc6ba32eca40839ac3574",
+        "Depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+      },
+      {
+        "Package": "docker-ce-cli",
+        "Version": "5:29.9.1-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/amd64/docker-ce-cli_29.9.1-1~debian.13~trixie_amd64.deb",
+        "SHA256": "c89d977d8073de91e7afcd099c82e16cef5506e4d446d006b240e77f78ba4b7d",
+        "Depends": "libc6 (>= 2.34)"
+      },
+      {
+        "Package": "containerd.io",
+        "Version": "2.4.2-2~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/amd64/containerd.io_2.4.2-2~debian.13~trixie_amd64.deb",
+        "SHA256": "a3e696cb98baafbb63895dc18b53f143088a2ead95c57820ac90dc5e1d61b05d",
+        "Depends": "libc6 (>= 2.38), libseccomp2 (>= 2.6.0)"
+      },
+      {
+        "Package": "docker-compose-plugin",
+        "Version": "5.6.0-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/amd64/docker-compose-plugin_5.6.0-1~debian.13~trixie_amd64.deb",
+        "SHA256": "500327ad3ca6c52f6d142225c7e6830c46a27ff0348a2b2291f0a143d99872ac",
+        "Depends": null
+      },
+      {
+        "Package": "docker-buildx-plugin",
+        "Version": "0.38.0-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~debian.13~trixie_amd64.deb",
+        "SHA256": "16397aa4052faf9914cfde37ec335c0b5898c6ad2a363b7e12dd897cb6fc5e9b",
+        "Depends": null
+      }
+    ],
+    "tested": false,
+    "signature_verified": false
+  },
+  "trixie-arm64": {
+    "source": "https://download.docker.com/linux/debian/dists/trixie/stable/binary-arm64/Packages.gz",
+    "packages": [
+      {
+        "Package": "docker-ce",
+        "Version": "5:29.9.1-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/arm64/docker-ce_29.9.1-1~debian.13~trixie_arm64.deb",
+        "SHA256": "0e92412b105738c532b7b918ab2fa6b00fa195c346dcf493c0c048d318556f32",
+        "Depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+      },
+      {
+        "Package": "docker-ce-cli",
+        "Version": "5:29.9.1-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/arm64/docker-ce-cli_29.9.1-1~debian.13~trixie_arm64.deb",
+        "SHA256": "20b15fb2db59de70cc2172ba1a3cf01b2ab6a2258af20c286b15be2ceca13ecf",
+        "Depends": "libc6 (>= 2.34)"
+      },
+      {
+        "Package": "containerd.io",
+        "Version": "2.4.2-2~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/arm64/containerd.io_2.4.2-2~debian.13~trixie_arm64.deb",
+        "SHA256": "ec62600bdae178642eb3a6bc9817ff9ccd95a5891b6c3076ffbba11f3b4d1da6",
+        "Depends": "libc6 (>= 2.38), libseccomp2 (>= 2.6.0)"
+      },
+      {
+        "Package": "docker-compose-plugin",
+        "Version": "5.6.0-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/arm64/docker-compose-plugin_5.6.0-1~debian.13~trixie_arm64.deb",
+        "SHA256": "f7b51c2e48afe340074285b6a10f72601e49c7a669100e6ff8b903c257cfc213",
+        "Depends": null
+      },
+      {
+        "Package": "docker-buildx-plugin",
+        "Version": "0.38.0-1~debian.13~trixie",
+        "Filename": "dists/trixie/pool/stable/arm64/docker-buildx-plugin_0.38.0-1~debian.13~trixie_arm64.deb",
+        "SHA256": "30c717b6b9551eb8758e8197b2789d8e5d53ac5ba3b448e95af60979be0dca79",
+        "Depends": null
+      }
+    ],
+    "tested": false,
+    "signature_verified": false
+  },
+  "arch-containerd": {
+    "NAME": "containerd",
+    "VERSION": "2.4.1-1",
+    "FILENAME": "containerd-2.4.1-1-x86_64.pkg.tar.zst",
+    "SHA256SUM": "c352b4c019c3d527daa50517a6420a7672b01876b95b80d72dd7192f05220999",
+    "PGPSIG": "iQIzBAABCgAdFiEEJipY7GxR9+o5Wy4t/cMEC5Ksp0gFAmq2XD0ACgkQ/cMEC5Ksp0jreg//WgNhVD2eFtSippMBvwSsre7FTjlR5Qarn5mMA8rXrpsfeY6d4jTB4lEVswDbuQiW2CKPHFR9u9K9AgrE6stX83DHtJ6Mw8zm73cB0CINd5H1C7LzNV4Bxyo0gstbZ8J6gSgj868ws4bc6hS0wTh/nyfF84pvQotylgphfGXGT8k/S8zNBrxy5fXGIcktOykH+218jf+Oosdq2cKFH9i0b8X5BlzauZU67NXwTCii/vSCNxDbohJwKS3Oo8cVjN1ZJVcqV8HX7tkdA27uqeyGJoyKPj/5S+5TqrokKPP8e5phkR9oPD2ZjeZ7cIiciMeux3On3hxqQNzU02JMzXNvOx1x1bI7CZPpJLFyjxx7FvXeYTECHc//xGDt21MTCc92sSUd3ywa5kkCMZSxMGiBMrkaAox2GnQ8NaQJccAub6VxNznuaO/QjyEMGIy9SGhI0p0nEcQHkA5p6SzfZJh9BUWOdudxxrYgaiGqIShpBPEOJ0YiXH9undvX9eyjSOOD+XBKf/EmM0XolOXI7qrUeETeB43p836hVAoKdNPiuJMlehOXU22Xo8hoL6OtQYLgoR9dFY7wvaqJ9XvJr8EytR+Y1okKwns6IqYTh8hJ3Jtmc6r9pGeSJAx6SYw1b4SJzBZKJCoWHl2Cw7qRmjzzkdRckpS+LvA2hFjGofwG6mk=",
+    "DEPENDS": "runc"
+  },
+  "arch-docker": {
+    "NAME": "docker",
+    "VERSION": "1:29.9.0-1",
+    "FILENAME": "docker-1:29.9.0-1-x86_64.pkg.tar.zst",
+    "SHA256SUM": "3cc00845b632f3302fe148b939c2736a094599d42e885aab214a5a532bd87d54",
+    "PGPSIG": "iQIzBAABCgAdFiEELjbYYgIhSC/EXLfyqRdkdZMmtEAFAmrIM/YACgkQqRdkdZMmtECaMw//d9EtWVpE5TiHEJ21VQY90Qh1+FwiJBVgLFRWrMhArhCOjwY7mqRxS0f1ImR6UEWk5iSGkvTkZnJxh3zPHSaqWgQh+eY+h4Noa8DhBN5cI3DuNxNIvipBZweyizx7nvfV1D2xJfAIO7/WJumNnUm4IjGoituZba2repJTyq9ppRT45sXZzk4at93l+BrhkCCyL5VAbP6oPNWaM403MhfDUfBiaYc1T9E1RPIIHxNBsBSTN9rD3VV+5qmZg8bGRQtAleXWUygoQdpNXL90uAQdd1+5FvpwEfr3VgCU0pPPZsVhjmu6ue9uTsj9uRtxAiYpovBsvyRMoB+kc9z2om3VAmo310QiSfOZRXKBkNtNZUj7k3Q2HvEdOIrJUX98z7+yxiNMKeXGmgQiThUmndudWohVS6E5Mv1h+GmBUXiGTlEhtmwt5pmEaB3H9TW5b3dHEOeBfgnY/v3upxw/YKCVnVLjfcXsDwC66IEElgiOKooS2FltgQyQUNhA5+TK+x3V16sEBdLVQg4j81zXNd6HTCsg0DNvjOkbfDbYHigeFXCIvwcscJlAVhNHZ1LpRMbRklYqQ25FiPIVAHBOpfGTDjGO/5BlBKB2pxDKukIPh3/UVwJJJJN6CECbYQNBWUriEVQVEsgm0oJ37ZZ4zJST9pCMCbVxQzoh7SAQ4dF49wk=",
+    "DEPENDS": "glibc\niproute2\ndevice-mapper\nsqlite\nsystemd-libs\nlibseccomp\nlibtool\nnftables\nrunc\ncontainerd"
+  },
+  "arch-docker-compose": {
+    "NAME": "docker-compose",
+    "VERSION": "5.6.0-1",
+    "FILENAME": "docker-compose-5.6.0-1-x86_64.pkg.tar.zst",
+    "SHA256SUM": "152ccc5e901b5a9ea2d53e29b8ad7b8ec736c9da75bbd224dc472a407578690d",
+    "PGPSIG": "iQEzBAABCgAdFiEEYB8g8dG7v0p4z1tt9rFhCz7NvJ8FAmq/95AACgkQ9rFhCz7NvJ+OJQgAh2y4qVHUBc8cQ/fVp3cvvc9b5MIcWRJv5ikTWmkcSMfDnt+33KYxXRPmuXdEr9mTXeB9ex2iLdV1sMqJoVMJDuaZ7aXuLks/UiNlVpHbZN33cr59sSJ4Dwbr3MsIEJts720B5OMqvLPIcVeKwrh8imNFX9toP8zLEqmnH6a7KNp85D55iu8CjDG5wkoYEhX1XLEQTGc6/jw/fUnAhTCmzZ/UvUk1D2y/LbkjJ00VYAgDg7xwt0yXmwAYQ4JtKhYLAeiIFS0V5CW9Za20EZcsfOb6EWM2hhc+DG86Vg4Hvj6VfVyPNVdv8ZBB4eRcs8He1m7/radK8UbZe+xo2DOWCQ==",
+    "DEPENDS": null
+  },
+  "arch-runc": {
+    "NAME": "runc",
+    "VERSION": "1.5.2-1",
+    "FILENAME": "runc-1.5.2-1-x86_64.pkg.tar.zst",
+    "SHA256SUM": "b204e74bba04c491d0bd71f8b5adefff538bbfc516d199bdb1a1513959977dd3",
+    "PGPSIG": "iNUEABYKAH0WIQQFx3danouXdAf+COadTFqhVCbaCgUCarcETV8UgAAAAAAuAChpc3N1ZXItZnByQG5vdGF0aW9ucy5vcGVucGdwLmZpZnRoaG9yc2VtYW4ubmV0MDVDNzc3NUE5RThCOTc3NDA3RkUwOEU2OUQ0QzVBQTE1NDI2REEwQQAKCRCdTFqhVCbaCm1MAQDd8qrsjNYIDWk0bYDkGGDk/T+zOWOmoZMhENmfs1rkTwEAupa2nj1e2AcS9y/YnWfq3eucMQbhffTByuLaE5+sbAI=",
+    "DEPENDS": "libpathrs\nlibseccomp"
+  },
+  "arch-source": {
+    "url": "https://archive.archlinux.org/repos/2026/10/12/extra/os/x86_64/extra.db",
+    "database_sha256": "6257fcc963adfd914f299884eae839f3ef139daf7c9c4248257d9c959029e849",
+    "signature_verified": false,
+    "tested": false
+  }
+}

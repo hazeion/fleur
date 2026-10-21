@@ -1,5 +1,36 @@
 """Trusted host-only event echo; no measured task starts before this proof."""
-def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error):
+def retained_exit(child):
+    """Observe an owned Linux child without releasing its PID/group identity."""
+    import os
+    if child.returncode is not None:
+        raise RuntimeError('owned child was already reaped')
+    value=os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+    if value is None:return None
+    return value.si_status if value.si_code==os.CLD_EXITED else -value.si_status
+
+
+def retire_owned_group(child, allowance):
+    """Signal while reserved, then prove disappearance within one old grace."""
+    import os
+    import signal
+    import time
+    end=time.monotonic()+allowance
+    retained_exit(child)  # Successful ownership observation, including pending.
+    if time.monotonic()>=end:raise RuntimeError('owned group retirement deadline')
+    try:os.killpg(child.pid,signal.SIGKILL)
+    except ProcessLookupError:pass
+    child.wait(timeout=max(0,end-time.monotonic()))
+    # The leader is now reaped. Only observation is safe from this point.
+    while True:
+        try:os.killpg(child.pid,0)
+        except ProcessLookupError:return
+        except PermissionError:pass  # Still unconfirmed; only later ESRCH can prove absence.
+        remaining=end-time.monotonic()
+        if remaining<=0:raise RuntimeError('owned group remains after retirement')
+        time.sleep(min(.005,remaining))
+
+
+def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error, verify_control=None, verify_cleanup=None):
     import json
     import os
     import selectors
@@ -68,12 +99,14 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
                 if not chunk: selector.unregister(key.fileobj)
                 else: record_error(chunk)
                 # Subscriber stderr remains private. Its exit is checked below.
-        if not cleanup and (cancelled or subscriber.poll() is not None):
+        if not cleanup and (cancelled or retained_exit(subscriber) is not None):
             raise Failed('canary-subscriber-ended')
 
     def call(arguments, limit, cleanup=False):
         nonlocal count,children_reaped
         if time.monotonic()>=limit: raise Failed('canary-timeout')
+        if cleanup and verify_cleanup is not None:verify_cleanup(limit)
+        if not cleanup and verify_control is not None:verify_control(limit)
         child=None
         captured={'canary-out':bytearray(),'canary-err':bytearray()}
         try:
@@ -83,24 +116,21 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
                 start_new_session=True,env=env)
             selector.register(child.stdout,selectors.EVENT_READ,'canary-out')
             selector.register(child.stderr,selectors.EVENT_READ,'canary-err')
-            while child.poll() is None or any(key.data in captured for key in selector.get_map().values()):
+            while retained_exit(child) is None or any(key.data in captured for key in selector.get_map().values()):
                 pump(limit,child,captured,cleanup)
-            if child.returncode!=0: raise Failed('canary-command')
+            if retained_exit(child)!=0: raise Failed('canary-command')
             return captured['canary-out'].decode('utf-8')
         finally:
             if child is not None:
-                # The leader can exit while a descendant still holds a pipe.
-                try: os.killpg(child.pid,signal.SIGKILL)
-                except ProcessLookupError: pass
                 try:
-                    child.wait(timeout=.2)
-                except subprocess.TimeoutExpired:
-                    children_reaped=False
-                    raise
+                    try:retire_owned_group(child,.2)
+                    except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired):
+                        children_reaped=False
+                        raise Failed('canary-child-retirement') from None
                 finally:
                     for stream in (child.stdout,child.stderr):
-                        try: selector.unregister(stream)
-                        except KeyError: pass
+                        try:selector.unregister(stream)
+                        except KeyError:pass
                         stream.close()
 
     def owned(labels):

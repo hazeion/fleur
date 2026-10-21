@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "types": [
+      "bun"
+    ],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "skipLibCheck": false
+  },
+  "include": [
+    "bin/**/*.ts",
+    "src/**/*.ts",
+    "tests/cli/**/*.ts",
+    "scripts/**/*.ts"
+  ]
+}

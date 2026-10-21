@@ -1,0 +1,81 @@
+{
+  "formatVersion": 1,
+  "catalogId": "ubuntu-24.04-amd64-docker-2026-10-19",
+  "artifactAuthentication": "authenticated",
+  "installationEvidence": "pending",
+  "runtimeSupport": "unverified",
+  "authentication": {
+    "observedDate": "2026-10-19",
+    "method": "official Docker signed InRelease, authenticated Packages index and actual payload SHA256",
+    "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "keyUrl": "https://download.docker.com/linux/ubuntu/gpg",
+    "keySha256": "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570",
+    "inReleaseSha256": "a1cf9d68d56338ea9e7dae55ccb68b27dfdf038dddfd08406e44705f1ad81a5a",
+    "packagesIndexSha256": "6b8afd21440acf552322180fb30cbd777c510a9ab08ebcd62e29183660ca1e71",
+    "maintainerScriptsSha256": "57a1b1785a8df71ff784b89a7afc0b86e24e4005eb7ca06b84fac73bef7d465b",
+    "nativeExecutionVerified": false
+  },
+  "profile": {
+    "method": "docker-official-apt",
+    "verified": true,
+    "distribution": "ubuntu",
+    "release": "24.04",
+    "architecture": "x64",
+    "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "packages": {
+      "docker-ce": "5:29.9.1-1~ubuntu.24.04~noble",
+      "docker-ce-cli": "5:29.9.1-1~ubuntu.24.04~noble",
+      "containerd.io": "2.4.2-2~ubuntu.24.04~noble",
+      "docker-buildx-plugin": "0.38.0-1~ubuntu.24.04~noble",
+      "docker-compose-plugin": "5.6.0-1~ubuntu.24.04~noble"
+    }
+  },
+  "artifacts": [
+    {
+      "name": "docker-ce",
+      "version": "5:29.9.1-1~ubuntu.24.04~noble",
+      "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce_29.9.1-1~ubuntu.24.04~noble_amd64.deb",
+      "sha256": "463a666215797c9f9ea7d0ad1751de5b2b3806a1b539a3550e16822ef34ccbfd",
+      "size": 24548040,
+      "depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0"
+    },
+    {
+      "name": "docker-ce-cli",
+      "version": "5:29.9.1-1~ubuntu.24.04~noble",
+      "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce-cli_29.9.1-1~ubuntu.24.04~noble_amd64.deb",
+      "sha256": "961968342af4738eb5fb5fc03f9834106c1e454bd010d574cf1a6feae9905efc",
+      "size": 17593952,
+      "depends": "libc6 (>= 2.34)"
+    },
+    {
+      "name": "containerd.io",
+      "version": "2.4.2-2~ubuntu.24.04~noble",
+      "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/containerd.io_2.4.2-2~ubuntu.24.04~noble_amd64.deb",
+      "sha256": "7327ab23182425e94b46a91567e9ddf0183f9b3a5ed53d5e2489f000dbf9cfe2",
+      "size": 23270672,
+      "depends": "libc6 (>= 2.38), libseccomp2 (>= 2.5.0)"
+    },
+    {
+      "name": "docker-buildx-plugin",
+      "version": "0.38.0-1~ubuntu.24.04~noble",
+      "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~ubuntu.24.04~noble_amd64.deb",
+      "sha256": "7094f8b50bc6b239292d475620424a531f7fa0763e466c52ffc3a4037e72bfc5",
+      "size": 17783524,
+      "depends": null
+    },
+    {
+      "name": "docker-compose-plugin",
+      "version": "5.6.0-1~ubuntu.24.04~noble",
+      "url": "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-compose-plugin_5.6.0-1~ubuntu.24.04~noble_amd64.deb",
+      "sha256": "132266d499d9873aafcbe5b515997b8abd714914fa32a62ccac705c1ede7ca81",
+      "size": 8079740,
+      "depends": null
+    }
+  ],
+  "limits": [
+    "Legacy verified:true means source-owned internal catalog admission, not native installation evidence.",
+    "The ordinary production catalog remains empty.",
+    "The apt adapter compares acquired payloads with these frozen URL, size, SHA256 and control identities and guards actual dpkg archive/action inputs; real guest execution remains unverified.",
+    "Fresh guest dependency closure and native/full-system installation evidence remain pending."
+  ]
+}

@@ -45,3 +45,35 @@ class ExactContainerdProfiles(unittest.TestCase):
         for build in (('v2.4.3',BUILDS[1][1]),('v2.4.2','0'*40),('v2.4.1','0'*40)):
             with self.subTest(build=build),self.assertRaises(ValueError):
                 audit_containerd_control(ARGUMENTS,{},server(build),cli(build,build))
+
+
+class OwnedGuestCompleteProfile(unittest.TestCase):
+    def test_owned_scope_matches_the_observed_complete_server_tuple(self):
+        observed=server(BUILDS[1]); observed.update(Version='29.9.1',GitCommit='b26fb77')
+        result=audit_containerd_control(ARGUMENTS,{},observed,cli(BUILDS[1],BUILDS[1]),host_scope='owned-guest')
+        self.assertEqual((result['docker_version'],result['docker_commit']),('29.9.1','b26fb77'))
+        self.assertEqual((result['containerd_version'],result['containerd_commit']),('2.4.2',BUILDS[1][1]))
+        self.assertEqual((result['runc_version'],result['runc_commit']),('1.5.2','v1.5.2-0-g29dd3dc2'))
+
+    def test_owned_tuple_never_crosses_host_scope_or_server_commit(self):
+        owned=server(BUILDS[1]);owned.update(Version='29.9.1',GitCommit='b26fb77')
+        client_commit={**owned,'GitCommit':'dfc520d'}
+        for observed,scope in ((owned,'github-hosted'),(server(BUILDS[1]),'owned-guest'),(client_commit,'owned-guest'),(owned,'unknown'),(owned,{'docker_version':'29.9.1'})):
+            with self.subTest(scope=scope),self.assertRaises(ValueError):
+                audit_containerd_control(ARGUMENTS,{},observed,cli(BUILDS[1],BUILDS[1]),host_scope=scope)
+
+    def test_owned_component_counts_and_all_ctr_sources_must_match_exact_build(self):
+        import copy
+        owned=server(BUILDS[1]);owned.update(Version='29.9.1',GitCommit='b26fb77')
+        malformed=[]
+        for name in ('containerd','runc'):
+            missing=copy.deepcopy(owned);missing['Components']=[row for row in missing['Components'] if row['Name']!=name];malformed.append(missing)
+            duplicate=copy.deepcopy(owned);duplicate['Components'].append(next(row for row in duplicate['Components'] if row['Name']==name));malformed.append(duplicate)
+        old_component=server(BUILDS[0]);old_component.update(Version='29.9.1',GitCommit='b26fb77');malformed.append(old_component)
+        wrong_runc=copy.deepcopy(owned);wrong_runc['Components'][1]['Details']['GitCommit']='wrong';malformed.append(wrong_runc)
+        for observed in malformed:
+            with self.subTest(observed=observed),self.assertRaises(ValueError):
+                audit_containerd_control(ARGUMENTS,{},observed,cli(BUILDS[1],BUILDS[1]),host_scope='owned-guest')
+        for detail in ('',cli(BUILDS[0],BUILDS[1]),cli(BUILDS[1],BUILDS[0]),cli(BUILDS[1],BUILDS[1])+'Server:\n Version: v2.4.2\n'):
+            with self.subTest(detail=detail),self.assertRaises(ValueError):
+                audit_containerd_control(ARGUMENTS,{},owned,detail,host_scope='owned-guest')

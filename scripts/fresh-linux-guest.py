@@ -835,12 +835,54 @@ def admitted_readiness(observed, command):
                                                'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
 
 
+def observe_ordinary_daemon(docker):
+    def object_result(arguments):
+        observed = json.loads(run(docker + arguments, timeout=10)[1])
+        if type(observed) is not dict:
+            raise RuntimeError('Ordinary daemon observation is not an object')
+        return observed
+    def text(value):
+        if type(value) is not str or not re.fullmatch(r'[\x20-\x7e]{1,256}', value):
+            raise RuntimeError('Ordinary daemon identity field is invalid')
+        return value
+    raw_info = object_result(['info', '--format', '{{json .}}'])
+    info = {key: text(raw_info.get(key)) for key in ('ServerVersion', 'KernelVersion', 'OSType', 'Architecture', 'Driver', 'CgroupDriver', 'CgroupVersion')}
+    for key in ('MemoryLimit', 'SwapLimit', 'CpuCfsPeriod', 'CpuCfsQuota', 'PidsLimit'):
+        if type(raw_info.get(key)) is not bool:
+            raise RuntimeError('Ordinary daemon capability field is invalid')
+        info[key] = raw_info[key]
+    raw_server = object_result(['version', '--format', '{{json .Server}}'])
+    server = {key: text(raw_server.get(key)) for key in ('Version', 'GitCommit', 'KernelVersion', 'Os', 'Arch')}
+    platform = raw_server.get('Platform')
+    if type(platform) is not dict:
+        raise RuntimeError('Ordinary daemon platform is invalid')
+    server['Platform'] = {'Name': text(platform.get('Name'))}
+    components = raw_server.get('Components')
+    if type(components) is not list or len(components) > 32:
+        raise RuntimeError('Ordinary daemon component list is invalid')
+    selected = {}
+    for item in components:
+        if type(item) is not dict or item.get('Name') not in ('Engine', 'containerd', 'runc'):
+            continue
+        name = item['Name']
+        if name in selected or type(item.get('Details')) is not dict:
+            raise RuntimeError('Ordinary daemon component identity is ambiguous')
+        selected[name] = {'Name': name, 'Version': text(item.get('Version')), 'Details': {'GitCommit': text(item['Details'].get('GitCommit'))}}
+    if set(selected) != {'Engine', 'containerd', 'runc'}:
+        raise RuntimeError('Ordinary daemon component identity is incomplete')
+    server['Components'] = [selected[name] for name in ('Engine', 'containerd', 'runc')]
+    return {'formatVersion': 1, 'scope': 'ordinary-daemon-readiness-observation', 'runtimeAdmission': False,
+            'source': 'ordinary-user-local-docker-cli', 'info': info, 'server': server}
+
+
 def verify_smoke_and_restrictions(state, owned_binding=None):
     context = run(["docker", "context", "show"])[1].strip()
     endpoint = json.loads(run(["docker", "context", "inspect", context, "--format", "{{json .Endpoints.docker}}"])[1])["Host"]
     if not re.fullmatch(r"unix:///[^\s?#]+", endpoint):
         raise RuntimeError("Guest endpoint is not a local Unix socket")
     docker = ["docker", "--host", endpoint]
+    if REPORT.get('executionArtifact', {}).get('kind') == 'ordinary':
+        REPORT['ordinaryDaemonObservation'] = observe_ordinary_daemon(docker)
     image = run([BUN, "-e", "import {smokeImages} from " + json.dumps(str(ROOT / "package/src/setup/profiles.ts")) + ";process.stdout.write(smokeImages.x64)"])[1]
     if not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", image):
         raise RuntimeError("Smoke image is not digest-pinned")

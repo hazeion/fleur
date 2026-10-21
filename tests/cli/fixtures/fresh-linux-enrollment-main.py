@@ -160,6 +160,13 @@ if name=='python3' and s['scenario'].startswith('ordinary-admitted') and args[0]
  s['restrictionCalls']=s.get('restrictionCalls',0)+1;save();print(json.dumps({'bounded_probe_passed':True,'cleanup_complete':True,'v1_gate_passed':False}));sys.exit(0)
 if name=='docker':
  if s['scenario'].startswith('ordinary-admitted') and args[:2]==['--host','unix:///var/run/docker.sock']:
+  query=args[2:]
+  if query in (['info','--format','{{json .}}'],['version','--format','{{json .Server}}']):
+   s.setdefault('ordinaryDaemonQueries',[]).append(query);save()
+   if query[0]=='info':print(json.dumps({'ServerVersion':'29.9.1','KernelVersion':'6.8.0-147-generic','OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}))
+   else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':'6.8.0-147-generic','Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
+   sys.exit(0)
+ if s['scenario'].startswith('ordinary-admitted') and args[:2]==['--host','unix:///var/run/docker.sock']:
   call=args[2:]
   if call[:2]==['ps','--all']:print('');sys.exit(0)
   if call[0]=='create':

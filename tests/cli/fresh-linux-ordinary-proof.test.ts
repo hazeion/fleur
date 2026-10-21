@@ -82,3 +82,18 @@ test("ready setup grant mutation invalidates proof and preserves the changed fil
     expect((await Bun.file(join(root, "protocol-state.json")).json()).restrictionCalls).toBeUndefined();
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+test("ordinary proof records bounded daemon capability version and driver fields without raw metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-ordinary-daemon-"));
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "ordinary-admitted"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(0);
+    const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(state.ordinaryDaemonQueries).toEqual([["info", "--format", "{{json .}}"], ["version", "--format", "{{json .Server}}"]]);
+    const observation = JSON.parse(stdout).ordinaryDaemonObservation;
+    expect(observation).toMatchObject({ scope: "ordinary-daemon-readiness-observation", runtimeAdmission: false, info: { ServerVersion: "29.9.1", Driver: "overlayfs", MemoryLimit: true, SwapLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, PidsLimit: true }, server: { Version: "29.9.1", GitCommit: "b26fb77", Platform: { Name: "Docker Engine - Community" } } });
+    expect(JSON.stringify(observation)).not.toContain("private-fixture");
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);

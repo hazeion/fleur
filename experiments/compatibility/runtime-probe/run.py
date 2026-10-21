@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Disposable native amd64/arm64 Linux experiment. Exit 0 accepts only bounded evidence."""
 import argparse
+from contextlib import contextmanager
+import math
+import os
+import stat
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +15,7 @@ import tempfile
 import time
 from report import accept, accept_threads, CONTROLS
 from runtime_profile import select_profile, native_elf_identity
+from helper_artifacts import stage_recorded_helpers, accept_helper_origin
 from protocol import run_container, StartupAuditRejected
 from resources import accept_resources
 from diagnostics import snapshot_worker
@@ -37,7 +42,50 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False, *, owned_guest_nonce=None, owned_guest_boot_id=None, owned_guest_uid=None, owned_guest_manifest_sha256=None, owned_guest_deadline=None):
+@contextmanager
+def recorded_probe_context(report, absolute_deadline):
+    if type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline) or time.monotonic() >= absolute_deadline:
+        raise ValueError('recorded helper context deadline expired')
+    observation = {'retained': True, 'cleanup_confirmed': False, 'path': None}
+    report['helper_artifact_context'] = observation
+    temporary = tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-', delete=False)
+    observation['path'] = temporary.name
+    directory = os.open(temporary.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(directory)
+        if not stat.S_ISDIR(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
+            raise ValueError('recorded helper context custody differs')
+        try:
+            yield temporary.name
+        except BaseException:
+            # Includes cancellation/SystemExit that staging does not normalize.
+            raise
+        else:
+            current = os.stat(temporary.name, follow_symlinks=False)
+            held = os.fstat(directory)
+            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != (before.st_dev, before.st_ino, before.st_uid, before.st_mode) or (held.st_dev, held.st_ino, held.st_uid, held.st_mode) != (before.st_dev, before.st_ino, before.st_uid, before.st_mode):
+                raise ValueError('recorded helper context custody changed')
+            allowed = {'bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js',
+                       'busy-application.js', 'profile.json', 'package.json', 'bun.lock',
+                       'filter.so', 'abuse', 'Dockerfile'}
+            entries = os.listdir(directory)
+            if len(entries) > len(allowed) or not set(entries).issubset(allowed):
+                raise ValueError('recorded helper context entries changed')
+            for name in entries:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o022:
+                    raise ValueError('recorded helper context entries changed')
+            temporary.cleanup()
+            observation.update(retained=False, cleanup_confirmed=True)
+    finally:
+        os.close(directory)
+
+
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False, *, owned_guest_nonce=None, owned_guest_boot_id=None, owned_guest_uid=None, owned_guest_manifest_sha256=None, owned_guest_deadline=None, recorded_helper_artifacts=None):
+    recorded = recorded_helper_artifacts is not None
+    REPORT.pop('helper_origin', None)
+    REPORT.pop('helper_artifact_context', None)
+    REPORT.pop('helper_origin_verified', None)
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -60,6 +108,8 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
             if type(owned_guest_deadline) not in (float,int):raise ValueError('original owned deadline required')
             host_context=select_owned_context(owned_guest_nonce,owned_guest_boot_id,owned_guest_uid,owned_guest_manifest_sha256,remaining=owned_guest_deadline-time.monotonic(),deadline=owned_guest_deadline)
             REPORT['owned_host_control']=host_context.report()
+        if recorded_helper_artifacts is not None and (type(recorded_helper_artifacts) is not str or not recorded_helper_artifacts or '\x00' in recorded_helper_artifacts or host_context is None or kernel_private_network):
+            raise ValueError('recorded helpers require original owned guest context')
         if type(idle_runtime_stress) is not bool:raise ValueError('idle runtime stress flag invalid')
         REPORT['idle_runtime_stress']=idle_runtime_stress
         if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
@@ -73,32 +123,36 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         expected_compiler = selected['compiler_sha256']
         REPORT.update({'architecture':architecture, 'base_image':base,
                        'expected_gcc_binary_sha256':expected_compiler,
-                       'compiler_status':'executed-pin',
+                       'compiler_status':'prebuilt-origin' if recorded else 'executed-pin',
                        'compiler_pin_verified':False})
         if type(expected_compiler) is not str or len(expected_compiler) != 64 or any(
                 character not in '0123456789abcdef' for character in expected_compiler):
             raise RuntimeError('native compiler profile lacks an executed SHA-256 pin')
-        compiler = shutil.which('gcc')
-        if compiler is None:
-            raise RuntimeError('gcc prerequisite missing; nothing installed')
-        version = command([compiler, '-dumpfullversion'])
-        REPORT['gcc'] = {'target': command([compiler, '-dumpmachine']), 'version': command([compiler, '--version']),
-                         'binary_sha256': hashlib.sha256(Path(compiler).read_bytes()).hexdigest()}
-        if REPORT['gcc']['target'] != selected['compiler_target']:
-            raise RuntimeError('compiler target differs from native architecture')
-        if REPORT['gcc']['binary_sha256'] != expected_compiler:
-            raise RuntimeError('compiler binary differs from executed GCC pin')
-        if version != REPORT['expected_gcc']:
-            raise RuntimeError(f'compiler candidate mismatch: {version}')
-        REPORT['compiler_pin_verified'] = True
+        if recorded:
+            REPORT.pop('gcc', None)
+        else:
+            compiler = shutil.which('gcc')
+            if compiler is None:
+                raise RuntimeError('gcc prerequisite missing; nothing installed')
+            version = command([compiler, '-dumpfullversion'])
+            REPORT['gcc'] = {'target': command([compiler, '-dumpmachine']), 'version': command([compiler, '--version']),
+                             'binary_sha256': hashlib.sha256(Path(compiler).read_bytes()).hexdigest()}
+            if REPORT['gcc']['target'] != selected['compiler_target']:
+                raise RuntimeError('compiler target differs from native architecture')
+            if REPORT['gcc']['binary_sha256'] != expected_compiler:
+                raise RuntimeError('compiler binary differs from executed GCC pin')
+            if version != REPORT['expected_gcc']:
+                raise RuntimeError(f'compiler candidate mismatch: {version}')
+            REPORT['compiler_pin_verified'] = True
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','heap_probe.ts','heap_probe.test.ts','application.js',
                                                'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
-                                               'registration_canary.py','worker_deadline.py','host_control.py','owned_guest.py','privileged_control.py','kernel_network.py','kernel_docker.py','engine_state.py')}
+                                               'registration_canary.py','worker_deadline.py','helper_artifacts.py','recorded-helper-origin.json','host_control.py','owned_guest.py','privileged_control.py','kernel_network.py','kernel_docker.py','engine_state.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
-        with tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-') as directory:
+        context_lifetime = recorded_probe_context(REPORT, host_context.deadline) if recorded else tempfile.TemporaryDirectory(prefix='fleur-runtime-probe-')
+        with context_lifetime as directory:
             context = Path(directory)
             for name in ('bootstrap.ts', 'heap_probe.ts', 'heap_probe.test.ts', 'application.js', 'busy-application.js'):
                 shutil.copyfile(HERE / name, context / name)
@@ -107,10 +161,15 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
             dependencies = HERE.parent / 'rendering'
             for name in ('package.json', 'bun.lock'):
                 shutil.copyfile(dependencies / name, context / name)
-            command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra',
-                     '-Werror', '-pthread', str(HERE / 'filter.c'), '-o', str(context / 'filter.so')])
-            command([compiler, '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
-                     str(HERE / 'abuse.c'), '-o', str(context / 'abuse')])
+            if recorded:
+                host_context.verify(host_context.deadline-time.monotonic())
+                staged_helpers = stage_recorded_helpers(recorded_helper_artifacts, context, architecture, base, host_context.deadline)
+                REPORT['helper_origin'] = staged_helpers['origin']
+            else:
+                command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra',
+                         '-Werror', '-pthread', str(HERE / 'filter.c'), '-o', str(context / 'filter.so')])
+                command([compiler, '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
+                         str(HERE / 'abuse.c'), '-o', str(context / 'abuse')])
             REPORT['helper_elf'] = native_elf_identity((context / 'filter.so').read_bytes()[:64], architecture)
             REPORT['abuse_elf'] = native_elf_identity((context / 'abuse').read_bytes()[:64], architecture)
             REPORT['abuse_sha256'] = hashlib.sha256((context / 'abuse').read_bytes()).hexdigest()
@@ -342,7 +401,9 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
         # A timed-out Docker build command can leave daemon work running after
         # its CLI has died. Removing a current tag does not cancel that work.
         REPORT['daemon_build_may_be_pending'] = build_started and not build_finished
-        REPORT['cleanup_complete'] = (all(item['outcome'] != 'failed' for item in cleanup)
+        artifact_context = REPORT.get('helper_artifact_context')
+        artifact_cleanup = artifact_context is None or artifact_context.get('cleanup_confirmed') is True
+        REPORT['cleanup_complete'] = (artifact_cleanup and all(item['outcome'] != 'failed' for item in cleanup)
                                       and not REPORT['daemon_build_may_be_pending']
                                       and ('lifecycle_failure' not in REPORT or
                                            REPORT['lifecycle_failure'].get('cleanup_verified') is True)
@@ -350,7 +411,9 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                                               for protocol in (REPORT.get('worker_protocol',{}),
                                                   REPORT.get('lifecycle_failure',{}).get('protocol',{}))))
         evidence = REPORT.get('evidence')
-        REPORT['bounded_probe_passed'] = (result_code == 0 and isinstance(evidence, dict)
+        origin_verified = accept_helper_origin(REPORT, recorded, host_context.deadline if host_context is not None else None)
+        if recorded:REPORT['helper_origin_verified'] = origin_verified
+        REPORT['bounded_probe_passed'] = (origin_verified and result_code == 0 and isinstance(evidence, dict)
             and accept(dict(evidence, cleanup_complete=REPORT['cleanup_complete']), architecture)
             and accept_resources(REPORT.get('trusted_cgroup_abuse'))
             and type(REPORT.get('worker_configuration')) is dict
@@ -399,5 +462,6 @@ if __name__ == '__main__':
     parser.add_argument('--owned-guest-uid',type=int)
     parser.add_argument('--owned-guest-manifest-sha256')
     parser.add_argument('--owned-guest-deadline',type=float)
+    parser.add_argument('--recorded-helper-artifacts',help='internal owned-fixture byte location; immutable source record only')
     arguments = parser.parse_args()
-    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network,arguments.idle_runtime_stress,owned_guest_nonce=arguments.owned_guest_nonce,owned_guest_boot_id=arguments.owned_guest_boot_id,owned_guest_uid=arguments.owned_guest_uid,owned_guest_manifest_sha256=arguments.owned_guest_manifest_sha256,owned_guest_deadline=arguments.owned_guest_deadline))
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network,arguments.idle_runtime_stress,owned_guest_nonce=arguments.owned_guest_nonce,owned_guest_boot_id=arguments.owned_guest_boot_id,owned_guest_uid=arguments.owned_guest_uid,owned_guest_manifest_sha256=arguments.owned_guest_manifest_sha256,owned_guest_deadline=arguments.owned_guest_deadline,recorded_helper_artifacts=arguments.recorded_helper_artifacts))

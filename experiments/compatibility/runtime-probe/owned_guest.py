@@ -140,10 +140,15 @@ class OwnedGuestContext:
     manifest_sha256: str
     files: tuple
 
-    def verify(self, remaining=None):
+    def verify(self, remaining=None, *, absolute_deadline=None):
         if remaining is not None and (type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0):
             raise ValueError('owned guest remaining budget required')
         deadline = time.monotonic() + (10 if remaining is None else min(10, remaining))
+        if absolute_deadline is not None:
+            if type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline):
+                raise ValueError('owned guest absolute deadline required')
+            deadline = min(deadline, absolute_deadline)
+        budget_remaining(deadline)
         if validate(self.nonce, deadline=deadline) != self:
             raise ValueError('owned guest context changed')
         budget_remaining(deadline)
@@ -245,7 +250,7 @@ def main(arguments):
             result.update(create(arguments[1], deadline=deadline))
         else:
             context = validate(arguments[1], deadline=deadline)
-            context.verify(budget_remaining(deadline))
+            context.verify(budget_remaining(deadline), absolute_deadline=deadline)
             result.update(context.report())
         budget_remaining(deadline)
         result['ok'] = True

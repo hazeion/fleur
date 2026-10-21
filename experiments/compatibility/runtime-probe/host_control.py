@@ -21,11 +21,14 @@ class HostControlContext:
         if (type(self.custody) is not OwnedGuestContext
                 or self.original != (self.custody.nonce, self.custody.boot_id, self.custody.uid, self.custody.manifest_sha256)):
             raise ValueError('original owned host context required')
-        left = self.deadline - time.monotonic()
-        if not math.isfinite(left) or left <= 0:
+        started = time.monotonic()
+        if type(self.deadline) not in (int, float) or not math.isfinite(self.deadline):
+            raise ValueError('original owned host deadline required')
+        end = min(self.deadline, started + min(10, remaining))
+        if end <= started:
             raise ValueError('original owned host deadline expired')
-        self.custody.verify(min(remaining, left))
-        if time.monotonic() >= self.deadline:
+        self.custody.verify(min(10, remaining), absolute_deadline=end)
+        if time.monotonic() >= end:
             raise ValueError('original owned host deadline expired')
 
     def root_payload(self):

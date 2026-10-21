@@ -116,10 +116,15 @@ class RecordedBuildContext:
         self._remaining()
         return snapshot
 
-    def seal(self):
+    def seal(self, staged_helpers=None):
         if self.ledger is not None:
             raise ValueError('recorded helper context already sealed')
-        self.ledger = self._snapshot()
+        snapshot = self._snapshot()
+        if staged_helpers is not None:
+            for name in ('filter.so', 'abuse'):
+                if snapshot.get(name, (None,))[0] != staged_helpers['files'][name]['identity']:
+                    raise ValueError('recorded helper context staged identity changed')
+        self.ledger = snapshot
         self.observation['ledger_verified'] = True
 
     def revalidate(self):
@@ -279,7 +284,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             if recorded:
                 host_context.verify(host_context.deadline-time.monotonic())
                 revalidate_recorded_helpers(context, staged_helpers, host_context.deadline)
-                directory.seal()
+                directory.seal(staged_helpers)
                 directory.revalidate()
             build_started = True
             command(['docker', 'build', *(['--network=host'] if trusted_build_network == 'host' else []), '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)

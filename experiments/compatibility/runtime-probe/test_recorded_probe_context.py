@@ -107,6 +107,45 @@ class RecordedContext(unittest.TestCase):
                 (context_path/'filter.so').unlink()
                 context_path.rmdir()
 
+    def test_sealing_cannot_adopt_replaced_staged_helper_inode(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-recorded-seal-test-') as fixture:
+            source = Path(fixture)/'input'
+            source.mkdir(mode=0o700)
+            for name, body in [('filter.so', b'abc'), ('abuse', b'hello')]:
+                (source/name).write_bytes(body)
+                (source/name).chmod(0o600)
+            report = {}
+            context_path = None
+            original = Path(fixture)/'original-filter'
+            actual_open = os.open
+            fired = False
+            try:
+                with self.assertRaisesRegex(ValueError, 'recorded helper context staged identity'):
+                    with run.recorded_probe_context(report, time.monotonic()+5) as context:
+                        context_path = Path(context)
+                        staged = stage_pair(source, context_path, TEXT_PAIR, time.monotonic()+5)
+                        def replaced_open(path, flags, *args, **kwargs):
+                            nonlocal fired
+                            if path == 'filter.so' and not fired:
+                                fired = True
+                                (context_path/'filter.so').rename(original)
+                                (context_path/'filter.so').write_bytes(b'abc')
+                                (context_path/'filter.so').chmod(0o600)
+                            return actual_open(path, flags, *args, **kwargs)
+                        with patch.object(os, 'open', side_effect=replaced_open):
+                            context.seal(staged)
+                self.assertTrue(fired)
+                self.assertEqual((context_path/'filter.so').read_bytes(), b'abc')
+                self.assertEqual(original.read_bytes(), b'abc')
+                self.assertNotEqual((context_path/'filter.so').stat().st_ino, original.stat().st_ino)
+                self.assertFalse(report['helper_artifact_context']['ledger_verified'])
+                self.assertFalse(report['helper_artifact_context']['cleanup_confirmed'])
+            finally:
+                if context_path is not None:
+                    for name in ('filter.so', 'abuse'):
+                        (context_path/name).unlink(missing_ok=True)
+                    context_path.rmdir()
+
     def test_sealed_allowed_name_replacement_invalidates_retained_context(self):
         report={}
         context_path=None

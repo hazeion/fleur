@@ -12,10 +12,11 @@ async function fixture(scenario: string) {
   const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
   await symlink(python, join(tools, "python3"));
   await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;const remote=process.argv.at(-1);await Bun.write(root+'/remote',remote);if(scenario==='early-ssh137')process.exit(137);if(scenario==='bun-slow'){for(const frame of [{formatVersion:1,scope:'guest-artifact-preparation-event',stage:'bun-preparation',state:'started'},{formatVersion:1,scope:'guest-bun-preparation-event',stage:'archive-authentication',state:'started',elapsedMs:0}])process.stdout.write(JSON.stringify(frame)+'\\n');await Bun.sleep(20000);process.exit(0);}if(scenario==='host-key'){process.stderr.write('SECRET transport material');process.exit(255);}const prefix=${JSON.stringify("cd() { command cd \"$FIXTURE_ROOT/lab\"; }\ncat() { command cat \"$FIXTURE_ROOT/nonce\"; }\npython3() { \"$FIXTURE_ROOT/tools/guest-python3\" \"$@\"; }\n")};const child=Bun.spawn(['/bin/sh','-c',prefix+remote],{stdin:'ignore',stdout:'inherit',stderr:'inherit',env:process.env});process.exit(await child.exited);\n`, { mode: 0o700 });
-  await writeFile(join(tools, "guest-python3"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;await Bun.write(root+'/python-called','yes');const frame=(stage,state)=>process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation-event',stage,state,elapsedMs:1})+'\\n');frame('archive-authentication','started');if(scenario==='bun-slow')await Bun.sleep(20000);if(scenario==='bun-killed')process.exit(137);if(scenario==='unknown-stage'){frame('SECRET','completed');process.exit(137);}if(scenario==='overflow'){process.stdout.write('SECRET'.repeat(400000));process.exit(137);}if(scenario==='bun-failed'){process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:false,error:{code:'PREPARATION_FAILED',message:'SECRET'}})+'\\n');process.exit(4);}for(const stage of ['archive-authentication','zip-entry-validation','executable-extraction','retained-output-authentication','archive-reauthentication','output-custody']){if(stage!=='archive-authentication')frame(stage,'started');frame(stage,'completed');}process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:true,archiveSha256:${JSON.stringify(archiveSha256)},archiveBytes:50000000,executableBytes:100000000,executableSha256:'a'.repeat(64)})+'\\n');\n`, { mode: 0o700 });
+  await writeFile(join(tools, "guest-python3"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;await Bun.write(root+'/python-called','yes');const frame=(stage,state)=>process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation-event',stage,state,elapsedMs:1})+'\\n');frame('archive-authentication','started');if(scenario==='bun-slow')await Bun.sleep(20000);if(scenario==='bun-killed')process.exit(137);if(scenario==='unknown-stage'){frame('SECRET','completed');process.exit(137);}if(scenario==='overflow'){await new Promise((resolve,reject)=>process.stdout.write('SECRET'.repeat(400000),error=>error?reject(error):resolve()));process.exit(137);}if(scenario==='bun-failed'){process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:false,error:{code:'PREPARATION_FAILED',message:'SECRET'}})+'\\n');process.exit(4);}for(const stage of ['archive-authentication','zip-entry-validation','executable-extraction','retained-output-authentication','archive-reauthentication','output-custody']){if(stage!=='archive-authentication')frame(stage,'started');frame(stage,'completed');}process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:true,archiveSha256:${JSON.stringify(archiveSha256)},archiveBytes:50000000,executableBytes:100000000,executableSha256:'a'.repeat(64)})+'\\n');\n`, { mode: 0o700 });
   await writeFile(join(tools, "tar"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const name=process.argv.at(-1);await Bun.write(root+'/tar-calls',(await Bun.file(root+'/tar-calls').exists()?await Bun.file(root+'/tar-calls').text():'')+name+'\\n');if(process.env.FIXTURE_SCENARIO==='candidate-failed'&&name==='fleur-internal-native-candidate.tgz')process.exit(2);if(process.env.FIXTURE_SCENARIO==='restriction-killed'&&name==='runtime-probe.tar')process.exit(137);\n`, { mode: 0o700 });
   const observe = async (budget = 10000) => {
-    const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce, "--budget-ms", String(budget)], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { PATH: tools + ":/usr/bin:/bin", HOME: root, FIXTURE_ROOT: root, FIXTURE_SCENARIO: scenario }, timeout: 15000 });
+    const preload = await Bun.file(join(root, "signal-denied.ts")).exists() ? ["--preload", join(root, "signal-denied.ts")] : [];
+    const child = Bun.spawn([process.execPath, ...preload, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce, "--budget-ms", String(budget)], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { PATH: tools + ":/usr/bin:/bin", HOME: root, FIXTURE_ROOT: root, FIXTURE_SCENARIO: scenario }, timeout: 15000 });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { exit, stderr, result: JSON.parse(stdout) };
   };
@@ -65,6 +66,10 @@ for (const scenario of ["host-key", "unknown-stage", "overflow", "bun-failed"] a
       const observed = await observe();
       expect(observed.exit).toBe(4); expect(observed.result.ok).toBe(false);
       expect(JSON.stringify(observed.result)).not.toContain("SECRET");
+      if (scenario === "overflow") {
+        expect(observed.result.transport.outputLimitExceeded, JSON.stringify(observed.result.transport)).toBe(true);
+        expect(observed.result.transport.deadlineFired).toBe(false);
+      }
       expect(await Bun.file(join(root, "tar-calls")).exists()).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -77,8 +82,10 @@ test("an exited SSH leader with inherited pipes cannot stretch the preparation d
     await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nconst child=Bun.spawn([${JSON.stringify(python)},'-c','import time;time.sleep(2)'],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(process.env.FIXTURE_ROOT+'/descendant',String(child.pid));process.exit(137);\n`, { mode: 0o700 });
     const observed = await observe(500);
     expect(observed.exit).toBe(4);
-    expect(observed.result).toMatchObject({ transport: { deadlineFired: true }, error: { code: "PREPARATION_HOST_DEADLINE" } });
+    expect(observed.result).toMatchObject({ transport: { deadlineFired: false }, localCleanup: { retired: true }, error: { code: "PREPARATION_SURVIVOR" } });
     expect(observed.result.transport.elapsedMs).toBeLessThan(1500);
+    const pid = Number(await readFile(join(root, "descendant"), "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
 
@@ -127,6 +134,8 @@ for (const malformed of ["only-final-bun-phase", "missing-pair", "duplicate", "r
       const observed = await observe();
       expect(observed.exit).toBe(4);
       expect(observed.result).toMatchObject({ ok: false, error: { code: "PREPARATION_PROTOCOL_INVALID" } });
+      expect(observed.result.localCleanup).toMatchObject({ retired: true });
+      expect(observed.result.localCleanup.error).toBeUndefined();
       if (malformed === "only-final-bun-phase") {
         expect(observed.result.lastStage).toMatchObject({ stage: "bun-preparation", state: "started" });
         expect(observed.result.bun).toBeUndefined();
@@ -149,3 +158,50 @@ test("a valid extraction-failure prefix retains its cleanup evidence without inv
     expect(observed.result.stages.some((stage: { stage: string }) => stage.stage === "complete")).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("a completed preparation with a live closed-pipe SSH descendant cannot be accepted", async () => {
+  const { root, observe } = await fixture("success");
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
+    const path = join(root, "tools/ssh");
+    const original = await readFile(path, "utf8");
+    await writeFile(path, original.replace("process.exit(await child.exited);", `const code=await child.exited;const survivor=Bun.spawn([${JSON.stringify(python)},'-c','import time;time.sleep(2)'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});await Bun.write(root+'/closed-pipe-descendant',String(survivor.pid));process.exit(code);`), { mode: 0o700 });
+    const observed = await observe();
+    expect(observed.exit).toBe(4);
+    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: false }, error: { code: "PREPARATION_SURVIVOR" } });
+    const pid = Number(await readFile(join(root, "closed-pipe-descendant"), "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("denied survivor signals enter finite cleanup before the preparation work deadline", async () => {
+  const { root, observe } = await fixture("success");
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
+    await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid));process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-artifact-preparation-event',stage:'bun-preparation',state:'started'})+'\\n');const survivor=Bun.spawn([${JSON.stringify(python)},'-c','import time;time.sleep(20)'],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(process.env.FIXTURE_ROOT+'/denied-survivor',String(survivor.pid));process.exit(0);\n`, { mode: 0o700 });
+    await writeFile(join(root, "signal-denied.ts"), `import{existsSync,readFileSync,appendFileSync}from'node:fs';const root=process.env.FIXTURE_ROOT;const original=process.kill.bind(process);process.kill=((pid,signal)=>{if((signal==='SIGTERM'||signal==='SIGKILL')&&existsSync(root+'/ssh-pid')&&pid===-Number(readFileSync(root+'/ssh-pid','utf8'))){appendFileSync(root+'/signal-denials',signal+'\\n');throw Object.assign(new Error('Owned fixture EPERM'),{code:'EPERM'});}return original(pid,signal);});\n`);
+    const started = performance.now(); const observed = await observe();
+    expect(observed.exit).toBe(4);
+    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: false, timeoutMs: 10000 }, localCleanup: { retired: false }, error: { code: "PREPARATION_CLEANUP_UNCONFIRMED" } });
+    expect(performance.now() - started).toBeLessThan(5000);
+    const denied = (await readFile(join(root, "signal-denials"), "utf8")).trim().split("\n");
+    expect(denied).toContain("SIGTERM"); expect(denied).toContain("SIGKILL");
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);
+
+test("malformed evidence followed by a stall remains owned by the original work watchdog", async () => {
+  const { root, observe } = await fixture("success");
+  try {
+    const frames = [
+      { formatVersion: 1, scope: "guest-artifact-preparation-event", stage: "bun-preparation", state: "started" },
+      { formatVersion: 1, scope: "guest-bun-preparation-event", stage: "output-custody", state: "completed", elapsedMs: 0 },
+    ];
+    await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(frames.map((frame) => JSON.stringify(frame)).join("\n") + "\n")});await Bun.sleep(20000);\n`, { mode: 0o700 });
+    const observed = await observe(500);
+    expect(observed.exit).toBe(4);
+    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: true, timeoutMs: 500 }, evidenceError: { code: "PREPARATION_PROTOCOL_INVALID" }, error: { code: "PREPARATION_HOST_DEADLINE" } });
+    expect(observed.result.transport.elapsedMs).toBeGreaterThanOrEqual(500);
+    expect(observed.result.transport.elapsedMs).toBeLessThan(2500);
+    expect(observed.result.lastStage).toMatchObject({ stage: "bun-preparation", state: "started" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);

@@ -21,7 +21,7 @@ let stopped = true;
 const sessionAbort = new AbortController();
 let sessionOperation: ReturnType<typeof observeGuestSessions> | undefined;
 const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
-const tools = ["qemu-img", "qemu-system-x86_64", "cloud-localds", "ssh", "ssh-keygen", "scp", "unzip", "python3", "git", "hdiutil"];
+const tools = ["qemu-img", "qemu-system-x86_64", "cloud-localds", "ssh", "ssh-keygen", "scp", "unzip", "python3", "git", "hdiutil", "/bin/ps"];
 function accelerator(): "tcg" | "kvm" {
   const value = process.env.FLEUR_GUEST_ACCELERATOR ?? "tcg";
   if (value !== "tcg" && value !== "kvm") return fail("ARGUMENT_INVALID", "Guest accelerator must be exactly tcg or kvm.");
@@ -121,7 +121,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");

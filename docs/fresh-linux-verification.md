@@ -116,12 +116,19 @@ raw stderr, arbitrary JSON fields and transport diagnostic text are omitted.
 An exit 137 alone remains a transport-or-remote-command failure; it does not prove
 that the host timer fired or that any particular guest stage completed.
 
-A local Python relay keeps its process-group leader alive after SSH exits. A
-private descriptor carries only the SSH exit tuple; the host retires the still
-owned group before reaping it. Local transport retirement has a separate bounded
+The shared host-only Python helper retains the actual SSH leader unreaped after exit. A private descriptor carries its PID, exit tuple and bounded process inventory; TypeScript completes owned group signals before explicit release and reaping. The fixed /bin/ps inventory reads only PID, process-group and state columns, never command arguments. Its absolute executable availability is included in host capabilities, and both helper source hashes are included in verifier provenance. Local transport retirement has a separate bounded
 three-second cleanup period and reports uncertainty if retirement is unconfirmed.
-This does not establish cleanup of remote guest work. The owned VM teardown
+The report separates work elapsed time from local cleanup elapsed time. A detected live local survivor invalidates preparation even after confirmed retirement; that refusal is distinct from an expired work timer. This does not establish cleanup of remote guest work. The owned VM teardown
 remains necessary. Success requires authenticated Bun output and completed
 candidate/restriction extraction in the expected order. These diagnostics do not
 establish that preparation fits within ten seconds on every guest, and they do
 not change runtime or release admission.
+
+Protocol rejection latches failure and stops further decoding. It does not
+unnecessarily signal an already exiting SSH leader: remaining bytes are counted
+and discarded only within the original remaining work budget. A stalled failed
+protocol is terminated by that same watchdog, without starting a new budget.
+The total two MiB limit includes discarded bytes and triggers immediate
+termination. Signal failures also enter finite cleanup immediately. Primary
+protocol evidence and any secondary cleanup uncertainty are both retained;
+neither a denied signal nor a cleanup failure becomes successful preparation.

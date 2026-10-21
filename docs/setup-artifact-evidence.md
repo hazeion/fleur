@@ -274,3 +274,12 @@ The unchanged restriction probe exited 0 with `bounded_probe_passed` and `cleanu
 | Audited launcher | `10b930c371ccd41e1325477e086605808f80bc46e4c5b6f7270076ce80335922` |
 
 Worker/image/resource cleanup, compiler-stage removal, final VM reaping and credential removal were confirmed. The private wrapper deliberately ended with `DIAGNOSTIC_ONLY`, exit 4, after successful guest proof. Its global v1 gate, CPU-performance proof and human-consent proof remain false. Those labels do not negate this individually reviewed prerequisite tuple, and they do not qualify other OS/architecture rows, the future full application or assisted Desktop installation. Other promised native platforms and blocked hosted CI remain open. Existing contract tests cover partial-package failure, pending-fence recovery, repository resume and serialization; successful fresh-login resume is not a claim that this VM run terminated during a privileged package transaction.
+
+
+## Intel Desktop 4.96.1 disk-image authentication
+
+On native Intel macOS 15.7.7, the official Docker Desktop 4.96.1 build 244132 image passed exact byte and SHA256 verification, strict Apple/Docker signature assessment and Gatekeeper open assessment as Notarized Developer ID. The image is 659,125,733 bytes with SHA256 `3d35634cf3dd0373d37d986de10eb744950d3822124615e774335f7be2a1d27a`. The fixed signature requirement includes Docker Team ID `9BNSXJN65R`. Both assessment processes were reaped and their owned process groups were confirmed absent. The original 60-second acceptance allowance and 55-second work fence were preserved.
+
+The first attempt completed in 26.80 seconds with exit 0 and report SHA256 `bb8241fe2d942bebcd26254237146b7947be2c58a58f4ab4bdddc5e274802741`. Independent review checked the exact receipt, operations and retirement facts; root additionally performed full descriptor-held payload readback and checked retained file identity. A second byte-identical attempt completed in 29.69 seconds with exit 0 and report SHA256 `62012b54c67a712052c8938a0b04d9a2bb4422152be5c58ecb20219467010062`. Its strict receipt and full descriptor-held payload readback also passed, with a separate independent evidence review.
+
+This proves the retained DMG input only. No application was mounted, copied, launched or admitted to the source catalog, and no legal agreement or runtime qualification is claimed. The earlier 4.96.0 artifact evidence remains separate. The existing 4.96.1 installed-application trust observations do not establish that installation used this DMG.

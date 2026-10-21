@@ -138,3 +138,39 @@ ordinary phase event cannot be delivered, preparation still fails, but another
 failed cleanup-event write cannot bypass the original owned-file claim/deletion
 or foreign-replacement preservation. A lost final result remains incomplete
 host evidence. No archive, retained-output or custody check is suppressed.
+
+
+## Recorded restriction-helper input (internal)
+
+The owned verifier can select `--recorded-helper-artifacts <fixed-pair-directory>`
+instead of `--compiler-debs`. This internal input supplies only `filter.so` and
+`abuse` bytes; it cannot choose a manifest, compiler, runtime profile or admission
+policy. The default route still executes the pinned local GCC with the original
+sources and flags. Recorded mode requires the complete original owned NoCloud
+binding and the full disposable VM route, including the same initial/resumed
+login binding. It is unavailable to ordinary persistent hosts and workers.
+
+The source-owned [origin record](../experiments/compatibility/runtime-probe/recorded-helper-origin.json)
+binds the 47,576-byte pair to producer report SHA256
+`de686cf6344410c3d29e1dcab19bcdabaddc05e4a7d4bdf50320f9c649282bbf`,
+GCC 13.3.0, its authenticated 38-package closure, original C sources/flags, ELF ABI
+and pinned Bun image. Both fixed inputs, current C sources and retained file
+identities are authenticated again before Docker build. Reports distinguish
+`prebuilt-origin` from local compilation: `compiler_pin_verified` is false, no
+local `gcc` observation is supplied, and producer compiler execution is a
+separate historical fact. This adds no OS, control, readiness or release row.
+
+The recorded build context remains inside the owned guest until that entire VM
+filesystem is disposed. Its local receipt explicitly remains pending; no local
+recursive cleanup or success is claimed. Existing worker/image/daemon/waiter
+cleanup assertions remain required. Host acceptance additionally requires the
+owned VM to be reaped and actual scratch/overlay removal, reported as
+`artifactDisposal.complete`. Uncertain host artifact custody instead retains the
+scratch and fails verification. All original preparation, runtime, GC/idle,
+resource, isolation and deadline gates remain unchanged.
+
+Portable text-artifact, filesystem and report-protocol tests cover this route;
+they do not establish execution of the genuine compiled pair. Full recorded-mode
+native runtime proof and independent evidence review remain pending. No new
+platform qualification or aggregate v1 compatibility claim follows from adding
+this input path.

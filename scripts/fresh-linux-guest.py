@@ -787,6 +787,37 @@ def restriction_invocation(owned_binding):
     return args, end
 
 
+def grant_snapshot():
+    budget_seconds(10)
+    path = Path.home() / '.local/state/fleur/setup/grants.json'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) & 0o077 or not 0 <= before.st_size <= 1024 * 1024):
+            raise RuntimeError('Ready setup grant custody is invalid')
+        parts = []
+        count = 0
+        while True:
+            budget_seconds(10)
+            part = os.read(fd, min(65536, before.st_size + 1 - count))
+            if not part:
+                break
+            parts.append(part)
+            count += len(part)
+            if count > before.st_size:
+                raise RuntimeError('Ready setup grants changed during read')
+        after = os.fstat(fd)
+        if count != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
+            raise RuntimeError('Ready setup grant custody changed')
+        return {'identity': file_identity(after), 'sha256': hashlib.sha256(b''.join(parts)).hexdigest()}
+    finally:
+        os.close(fd)
+
+
 def admitted_readiness(observed, command):
     if type(observed) is not dict or type(observed.get('exitCode')) is not int or observed['exitCode'] != 0:
         return False
@@ -830,6 +861,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
     try:
         for _ in range(2):
             before = snapshot()
+            ordinary = REPORT.get('executionArtifact', {}).get('kind') == 'ordinary'
+            grants_before = grant_snapshot() if ordinary else None
             observed = command_json("doctor")
             envelope = observed.get("result", {})
             components = object_field(command_data(envelope), "components")
@@ -845,8 +878,15 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
                              for name in ("cli", "daemon", "compose", "smoke"))
                      and object_field(components, "smoke").get("cleanup") is True
                      and object_field(components, "release").get("state") == "unverified")
-            if REPORT.get('executionArtifact', {}).get('kind') == 'ordinary':
+            if ordinary:
                 ready = admitted_readiness(observed, 'doctor')
+                if ready:
+                    reprobe = command_json('setup')
+                    snapshots_equal = snapshot() == before
+                    grants_equal = grant_snapshot() == grants_before
+                    REPORT.setdefault('readySetupReprobes', []).append({**reprobe, 'snapshotPreserved': snapshots_equal, 'grantsPreserved': grants_equal})
+                    if not admitted_readiness(reprobe, 'setup') or not snapshots_equal or not grants_equal:
+                        raise RuntimeError('Ordinary ready setup reprobe changed state or requested new authority')
             if not ready or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
                 raise RuntimeError("Repeat ordinary-user smoke or host state preservation failed")
             REPORT["runs"].append(observed)

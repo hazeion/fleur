@@ -49,3 +49,20 @@ test("ordinary admitted Doctor zero preserves both smoke rounds and the original
     expect(state.unexpected).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+test("ordinary ready setup reprobes perform no new authority or package work", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-ordinary-reprobe-"));
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "ordinary-admitted"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(0);
+    const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(state.ordinaryReadySetupCalls).toBe(3);
+    expect(state.installPrompts).toHaveLength(7);
+    expect(state.enrollmentPrompts).toEqual([]);
+    const report = JSON.parse(stdout);
+    expect(report.readySetupReprobes).toHaveLength(2);
+    for (const proof of report.readySetupReprobes) expect(proof).toMatchObject({ exitCode: 0, snapshotPreserved: true, grantsPreserved: true, result: { command: "setup", ok: true, error: null } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);

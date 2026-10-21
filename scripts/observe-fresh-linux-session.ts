@@ -32,6 +32,15 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>): void 
   for (const item of guest.runs) {
     const observed = item as { exitCode?: unknown; result?: { formatVersion?: unknown; command?: unknown; ok?: unknown; truncated?: unknown; error?: { code?: unknown }; data?: { components?: Record<string, { state?: unknown; cleanup?: unknown }> } } };
     const envelope = observed?.result; const components = envelope?.data?.components;
+    const artifact = guest.executionArtifact as { kind?: unknown; packageName?: unknown } | undefined;
+    if (artifact?.kind === "ordinary") {
+      const evidence = "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2";
+      if (artifact.packageName !== "fleur" || observed?.exitCode !== 0 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== true || envelope.error !== null || envelope.truncated !== false
+          || !isDeepStrictEqual(Object.keys(envelope).sort(), ["formatVersion", "command", "ok", "data", "error", "truncated"].sort())
+          || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true
+          || !isDeepStrictEqual(components?.release, { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: evidence, isolationSha256: evidence } })) throw new Error("Guest final proof lacks exact admitted ordinary doctor rounds");
+      continue;
+    }
     if (observed?.exitCode !== 4 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== false || envelope.truncated !== false || envelope.error?.code !== "PREREQUISITE_UNAVAILABLE"
         || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true || components?.release?.state !== "unverified") throw new Error("Guest final proof lacks the complete release-unverified doctor rounds");
   }

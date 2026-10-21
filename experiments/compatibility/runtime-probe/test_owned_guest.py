@@ -22,14 +22,14 @@ BOOT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
 
 class OwnedGuestCustody(unittest.TestCase):
-    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0):
+    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04'):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             bodies = {'etc/fleur-owned-guest': NONCE,
-                      'etc/fleur-owned-guest.json': json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': 1000}),
+                      'etc/fleur-owned-guest.json': json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': 1000, 'osRelease': {'id':'ubuntu', 'versionId':release, 'sha256':hashlib.sha256(f'ID=ubuntu\nVERSION_ID="{release}"\n'.encode()).hexdigest()}}),
                       'proc/sys/kernel/random/boot_id': BOOT+'\n',
                       'proc/1/comm': 'systemd\n',
-                      'usr/lib/os-release': 'ID=ubuntu\nVERSION_ID="24.04"\n',
+                      'usr/lib/os-release': f'ID=ubuntu\nVERSION_ID="{release}"\n',
                       'usr/bin/systemd-detect-virt': 'owned root tool protocol fixture',
                       'usr/local/lib/fleur-owned-guest.py': Path(owned_guest.__file__).read_text()}
             if scenario=='wrong-boot': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace(BOOT,'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee')
@@ -120,13 +120,15 @@ class OwnedGuestCustody(unittest.TestCase):
                                     with contextlib.redirect_stdout(captured):status=owned_guest.main(argv)
                                 finally:uid_state[0]=previous
                                 return SimpleNamespace(returncode=status,stdout=captured.getvalue().encode(),stderr=b'')
-                            action(SimpleNamespace(context=context,root=root,clock=clock,uid=uid_state,virtualized=virtualized,root_cli=root_cli))
+                            action(SimpleNamespace(context=context,root=root,clock=clock,uid=uid_state,virtualized=virtualized,root_cli=root_cli,lstat=lambda path:original_stat(path,follow_symlinks=False)))
                         report={'ok':context is not None, 'context':context.report() if context is not None else None}
                         code=0 if context is not None else 4
                     except (OSError,ValueError,RuntimeError):
                         report={'ok':False};code=4
                     print(json.dumps(report))
-            if scenario.startswith('produce'): self.produced_manifest=json.loads((root/'etc/fleur-owned-guest.json').read_text())
+            if scenario.startswith('produce'):
+                manifest_file = root/'etc/fleur-owned-guest.json'
+                self.produced_manifest = json.loads(manifest_file.read_text()) if manifest_file.exists() else None
             return code,json.loads(output.getvalue())
 
     def test_explicit_cli_validates_root_manifest_bound_to_real_fixture_bytes(self):
@@ -135,6 +137,120 @@ class OwnedGuestCustody(unittest.TestCase):
         self.assertEqual(report['scope'],'owned-guest-custody-validation')
         self.assertEqual(report['nonce'],NONCE);self.assertEqual(report['bootId'],BOOT);self.assertEqual(report['uid'],1000)
         self.assertFalse(report['runtimeAdmission']);self.assertFalse(report['humanConsentProof']);self.assertFalse(report['nativeCpuPerformanceProof'])
+
+    def test_exact_ubuntu26_cli_custody_remains_nonadmitting(self):
+        code, report = self.observe(release='26.04')
+        self.assertEqual(code, 0)
+        self.assertEqual(report['scope'], 'owned-guest-custody-validation')
+        self.assertEqual((report['nonce'], report['bootId'], report['uid']), (NONCE, BOOT, 1000))
+        self.assertTrue(report['fixtureCustodyValidated'])
+        self.assertFalse(report['runtimeAdmission'])
+        self.assertFalse(report['humanConsentProof'])
+        self.assertFalse(report['nativeCpuPerformanceProof'])
+
+    def test_retained_original_os_change_between_allowed_releases_is_refused(self):
+        def changed(fixture):
+            release = fixture.root/'usr/lib/os-release'
+            release.chmod(0o644)
+            release.write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
+            release.chmod(0o444)
+            with self.assertRaisesRegex(ValueError, 'context changed|owned manifest binding'):
+                fixture.context.verify(0.25)
+        code, report = self.observe(control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
+
+    def test_fresh_factory_cannot_rebind_original_manifest_to_another_allowed_os(self):
+        from host_control import select_owned_context
+        for original_release, changed_release in (('24.04', '26.04'), ('26.04', '24.04')):
+            with self.subTest(original=original_release, changed=changed_release):
+                def changed(fixture):
+                    release = fixture.root/'usr/lib/os-release'
+                    release.chmod(0o644)
+                    release.write_text(f'ID=ubuntu\nVERSION_ID="{changed_release}"\n')
+                    release.chmod(0o444)
+                    with self.assertRaises(ValueError):
+                        select_owned_context(nonce=fixture.context.custody.nonce, boot_id=fixture.context.custody.boot_id,
+                            uid=fixture.context.custody.uid, manifest_sha256=fixture.context.custody.manifest_sha256,
+                            remaining=0.25, deadline=100.25)
+                code, report = self.observe(release=original_release,
+                    control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+                self.assertEqual(code, 0)
+                self.assertTrue(report['ok'])
+
+    def test_root_cli_agrees_on_exact_ubuntu26_original_binding(self):
+        def verified(fixture):
+            response = fixture.root_cli(['--verify-control', fixture.context.root_payload(), '--budget-seconds', '0.25'])
+            self.assertEqual(response.returncode, 0)
+            result = json.loads(response.stdout)
+            self.assertTrue(result['rootValidation'])
+            self.assertEqual((result['nonce'], result['bootId'], result['uid'], result['manifestSha256']), fixture.context.original)
+            self.assertFalse(result['runtimeAdmission'])
+        code, report = self.observe(release='26.04', control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=verified)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
+
+    def test_root_cli_refuses_original_os_drift_without_changing_public_binding(self):
+        def changed(fixture):
+            payload = fixture.context.root_payload()
+            release = fixture.root/'usr/lib/os-release'
+            release.chmod(0o644)
+            release.write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
+            release.chmod(0o444)
+            response = fixture.root_cli(['--verify-control', payload, '--budget-seconds', '0.25'])
+            self.assertEqual(response.returncode, 4)
+            result = json.loads(response.stdout)
+            self.assertFalse(result['ok'])
+            self.assertNotIn('rootValidation', result)
+            self.assertFalse(result['runtimeAdmission'])
+        code, report = self.observe(control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
+
+    def test_same_bytes_replacement_of_original_os_file_is_refused(self):
+        def changed(fixture):
+            release = fixture.root/'usr/lib/os-release'
+            original = release.with_name('original-release')
+            release.rename(original)
+            release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+            release.chmod(0o444)
+            self.assertNotEqual(fixture.lstat(release).st_ino, fixture.lstat(original).st_ino)
+            with self.assertRaisesRegex(ValueError, 'context changed|owned manifest binding'):
+                fixture.context.verify(0.25)
+        code, report = self.observe(control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
+
+    def test_other_ubuntu_releases_remain_unverified(self):
+        for release in ('22.04', '25.10', '26.10', '27.04'):
+            with self.subTest(release=release):
+                code, report = self.observe(release=release)
+                self.assertEqual(code, 4)
+                self.assertFalse(report['ok'])
+                self.assertFalse(report['runtimeAdmission'])
+                self.assertNotIn('fixtureCustodyValidated', report)
+
+    def test_default_ubuntu24_seed_cannot_create_original_binding_on_ubuntu26(self):
+        code, report = self.observe('produce', release='26.04', arguments=['--create', NONCE])
+        self.assertEqual(code, 4)
+        self.assertFalse(report['ok'])
+        self.assertIsNone(self.produced_manifest)
+        self.assertNotIn('manifestCreated', report)
+
+    def test_explicit_ubuntu26_seed_produces_the_bound_os_manifest(self):
+        code, report = self.observe('produce', release='26.04', arguments=['--create-ubuntu26', NONCE])
+        self.assertEqual(code, 0)
+        self.assertTrue(report['manifestCreated'])
+        self.assertEqual(self.produced_manifest, {'formatVersion':1, 'nonce':NONCE, 'bootId':BOOT, 'uid':1000,
+            'osRelease':{'id':'ubuntu', 'versionId':'26.04', 'sha256':hashlib.sha256(b'ID=ubuntu\nVERSION_ID="26.04"\n').hexdigest()}})
+        self.assertFalse(report['runtimeAdmission'])
+
+    def test_explicit_ubuntu26_seed_cannot_produce_on_ubuntu24(self):
+        code, report = self.observe('produce', arguments=['--create-ubuntu26', NONCE])
+        self.assertEqual(code, 4)
+        self.assertFalse(report['ok'])
+        self.assertIsNone(self.produced_manifest)
+        self.assertNotIn('manifestCreated', report)
 
     def test_malicious_root_manifest_or_binding_never_grants_fixture_custody(self):
         for scenario in ('symlink','writable','ancestor','foreign-owner','wrong-boot','wrong-uid','duplicate-key','ancestor-symlink','changed-manifest'):
@@ -162,7 +278,7 @@ class OwnedGuestCustody(unittest.TestCase):
     def test_boot_producer_writes_exclusive_root_manifest_with_original_identity(self):
         code,report=self.observe('produce',['--create',NONCE])
         self.assertEqual(code,0);self.assertTrue(report['manifestCreated'])
-        self.assertEqual(self.produced_manifest,{'formatVersion':1,'nonce':NONCE,'bootId':BOOT,'uid':1000})
+        self.assertEqual(self.produced_manifest,{'formatVersion':1,'nonce':NONCE,'bootId':BOOT,'uid':1000,'osRelease':{'id':'ubuntu','versionId':'24.04','sha256':hashlib.sha256(b'ID=ubuntu\nVERSION_ID="24.04"\n').hexdigest()}})
         self.assertFalse(report['runtimeAdmission'])
 
     def test_unrelated_directory_contents_do_not_change_retained_manifest_identity(self):
@@ -279,6 +395,6 @@ class OwnedGuestCustody(unittest.TestCase):
     def test_boot_producer_never_replaces_an_existing_manifest(self):
         code,report=self.observe('produce-existing',['--create',NONCE])
         self.assertEqual(code,4);self.assertFalse(report['ok'])
-        self.assertEqual(self.produced_manifest,{'formatVersion':1,'nonce':NONCE,'bootId':BOOT,'uid':1000})
+        self.assertEqual(self.produced_manifest,{'formatVersion':1,'nonce':NONCE,'bootId':BOOT,'uid':1000,'osRelease':{'id':'ubuntu','versionId':'24.04','sha256':hashlib.sha256(b'ID=ubuntu\nVERSION_ID="24.04"\n').hexdigest()}})
 
 if __name__=='__main__':unittest.main()

@@ -4,16 +4,20 @@ import { join, resolve } from "node:path";
 import { smokeImages } from "../src/setup/profiles.ts";
 import { productionHost } from "../src/setup/host.ts";
 
-// Run only on an owned disposable native Linux CI runner. This acquires one exact
-// smoke image; it neither installs Docker nor changes services, contexts or access.
+// Legacy disposable Linux verification may acquire the exact smoke image.
+// Explicit existing-only mode also supports native macOS and never pulls images.
+// Neither mode installs Docker or changes services, contexts or access.
 const repository = resolve(import.meta.dir, "..");
+const existingOnly = process.env.FLEUR_EXISTING_DOCKER_ONLY === "yes";
 const scratch = await mkdtemp(join(tmpdir(), "fleur-native-setup-"));
 const output = resolve(process.env.FLEUR_NATIVE_REPORT ?? "native-setup.json");
 const observations: Record<string, unknown> = {
-  formatVersion: 1, scope: "native-existing-docker", verifiedReleaseProfile: false,
+  formatVersion: 1, scope: existingOnly ? "native-existing-docker-readiness" : "native-existing-docker", verifiedReleaseProfile: false,
+  installationVerified: false, humanConsentProof: false, imageAcquisition: existingOnly ? "none" : "explicit-disposable-verifier",
   bun: Bun.version, bunRevision: Bun.revision, architecture: process.arch,
   sourceCommit: process.env.GITHUB_SHA ?? null, runs: [],
 };
+observations.verifierSha256 = Bun.CryptoHasher.hash("sha256", await readFile(import.meta.path), "hex");
 let cleanupSentinel: (() => Promise<void>) | undefined;
 async function run(args: string[], expected = 0): Promise<string> {
   const result = await productionHost().run(args, 120000);
@@ -21,8 +25,13 @@ async function run(args: string[], expected = 0): Promise<string> {
   return result.stdout;
 }
 try {
-  if (process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") throw new Error("Explicit FLEUR_OWNED_DISPOSABLE_HOST=yes opt-in required before Docker access.");
-  if (process.platform !== "linux" || !["x64", "arm64"].includes(process.arch)) throw new Error("Native Linux amd64/arm64 runner required.");
+  if (!existingOnly && process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") throw new Error("Explicit FLEUR_OWNED_DISPOSABLE_HOST=yes opt-in required before Docker access.");
+  if ((!existingOnly && process.platform !== "linux") || !["linux", "darwin"].includes(process.platform) || !["x64", "arm64"].includes(process.arch)) throw new Error(existingOnly ? "Native macOS or Linux amd64/arm64 host required." : "Native Linux amd64/arm64 runner required.");
+  if (existingOnly) {
+    const native = await productionHost().host();
+    if (native.translated !== false) throw new Error("Existing Docker verification requires verified native execution.");
+    observations.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
+  }
   process.chdir(repository);
   const beforeContext = await run(["docker", "context", "show"]);
   const ambientHost = process.env.DOCKER_HOST;
@@ -41,14 +50,26 @@ try {
     finally { delete process.env.DOCKER_CONTEXT; process.env.DOCKER_HOST = endpoint as string; }
   }
   observations.endpoint = "local-unix";
-  observations.osRelease = await readFile("/etc/os-release", "utf8");
-  observations.kernel = (await run(["uname", "-srmo"])).trim();
+  observations.osRelease = process.platform === "darwin" ? (await run(["sw_vers", "-productVersion"])).trim() : await readFile("/etc/os-release", "utf8");
+  observations.kernel = (await run(["uname", process.platform === "darwin" ? "-srm" : "-srmo"])).trim();
   observations.docker = JSON.parse(await docker("version", "--format", "{{json .}}"));
   observations.compose = (await docker("compose", "version", "--short")).trim();
   const image = smokeImages[process.arch];
   if (!image) throw new Error("No exact smoke image for architecture.");
-  await docker("pull", image);
-  const imageMetadata = JSON.parse(await docker("image", "inspect", image));
+  let imageBody: string;
+  if (existingOnly) {
+    const inspected = await productionHost().run(["docker", "--host", endpoint, "image", "inspect", image], 120000);
+    if (inspected.status !== "completed" || inspected.exitCode !== 0) {
+      if (inspected.status === "completed" && /no such (?:image|object)/i.test(inspected.stderr)) observations.requiredAction = { action: "image-acquire", method: "docker-digest-pull", image };
+      throw new Error("The exact smoke image must already be present; use separately authorized Fleur setup. No image was acquired by this verifier.");
+    }
+    imageBody = inspected.stdout;
+    observations.imagePresence = "preexisting";
+  } else {
+    await docker("pull", image);
+    imageBody = await docker("image", "inspect", image);
+  }
+  const imageMetadata = JSON.parse(imageBody);
   observations.image = imageMetadata;
   const imageId = imageMetadata[0]?.Id;
   if (typeof imageId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new Error("Pinned image inspection did not supply a full image identity.");

@@ -31,15 +31,18 @@ class HostControlContext:
         if time.monotonic() >= end:
             raise ValueError('original owned host deadline expired')
 
-    def root_payload(self):
+    def root_payload(self, *, deadline=None):
         # Data only: the fixed root NoCloud CLI must freshly verify this payload.
         if (type(self.custody) is not OwnedGuestContext
                 or self.original != (self.custody.nonce, self.custody.boot_id, self.custody.uid, self.custody.manifest_sha256)
                 or type(self.deadline) not in (int, float) or not math.isfinite(self.deadline) or self.deadline <= 0):
             raise ValueError('original owned host context required')
+        if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= 0):
+            raise ValueError('finite absolute owned phase deadline required')
+        end = self.deadline if deadline is None else min(self.deadline, deadline)
         return json.dumps({'formatVersion': 1, 'nonce': self.custody.nonce, 'bootId': self.custody.boot_id,
                            'uid': self.custody.uid, 'manifestSha256': self.custody.manifest_sha256,
-                           'custodySha256': self.custody.custody_digest(), 'deadlineMonotonic': self.deadline},
+                           'custodySha256': self.custody.custody_digest(), 'deadlineMonotonic': end},
                           sort_keys=True, separators=(',', ':'), allow_nan=False)
 
     def report(self):

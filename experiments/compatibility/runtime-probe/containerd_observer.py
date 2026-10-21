@@ -9,12 +9,12 @@ import selectors
 import subprocess
 import time
 from daemon_trace import parse_stacks, PREFIXES, STATES, NAME
-from registration_canary import register_canary
+from registration_canary import register_canary, retained_exit, retire_owned_group
 
 # Reuse the existing bounded stack grammar inside the isolated root process.
 ROOT_PARSER = ('import json,re\nINPUT_LIMIT=65536\nOUTPUT_LIMIT=4096\n'
                +'PREFIXES='+repr(PREFIXES)+'\nSTATES='+repr(STATES)+'\nNAME='+repr(NAME)+'\n'
-               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(register_canary))
+               +inspect.getsource(parse_stacks)+"\n"+inspect.getsource(retained_exit)+"\n"+inspect.getsource(retire_owned_group)+"\n"+inspect.getsource(register_canary))
 
 # The privileged supervisor owns the child process group. Control EOF and the
 # original absolute time allowance both cause root to terminate and reap it.
@@ -60,7 +60,7 @@ try:
     selector.register(p.stderr,selectors.EVENT_READ,'err')
     phase=1
     while time.monotonic()<deadline:
-        if p.poll() is not None: phase=2; break
+        if retained_exit(p) is not None: phase=2; break
         stop=False
         for key,_ in selector.select(min(0.025,max(0,deadline-time.monotonic()))):
             chunk=os.read(key.fileobj.fileno(),4096)
@@ -87,7 +87,7 @@ try:
         if stop: break
     # At the operation deadline only failure cleanup may continue. Give the
     # failed caller a bounded control window before retiring the root child.
-    if not diagnostic and time.monotonic()>=deadline and p.poll() is None:
+    if not diagnostic and time.monotonic()>=deadline and retained_exit(p) is None:
         phase=5
         control_deadline=time.monotonic()+0.2
         while time.monotonic()<control_deadline:
@@ -103,9 +103,9 @@ try:
 finally:
     try:
         if p is not None:
-            pre_retirement_returncode=p.poll()
+            pre_retirement_returncode=retained_exit(p)
             try:
-                if diagnostic and p.poll() is None:
+                if diagnostic and retained_exit(p) is None:
                     try: os.kill(p.pid,signal.SIGQUIT)
                     except ProcessLookupError: pass
                     capture_deadline=time.monotonic()+0.2
@@ -117,11 +117,8 @@ finally:
                             raw_stack.extend(chunk)
                         except BlockingIOError: time.sleep(0.005)
             finally:
-                p.poll() # retire a child that already exited during trace capture
-                try: os.killpg(p.pid,signal.SIGKILL)
-                except ProcessLookupError: pass
-                try: p.wait(timeout=0.4 if diagnostic else 0.75) # failure-only reap grace, never operation success
-                except subprocess.TimeoutExpired: sys.exit(74)
+                try:retire_owned_group(p,0.4 if diagnostic else 0.75)
+                except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired):sys.exit(74)
     finally:
         if p is not None:
             # Count any final stderr bytes without retaining raw diagnostics.
@@ -182,8 +179,13 @@ def _object(pairs):
 
 class ContainerdObserver:
     """Prepare before Docker run; bind an already host-verified owned CID/PID."""
-    def __init__(self, ctr, address, namespace, timeout, launcher=None):
+    def __init__(self, ctr, address, namespace, timeout, launcher=None, *, host_binding=None):
         self.deadline = time.monotonic()+_budget(timeout)
+        self.host_binding=host_binding
+        if host_binding is not None:
+            from privileged_control import HostDaemonBinding
+            if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
+            host_binding.verify_operation(ctr,address,namespace,self.deadline-time.monotonic())
         if (type(ctr) is not str or not os.path.isabs(ctr)
                 or type(address) is not str or not os.path.isabs(address)
                 or namespace != 'moby'):
@@ -212,6 +214,14 @@ class ContainerdObserver:
         command = launcher if launcher is not None else [
             '/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',SUPERVISOR,
             ctr,address,namespace,str(self.deadline)]
+        if host_binding is not None:
+            from privileged_control import ROOT_BINDING_SOURCE
+            owned_source=SUPERVISOR.replace('ctr,address,namespace,absolute_deadline=sys.argv[1:]','ctr,address,namespace,absolute_deadline=sys.argv[1:5]\npayload=sys.argv[5];binding=json.loads(sys.argv[6])\ndef verify_owned(limit):\n    verify_root_binding(payload,binding,min(limit,float(absolute_deadline),json.loads(payload)["deadlineMonotonic"]),ctr,address,namespace)')
+            owned_source=owned_source.replace('def record_error(chunk):',"def verify_retained_endpoint(limit):\n    if time.monotonic()>=limit or daemon_identity(address,ctr,deadline=limit)!=binding['identity']:raise ValueError('retained cleanup endpoint changed')\n    if time.monotonic()>=limit:raise ValueError('cleanup validation expired')\ndef record_error(chunk):")
+            owned_source=owned_source.replace('    p=subprocess.Popen([ctr,','    verify_owned(deadline)\n    p=subprocess.Popen([ctr,',1)
+            owned_source=owned_source.replace('canary_owner,forward,record_error)','canary_owner,forward,record_error,verify_owned,verify_retained_endpoint)')
+            owned_source=owned_source.replace('                    try: os.kill(p.pid,signal.SIGQUIT)','                    verify_owned(deadline)\n                    try: os.kill(p.pid,signal.SIGQUIT)')
+            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',ROOT_BINDING_SOURCE+owned_source,ctr,address,namespace,str(self.deadline),*host_binding.root_arguments(self.deadline)]
         try:
             self.selector = selectors.DefaultSelector()
         except OSError:
@@ -239,6 +249,7 @@ class ContainerdObserver:
             raise ObserverUnverified('readiness-order')
         self.ready_requested=True
         limit=self._limit(remaining)
+        if self.host_binding is not None:self.host_binding.verify(limit-time.monotonic())
         self.process.stdin.write(b'prepare-registration\n')
         self.process.stdin.flush()
         while True:
@@ -336,6 +347,7 @@ class ContainerdObserver:
                 or type(host_pid) is not int or not 0 < host_pid <= 2**32-1):
             raise ObserverUnverified('identity-invalid')
         limit=self._limit(remaining)
+        if self.host_binding is not None:self.host_binding.verify(limit-time.monotonic())
         try:
             while True:
                 namespace,topic,event,seconds,nanos=self._event(limit)
@@ -355,6 +367,7 @@ class ContainerdObserver:
         if not self.registration_failed or self.container is not None or self.diagnostic_requested:
             raise ObserverUnverified('diagnostic-order')
         self.diagnostic_requested = True
+        if self.host_binding is not None:self.host_binding.verify(self.deadline-time.monotonic())
         try:
             self.process.stdin.write(b'diagnose-registration\n')
             self.process.stdin.flush()
@@ -417,6 +430,7 @@ class ContainerdObserver:
                 remaining=0
             success_limit=min(success_limit,now+remaining)
         limit=success_limit
+        self.cleanup_late=self.cleanup_late or now>=success_limit
         grace=False
         self.process.stdin.close() # root supervisor owns child kill and reap
         try:
@@ -453,15 +467,20 @@ class ContainerdObserver:
             if not self.cleanup_verified:
                 self.phase='closed-cleanup-unverified'
                 raise ObserverUnverified('observer-cleanup',self.snapshot())
-            self.cleanup_late=grace or time.monotonic()>=success_limit
+            self.cleanup_late=self.cleanup_late or grace or time.monotonic()>=success_limit
             self.phase='closed-after-deadline' if self.cleanup_late else 'closed'
             if self.cleanup_late:
                 raise ObserverUnverified('observer-cleanup-deadline',self.snapshot())
             return True
         except (subprocess.TimeoutExpired,OSError,ObserverUnverified) as error:
-            if isinstance(error,ObserverUnverified) and error.category=='observer-cleanup-deadline': raise
-            raise ObserverUnverified('observer-cleanup',self.snapshot()) from None
+            self.cleanup_late=self.cleanup_late or grace or time.monotonic()>=success_limit
+            category='observer-cleanup-deadline' if self.cleanup_late else 'observer-cleanup'
+            self.phase='closed-after-deadline' if self.cleanup_verified and self.cleanup_late else 'closed-cleanup-unverified'
+            raise ObserverUnverified(category,self.snapshot()) from None
         finally:
             if self.closed or self.process.poll() is not None:
+                # Terminal transport without a verified retirement ACK remains
+                # unconfirmed; repeated close must not touch a closed selector.
+                self.closed=True
                 self.selector.close()
                 self.process.stdout.close()

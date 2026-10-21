@@ -181,3 +181,12 @@ class HostedCapture(unittest.TestCase):
         self.assertTrue(result['truncated'])
         self.assertGreater(len(result['goroutines']),0)
         self.assertLessEqual(len(json.dumps(result).encode()),OUTPUT_LIMIT)
+
+
+class ExplicitOwnedTraceBoundary(unittest.TestCase):
+    def test_data_only_binding_never_starts_privileged_diagnostic(self):
+        from unittest.mock import patch
+        from daemon_trace import capture_daemon_trace
+        with patch('subprocess.Popen',side_effect=AssertionError('untyped trace authority reached privilege')):
+            with self.assertRaisesRegex(ValueError,'typed host daemon binding'):
+                capture_daemon_trace(2,host_binding={'ok':True})

@@ -112,17 +112,28 @@ def eligible_host():
     return platform.system() == 'Linux' and all(os.environ.get(key) == value for key,value in expected.items())
 
 
-def capture_daemon_trace(remaining):
-    if not eligible_host(): return {'outcome':'ineligible-host'}
+def capture_daemon_trace(remaining, *, host_binding=None):
+    if host_binding is None and not eligible_host(): return {'outcome':'ineligible-host'}
     if type(remaining) not in (int,float) or not math.isfinite(remaining) or remaining <= 1:
         return {'outcome':'budget-unavailable'}
     budget = min(5,remaining)
     deadline = time.monotonic()+budget
+    supervisor=ROOT_SUPERVISOR
+    if host_binding is not None:
+        from privileged_control import HostDaemonBinding, ROOT_BINDING_SOURCE
+        if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
+        host_binding.verify(deadline-time.monotonic())
+        signal_source=ROOT_BINDING_SOURCE+"\nimport sys,signal\npayload=sys.argv[1];binding=json.loads(sys.argv[2]);deadline=min(float(sys.argv[3]),json.loads(payload)['deadlineMonotonic'])\nverify_root_binding(payload,binding,deadline)\nfd=os.pidfd_open(binding['identity']['pid'],0)\ntry:\n    if daemon_identity(binding['address'],binding['ctr'],deadline=deadline)!=binding['identity'] or time.monotonic()>=deadline:raise ValueError('trace daemon changed')\n    signal.pidfd_send_signal(fd,signal.SIGUSR1)\nfinally:os.close(fd)\n"
+        invocation=shlex.join(['/usr/bin/python3','-I','-c',signal_source,*host_binding.root_arguments(deadline),str(deadline)])
+        owned_trace=TRACE_COMMAND.replace('kill -USR1 "$daemon"',invocation)
+        supervisor=ROOT_SUPERVISOR.replace(shlex.quote(TRACE_COMMAND),shlex.quote(owned_trace))
+        budget=deadline-time.monotonic()
+        if budget<=.75:return {'outcome':'budget-unavailable'}
     process = None
     output, errors = bytearray(),bytearray()
     outcome = 'unavailable'
     try:
-        process = subprocess.Popen(['sudo','-n','/bin/sh','-c',ROOT_SUPERVISOR,'fleur-daemon-trace',format(math.floor((budget-.75)*1000)/1000,'.3f')],stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(['sudo','-n','/bin/sh','-c',supervisor,'fleur-daemon-trace',format(math.floor((budget-.75)*1000)/1000,'.3f')],stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,
             env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'})
         with selectors.DefaultSelector() as selector:

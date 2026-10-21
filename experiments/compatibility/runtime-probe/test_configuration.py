@@ -348,3 +348,14 @@ class KernelNetworkConfiguration(unittest.TestCase):
             changed=copy.deepcopy(good);changed['NetworkSettings'][field]=value
             with self.subTest(field=field),self.assertRaises(ValueError):
                 audit_configuration(changed,'owner','worker',IMAGE,kernel_private=True,kernel_proof=PROOF)
+
+
+class ExplicitPrivilegedHostBoundary(unittest.TestCase):
+    def test_untyped_owned_authority_refuses_before_any_host_path_or_command(self):
+        import os
+        from unittest.mock import patch
+        from configuration import inspect_containerd_control
+        from owned_guest import HOSTED
+        with patch('platform.system',return_value='Linux'),patch.dict(os.environ,HOSTED,clear=True),patch('pathlib.Path.resolve',side_effect=AssertionError('untyped authority reached host filesystem')),patch('subprocess.run',side_effect=AssertionError('untyped authority reached host command')):
+            with self.assertRaisesRegex(ValueError,'typed owned host control'):
+                inspect_containerd_control(host_context={'fixtureCustodyValidated':True})

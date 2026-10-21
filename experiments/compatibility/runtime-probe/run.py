@@ -37,7 +37,7 @@ def command(args, timeout=30, cwd=None):
     return result.stdout.strip()
 
 
-def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False):
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False, *, owned_guest_nonce=None, owned_guest_boot_id=None, owned_guest_uid=None, owned_guest_manifest_sha256=None, owned_guest_deadline=None):
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -47,7 +47,19 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
     resource_containers = []
     worker_environment = host_environment()
     creator = None
+    host_context=None;host_binding=None
+    def trace(remaining):
+        if host_context is None:return capture_daemon_trace(remaining)
+        if host_binding is None:return {'outcome':'owned-daemon-binding-unavailable'}
+        return capture_daemon_trace(remaining,host_binding=host_binding)
     try:
+        from host_control import select_owned_context
+        owned_values=(owned_guest_nonce,owned_guest_boot_id,owned_guest_uid,owned_guest_manifest_sha256,owned_guest_deadline)
+        if any(value is not None for value in owned_values):
+            if any(value is None for value in owned_values) or kernel_private_network:raise ValueError('complete owned binding without kernel-private scope required')
+            if type(owned_guest_deadline) not in (float,int):raise ValueError('original owned deadline required')
+            host_context=select_owned_context(owned_guest_nonce,owned_guest_boot_id,owned_guest_uid,owned_guest_manifest_sha256,remaining=owned_guest_deadline-time.monotonic(),deadline=owned_guest_deadline)
+            REPORT['owned_host_control']=host_context.report()
         if type(idle_runtime_stress) is not bool:raise ValueError('idle runtime stress flag invalid')
         REPORT['idle_runtime_stress']=idle_runtime_stress
         if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
@@ -82,7 +94,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         REPORT['source_sha256'] = {name:hashlib.sha256((HERE / name).read_bytes()).hexdigest()
                                   for name in ('filter.c','abuse.c','bootstrap.ts','heap_probe.ts','heap_probe.test.ts','application.js',
                                                'protocol.py','report.py','runtime_profile.py','run.py','resources.py','threads.py','diagnostics.py','configuration.py','lifecycle.py','busy-application.js','descriptor_audit.py','completion.py','waiter.py','daemon_trace.py','containerd_observer.py',
-                                               'registration_canary.py','worker_deadline.py','kernel_network.py','kernel_docker.py','engine_state.py')}
+                                               'registration_canary.py','worker_deadline.py','host_control.py','owned_guest.py','privileged_control.py','kernel_network.py','kernel_docker.py','engine_state.py')}
         REPORT['host'] = {'kernel': platform.release(),
                           'os_release': Path('/etc/os-release').read_text(),
                           'docker': command(['docker', 'version', '--format', '{{json .}}'])}
@@ -163,7 +175,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             if creator is not None:
                 primary_id=creator.create_worker(container,tag,REPORT['image_id'],'render')
                 primary_command=['docker','start','--attach','--interactive',primary_id]
-            output = run_container(primary_command, timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter,completion_stall=capture_daemon_trace)
+            output = run_container(primary_command, timeout=30, startup_audit=startup_worker, diagnostics=REPORT['worker_protocol'], environment=worker_environment, completion_observer=completed_worker,completion_start=start_waiter,completion_stall=trace)
             if len(output) > 16384:
                 raise RuntimeError('probe output exceeded bound')
             # Retain successful native evidence even if a later resource probe fails.
@@ -210,7 +222,9 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['trusted_cgroup_abuse'] = resources
             if not accept_resources(resources):
                 raise RuntimeError('missing controlled cgroup enforcement evidence')
-            control = inspect_containerd_control() if healthy_containerd_exit else None
+            if healthy_containerd_exit and host_context is not None:
+                control,host_binding=inspect_containerd_control(host_context=host_context,with_binding=True)
+            else:control=inspect_containerd_control() if healthy_containerd_exit else None
             state_endpoint=None
             if control is not None:
                 state_endpoint=control.pop('_docker_state_endpoint',None)
@@ -219,7 +233,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 REPORT['host_containerd_control'] = control
             REPORT['healthy_exit_evidence'] = 'containerd-init-exit' if control is not None else 'startup-bound-docker-wait'
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
-                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,
+                REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,host_binding=host_binding,
                 create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
                 aggregate_preparation_budget=creator is not None,
                 inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
@@ -227,7 +241,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 idle_tag=tag+'-idle'
                 REPORT['restricted_worker_idle_lifecycle'] = run_lifecycle(
                     REPORT['image_id'],idle_tag,architecture,worker_environment,audited_worker,timeout=30,
-                    containerd_control=control,broker_ack_delay=11,
+                    containerd_control=control,host_binding=host_binding,broker_ack_delay=11,
                     create_worker=(lambda name,busy,remaining:creator.create_worker(name,idle_tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
                     aggregate_preparation_budget=creator is not None,
                     inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
@@ -380,5 +394,10 @@ if __name__ == '__main__':
     parser.add_argument('--healthy-containerd-exit',action='store_true',help='Linux-host-only matching init exit evidence for concurrent healthy workers; removal still required')
     parser.add_argument('--kernel-private-network',action='store_true',help='owned VFS only: explicit NetworkDisabled plus measured kernel isolation')
     parser.add_argument('--idle-runtime-stress',action='store_true',help='add two unchanged 30-second lifecycle proofs with an audited 11-second broker pause')
+    parser.add_argument('--owned-guest-nonce')
+    parser.add_argument('--owned-guest-boot-id')
+    parser.add_argument('--owned-guest-uid',type=int)
+    parser.add_argument('--owned-guest-manifest-sha256')
+    parser.add_argument('--owned-guest-deadline',type=float)
     arguments = parser.parse_args()
-    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network,arguments.idle_runtime_stress))
+    raise SystemExit(main(arguments.architecture,arguments.trusted_build_network,arguments.healthy_containerd_exit,arguments.kernel_private_network,arguments.idle_runtime_stress,owned_guest_nonce=arguments.owned_guest_nonce,owned_guest_boot_id=arguments.owned_guest_boot_id,owned_guest_uid=arguments.owned_guest_uid,owned_guest_manifest_sha256=arguments.owned_guest_manifest_sha256,owned_guest_deadline=arguments.owned_guest_deadline))

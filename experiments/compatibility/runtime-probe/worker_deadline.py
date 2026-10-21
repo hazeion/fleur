@@ -115,7 +115,7 @@ class DeadlineGuardUnverified(RuntimeError):
 
 class HostDeadlineGuard:
     """Arm before application ACK; success requires observed kernel termination."""
-    def __init__(self, container_id, pid, deadline, launcher=None):
+    def __init__(self, container_id, pid, deadline, launcher=None, *, host_binding=None):
         self.deadline = deadline
         self.started = time.monotonic()
         self.stdout_bytes = 0
@@ -131,6 +131,13 @@ class HostDeadlineGuard:
             raise RuntimeError('worker identity or deadline invalid')
         command = ['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',ROOT_GUARD,
                    container_id,str(pid),str(deadline)]
+        if host_binding is not None:
+            from privileged_control import HostDaemonBinding, ROOT_BINDING_SOURCE
+            if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
+            host_binding.verify(deadline-time.monotonic())
+            owned_guard=ROOT_GUARD.replace('container_id, pid, deadline = sys.argv[1:]','container_id, pid, deadline = sys.argv[1:4]\n        payload=sys.argv[4];binding=json.loads(sys.argv[5])\n        verify_root_binding(payload,binding,min(float(deadline),json.loads(payload)["deadlineMonotonic"]))')
+            command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',ROOT_BINDING_SOURCE+owned_guard,container_id,str(pid),str(deadline),*host_binding.root_arguments(deadline)]
+
         try:
             self.process = (launcher or subprocess.Popen)(command, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)

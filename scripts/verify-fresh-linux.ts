@@ -7,6 +7,8 @@ import { observeGuestSessions } from "./observe-fresh-linux-session.ts";
 import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
 import { observePreparation } from "./observe-fresh-linux-preparation.ts";
 import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
+import { observeOwnedGuestCustody } from "./observe-owned-guest-custody.ts";
+import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding } from "./owned-guest-seed.ts";
 
 // Internal verification only. The source-owned ordinary production catalog stays empty.
 const imagePin = { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 };
@@ -121,7 +123,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");
@@ -136,7 +138,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
     users: [{ name: "fleur", groups: ["sudo"], sudo: "ALL=(ALL) NOPASSWD:ALL", shell: "/bin/bash", lock_passwd: true, ssh_authorized_keys: [(await readFile(clientKey + ".pub", "utf8")).trim()] }],
     ssh_pwauth: false, disable_root: true,
     ssh_keys: { ed25519_private: await readFile(hostKey, "utf8"), ed25519_public: (await readFile(hostKey + ".pub", "utf8")).trim() },
-    write_files: [{ path: "/etc/fleur-owned-guest", permissions: "0444", content: nonce }],
+    ...await ownedGuestSeed(nonce),
     package_update: false, package_upgrade: false,
   });
   await writeFile(userdata, userdataText, { flag: "wx", mode: 0o600 });
@@ -166,6 +168,14 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   if (vm.exitCode !== null) fail("BOOT_FAILED", "Owned QEMU exited before guest readiness.");
   if (!readiness.ok) fail(readiness.error?.code ?? "BOOT_FAILED", readiness.error?.message ?? "Guest boot observation failed.");
   report.boot = { hostKeyPinnedBeforeBoot: true, cloudInitComplete: true, scope: "full-system-qemu", accelerator: selectedAccelerator };
+  const custody = await attestOwnedGuestBoot({ nonce, deadline: bootDeadline,
+    query: async (_remote, timeoutMs) => {
+      const observation = await observeOwnedGuestCustody({ port, identity: clientKey, knownHosts, nonce }, timeoutMs, bootCancellation.signal);
+      report.ownedGuestCustodyTransport = { ...observation, stdout: undefined };
+      return observation;
+    } });
+  report.ownedGuestCustody = custody;
+  const ownedGuestBinding = copyOwnedGuestBinding({ nonce: custody.nonce, bootId: custody.bootId, uid: custody.uid, manifestSha256: custody.manifestSha256 }, nonce);
   await ssh("mkdir -m 700 lab");
   const restrictionArchive = join(scratch, "runtime-probe.tar");
   const sourceCommit = (await command(["git", "-C", repository, "rev-parse", "HEAD"])).stdout.trim();
@@ -195,7 +205,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   process.once("SIGINT", cancelSession); process.once("SIGTERM", cancelSession);
   let sessions;
   try {
-    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce }, sessionAbort.signal);
+    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding }, sessionAbort.signal);
     sessions = await sessionOperation;
   } finally { process.removeListener("SIGINT", cancelSession); process.removeListener("SIGTERM", cancelSession); }
   report.sessions = sessions;

@@ -8,7 +8,7 @@ const policy = {
   host: { system: "darwin", distribution: null, release: "15.7.7", architecture: "x64" },
   bun: "1.4.3",
   cli: { version: "29.9.2", commit: "a82e528" },
-  engine: { version: "29.9.2", commit: "0367cbe", kernel: "7.0.14-linuxkit", platform: "Docker Desktop 4.96.1 (244132)" },
+  engine: { version: "29.9.2", commit: "0367cbe", kernel: "7.0.14-linuxkit", platform: "Docker Desktop 4.96.1 (244132)", cgroupDriver: "cgroupfs", cgroupVersion: "2", operatingMode: "rootful", securityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] },
   containerd: { version: "v2.4.2", commit: "b7a25261e029d68978bbf290df0a62fc819b3c51" },
   runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" },
   compose: "5.6.0", image,
@@ -21,7 +21,7 @@ function desktopFixture() {
   const containers = new Map<string, { name: string; owner: string; finished: boolean }>();
   const id = "a".repeat(64);
   const imageId = "sha256:" + "b".repeat(64);
-  const info = { ID: "fixture-engine-identity", KernelVersion: "7.0.14-linuxkit", ServerVersion: "29.9.2", OSType: "linux", Architecture: "x86_64" };
+  const info = { CgroupVersion: "2", CgroupDriver: "cgroupfs", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], ID: "fixture-engine-identity", KernelVersion: "7.0.14-linuxkit", ServerVersion: "29.9.2", OSType: "linux", Architecture: "x86_64" };
   const server = {
     Version: "29.9.2", GitCommit: "0367cbe", KernelVersion: "7.0.14-linuxkit", Os: "linux", Arch: "amd64",
     Platform: { Name: "Docker Desktop 4.96.1 (244132)" },
@@ -170,4 +170,46 @@ test("decoding final daemon metadata still consumes the original deadline", asyn
     expect(outcome.result).toMatchObject({ error: { code: "READINESS_TIMEOUT" }, data: { components: { smoke: { cleanup: true }, release: { state: "unverified" } } } });
     expect(fixture.containers.size).toBe(0);
   } finally { clock.mockRestore(); }
+});
+
+
+test("qualified versions cannot hide disabled daemon memory enforcement", async () => {
+  const fixture = desktopFixture();
+  fixture.info.MemoryLimit = false;
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("an unqualified rootless daemon cannot inherit a rootful runtime policy", async () => {
+  const fixture = desktopFixture();
+  fixture.info.SecurityOptions.push("name=rootless");
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("a separately qualified rootless runtime can match its own exact policy", async () => {
+  const fixture = desktopFixture();
+  fixture.info.SecurityOptions.push("name=rootless");
+  const rootless = { ...policy, id: "synthetic-qualified-rootless", engine: { ...policy.engine, operatingMode: "rootless" as const, securityOptions: [...policy.engine.securityOptions, "name=rootless"] } };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [rootless]) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "synthetic-qualified-rootless" } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("nested security policy arrays are copied before command execution", async () => {
+  const fixture = desktopFixture();
+  const options: string[] = [...policy.engine.securityOptions];
+  const mutable = { ...policy, engine: { ...policy.engine, securityOptions: options } };
+  const handlers = setupCommands(fixture.host, [], [mutable]);
+  options.push("name=userns");
+  fixture.info.SecurityOptions.push("name=userns");
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
 });

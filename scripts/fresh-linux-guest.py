@@ -34,6 +34,34 @@ def budget_seconds(limit):
     return remaining
 
 
+def command_exited(child):
+    # Observe without reaping: the retained leader reserves this owned PGID.
+    return os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+
+def stop_command_group(child):
+    # Never poll/wait before signaling: a reaped leader's PID could be reused.
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Some kernels refuse signaling a group containing only zombies.
+        # Reaping and disappearance, never this exception, establish cleanup.
+        pass
+    child.wait(timeout=5)
+    # Successful signaling does not prove root-owned descendants were killed.
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Guest command process-group cleanup could not be confirmed")
+        time.sleep(0.02)
+
+
 def run(args, timeout=60, allowed=(0,)):
     timeout = budget_seconds(timeout)
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -55,12 +83,17 @@ def run(args, timeout=60, allowed=(0,)):
                     output[key.fileobj].extend(part)
                     if sum(len(value) for value in output.values()) > 2 * 1024 * 1024:
                         raise RuntimeError("Guest command output exceeded evidence limit")
-        child.wait(timeout=max(0.001, deadline - time.monotonic()))
+        while not command_exited(child):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Guest command deadline expired: " + args[0])
+            time.sleep(0.02)
     finally:
-        if child.poll() is None:
-            os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=5)
-        selector.close()
+        try:
+            stop_command_group(child)
+        finally:
+            selector.close()
+            child.stdout.close()
+            child.stderr.close()
     stdout, stderr = bytes(output[child.stdout]), bytes(output[child.stderr])
     if child.returncode not in allowed:
         raise RuntimeError("Guest command failed: " + args[0] + ": " + stderr.decode(errors="replace")[-2048:])
@@ -119,7 +152,7 @@ def setup_pty(reply, expected_prompt=None):
     accepted_prompts = []
     deadline = time.monotonic() + budget_seconds(615)
     try:
-        while child.poll() is None:
+        while not command_exited(child):
             if time.monotonic() > deadline:
                 raise RuntimeError("Candidate PTY setup deadline expired")
             if not select.select([master], [], [], 0.2)[0]:
@@ -144,12 +177,11 @@ def setup_pty(reply, expected_prompt=None):
                 accepted_prompts.append(prompt)
                 os.write(master, (reply + "\n").encode())
                 answered += 1
-        child.wait(timeout=5)
     finally:
-        if child.poll() is None:
-            os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=5)
-        os.close(master)
+        try:
+            stop_command_group(child)
+        finally:
+            os.close(master)
     return {"exitCode": child.returncode, "promptsAnswered": answered,
             "transcript": output.decode(errors="replace"), "reply": reply, "prompts": accepted_prompts}
 

@@ -26,8 +26,10 @@ export async function ownedGuestSeed(nonce: string): Promise<{ write_files: { pa
   ], runcmd: [["/usr/bin/python3", "-I", "/usr/local/lib/fleur-owned-guest.py", "--create", nonce]] };
 }
 
+export interface CustodyTransportReply { ok: boolean; stdout: string; transport: { exitCode: number | null; signal: string | null; deadlineFired: boolean; outputLimitExceeded: boolean }; localCleanup: { retired: boolean; error?: string }; error?: unknown }
+
 /** Host transport receipt only; this does not admit a runtime profile. */
-export async function attestOwnedGuestBoot(options: { nonce: string; deadline: number; now?: () => number; query: (remote: string, timeoutMs: number) => Promise<{ exitCode: number; stdout: string }> }): Promise<Record<string, unknown>> {
+export async function attestOwnedGuestBoot(options: { nonce: string; deadline: number; now?: () => number; query: (remote: string, timeoutMs: number) => Promise<CustodyTransportReply> }): Promise<Record<string, unknown>> {
   const fail = (code: string, message: string): never => { throw Object.assign(new Error(message), { code }); };
   const nonce = options.nonce;
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(nonce)) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Canonical owned nonce required.");
@@ -38,8 +40,9 @@ export async function attestOwnedGuestBoot(options: { nonce: string; deadline: n
   const observed = await options.query(`python3 -I /usr/local/lib/fleur-owned-guest.py --owned-guest-nonce ${nonce} --budget-seconds ${timeout / 1000}`, timeout);
   const completed = now();
   if (!Number.isFinite(completed) || completed >= options.deadline) fail("BOOT_TIMEOUT", "Owned guest custody exceeded the original boot deadline.");
+  if (observed.ok !== true || observed.transport.exitCode !== 0 || observed.transport.signal !== null || observed.transport.deadlineFired !== false || observed.transport.outputLimitExceeded !== false || observed.localCleanup.retired !== true || observed.localCleanup.error !== undefined || observed.error !== undefined) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Owned custody requires completed and retired pinned transport proof.");
   const custody = JSON.parse(observed.stdout);
-  if (observed.exitCode !== 0 || custody.formatVersion !== 1 || custody.scope !== "owned-guest-custody-validation" || custody.ok !== true || custody.fixtureCustodyValidated !== true || custody.nonce !== nonce || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(custody.bootId) || !Number.isSafeInteger(custody.uid) || custody.uid <= 0 || !/^[a-f0-9]{64}$/.test(custody.manifestSha256) || custody.runtimeSupport !== "unverified" || custody.runtimeAdmission !== false || custody.humanConsentProof !== false || custody.nativeCpuPerformanceProof !== false) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Pinned guest transport did not establish its explicit boot manifest binding.");
+  if (custody.formatVersion !== 1 || custody.scope !== "owned-guest-custody-validation" || custody.ok !== true || custody.fixtureCustodyValidated !== true || custody.nonce !== nonce || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(custody.bootId) || !Number.isSafeInteger(custody.uid) || custody.uid <= 0 || !/^[a-f0-9]{64}$/.test(custody.manifestSha256) || custody.runtimeSupport !== "unverified" || custody.runtimeAdmission !== false || custody.humanConsentProof !== false || custody.nativeCpuPerformanceProof !== false) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Pinned guest transport did not establish its explicit boot manifest binding.");
   copyOwnedGuestBinding({ nonce: custody.nonce, bootId: custody.bootId, uid: custody.uid, manifestSha256: custody.manifestSha256 }, nonce);
   return custody;
 }

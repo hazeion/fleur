@@ -170,7 +170,9 @@ scratch and fails verification. All original preparation, runtime, GC/idle,
 resource, isolation and deadline gates remain unchanged.
 
 Portable text-artifact, filesystem and report-protocol tests cover this route;
-they do not establish execution of the genuine compiled pair. Full recorded-mode
-native runtime proof and independent evidence review remain pending. No new
-platform qualification or aggregate v1 compatibility claim follows from adding
+they do not establish execution of the genuine compiled pair. Separately, the
+genuine pair passed two native recorded-mode runs on the existing Ubuntu 24.04
+x64 tuple, with independent runtime, custody and disposal evidence review. See
+the [recorded-helper evidence](setup-artifact-evidence.md#recorded-helper-verification-on-the-existing-ubuntu-tuple).
+No new platform qualification or aggregate v1 compatibility claim follows from
 this input path.

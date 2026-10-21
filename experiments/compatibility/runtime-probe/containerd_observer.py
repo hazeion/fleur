@@ -189,7 +189,7 @@ class ContainerdObserver:
         if host_binding is not None:
             from privileged_control import HostDaemonBinding
             if type(host_binding) is not HostDaemonBinding:raise ValueError('typed host daemon binding required')
-            host_binding.verify(self.deadline-time.monotonic())
+            host_binding.verify_operation(ctr,address,namespace,self.deadline-time.monotonic())
         if (type(ctr) is not str or not os.path.isabs(ctr)
                 or type(address) is not str or not os.path.isabs(address)
                 or namespace != 'moby'):
@@ -220,9 +220,10 @@ class ContainerdObserver:
             ctr,address,namespace,str(self.deadline)]
         if host_binding is not None:
             from privileged_control import ROOT_BINDING_SOURCE
-            owned_source=SUPERVISOR.replace('ctr,address,namespace,absolute_deadline=sys.argv[1:]','ctr,address,namespace,absolute_deadline=sys.argv[1:5]\npayload=sys.argv[5];binding=json.loads(sys.argv[6])\ndef verify_owned(limit):\n    verify_root_binding(payload,binding,min(limit,float(absolute_deadline),json.loads(payload)["deadlineMonotonic"]))')
+            owned_source=SUPERVISOR.replace('ctr,address,namespace,absolute_deadline=sys.argv[1:]','ctr,address,namespace,absolute_deadline=sys.argv[1:5]\npayload=sys.argv[5];binding=json.loads(sys.argv[6])\ndef verify_owned(limit):\n    verify_root_binding(payload,binding,min(limit,float(absolute_deadline),json.loads(payload)["deadlineMonotonic"]),ctr,address,namespace)')
+            owned_source=owned_source.replace('def record_error(chunk):',"def verify_retained_endpoint(limit):\n    if time.monotonic()>=limit or daemon_identity(address,ctr)!=binding['identity']:raise ValueError('retained cleanup endpoint changed')\n    if time.monotonic()>=limit:raise ValueError('cleanup validation expired')\ndef record_error(chunk):")
             owned_source=owned_source.replace('    p=subprocess.Popen([ctr,','    verify_owned(deadline)\n    p=subprocess.Popen([ctr,',1)
-            owned_source=owned_source.replace('canary_owner,forward,record_error)','canary_owner,forward,record_error,verify_owned)')
+            owned_source=owned_source.replace('canary_owner,forward,record_error)','canary_owner,forward,record_error,verify_owned,verify_retained_endpoint)')
             owned_source=owned_source.replace('                    try: os.kill(p.pid,signal.SIGQUIT)','                    verify_owned(deadline)\n                    try: os.kill(p.pid,signal.SIGQUIT)')
             command=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-u','-c',ROOT_BINDING_SOURCE+owned_source,ctr,address,namespace,str(self.deadline),*host_binding.root_arguments(self.deadline)]
         try:

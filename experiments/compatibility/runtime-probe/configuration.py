@@ -373,7 +373,7 @@ def inspect_containerd_control(*, probe_first_use=False, host_context=None, with
         return remaining
     if retained_binding is not None:
         from privileged_control import ROOT_BINDING_SOURCE
-        root_version=ROOT_BINDING_SOURCE+"\nimport sys\npayload=sys.argv[1];binding=json.loads(sys.argv[2]);deadline=min(float(sys.argv[3]),json.loads(payload)['deadlineMonotonic'])\nverify_root_binding(payload,binding,deadline)\nleft=math.floor((deadline-time.monotonic())*1000)/1000\nif left<=1:raise ValueError('root version budget expired')\nos.execv('/usr/bin/timeout',['/usr/bin/timeout','--signal=TERM','--kill-after=1s',str(left-1)+'s',*sys.argv[5:]])\n"
+        root_version=ROOT_BINDING_SOURCE+"\nimport sys\npayload=sys.argv[1];binding=json.loads(sys.argv[2]);deadline=min(float(sys.argv[3]),json.loads(payload)['deadlineMonotonic'])\nverify_root_binding(payload,binding,deadline)\nexec_root_version(sys.argv[5:],deadline)\n"
         prefix=['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c',root_version,*retained_binding.root_arguments(authority_started+15),str(authority_started+15)]
     if probe_first_use:
         # Diagnostic benchmark only: isolate sudo/session startup, then cold ctr

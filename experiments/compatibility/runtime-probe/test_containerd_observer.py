@@ -110,6 +110,31 @@ os.killpg=witnessed_killpg
             self.assertTrue(observer.close(1))
             self.assertFalse(witness.exists(),'canary cleanup signaled a released numeric process group')
 
+    def test_lost_canary_child_reservation_never_signals_its_released_group(self):
+        with tempfile.TemporaryDirectory() as name:
+            witness=pathlib.Path(name)/'unsafe'
+            adapter=self.retained_signal_adapter(witness)+"""
+real_waitid=os.waitid
+lost=set()
+class LostReservationPopen(WitnessPopen):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        if len(args[0])>5 and args[0][5]=='namespaces':lost.add(self.pid)
+subprocess.Popen=LostReservationPopen
+def lost_waitid(kind,pid,flags):
+    if pid in lost:
+        if pid not in released:
+            os.waitpid(pid,0);released.add(pid)
+        raise ChildProcessError('external fixture reaped this owned child')
+    return real_waitid(kind,pid,flags)
+os.waitid=lost_waitid
+"""
+            observer,state=self.canary_observer(adapter_extra=adapter)
+            with self.assertRaises(ObserverUnverified):observer.ready(4)
+            try:observer.close(1)
+            except ObserverUnverified:self.assertTrue(observer.snapshot()['reaped'])
+            self.assertFalse(witness.exists(),'lost WNOWAIT reservation authorized a group signal')
+
     def test_subscriber_arguments_preserve_literal_equality_value_quotes(self):
         # Literal quotes are required by the pinned containerd filter parser:
         # slash-delimited values are valid only for the regex operator.

@@ -9,7 +9,7 @@ def retained_exit(child):
     return value.si_status if value.si_code==os.CLD_EXITED else -value.si_status
 
 
-def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error, verify_control=None):
+def register_canary(selector, subscriber, ctr, address, namespace, deadline, name, owner, forward, record_error, verify_control=None, verify_cleanup=None):
     import json
     import os
     import selectors
@@ -84,6 +84,7 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
     def call(arguments, limit, cleanup=False):
         nonlocal count,children_reaped
         if time.monotonic()>=limit: raise Failed('canary-timeout')
+        if cleanup and verify_cleanup is not None:verify_cleanup(limit)
         if not cleanup and verify_control is not None:verify_control(limit)
         child=None
         captured={'canary-out':bytearray(),'canary-err':bytearray()}
@@ -100,20 +101,28 @@ def register_canary(selector, subscriber, ctr, address, namespace, deadline, nam
             return captured['canary-out'].decode('utf-8')
         finally:
             if child is not None:
-                # The leader can exit while a descendant still holds a pipe.
+                # WNOWAIT proof must still exist immediately before signaling;
+                # returncode=None alone does not exclude an external reap.
+                reserved=False
                 try:
-                    if child.returncode is None:os.killpg(child.pid,signal.SIGKILL)
-                except ProcessLookupError: pass
-                try:
-                    child.wait(timeout=.2)
-                except subprocess.TimeoutExpired:
-                    children_reaped=False
-                    raise
+                    try:
+                        retained_exit(child)
+                        reserved=True
+                    except (OSError,RuntimeError,AttributeError):
+                        children_reaped=False
+                    if reserved:
+                        try:os.killpg(child.pid,signal.SIGKILL)
+                        except ProcessLookupError:pass
+                        try:child.wait(timeout=.2)
+                        except subprocess.TimeoutExpired:
+                            children_reaped=False
+                            raise
                 finally:
                     for stream in (child.stdout,child.stderr):
-                        try: selector.unregister(stream)
-                        except KeyError: pass
+                        try:selector.unregister(stream)
+                        except KeyError:pass
                         stream.close()
+                if not reserved:raise Failed('canary-child-reservation')
 
     def owned(labels):
         for line in labels.splitlines():

@@ -40,14 +40,35 @@ def daemon_identity(address, ctr):
     if not start.isdigit():raise ValueError('host daemon start identity invalid')
     command=bounded(proc/'cmdline',65536)
     if type(address) is not str or not address.startswith('/') or ctr!='/usr/bin/ctr':raise ValueError('host endpoint identity invalid')
+    arguments=[part.decode('utf-8') for part in command.split(b'\0') if part]
+    def option(name):
+        values=[]
+        for index,arg in enumerate(arguments):
+            if arg==name:
+                if index+1>=len(arguments):raise ValueError('daemon option missing')
+                values.append(arguments[index+1])
+            elif arg.startswith(name+'='):values.append(arg[len(name)+1:])
+        if len(values)>1:raise ValueError('daemon option duplicated')
+        return values[0] if values else None
+    config_path=option('--config-file') or '/etc/docker/daemon.json'
+    config={};config_identity={'exists':False}
+    if Path(config_path).exists():
+        config_file,config_info=trusted(config_path,stat.S_ISREG)
+        config_bytes=bounded(config_file,65536);config=json.loads(config_bytes)
+        if type(config) is not dict:raise ValueError('daemon configuration invalid')
+        config_identity={'exists':True,'path':str(config_file),'identity':row(config_info),'sha256':hashlib.sha256(config_bytes).hexdigest()}
+    configured=option('--containerd') or config.get('containerd')
+    namespace=option('--containerd-namespace') or config.get('containerd-namespace','moby')
+    if type(configured) is not str or not configured.startswith('/') or namespace!='moby' or Path(configured).resolve(strict=True)!=Path(address).resolve(strict=True):raise ValueError('daemon configured endpoint changed')
     default,defaultinfo=trusted('/var/run/docker.sock',stat.S_ISSOCK,True)
     endpoint,endpointinfo=trusted(address,stat.S_ISSOCK,True)
     executable,ctrinfo=trusted(ctr,stat.S_ISREG)
-    return {'pid':pid,'startTime':start.decode(),'procIdentity':row(proc.stat()),'pidfileIdentity':row(pidinfo),'pidfileSha256':hashlib.sha256(raw).hexdigest(),'commandSha256':hashlib.sha256(command).hexdigest(),'defaultSocket':str(default),'defaultSocketIdentity':row(defaultinfo),'defaultParentIdentity':row(default.parent.stat()),'address':str(endpoint),'endpointIdentity':row(endpointinfo),'endpointParentIdentity':row(endpoint.parent.stat()),'ctr':ctr,'ctrResolved':str(executable),'ctrIdentity':row(ctrinfo)}
+    return {'pid':pid,'startTime':start.decode(),'procIdentity':row(proc.stat()),'pidfileIdentity':row(pidinfo),'pidfileSha256':hashlib.sha256(raw).hexdigest(),'commandSha256':hashlib.sha256(command).hexdigest(),'defaultSocket':str(default),'defaultSocketIdentity':row(defaultinfo),'defaultParentIdentity':row(default.parent.stat()),'address':str(endpoint),'endpointIdentity':row(endpointinfo),'endpointParentIdentity':row(endpoint.parent.stat()),'ctr':ctr,'ctrResolved':str(executable),'ctrIdentity':row(ctrinfo),'ctrSize':ctrinfo.st_size,'ctrCtimeNs':ctrinfo.st_ctime_ns,'ctrSha256':hashlib.sha256(bounded(executable,8*1024*1024)).hexdigest(),'configuration':config_identity}
 
 
-def verify_root_binding(payload, binding, deadline):
+def verify_root_binding(payload, binding, deadline, ctr=None, address=None, namespace=None):
     """Executed from embedded source, never imports a user-writable module."""
+    if ctr is not None and (ctr!=binding['ctr'] or namespace!='moby' or Path(address).resolve(strict=True)!=Path(binding['address']).resolve(strict=True)):raise ValueError('root operation differs from retained daemon')
     remaining=min(10,deadline-time.monotonic())
     millis=math.floor(remaining*1000)
     if millis<=0:raise ValueError('root control deadline expired')
@@ -55,8 +76,15 @@ def verify_root_binding(payload, binding, deadline):
     payload=json.dumps(clipped,sort_keys=True,separators=(',',':'),allow_nan=False)
     process=subprocess.run(['/usr/bin/python3','-I','/usr/local/lib/fleur-owned-guest.py','--verify-control',payload,'--budget-seconds',format(millis/1000,'.3f')],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=millis/1000,env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},check=False)
     if process.returncode or len(process.stdout)>4096 or len(process.stderr)>1024:raise ValueError('root fixture custody refused')
-    expected=json.loads(payload);value=json.loads(process.stdout)
-    if type(value) is not dict or value.get('rootValidation') is not True or value.get('scope')!='owned-guest-root-control-validation' or value.get('nonce')!=expected['nonce'] or value.get('bootId')!=expected['bootId'] or value.get('uid')!=expected['uid']:raise ValueError('root fixture validation invalid')
+    def unique(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value:raise ValueError('duplicate root validation field')
+            value[key]=item
+        return value
+    expected=json.loads(payload);value=json.loads(process.stdout,object_pairs_hook=unique)
+    required={**expected,'scope':'owned-guest-root-control-validation','ok':True,'fixtureCustodyValidated':True,'rootValidation':True,'runtimeSupport':'unverified','runtimeAdmission':False,'humanConsentProof':False,'nativeCpuPerformanceProof':False}
+    if (type(value) is not dict or value!=required or type(value.get('formatVersion')) is not int or type(value.get('uid')) is not int or any(type(value.get(key)) is not bool for key in ('ok','fixtureCustodyValidated','rootValidation','runtimeAdmission','humanConsentProof','nativeCpuPerformanceProof'))):raise ValueError('root fixture validation invalid')
     if time.monotonic()>=deadline or daemon_identity(binding['address'],binding['ctr'])!=binding['identity']:raise ValueError('root daemon binding changed')
     # Reuse the deadline-fenced fixed Engine API transport, including trickle protection.
     left=deadline-time.monotonic()
@@ -66,14 +94,31 @@ def verify_root_binding(payload, binding, deadline):
     if time.monotonic()>=deadline:raise ValueError('root control deadline expired')
 
 
-ROOT_BINDING_SOURCE=('import hashlib,json,math,os,stat,subprocess,time\nfrom pathlib import Path\n'+inspect.getsource(ContainerdControlUnverified)+'\n'+inspect.getsource(read_default_docker_control)+'\n'+inspect.getsource(daemon_identity)+'\n'+inspect.getsource(verify_root_binding)+'\n')
+def exec_root_version(arguments, deadline):
+    remaining=math.floor((deadline-time.monotonic())*1000)/1000
+    if remaining<=1:raise ValueError('root version budget expired')
+    environment={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','CONTAINERD_SUPPRESS_DEPRECATION_WARNINGS':'true'}
+    os.execve('/usr/bin/timeout',['/usr/bin/timeout','--signal=TERM','--kill-after=0.2s',str(remaining-1)+'s',*arguments],environment)
 
 
-@dataclass(frozen=True)
+ROOT_BINDING_SOURCE=('import hashlib,json,math,os,stat,subprocess,time\nfrom pathlib import Path\n'+inspect.getsource(ContainerdControlUnverified)+'\n'+inspect.getsource(read_default_docker_control)+'\n'+inspect.getsource(daemon_identity)+'\n'+inspect.getsource(verify_root_binding)+'\n'+inspect.getsource(exec_root_version)+'\n')
+
+
+@dataclass(frozen=True,init=False)
 class HostDaemonBinding:
     context: object
-    identity: dict
+    _identity_json: str
     engine_id: str
+
+    def __init__(self, context, identity, engine_id):
+        if type(identity) is not dict or type(engine_id) is not str or not 0<len(engine_id)<=256:raise ValueError('retained daemon binding invalid')
+        object.__setattr__(self,'context',context)
+        object.__setattr__(self,'_identity_json',json.dumps(identity,sort_keys=True,separators=(',',':'),allow_nan=False))
+        object.__setattr__(self,'engine_id',engine_id)
+
+    @property
+    def identity(self):
+        return json.loads(self._identity_json)
 
     def verify(self, remaining):
         if type(remaining) not in (int,float) or not math.isfinite(remaining) or remaining<=0:raise ValueError('host control remaining budget required')
@@ -83,13 +128,22 @@ class HostDaemonBinding:
         from configuration import read_default_docker_control
         left=deadline-time.monotonic()
         if left<=0:raise ValueError('host control deadline expired')
-        info,_,_=read_default_docker_control(self.identity['defaultSocket'],timeout=left)
+        info,_,_=read_default_docker_control(self.identity['defaultSocket'],timeout=min(15,left))
         if info.get('ID')!=self.engine_id:raise ValueError('default daemon association changed')
         left=deadline-time.monotonic()
         if left<=0:raise ValueError('host control deadline expired')
         active=subprocess.run(['docker','info','--format','{{.ID}}'],stdin=subprocess.DEVNULL,capture_output=True,timeout=left,check=False)
         if active.returncode or len(active.stdout)>4096 or len(active.stderr)>4096 or active.stdout!=(self.engine_id+'\n').encode():raise ValueError('ambient daemon association changed')
         if time.monotonic()>=deadline or daemon_identity(self.identity['address'],self.identity['ctr'])!=self.identity:raise ValueError('host control changed during validation')
+
+    def verify_operation(self, ctr, address, namespace, remaining):
+        started=time.monotonic()
+        authorize_host_control(self.context,remaining=remaining)
+        remaining-=time.monotonic()-started
+        if remaining<=0:raise ValueError('host control deadline expired')
+        if (ctr!=self.identity['ctr'] or namespace!='moby' or Path(address).resolve(strict=True)!=Path(self.identity['address']).resolve(strict=True)):
+            raise ValueError('operation differs from retained daemon binding')
+        self.verify(remaining)
 
     def root_arguments(self, deadline):
         return [self.context.root_payload(deadline=deadline),json.dumps({'address':self.identity['address'],'ctr':self.identity['ctr'],'identity':self.identity,'engineId':self.engine_id},sort_keys=True,separators=(',',':'))]

@@ -97,3 +97,44 @@ stays incomplete with its original setup and doctor evidence, without an
 additional enrollment prompt or login checkpoint. Missing authority-plan fields
 and non-object data at handoff/readiness boundaries are rejected explicitly;
 null data cannot count as a plan, new-login requirement or readiness proof.
+
+## Artifact preparation diagnostics
+
+The initial guest artifact preparation keeps its existing ten-second host work
+budget, including transport startup and observation overhead. SSH still uses a
+three-second connection limit. It neither starts the compiler prerequisite nor
+changes boot, setup, session, resume or restriction budgets.
+
+The host preserves `preparationObservation` even when preparation fails. It
+records the local deadline flag, transport exit or signal, bounded byte counts,
+and allowlisted phase events with host elapsed times. The opt-in Bun events
+identify archive authentication, entry validation, executable extraction,
+retained-output authentication, archive reauthentication and output custody.
+Candidate and restriction archive commands have separate start/completion events.
+Successful Bun evidence requires each start/completion pair in the producer order inside the Bun phase, followed by one validated Bun result. Missing, duplicate, crossed, out-of-scope and post-completion events are rejected. Guest elapsed values are nondecreasing relative integer milliseconds within the applicable work budget; no guest epoch is compared to a host timestamp. A failed run retains only its valid observed prefix, including a valid extraction-cleanup prefix. A valid Bun result is retained even if a later archive command fails. Raw stdout,
+raw stderr, arbitrary JSON fields and transport diagnostic text are omitted.
+An exit 137 alone remains a transport-or-remote-command failure; it does not prove
+that the host timer fired or that any particular guest stage completed.
+
+The shared host-only Python helper retains the actual SSH leader unreaped after exit. A private descriptor carries its PID, exit tuple and bounded process inventory; TypeScript completes owned group signals before explicit release and reaping. The fixed /bin/ps inventory reads only PID, process-group and state columns, never command arguments. Its absolute executable availability is included in host capabilities, and both helper source hashes are included in verifier provenance. Local transport retirement has a separate bounded
+three-second cleanup period and reports uncertainty if retirement is unconfirmed.
+The report separates work elapsed time from local cleanup elapsed time. A detected live local survivor invalidates preparation even after confirmed retirement; that refusal is distinct from an expired work timer. This does not establish cleanup of remote guest work. The owned VM teardown
+remains necessary. Success requires authenticated Bun output and completed
+candidate/restriction extraction in the expected order. These diagnostics do not
+establish that preparation fits within ten seconds on every guest, and they do
+not change runtime or release admission.
+
+Protocol rejection latches failure and stops further decoding. It does not
+unnecessarily signal an already exiting SSH leader: remaining bytes are counted
+and discarded only within the original remaining work budget. A stalled failed
+protocol is terminated by that same watchdog, without starting a new budget.
+The total two MiB limit includes discarded bytes and triggers immediate
+termination. Signal failures also enter finite cleanup immediately. Primary
+protocol evidence and any secondary cleanup uncertainty are both retained;
+neither a denied signal nor a cleanup failure becomes successful preparation.
+
+Bun cleanup telemetry is best effort only within the failure cleanup path. If an
+ordinary phase event cannot be delivered, preparation still fails, but another
+failed cleanup-event write cannot bypass the original owned-file claim/deletion
+or foreign-replacement preservation. A lost final result remains incomplete
+host evidence. No archive, retained-output or custody check is suppressed.

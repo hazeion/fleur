@@ -232,6 +232,29 @@ os.killpg=accepted_without_effect
                     time.sleep(.005)
                 else:self.fail('controlled descendant failed its independent stop boundary')
 
+    def test_cancelled_namespace_cleanup_confirms_absence_after_transient_zero_denial(self):
+        original=self.canary_observer
+        adapter="""import subprocess,errno
+cleanup_pids=set();denied=set()
+cleanup_popen=subprocess.Popen
+class CleanupObservationPopen(cleanup_popen):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        if len(args[0])>6 and args[0][5:7]==['namespaces','list'] and '--quiet' not in args[0]:cleanup_pids.add(self.pid)
+subprocess.Popen=CleanupObservationPopen
+cleanup_signal=os.killpg
+def transient_cleanup_observation(pid,sig):
+    if not sig and pid in cleanup_pids and pid not in denied:
+        denied.add(pid);raise PermissionError(errno.EPERM,'controlled transient group observation')
+    return cleanup_signal(pid,sig)
+os.killpg=transient_cleanup_observation
+"""
+        def fixture(mode='valid',timeout=5,adapter_extra=''):
+            return original(mode,timeout=timeout,adapter_extra=adapter_extra+adapter)
+        self.canary_observer=fixture
+        try:self.test_control_eof_during_namespace_cleanup_cannot_grant_readiness()
+        finally:self.canary_observer=original
+
     def test_subscriber_arguments_preserve_literal_equality_value_quotes(self):
         # Literal quotes are required by the pinned containerd filter parser:
         # slash-delimited values are valid only for the regex operator.

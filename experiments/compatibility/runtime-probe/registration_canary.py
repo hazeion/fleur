@@ -24,7 +24,7 @@ def retire_owned_group(child, allowance):
     while True:
         try:os.killpg(child.pid,0)
         except ProcessLookupError:return
-        except PermissionError:raise RuntimeError('owned group disappearance unconfirmed') from None
+        except PermissionError:pass  # Still unconfirmed; only later ESRCH can prove absence.
         remaining=end-time.monotonic()
         if remaining<=0:raise RuntimeError('owned group remains after retirement')
         time.sleep(min(.005,remaining))

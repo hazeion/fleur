@@ -32,3 +32,20 @@ test("ordinary admission metadata mismatch is refused before any setup authority
     expect(state.enrollmentPrompts).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+test("ordinary admitted Doctor zero preserves both smoke rounds and the original restriction gate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-ordinary-admitted-"));
+  try {
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "ordinary-admitted"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report).toMatchObject({ ok: true, runtimeSupport: "unverified", humanConsentProof: false, sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: { bounded_probe_passed: true, cleanup_complete: true, v1_gate_passed: false } } });
+    expect(report.runs).toHaveLength(2);
+    for (const run of report.runs) expect(run).toMatchObject({ exitCode: 0, result: { command: "doctor", ok: true, error: null, truncated: false, data: { components: { release: { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2", isolationSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } } } } } });
+    const state = await Bun.file(join(root, "protocol-state.json")).json();
+    expect(state.restrictionCalls).toBe(1);
+    expect(state.unexpected).toEqual([]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 25000);

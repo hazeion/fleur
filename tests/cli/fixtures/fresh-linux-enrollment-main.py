@@ -50,6 +50,11 @@ root=pathlib.Path(os.environ['FIXTURE_ROOT']);p=root/'protocol-state.json';s=jso
 def save():p.write_text(json.dumps(s))
 def envelope(command,data,code,error):
  print(json.dumps({'formatVersion':1,'command':command,'ok':False,'truncated':False,'data':data,'error':{'code':error}}));save();sys.exit(code)
+def admitted(command):
+ if command=='doctor':s['ordinaryDoctorCalls']=s.get('ordinaryDoctorCalls',0)+1
+ else:s['ordinaryReadySetupCalls']=s.get('ordinaryReadySetupCalls',0)+1
+ data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
+ print(json.dumps({'formatVersion':1,'command':command,'ok':True,'data':data,'error':None,'truncated':False}));save();sys.exit(0)
 def plan():
  checksum=package_checksum if s['scenario']=='reused-package-plan' else enrollment_checksum
  result={'action':'docker-access','method':'docker-official-apt','privilege':'root-equivalent daemon access','user':{'name':'fleur','uid':uid},'group':{'name':'docker','gid':997},'endpoint':'unix:///var/run/docker.sock','checksum':checksum,'target':'Add fleur to Docker group 997: root-equivalent daemon access; plan '+checksum}
@@ -63,7 +68,9 @@ def ask(action,target,checksum,enrollment=False,method="docker-official-apt"):
  reply=sys.stdin.readline().strip();s['enrollmentPrompts' if enrollment else 'installPrompts'].append({'action':action,'target':target,'checksum':checksum,'reply':reply});save();return reply
 if name=='bun':
  if args==['--version']:print('1.4.3');sys.exit(0)
+ if args and args[0]=='-e' and s['scenario'].startswith('ordinary-admitted'):sys.stdout.write('oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e');sys.exit(0)
  command=args[1]
+ if s['scenario'].startswith('ordinary-admitted') and s['installed'] and command in ('doctor','setup'):admitted(command)
  if command=='doctor':
   if s.get('freshSession') and s['scenario'].startswith('resume-doctor-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,4,'PREREQUISITE_UNAVAILABLE')
   if s['installed'] and s['scenario'].startswith('doctor-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,4,'PREREQUISITE_UNAVAILABLE')
@@ -147,7 +154,16 @@ if name=='getent':
  else:raise RuntimeError('Unexpected directory lookup')
  sys.exit(0)
 if name=='stat':print('1|'+('3' if s.get('freshSession') and s['scenario']=='resume-socket-change' else '2')+'|socket|0|997|660');sys.exit(0)
+if name=='python3' and s['scenario'].startswith('ordinary-admitted') and args[0].endswith('/runtime-probe/run.py'):
+ s['restrictionCalls']=s.get('restrictionCalls',0)+1;save();print(json.dumps({'bounded_probe_passed':True,'cleanup_complete':True,'v1_gate_passed':False}));sys.exit(0)
 if name=='docker':
+ if s['scenario'].startswith('ordinary-admitted') and args[:2]==['--host','unix:///var/run/docker.sock']:
+  call=args[2:]
+  if call[:2]==['ps','--all']:print('');sys.exit(0)
+  if call[0]=='create':
+   s['sentinel']={'Id':'a'*64,'Name':'/'+call[call.index('--name')+1],'Config':{'Labels':{'dev.fleur.guest-sentinel':call[call.index('--label')+1].split('=',1)[1]}},'State':{'Running':False}};save();print('a'*64);sys.exit(0)
+  if call==['inspect','a'*64]:print(json.dumps([s['sentinel']]));sys.exit(0)
+  if call==['rm','a'*64]:s.pop('sentinel');save();print('a'*64);sys.exit(0)
  if args==['context','show']:print('default');sys.exit(0)
  if args==['context','inspect','default','--format','{{json .Endpoints.docker}}']:print(json.dumps({'Host':'unix:///var/run/docker.sock'}));sys.exit(0)
  raise RuntimeError('No Docker mutation in smoke-authority fixture')
@@ -157,7 +173,7 @@ if name=='apt-get':
  print('0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.');sys.exit(0)
 s['unexpected'].append({'tool':name,'args':args});save();raise RuntimeError('Unknown fixture command')
 '''
-for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "id", "getent", "apt-get", "stat", "docker"]:
+for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "id", "getent", "apt-get", "stat", "docker", "python3"]:
     target = lab / name if name == "bun" else tools / name
     target.write_text("#!" + sys.executable + " -S\n" + TOOL)
     target.chmod(0o700)

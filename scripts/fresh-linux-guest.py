@@ -787,6 +787,23 @@ def restriction_invocation(owned_binding):
     return args, end
 
 
+def admitted_readiness(observed, command):
+    if type(observed) is not dict or type(observed.get('exitCode')) is not int or observed['exitCode'] != 0:
+        return False
+    envelope = observed.get('result')
+    if (type(envelope) is not dict or set(envelope) != {'formatVersion', 'command', 'ok', 'data', 'error', 'truncated'}
+            or type(envelope['formatVersion']) is not int or envelope['formatVersion'] != 1 or envelope['command'] != command
+            or envelope['ok'] is not True or envelope['error'] is not None or envelope['truncated'] is not False
+            or type(envelope['data']) is not dict or type(envelope['data'].get('components')) is not dict):
+        return False
+    components = envelope['data']['components']
+    evidence = '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'
+    return (all(type(components.get(name)) is dict and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
+            and components['smoke'].get('cleanup') is True
+            and components.get('release') == {'state': 'verified', 'profile': 'ubuntu-24.04-x64-docker-29.9.1',
+                                               'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
+
+
 def verify_smoke_and_restrictions(state, owned_binding=None):
     context = run(["docker", "context", "show"])[1].strip()
     endpoint = json.loads(run(["docker", "context", "inspect", context, "--format", "{{json .Endpoints.docker}}"])[1])["Host"]
@@ -828,6 +845,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
                              for name in ("cli", "daemon", "compose", "smoke"))
                      and object_field(components, "smoke").get("cleanup") is True
                      and object_field(components, "release").get("state") == "unverified")
+            if REPORT.get('executionArtifact', {}).get('kind') == 'ordinary':
+                ready = admitted_readiness(observed, 'doctor')
             if not ready or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
                 raise RuntimeError("Repeat ordinary-user smoke or host state preservation failed")
             REPORT["runs"].append(observed)

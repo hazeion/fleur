@@ -90,3 +90,19 @@ test("artifact selection rejects unknown modes or builder filename substitution"
     await expect(selectVerificationArtifact(directory, { ...built, ordinary: { ...built.ordinary, filename: "../foreign.tgz" } }, "ordinary-source-owned", staging)).rejects.toMatchObject({ code: "ARTIFACT_MISMATCH" });
   });
 });
+
+for (const mode of ["directory-swap", "copied-byte-change"]) {
+  test(`ordinary staging refuses real ${mode} at the filesystem observation boundary`, async () => {
+    const { resolve } = await import("node:path");
+    await artifactFixture(async ({ root }) => {
+      const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "fixtures/ordinary-artifact-faults.ts"), mode, root], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exit, stderr + stdout).toBe(0);
+      const proof = JSON.parse(stdout);
+      expect(proof.fired).toBe(true);
+      expect(proof.failed).toBe(true);
+      expect(proof.cleanupConfirmed).toBe(false);
+      expect(proof.foreignEntries).toEqual([]);
+    });
+  });
+}

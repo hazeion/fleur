@@ -1,5 +1,5 @@
-import { constants } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile, lstat, unlink, rmdir } from "node:fs/promises";
+import { constants, closeSync, fstatSync, fsyncSync, readSync, writeSync } from "node:fs";
+import { mkdir, mkdtemp, open, readFile, rm, writeFile, lstat } from "node:fs/promises";
 import { arch, platform, release, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
@@ -50,14 +50,14 @@ async function command(args: string[], timeout = 30000, allowed: number[] = [0])
     return { stdout, stderr, exitCode };
   } finally { if (child.exitCode === null) { child.kill("SIGKILL"); await child.exited; } }
 }
-async function authenticate(path: string, pin: { sha256: string; size?: number; maxBytes?: number }, destination?: string, created?: (identity: { dev: number; ino: number }) => void): Promise<string> {
+async function authenticate(path: string, pin: { sha256: string; size?: number; maxBytes?: number }, destination?: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = await file.stat();
     if (!before.isFile() || before.size <= 0 || (pin.size !== undefined && before.size !== pin.size) || before.size > (pin.maxBytes ?? pin.size!)) fail("ARTIFACT_MISMATCH", "Artifact size differs from the authenticated release.");
     const output = destination ? await open(destination, "wx", 0o600) : undefined;
     const hash = new Bun.CryptoHasher("sha256");
-    try { if (output && created) { const identity = await output.stat(); created({ dev: identity.dev, ino: identity.ino }); } for await (const bytes of file.createReadStream({ autoClose: false, end: before.size - 1, signal: AbortSignal.timeout(120000) })) { hash.update(bytes); if (output) await output.writeFile(bytes); } await output?.sync(); }
+    try { for await (const bytes of file.createReadStream({ autoClose: false, end: before.size - 1, signal: AbortSignal.timeout(120000) })) { hash.update(bytes); if (output) await output.writeFile(bytes); } await output?.sync(); }
     finally { await output?.close(); }
     const after = await file.stat();
     const digest = hash.digest("hex");
@@ -75,7 +75,17 @@ export async function selectVerificationArtifact(directory: string, built: { can
     await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
     return { kind: "internal-candidate" as const, path: archive, sha256: built.candidate.sha256 };
   }
+  if (process.platform !== "darwin" && process.platform !== "linux") fail("INFRASTRUCTURE_UNAVAILABLE", "Descriptor-relative artifact publication is unavailable.");
+  const { dlopen, FFIType, ptr } = await import("bun:ffi");
+  const library = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6", {
+    mkdirat: { args: [FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+    openat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+    linkat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+    mkstemp: { args: [FFIType.ptr], returns: FFIType.i32 },
+  });
   const retained: { path: string; handle: Awaited<ReturnType<typeof open>>; dev: number; ino: number }[] = [];
+  const identity = (value: ReturnType<typeof fstatSync>) => [value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs, value.nlink];
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   const verifyParents = async () => {
     for (const parent of retained) {
       const current = await lstat(parent.path); const bound = await parent.handle.stat();
@@ -83,44 +93,80 @@ export async function selectVerificationArtifact(directory: string, built: { can
           || bound.dev !== parent.dev || bound.ino !== parent.ino || bound.uid !== process.getuid?.() || (bound.mode & 0o077) !== 0) fail("ARTIFACT_MISMATCH", "Owned artifact directory custody changed.");
     }
   };
-  const outputDirectory = join(stagingRoot, "ordinary-execution");
-  const archive = join(outputDirectory, "fleur-internal-native-candidate.tgz");
-  let directoryCreated = false;
-  let directoryIdentity: { dev: number; ino: number } | undefined;
-  let fileIdentity: { dev: number; ino: number } | undefined;
+  const outputDirectory = join(stagingRoot, "ordinary-execution"); const archive = join(outputDirectory, "fleur-internal-native-candidate.tgz");
+  const directoryName = Buffer.from("ordinary-execution\0"); const outputName = Buffer.from("fleur-internal-native-candidate.tgz\0");
+  let outputFd = -1; let copyFd = -1; let publishedFd = -1;
+  let copyDirectory: string | undefined; let copyParent: Awaited<ReturnType<typeof open>> | undefined;
+  let copyIdentity: { dev: number; ino: number } | undefined; let directoryCreated = false; let privateCopyRetired = true;
+  const removePrivateCopy = async () => {
+    if (!copyDirectory) { if (!privateCopyRetired) throw new Error("Private copy allocation is unconfirmed"); return; }
+    if (!copyIdentity || !copyParent) throw new Error("Private copy custody is unconfirmed");
+    const current = await lstat(copyDirectory); const bound = await copyParent.stat();
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== copyIdentity.dev || current.ino !== copyIdentity.ino || bound.dev !== current.dev || bound.ino !== current.ino) throw new Error("Private copy directory custody changed");
+    await rm(copyDirectory, { recursive: true }); copyDirectory = undefined; privateCopyRetired = true;
+  };
   try {
     for (const path of [directory, stagingRoot]) {
       const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const info = await handle.stat(); retained.push({ path, handle, dev: info.dev, ino: info.ino });
     }
     await verifyParents();
-    await mkdir(outputDirectory, { mode: 0o700 }); directoryCreated = true;
-    const created = await lstat(outputDirectory); directoryIdentity = { dev: created.dev, ino: created.ino };
-    if (!created.isDirectory() || created.isSymbolicLink() || created.uid !== process.getuid?.() || (created.mode & 0o077) !== 0) fail("ARTIFACT_MISMATCH", "New artifact staging custody is invalid.");
+    const source = join(directory, "fleur-ordinary.tgz");
+    await authenticate(source, { sha256: built.ordinary.sha256, maxBytes: 8 * 1024 * 1024 });
+    privateCopyRetired = false;
+    copyDirectory = await mkdtemp(join(tmpdir(), "fleur-ordinary-copy-"));
+    copyParent = await open(copyDirectory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const privateStat = await copyParent.stat(); copyIdentity = { dev: privateStat.dev, ino: privateStat.ino };
+    const template = Buffer.from(join(copyDirectory, "archive-XXXXXX") + "\0"); copyFd = library.symbols.mkstemp(ptr(template));
+    if (copyFd < 0) throw new Error("Exclusive private copy creation failed");
+    const privateFile = fstatSync(copyFd);
+    if (!privateFile.isFile() || privateFile.uid !== process.getuid?.() || privateFile.nlink !== 1 || privateFile.size !== 0 || (privateFile.mode & 0o077) !== 0) fail("ARTIFACT_MISMATCH", "Private copy file custody is invalid.");
+    const copyName = Buffer.from(template.toString().split("\0")[0]!.slice(copyDirectory.length + 1) + "\0");
+    const input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = await input.stat(); const hash = new Bun.CryptoHasher("sha256"); const buffer = Buffer.alloc(65536); let count = 0;
+      if (!before.isFile() || before.size <= 0 || before.size > 8 * 1024 * 1024) fail("ARTIFACT_MISMATCH", "Ordinary source size changed.");
+      while (count < before.size) {
+        const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, before.size - count), count);
+        if (!bytesRead) fail("ARTIFACT_MISMATCH", "Ordinary source ended early.");
+        hash.update(buffer.subarray(0, bytesRead)); let written = 0;
+        while (written < bytesRead) { const size = writeSync(copyFd, buffer, written, bytesRead - written); if (!size) throw new Error("Private copy write made no progress"); written += size; }
+        count += bytesRead;
+      }
+      const after = await input.stat();
+      if (!same(identity(before), identity(after)) || hash.digest("hex") !== built.ordinary.sha256) fail("ARTIFACT_MISMATCH", "Ordinary source bytes changed.");
+      fsyncSync(copyFd);
+    } finally { await input.close(); }
     await verifyParents();
-    await authenticate(join(directory, "fleur-ordinary.tgz"), { sha256: built.ordinary.sha256, maxBytes: 8 * 1024 * 1024 }, archive, (identity) => { fileIdentity = identity; });
+    if (library.symbols.mkdirat(retained[1]!.handle.fd, ptr(directoryName), 0o700) !== 0) throw new Error("Exclusive ordinary staging creation failed");
+    directoryCreated = true;
+    outputFd = library.symbols.openat(retained[1]!.handle.fd, ptr(directoryName), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (outputFd < 0) throw new Error("Owned ordinary staging could not be retained");
+    const ownedDirectory = fstatSync(outputFd); const visibleDirectory = await lstat(outputDirectory);
+    if (!ownedDirectory.isDirectory() || ownedDirectory.uid !== process.getuid?.() || (ownedDirectory.mode & 0o077) !== 0 || visibleDirectory.dev !== ownedDirectory.dev || visibleDirectory.ino !== ownedDirectory.ino || visibleDirectory.isSymbolicLink()) fail("ARTIFACT_MISMATCH", "Ordinary staging identity changed.");
+    if (library.symbols.linkat(copyParent.fd, ptr(copyName), outputFd, ptr(outputName), 0) !== 0) throw new Error("Exclusive descriptor-relative publication failed");
+    publishedFd = library.symbols.openat(outputFd, ptr(outputName), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (publishedFd < 0) throw new Error("Published artifact could not be retained");
+    const copied = fstatSync(copyFd); const published = fstatSync(publishedFd);
+    if (!published.isFile() || published.dev !== copied.dev || published.ino !== copied.ino || published.nlink !== 2) fail("ARTIFACT_MISMATCH", "Published copy inode changed.");
+    await removePrivateCopy();
     await verifyParents();
-    const finalDirectory = await lstat(outputDirectory); const finalFile = await lstat(archive);
-    if (finalDirectory.dev !== directoryIdentity.dev || finalDirectory.ino !== directoryIdentity.ino || !finalFile.isFile() || finalFile.isSymbolicLink() || finalFile.nlink !== 1
-        || finalFile.dev !== fileIdentity?.dev || finalFile.ino !== fileIdentity?.ino) fail("ARTIFACT_MISMATCH", "Staged ordinary artifact custody changed.");
+    const visible = await lstat(archive); const directoryAfter = await lstat(outputDirectory);
+    if (directoryAfter.isSymbolicLink() || directoryAfter.dev !== ownedDirectory.dev || directoryAfter.ino !== ownedDirectory.ino || !visible.isFile() || visible.isSymbolicLink() || visible.dev !== published.dev || visible.ino !== published.ino) fail("ARTIFACT_MISMATCH", "Published ordinary path custody changed.");
+    const beforeRead = fstatSync(publishedFd); const digest = new Bun.CryptoHasher("sha256"); const buffer = Buffer.alloc(65536); let offset = 0;
+    if (beforeRead.nlink !== 1 || beforeRead.size <= 0 || beforeRead.size > 8 * 1024 * 1024) fail("ARTIFACT_MISMATCH", "Published ordinary size or links changed.");
+    while (true) { const bytes = readSync(publishedFd, buffer, 0, buffer.length, offset); if (!bytes) break; offset += bytes; if (offset > beforeRead.size) fail("ARTIFACT_MISMATCH", "Published copy grew during readback."); digest.update(buffer.subarray(0, bytes)); }
+    if (offset !== beforeRead.size || digest.digest("hex") !== built.ordinary.sha256 || !same(identity(beforeRead), identity(fstatSync(publishedFd)))) fail("ARTIFACT_MISMATCH", "Published ordinary bytes changed.");
     return { kind: "ordinary" as const, path: archive, sha256: built.ordinary.sha256 };
   } catch (error) {
-    let cleanupConfirmed = !directoryCreated && fileIdentity === undefined;
-    if (directoryIdentity) {
-      try {
-        await verifyParents();
-        const current = await lstat(outputDirectory);
-        if (!current.isDirectory() || current.dev !== directoryIdentity.dev || current.ino !== directoryIdentity.ino) throw new Error("Staging identity changed");
-        if (fileIdentity) {
-          const file = await lstat(archive);
-          if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || file.dev !== fileIdentity.dev || file.ino !== fileIdentity.ino) throw new Error("Staged file identity changed");
-          await unlink(archive);
-        }
-        await rmdir(outputDirectory); cleanupConfirmed = true;
-      } catch { cleanupConfirmed = false; }
-    }
-    throw Object.assign(error instanceof Error ? error : new Error("Ordinary artifact staging failed"), { artifactCleanupConfirmed: cleanupConfirmed });
-  } finally { await Promise.all(retained.map((parent) => parent.handle.close())); }
+    let privateCopyRemoved = true;
+    try { await removePrivateCopy(); } catch { privateCopyRemoved = false; }
+    // Never unlink a published or replaced staging name on uncertain custody.
+    throw Object.assign(error instanceof Error ? error : new Error("Ordinary artifact staging failed"), { artifactCleanupConfirmed: !directoryCreated && privateCopyRemoved });
+  } finally {
+    for (const fd of [publishedFd, copyFd, outputFd]) if (fd >= 0) closeSync(fd);
+    await copyParent?.close(); await Promise.all(retained.map((parent) => parent.handle.close())); library.close();
+  }
 }
 
 async function freePort(): Promise<number> {

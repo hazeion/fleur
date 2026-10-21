@@ -380,3 +380,10 @@ def revalidate_recorded_helpers(directory, staged, absolute_deadline):
         return revalidate_pair(directory, PairSpec(pins['filter.so'], pins['abuse']), staged, absolute_deadline)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise HelperArtifactUnverified('recorded helper prebuild custody unconfirmed', recovery_required=True) from error
+
+
+def recorded_helper_contract(absolute_deadline):
+    """Read the one immutable source record; returned data cannot select staging policy."""
+    manifest = _recorded_manifest(absolute_deadline)
+    _recorded_sources(manifest, absolute_deadline)
+    return manifest

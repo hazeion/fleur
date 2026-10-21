@@ -4,6 +4,7 @@ PTY replies below are automated test inputs. They prove neither real human
 consent nor acceptance of any legal agreement. No production grant API is added.
 """
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -28,6 +29,8 @@ REPORT = {"formatVersion": 1, "ok": False, "installationEvidence": "pending",
 
 
 GUEST_DEADLINE = None
+RECORDED_HELPERS = False
+_RECORDED_MODULE = None
 
 def budget_seconds(limit):
     remaining = limit if GUEST_DEADLINE is None else min(limit, GUEST_DEADLINE - time.monotonic())
@@ -238,8 +241,12 @@ def file_identity(info):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def observed_input(path, limit, expected=None):
-    budget_seconds(900)
+def observed_input(path, limit, expected=None, *, absolute_deadline=None):
+    def check_budget():
+        budget_seconds(900)
+        if absolute_deadline is not None and (type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline) or time.monotonic() >= absolute_deadline):
+            raise TimeoutError('Handoff original input deadline expired')
+    check_budget()
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
@@ -248,7 +255,7 @@ def observed_input(path, limit, expected=None):
         digest = hashlib.sha256()
         size = 0
         while True:
-            budget_seconds(900)
+            check_budget()
             chunk = stream.read(1024 * 1024)
             if not chunk:
                 break
@@ -259,7 +266,67 @@ def observed_input(path, limit, expected=None):
         after = os.fstat(stream.fileno())
         if size != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
             raise RuntimeError("Handoff input bytes or pathname identity changed")
+        check_budget()
         return {"sha256": digest.hexdigest(), "size": size}
+
+
+def _recorded_helper_module():
+    global _RECORDED_MODULE
+    if _RECORDED_MODULE is None:
+        # Ordinary host-only source from the authenticated Git restriction archive.
+        # Privileged root validation still uses its fixed root-owned program.
+        directory = ROOT/'experiments/compatibility/runtime-probe'
+        name = '_fleur_recorded_helpers_' + hashlib.sha256(str(directory).encode()).hexdigest()[:16]
+        spec = importlib.util.spec_from_file_location(name, directory/'helper_artifacts.py')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        sys.path.insert(0, str(directory))
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+        _RECORDED_MODULE = module
+    return _RECORDED_MODULE
+
+
+def recorded_helper_handoff():
+    started = time.monotonic()
+    budget_seconds(10)
+    if type(GUEST_DEADLINE) not in (int, float) or not math.isfinite(GUEST_DEADLINE):
+        raise RuntimeError('Recorded helper original guest deadline required')
+    deadline = min(GUEST_DEADLINE, started+10)
+    contract = _recorded_helper_module()
+    metadata = contract.recorded_helper_contract(deadline)
+    root = ROOT/'recorded-helpers'
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(directory)
+        if not stat.S_ISDIR(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
+            raise RuntimeError('Recorded helper handoff custody differs')
+        if sorted(os.listdir(directory)) != ['abuse', 'filter.so']:
+            raise RuntimeError('Recorded helper handoff entries differ')
+        files = {}
+        for pin in metadata['helpers']:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Recorded helper original handoff deadline expired')
+            info = os.stat(pin['name'], dir_fd=directory, follow_symlinks=False)
+            if info.st_size != pin['bytes']:
+                raise RuntimeError('Recorded helper handoff bytes differ')
+            if info.st_mode & 0o077:
+                raise RuntimeError('Recorded helper handoff custody differs')
+            observed = observed_input(root/pin['name'], pin['bytes'], expected=info, absolute_deadline=deadline)
+            if observed != {'size':pin['bytes'], 'sha256':pin['sha256']}:
+                raise RuntimeError('Recorded helper handoff bytes differ')
+            files[pin['name']] = {**observed, 'identity':[str(value) for value in file_identity(info)]}
+        for name, observed in files.items():
+            if [str(value) for value in file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False))] != observed['identity']:
+                raise RuntimeError('Recorded helper handoff custody changed')
+        if file_identity(before) != file_identity(os.fstat(directory)) or file_identity(before) != file_identity(root.lstat()) or time.monotonic() >= deadline:
+            raise RuntimeError('Recorded helper handoff custody changed')
+        return {'manifestSha256':contract.RECORDED_MANIFEST_SHA256, 'files':files,
+                'directoryIdentity':[str(value) for value in file_identity(before)]}
+    finally:
+        os.close(directory)
 
 
 def handoff_artifacts():
@@ -272,6 +339,11 @@ def handoff_artifacts():
     paths = {"candidateArchive": (ROOT / "fleur-internal-native-candidate.tgz", 8 * 1024 * 1024), "bunArchive": (ROOT / "bun.zip", 160 * 1024 * 1024), "restrictionArchive": (ROOT / "runtime-probe.tar", 16 * 1024 * 1024), "bunExecutable": (ROOT / "bun", 256 * 1024 * 1024), "guestSource": (Path(__file__), 256 * 1024)}
     for label, (path, limit) in paths.items():
         records[label] = observed_input(path, limit)
+    if RECORDED_HELPERS:
+        observed = recorded_helper_handoff()
+        if 'recordedHelperInputs' in REPORT and observed != REPORT['recordedHelperInputs']:
+            raise RuntimeError('Original recorded helper input binding changed')
+        records['recordedHelpers'] = observed
     files = []
     total = 0
     entries = 0
@@ -322,11 +394,24 @@ def check_handoff_owned_binding(payload, binding):
         raise RuntimeError("Resume original owned fixture binding changed")
 
 
+def check_handoff_recorded_mode(payload, recorded):
+    if type(payload) is not dict or type(recorded) is not bool or type(payload.get('report', {})) is not dict:
+        raise RuntimeError('Original recorded helper mode changed')
+    evidence = payload.get('report', {})
+    if recorded:
+        if payload.get('helperMode') != 'recorded-prebuilt' or evidence.get('helperMode') != 'recorded-prebuilt':
+            raise RuntimeError('Original recorded helper mode changed')
+    elif 'helperMode' in payload or 'helperMode' in evidence:
+        raise RuntimeError('Legacy checkpoint cannot acquire recorded helper mode')
+
+
 def publish_handoff(nonce, evidence, owned_binding=None):
     payload = {"formatVersion": 1, "phase": "new-login-required", "nonce": nonce, "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "uid": os.getuid(), "guestDeadlineMonotonic": GUEST_DEADLINE, "artifacts": handoff_artifacts(), "report": evidence}
     if owned_binding is not None:
         payload['ownedGuestBinding'] = owned_binding._asdict()
+    if RECORDED_HELPERS:payload['helperMode'] = 'recorded-prebuilt'
     check_handoff_owned_binding(payload, owned_binding)
+    check_handoff_recorded_mode(payload, RECORDED_HELPERS)
     if not re.fullmatch(r"[a-f0-9-]{36}", payload["bootId"]):
         raise RuntimeError("Guest boot identity is unavailable")
     body = json.dumps(payload, separators=(",", ":")).encode()
@@ -434,6 +519,7 @@ def resume_guest(nonce, expected_digest, owned_binding=None):
                 or evidence.get("phase") != "new-login-required" or evidence.get("ok") is not False or evidence.get("installationEvidence") != "pending" or evidence.get("runtimeSupport") != "unverified" or evidence.get("humanConsentProof") is not False or not evidence.get("baseline") or evidence.get("runs") != []):
             raise RuntimeError("Resume checkpoint binding or original deadline is invalid")
         check_handoff_owned_binding(payload, owned_binding)
+        check_handoff_recorded_mode(payload, RECORDED_HELPERS)
         GUEST_DEADLINE = deadline
         budget_seconds(900)
         verify_owned_binding(owned_binding)
@@ -573,6 +659,18 @@ def parse_guest_invocation(arguments):
     return nonce, arguments[2] if resume else None, OwnedGuestBinding(nonce, boot_id, int(uid_text), manifest_sha)
 
 
+def parse_recorded_guest_invocation(arguments):
+    recorded = '--recorded-helpers' in arguments
+    if recorded:
+        if arguments[-1] != '--recorded-helpers' or arguments.count('--recorded-helpers') != 1:
+            raise RuntimeError('Exact recorded helper selection required')
+        arguments = arguments[:-1]
+    nonce, resume, binding = parse_guest_invocation(arguments)
+    if recorded and binding is None:
+        raise RuntimeError('Recorded helpers require complete original owned binding')
+    return nonce, resume, binding, recorded
+
+
 def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
     if binding is None:
         return None
@@ -672,9 +770,11 @@ def installation_packages():
 
 
 def main():
-    global GUEST_DEADLINE
+    global GUEST_DEADLINE, RECORDED_HELPERS
     GUEST_DEADLINE = time.monotonic() + 900
-    nonce, resume_digest, owned_binding = parse_guest_invocation(sys.argv[1:])
+    nonce, resume_digest, owned_binding, RECORDED_HELPERS = parse_recorded_guest_invocation(sys.argv[1:])
+    if RECORDED_HELPERS:
+        REPORT['helperMode'] = 'recorded-prebuilt'
     resume = resume_digest is not None
     if not re.fullmatch(r"[a-f0-9-]{36}", nonce) or Path("/etc/fleur-owned-guest").read_text().strip() != nonce:
         raise RuntimeError("Owned guest identity is absent")
@@ -684,6 +784,8 @@ def main():
         resume_guest(nonce, resume_digest, owned_binding)
         return
     verify_owned_binding(owned_binding)
+    if RECORDED_HELPERS:
+        REPORT['recordedHelperInputs'] = recorded_helper_handoff()
     try:
         (ROOT / "fresh-linux-state.json").lstat()
     except FileNotFoundError:
@@ -772,6 +874,8 @@ def finish_ready_guest(state, owned_binding=None):
 
 
 def restriction_invocation(owned_binding):
+    if RECORDED_HELPERS and owned_binding is None:
+        raise RuntimeError('Recorded helpers require original owned restriction binding')
     args = ["python3", str(ROOT / "experiments/compatibility/runtime-probe/run.py"), "--architecture", "amd64", "--healthy-containerd-exit", "--idle-runtime-stress"]
     if owned_binding is None:
         return args, None
@@ -784,6 +888,8 @@ def restriction_invocation(owned_binding):
     args += ['--owned-guest-nonce', owned_binding.nonce, '--owned-guest-boot-id', owned_binding.bootId,
              '--owned-guest-uid', str(owned_binding.uid), '--owned-guest-manifest-sha256', owned_binding.manifestSha256,
              '--owned-guest-deadline', str(end)]
+    if RECORDED_HELPERS:
+        args += ['--recorded-helper-artifacts', str(ROOT/'recorded-helpers')]
     return args, end
 
 
@@ -965,6 +1071,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         finally:
             sys.path.pop(0)
         # Execute the existing gate without skipping any GC, idle, resource or deadline assertion.
+        if RECORDED_HELPERS and recorded_helper_handoff() != REPORT.get('recordedHelperInputs'):
+            raise RuntimeError('Original recorded helper input binding changed')
         probe_args, restriction_deadline = restriction_invocation(owned_binding)
         verify_owned_binding(owned_binding, absolute_deadline=restriction_deadline)
         if restriction_deadline is None:
@@ -972,6 +1080,20 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         else:
             code, text, _ = run(probe_args, timeout=600, allowed=(0, 1), absolute_deadline=restriction_deadline)
         REPORT["restrictionProbe"] = {"exitCode": code, "result": json.loads(text)}
+        if RECORDED_HELPERS:
+            proof = REPORT['restrictionProbe']['result']
+            original = proof.get('owned_host_control', {})
+            context = proof.get('helper_artifact_context', {})
+            if (not _recorded_helper_module().accept_helper_origin(proof, True, restriction_deadline)
+                    or proof.get('owned_artifact_disposal_scope_verified') is not True
+                    or type(original.get('uid')) is not int or original.get('fixtureCustodyValidated') is not True
+                    or original.get('hostControlScope') != 'owned-guest' or original.get('runtimeAdmission') is not False
+                    or tuple(original.get(field) for field in owned_binding._fields) != tuple(owned_binding)
+                    or context.get('state') != 'retained-for-owned-guest-disposal'
+                    or context.get('disposal_scope') != 'owned-full-system-guest-filesystem'
+                    or context.get('local_disposal') != 'pending' or context.get('cleanup_confirmed') is not False
+                    or context.get('retained') is not True or context.get('ledger_verified') is not True):
+                raise RuntimeError('Recorded helper origin or owned disposal scope differs')
         if code != 0 or REPORT["restrictionProbe"]["result"].get("cleanup_complete") is not True or REPORT["restrictionProbe"]["result"].get("bounded_probe_passed") is not True:
             REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Inspect restrictionProbe for the observed exit status and bounded result."}
             return

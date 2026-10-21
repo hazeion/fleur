@@ -31,6 +31,36 @@ class CallerBinding(unittest.TestCase):
         binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]
         with self.assertRaises(AttributeError):binding.uid=0
         self.assertEqual(binding.uid,1000)
+    def test_owned_initial_main_revalidates_root_fixture_before_setup_commands(self):
+        class StopAtBoundary(Exception):pass
+        commands=[]
+        def started(args,**kwargs):
+            commands.append(args)
+            self.assertEqual(args[:3],['/usr/bin/python3','-I','/usr/local/lib/fleur-owned-guest.py'])
+            raise StopAtBoundary()
+        def read(path,*args,**kwargs):
+            if str(path)=='/etc/fleur-owned-guest':return NONCE
+            if str(path)=='/proc/1/comm':return 'systemd'
+            self.fail('initial owned fixture reached unvalidated file '+str(path))
+        with patch.object(sys,'argv',[str(source),NONCE,*FIELDS]),patch('os.getuid',return_value=1000),patch.object(Path,'read_text',read),patch('subprocess.Popen',side_effect=started):
+            with self.assertRaises(StopAtBoundary):guest.main()
+        self.assertEqual(len(commands),1)
+
+    def test_checkpoint_requires_the_same_complete_original_owned_binding(self):
+        binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]
+        payload={'ownedGuestBinding':binding._asdict()}
+        guest.check_handoff_owned_binding(payload,binding)
+        guest.check_handoff_owned_binding({},None)
+        for other in ({}, {'ownedGuestBinding':None}, {'ownedGuestBinding':{**binding._asdict(),'uid':1001}}, {'ownedGuestBinding':{**binding._asdict(),'nonce':'b'*32}}, {'ownedGuestBinding':{**binding._asdict(),'profile':'29.9.1'}}):
+            with self.subTest(other=other),self.assertRaises(RuntimeError):guest.check_handoff_owned_binding(other,binding)
+        with self.assertRaises(RuntimeError):guest.check_handoff_owned_binding(payload,None)
+
+    def test_expired_owned_phase_starts_no_validation_command(self):
+        binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]
+        with patch('os.getuid',return_value=1000),patch('time.monotonic',return_value=100.0):
+            with self.assertRaises(TimeoutError):
+                guest.verify_owned_binding(binding,absolute_deadline=99.0,query=lambda *a,**k:self.fail('expired phase reached command'))
+
     def test_original_binding_is_verified_by_fixed_root_nocloud_program(self):
         binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]
         calls=[]
@@ -43,6 +73,21 @@ class CallerBinding(unittest.TestCase):
         with patch('os.getuid',return_value=1000):
             verified=guest.verify_owned_binding(binding,query=query)
         self.assertEqual(verified,binding);self.assertTrue(calls)
+class RestrictionCaller(unittest.TestCase):
+    def test_owned_restriction_uses_original_identity_and_absolute_guest_remainder(self):
+        binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]
+        previous=guest.GUEST_DEADLINE
+        try:
+            guest.GUEST_DEADLINE=150.0
+            with patch('time.monotonic',return_value=100.0):args,end=guest.restriction_invocation(binding)
+            self.assertEqual(end,150.0)
+            self.assertEqual(args[-10:],['--owned-guest-nonce',NONCE,'--owned-guest-boot-id',BOOT,'--owned-guest-uid','1000','--owned-guest-manifest-sha256','a'*64,'--owned-guest-deadline','150.0'])
+            with patch('time.monotonic',return_value=151.0),self.assertRaises(TimeoutError):guest.restriction_invocation(binding)
+            args,end=guest.restriction_invocation(None)
+            self.assertIsNone(end)
+            self.assertEqual(args[-3:],['amd64','--healthy-containerd-exit','--idle-runtime-stress'])
+        finally:guest.GUEST_DEADLINE=previous
+
 class OwnedCommandBudget(unittest.TestCase):
     def test_invalid_absolute_deadline_starts_no_process(self):
         for deadline in (0,100,float('nan'),float('inf'),True):

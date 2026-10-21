@@ -674,7 +674,7 @@ def verify_smoke_and_restrictions(state):
         code, text, _ = run(["python3", str(probe), "--architecture", "amd64", "--healthy-containerd-exit", "--idle-runtime-stress"], timeout=600, allowed=(0, 1))
         REPORT["restrictionProbe"] = {"exitCode": code, "result": json.loads(text)}
         if code != 0 or REPORT["restrictionProbe"]["result"].get("cleanup_complete") is not True or REPORT["restrictionProbe"]["result"].get("bounded_probe_passed") is not True:
-            REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Missing compiler/dependencies were not preinstalled."}
+            REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Inspect restrictionProbe for the observed exit status and bounded result."}
             return
         REPORT["installationEvidence"] = "verified-full-system-guest"
         REPORT["ok"] = True

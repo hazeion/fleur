@@ -44,7 +44,7 @@ elif scenario == "wrong-ok":
     result["result"]["ok"] = True
 elif scenario == "wrong-release":
     components["release"]["state"] = "ready"
-elif scenario not in ("ready", "restriction-exit", "restriction-false", "restriction-missing", "restriction-malformed", "restriction-cleanup"):
+elif scenario not in ("ready", "restriction-exit", "restriction-false", "restriction-missing", "restriction-malformed", "restriction-cleanup", "restriction-host-ineligible"):
     raise AssertionError("Unknown fixture scenario")
 # Fail the second repeat. The first successful result must not mask it.
 calls = 0
@@ -84,8 +84,11 @@ def run(args, **kwargs):
             del evidence["bounded_probe_passed"]
         if scenario == "restriction-cleanup":
             evidence["cleanup_complete"] = False
+        if scenario == "restriction-host-ineligible":
+            evidence.update({"bounded_probe_passed": False, "compiler_pin_verified": True,
+                             "failure": "Host is not eligible for privileged containerd observation. private-fixture-canary"})
         text = "{invalid-json" if scenario == "restriction-malformed" else json.dumps(evidence)
-        return (1 if scenario == "restriction-exit" else 0), text, ""
+        return (1 if scenario in ("restriction-exit", "restriction-host-ineligible") else 0), text, ""
     if "-e" in args:
         return 0, "oven/bun@sha256:" + "c" * 64, ""
     raise AssertionError(args)

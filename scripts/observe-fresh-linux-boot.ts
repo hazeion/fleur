@@ -23,7 +23,7 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000)
   const finished = child.finished;
   const observe = async (): Promise<BootObservation> => {
   try {
-    const [stdout, stderr, code] = await Promise.all([bounded(child.stdout!), bounded(child.stderr!), finished]);
+    const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!), bounded(child.stderr!), finished]), child.signalFailed]);
     if (code === 75) return result("pending");
     const preAuthenticationReset = `kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port ${target.port}\r\n`;
     if (code === 255 && stdout === "" && (stderr === preAuthenticationReset || stderr === preAuthenticationReset.replaceAll("\r\n", "\n"))) return result("pending");

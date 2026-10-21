@@ -2,10 +2,12 @@
 from dataclasses import dataclass
 import hashlib
 import math
+import json
 import time
 import os
 import stat
 from pathlib import Path
+from runtime_profile import native_elf_identity
 
 
 class HelperArtifactUnverified(ValueError):
@@ -139,7 +141,7 @@ def stage_pair(source_directory, destination_directory, pair_spec, absolute_dead
             if _identity(before) != _identity(os.fstat(fd)) or _identity(before) != _identity(os.stat(name, dir_fd=destination_fd, follow_symlinks=False)):
                 raise ValueError('artifact output custody changed')
             parents_unchanged()
-            files[name] = {'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'header': body[:64]}
+            files[name] = {'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'header': body[:64], 'identity': _identity(before)}
         for name, fd, before in outputs:
             remaining()
             if _identity(before) != _identity(os.fstat(fd)) or _identity(before) != _identity(os.stat(name, dir_fd=destination_fd, follow_symlinks=False)):
@@ -160,3 +162,135 @@ def stage_pair(source_directory, destination_directory, pair_spec, absolute_dead
             os.close(fd)
         for _, fd, _ in reversed(directories):
             os.close(fd)
+
+
+RECORDED_MANIFEST_SHA256 = '26167bf5307aacabbec7f51e05e348418170d98075baa1964b971460988cf47b'
+
+
+def _recorded_manifest(absolute_deadline):
+    if type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline) or time.monotonic() >= absolute_deadline:
+        raise HelperArtifactUnverified('artifact deadline expired')
+    path = Path(__file__).with_name('recorded-helper-origin.json')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= 16384:
+            raise HelperArtifactUnverified('recorded helper manifest custody differs')
+        body = bytearray()
+        while len(body) <= 16384:
+            if time.monotonic() >= absolute_deadline:
+                raise HelperArtifactUnverified('artifact deadline expired')
+            block = os.read(fd, min(4096, 16385-len(body)))
+            if not block:
+                break
+            body.extend(block)
+        if hashlib.sha256(body).hexdigest() != RECORDED_MANIFEST_SHA256 or _identity(before) != _identity(os.fstat(fd)) or _identity(before) != _identity(os.stat(path, follow_symlinks=False)):
+            raise HelperArtifactUnverified('recorded helper manifest differs')
+        return json.loads(body)
+    finally:
+        os.close(fd)
+
+
+def stage_recorded_helpers(source_directory, destination_directory, architecture, base, absolute_deadline):
+    manifest = _recorded_manifest(absolute_deadline)
+    if architecture != manifest['architecture'] or base != manifest['baseImage']:
+        raise HelperArtifactUnverified('recorded helper profile differs')
+    for source in manifest['sources']:
+        path = Path(__file__).with_name(source['file'])
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size != source['bytes']:
+                    raise HelperArtifactUnverified('recorded helper source differs')
+                body = bytearray()
+                while len(body) <= source['bytes']:
+                    if time.monotonic() >= absolute_deadline:
+                        raise HelperArtifactUnverified('artifact deadline expired')
+                    block = os.read(fd, min(65536, source['bytes']+1-len(body)))
+                    if not block:
+                        break
+                    body.extend(block)
+                if len(body) != source['bytes'] or hashlib.sha256(body).hexdigest() != source['sha256'] or _identity(before) != _identity(os.fstat(fd)) or _identity(before) != _identity(os.stat(path, follow_symlinks=False)):
+                    raise HelperArtifactUnverified('recorded helper source differs')
+            finally:
+                os.close(fd)
+        except OSError as error:
+            raise HelperArtifactUnverified('recorded helper source custody differs') from error
+    pins = {item['name']: ArtifactPin(item['bytes'], item['sha256']) for item in manifest['helpers']}
+    staged = stage_pair(source_directory, destination_directory, PairSpec(pins['filter.so'], pins['abuse']), absolute_deadline)
+    try:
+        directory = os.open(destination_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            parent = os.fstat(directory)
+            for name in ('filter.so', 'abuse'):
+                if time.monotonic() >= absolute_deadline:
+                    raise HelperArtifactUnverified('artifact deadline expired')
+                item = staged['files'][name]
+                item['elf'] = native_elf_identity(item['header'], architecture)
+                if int.from_bytes(item['header'][16:18], 'little') != manifest['abi']['elfType']:
+                    raise HelperArtifactUnverified('recorded helper ELF type differs')
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    if _identity(os.fstat(fd)) != item['identity']:
+                        raise HelperArtifactUnverified('artifact output custody changed')
+                    os.fchmod(fd, 0o555)
+                    os.fsync(fd)
+                    after = os.fstat(fd)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    sealed = bytearray()
+                    while len(sealed) <= item['bytes']:
+                        if time.monotonic() >= absolute_deadline:
+                            raise HelperArtifactUnverified('artifact deadline expired')
+                        block = os.read(fd, min(65536, item['bytes']+1-len(sealed)))
+                        if not block:
+                            break
+                        sealed.extend(block)
+                    if len(sealed) != item['bytes'] or hashlib.sha256(sealed).hexdigest() != item['sha256'] or _identity(after) != _identity(os.fstat(fd)):
+                        raise HelperArtifactUnverified('artifact output bytes changed')
+                    if after.st_dev != item['identity'][0] or after.st_ino != item['identity'][1] or _identity(after) != _identity(os.stat(name, dir_fd=directory, follow_symlinks=False)):
+                        raise HelperArtifactUnverified('artifact output custody changed')
+                    item['identity'] = _identity(after)
+                finally:
+                    os.close(fd)
+            named = os.stat(destination_directory, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (parent.st_dev, parent.st_ino) or time.monotonic() >= absolute_deadline:
+                raise HelperArtifactUnverified('artifact parent custody changed')
+        finally:
+            os.close(directory)
+    except (OSError, ValueError) as error:
+        raise HelperArtifactUnverified('recorded helper publication unconfirmed', recovery_required=True) from error
+    staged['origin'] = _origin_record(manifest)
+    return staged
+
+
+def _origin_record(manifest):
+    return {'mode': 'recorded-prebuilt', 'manifest_sha256': RECORDED_MANIFEST_SHA256,
+            'architecture': manifest['architecture'], 'base_image': manifest['baseImage'],
+            'local_compiler_executed': False, 'producer': manifest['producer'],
+            'source_sha256': {item['file']: item['sha256'] for item in manifest['sources']},
+            'helpers': manifest['helpers']}
+
+
+def accept_helper_origin(report, recorded=False, absolute_deadline=None):
+    """Validate report data against the source record; this does not stage or execute bytes."""
+    if type(recorded) is not bool or type(report) is not dict:
+        return False
+    if not recorded:
+        return report.get('compiler_status') == 'executed-pin' and report.get('compiler_pin_verified') is True and report.get('helper_origin') is None
+    try:
+        manifest = _recorded_manifest(absolute_deadline)
+        expected = _origin_record(manifest)
+        if report.get('expected_gcc') != manifest['producer']['compiler']['version'] or report.get('expected_gcc_binary_sha256') != manifest['producer']['compiler']['sha256']:
+            return False
+        if report.get('compiler_status') != 'prebuilt-origin' or report.get('compiler_pin_verified') is not False or 'gcc' in report or report.get('architecture') != manifest['architecture'] or report.get('base_image') != manifest['baseImage']:
+            return False
+        if json.dumps(report.get('helper_origin'), sort_keys=True, allow_nan=False) != json.dumps(expected, sort_keys=True, allow_nan=False):
+            return False
+        files = {item['name']: item for item in manifest['helpers']}
+        return (report.get('helper_sha256') == files['filter.so']['sha256']
+                and report.get('abuse_sha256') == files['abuse']['sha256']
+                and all(report.get('source_sha256', {}).get(item['file']) == item['sha256'] for item in manifest['sources'])
+                and all(json.dumps(report.get(field), sort_keys=True) == json.dumps({'class': 64, 'endianness': 'little', 'machine': 62}, sort_keys=True) for field in ('helper_elf', 'abuse_elf')))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False

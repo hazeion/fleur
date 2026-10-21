@@ -190,6 +190,38 @@ class PairArtifacts(unittest.TestCase):
         self.assertEqual((self.destination/'filter.so').read_bytes(), b'abc')
         self.assertEqual((self.destination/'retained-output').read_bytes(), b'abc')
 
+    def test_recorded_policy_refuses_foreign_architecture_before_artifact_io(self):
+        from helper_artifacts import stage_recorded_helpers
+        with self.assertRaisesRegex(ValueError, 'recorded helper profile'):
+            stage_recorded_helpers(self.root/'absent', self.destination, 'arm64',
+                'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e', time.monotonic()+5)
+        self.assertEqual(list(self.destination.iterdir()), [])
+
+    def test_hardlinked_source_refuses_without_publication(self):
+        os.link(self.source/'filter.so', self.root/'second-link')
+        with self.assertRaisesRegex(ValueError, 'artifact custody') as refused:
+            stage_pair(self.source, self.destination, TEXT_PAIR, time.monotonic()+5)
+        self.assertTrue(refused.exception.cleanup_confirmed)
+        self.assertFalse(refused.exception.recovery_required)
+        self.assertEqual(list(self.destination.iterdir()), [])
+        self.assertEqual((self.root/'second-link').read_bytes(), b'abc')
+
+    def test_missing_second_input_refuses_without_publication(self):
+        (self.source/'abuse').unlink()
+        with self.assertRaisesRegex(ValueError, 'artifact custody') as refused:
+            stage_pair(self.source, self.destination, TEXT_PAIR, time.monotonic()+5)
+        self.assertTrue(refused.exception.cleanup_confirmed)
+        self.assertFalse(refused.exception.recovery_required)
+        self.assertEqual(list(self.destination.iterdir()), [])
+
+    def test_truncated_second_input_refuses_without_publication(self):
+        (self.source/'abuse').write_bytes(b'hell')
+        with self.assertRaisesRegex(ValueError, 'artifact digest') as refused:
+            stage_pair(self.source, self.destination, TEXT_PAIR, time.monotonic()+5)
+        self.assertTrue(refused.exception.cleanup_confirmed)
+        self.assertFalse(refused.exception.recovery_required)
+        self.assertEqual(list(self.destination.iterdir()), [])
+
 
 if __name__ == '__main__':
     unittest.main()

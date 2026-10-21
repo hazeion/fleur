@@ -233,15 +233,44 @@ the later enrollment/resume chain to this context require separate review. The
 existing restriction, lifecycle and cleanup gates remain mandatory.
 
 
-## Ubuntu ordinary-catalog admission candidate
+## Ubuntu ordinary-catalog source mapping
 
-The exact Ubuntu 24.04 x64 prerequisite and official APT records now map the reviewed report `75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2` to source commit `a9606d74fd55b252c0aab8432ff72ec513457a5e` and artifact catalog `540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58`. The older diagnostic catalog and its historical pending labels are preserved. This source change proposes one prerequisite tuple; it does not promote the global runtime gate or other platforms.
+The exact Ubuntu 24.04 x64 prerequisite and official APT records now map the reviewed report `75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2` to source commit `a9606d74fd55b252c0aab8432ff72ec513457a5e` and artifact catalog `540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58`. The older diagnostic catalog and its historical pending labels are preserved. This source row covers one prerequisite tuple; it does not promote the global runtime gate or other platforms.
 
-The ordinary Doctor contract additionally binds current daemon resource flags, cgroup driver, rootful/rootless mode and exact security options. The proposed Ubuntu systemd/rootful/AppArmor tuple must be captured and checked in the new ordinary packed VM run; those complete metadata fields were not directly retained by the older report. Focused synthetic OS fixtures verify selection and rejection behavior, not native execution. Fresh ordinary setup, ready reprobes, exact metadata and cleanup remain required before this candidate can ship. Existing enrollment resume is not evidence of termination during a privileged package transaction; interruption and recovery contracts require their separate tests.
+The ordinary Doctor contract additionally binds current daemon resource flags, cgroup driver, rootful/rootless mode and exact security options. The complete Ubuntu systemd/rootful/AppArmor tuple was absent from the older report and has now been captured and checked by the ordinary packed VM run below. Focused synthetic OS fixtures verify selection and rejection behavior, not native execution. Fresh ordinary setup, ready reprobes, exact metadata and cleanup passed in that run. Existing enrollment resume is not evidence of termination during a privileged package transaction; interruption and recovery contracts require their separate tests.
 
 
 ### AppArmor wire-format regression
 
 The first ordinary-catalog VM run at `49978478855cf900e0347d93ec710bb8276ea420` produced report `cf3309135256313884258b17c9477cf268d599a76492c93c94821e32b80e8481`. Official installation, separate enrollment, fresh-session resume and smoke image acquisition completed, but the security-option observer refused an unknown descriptor before the repeated readiness and restriction proof. VM reaping and credential removal were confirmed. The report retained the proposed Engine/kernel/component tuple, systemd cgroup v2 and available resource flags. It redacted the unknown descriptor, so that run does not prove its exact contents or complete ordinary qualification.
 
-The [serializer at the exact Engine build](https://github.com/moby/moby/blob/b26fb77d3e7b01f9d21b89539c1ab428f5ca431f/daemon/info.go#L198) emits `name=apparmor,profile=default` for its standard AppArmor template. The proposed record originally used the older bare descriptor. The matcher and observer now recognize only this additional exact standard literal; custom and unconfined profiles remain unavailable, and legacy/default forms cannot count as distinct mechanisms. The candidate row binds the modern literal. A new actual VM run must capture it and pass the unchanged ordinary qualification and restriction checks before release. Upstream format evidence alone does not establish what the redacted runtime value was.
+The [serializer at the exact Engine build](https://github.com/moby/moby/blob/b26fb77d3e7b01f9d21b89539c1ab428f5ca431f/daemon/info.go#L198) emits `name=apparmor,profile=default` for its standard AppArmor template. The proposed record originally used the older bare descriptor. The matcher and observer now recognize only this additional exact standard literal; custom and unconfined profiles remain unavailable, and legacy/default forms cannot count as distinct mechanisms. The row binds the modern literal. The second actual VM run below captured it and passed the unchanged ordinary qualification and restriction checks. Upstream format evidence alone did not establish what the first redacted runtime value was.
+
+
+## Qualified ordinary Ubuntu prerequisite tuple
+
+Source `28a223cf625a01841fd850accb87de4f8553bb92` completed the ordinary packed proof on a fresh Ubuntu 24.04 x64 guest using Intel HVF with explicit host CPU selection. Report SHA256: `62d29dba9c06b896d5b56503638cc1f261d2282ae9f6e4b931ce3dca238c96ae`. An independent reviewer checked actual report contents, artifact/source hashes and acceptance results.
+
+| Field | Observed exact value |
+|---|---|
+| Native guest / Bun | Ubuntu 24.04 x64 / 1.4.3 |
+| CLI / Engine | 29.9.1/dfc520d / 29.9.1/b26fb77 |
+| Kernel / platform | 6.8.0-147-generic / Docker Engine - Community |
+| containerd / runc | v2.4.2/b7a25261e029d68978bbf290df0a62fc819b3c51 / 1.5.2/v1.5.2-0-g29dd3dc2 |
+| Compose | 5.6.0 |
+| Enforcement metadata | systemd, cgroup v2, rootful; CPU period/quota, memory, swap and PID capabilities true |
+| Security options | `name=apparmor,profile=default`, `name=seccomp,profile=builtin`, `name=cgroupns` |
+
+Both packed ordinary Doctor rounds returned exit 0 with profile `ubuntu-24.04-x64-docker-29.9.1` and confirmed smoke cleanup. Two ready setup reprobes also returned exit 0 while preserving package/service/source snapshots and grants. The stopped sentinel and original Docker inventory/context were preserved; sentinel cleanup completed. Actual installation used the five authenticated official APT packages, separate action scopes, separate account enrollment, stale-login refusal and a fresh-session resume. The original candidate catalog and its historical labels remain unchanged. The source row retains the earlier installation/restriction report as its evidence reference; this later report additionally proves the ordinary success path and complete enforcement tuple.
+
+The unchanged restriction probe exited 0 with `bounded_probe_passed` and `cleanup_complete` true. It recorded six GC collections with 128 retained objects, 16,384 retained bytes and checksum 8,128. All 24 syscall negatives and twelve event negatives returned `-1`; descriptor/thread restrictions, CPU throttling, memory OOM and the 64-PID bound passed. Normal and idle lifecycle groups each passed two repetitions under the original 30-second deadline. Both idle groups retained the registered request across the required 11-second pause, observed at 11,000 and 11,001 ms. Healthy work completed while the busy worker remained active. All four Linux pidfd physical exits were confirmed, at 32, 33, 66 and 32 ms after their deadlines, with guards reaped. Event replacement was rejected as `class-mismatch` before application evaluation, event execution or startup acknowledgment.
+
+| Provenance | SHA256 |
+|---|---|
+| Ordinary packed archive | `4d57352791b4ea4e77f23f7b44d4402c666c0f99df60f2dbe7f571931c200d90` |
+| Packaged admission metadata | `e046c4e79d54e7bf95fa76e10f31387874b02309f480de4ed824e54df45728a3` |
+| Tracked verifier | `b92e6b4f543ffbacfafe7e598cbf5adb993f7d2c9211ba7d9bcb8f09c945b2ba` |
+| Private HVF diagnostic | `3760d41665ab2c962bbf7c9dfea6c1b5fc460f20fea8d3517f4b38c2a00d6a66` |
+| Audited launcher | `10b930c371ccd41e1325477e086605808f80bc46e4c5b6f7270076ce80335922` |
+
+Worker/image/resource cleanup, compiler-stage removal, final VM reaping and credential removal were confirmed. The private wrapper deliberately ended with `DIAGNOSTIC_ONLY`, exit 4, after successful guest proof. Its global v1 gate, CPU-performance proof and human-consent proof remain false. Those labels do not negate this individually reviewed prerequisite tuple, and they do not qualify other OS/architecture rows, the future full application or assisted Desktop installation. Other promised native platforms and blocked hosted CI remain open. Existing contract tests cover partial-package failure, pending-fence recovery, repository resume and serialization; successful fresh-login resume is not a claim that this VM run terminated during a privileged package transaction.

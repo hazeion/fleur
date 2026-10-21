@@ -11,8 +11,11 @@ import time
 def observe_candidate_identity(command):
     """Observe selected identities using the guest's bounded OS-command runner.
 
-    Path/daemon association facts are advisory. This function creates no trusted
-    control handle and cannot change profile eligibility or restriction results.
+    Path/daemon association facts are advisory. Canonical path checks do not
+    establish immutable file/executable custody, alias stability, or authority
+    against a privileged account. The caller owns process/output deadlines.
+    This function creates no trusted control handle and cannot change profile
+    eligibility or restriction results.
     """
     report = {'formatVersion': 1, 'scope': 'runtime-profile-candidate-observation',
               'accepted': False, 'runtimeSupport': 'unverified',

@@ -74,7 +74,7 @@ def run(args, timeout=60, allowed=(0,)):
     try:
         while selector.get_map():
             if time.monotonic() >= deadline:
-                raise RuntimeError("Guest command deadline expired: " + args[0])
+                raise TimeoutError("Guest command deadline expired: " + args[0])
             for key, _ in selector.select(0.2):
                 part = os.read(key.fileobj.fileno(), 8192)
                 if not part:
@@ -85,7 +85,7 @@ def run(args, timeout=60, allowed=(0,)):
                         raise RuntimeError("Guest command output exceeded evidence limit")
         while not command_exited(child):
             if time.monotonic() >= deadline:
-                raise RuntimeError("Guest command deadline expired: " + args[0])
+                raise TimeoutError("Guest command deadline expired: " + args[0])
             time.sleep(0.02)
     finally:
         try:

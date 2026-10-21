@@ -1,5 +1,5 @@
 """Candidate observations through filesystem and bounded command protocols."""
-import io,json,stat,subprocess,unittest
+import ast,io,json,stat,subprocess,sys,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,7 +9,7 @@ ENGINE={'Version':'29.9.1','GitCommit':'engine-observed','Components':[
  {'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'runc-observed'}}]}
 CTR='Client:\n Version: v2.4.2\n Revision: containerd-observed\nServer:\n Version: v2.4.2\n Revision: containerd-observed\n'
 class CandidateObservation(unittest.TestCase):
- def observe(self,engine=None,ctr=CTR,active='daemon-owned',change=None,command_error=None):
+ def observe(self,engine=None,ctr=CTR,active='daemon-owned',change=None,command_error=None,runner=None):
   calls=[]
   bodies={'/var/run/docker.pid':b'42\n','/proc/42/comm':b'dockerd\n','/proc/42/cmdline':b'/usr/bin/dockerd\0--containerd=/run/containerd/containerd.sock\0','/usr/bin/ctr':b'ctr-bytes','/usr/bin/runc':b'runc-bytes'}
   def metadata(path,**kwargs):
@@ -20,6 +20,7 @@ class CandidateObservation(unittest.TestCase):
   def command(args,**kwargs):
    calls.append((args,kwargs))
    if command_error:raise command_error
+   if runner:return runner(args,**kwargs)
    if args[-1]=='{{json .Server}}':return 0,json.dumps(engine or ENGINE),'sensitive stderr excluded'
    if args[-1]=='{{.ID}}':return 0,(active if '--host' not in args else 'daemon-owned')+'\n',''
    if args[-1]=='version':return 0,ctr,''
@@ -78,4 +79,16 @@ class CandidateObservation(unittest.TestCase):
   engine=json.loads(json.dumps(ENGINE));engine['Components'][1]['Details']['GitCommit']='different-commit'
   result=self.observe(engine=engine)
   self.assertEqual(result['outcome'],'unavailable');self.assertEqual(result['failureCategory'],'runc-identity')
+ def test_real_guest_runner_deadline_is_reported_as_timeout(self):
+  source=Path(__file__).resolve().parents[3]/'scripts/fresh-linux-guest.py'
+  tree=ast.parse(source.read_text());tree.body=[node for node in tree.body if not isinstance(node,ast.Try)]
+  namespace={};exec(compile(tree,str(source),'exec'),namespace)
+  def runner(args,**kwargs):
+   return namespace['run']([sys.executable,'-c','import time;time.sleep(10)'],timeout=1)
+  result=self.observe(runner=runner)
+  self.assertEqual(result['outcome'],'unavailable');self.assertTrue(result['timedOut'])
+  self.assertFalse(result['accepted'])
+ def test_non_timeout_command_refusal_is_not_reported_as_timeout(self):
+  result=self.observe(command_error=RuntimeError('Guest command output exceeded evidence limit'))
+  self.assertEqual(result['outcome'],'unavailable');self.assertFalse(result['timedOut'])
 if __name__=='__main__':unittest.main()

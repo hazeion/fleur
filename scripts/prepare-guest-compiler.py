@@ -1,4 +1,5 @@
 """Offline verification prerequisite, never a Fleur setup action or release admission."""
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -18,6 +19,11 @@ MANIFEST_SHA256 = '11127a1f28b3bac544f79d0f0bc4f91a68afec74568c342bc4bb7c773dcf0
 COMPILER_SHA256 = '1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26'
 COMPILER = '/usr/bin/x86_64-linux-gnu-gcc-13'
 ALIAS = Path('/usr/local/bin/gcc')
+COMMAND_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+BINUTILS = {
+    'as': {'target': '/usr/bin/x86_64-linux-gnu-as', 'sha256': '21aff249b692b5c31a44007491f922dcb49f41323e362c57d2ada3f52eddb7f0', 'bytes': 745768},
+    'ld': {'target': '/usr/bin/x86_64-linux-gnu-ld.bfd', 'sha256': 'e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b', 'bytes': 1359128},
+}
 DEADLINE = None
 STATE = {}
 
@@ -61,7 +67,7 @@ def stop_command_group(child):
 def bounded_command(args, timeout=60):
     end = time.monotonic() + budget(timeout)
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             start_new_session=True, env={'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'DEBIAN_FRONTEND': 'noninteractive', 'DPKG_COLORS': 'never'})
+                             start_new_session=True, env={'PATH': COMMAND_PATH, 'LC_ALL': 'C', 'DEBIAN_FRONTEND': 'noninteractive', 'DPKG_COLORS': 'never'})
     output = {child.stdout: bytearray(), child.stderr: bytearray()}
     selector = selectors.DefaultSelector()
     for stream in output:
@@ -198,6 +204,154 @@ def ensure_alias():
     return {'path': str(ALIAS), 'target': COMPILER, 'created': created}
 
 
+def rollback_binutils_aliases(parent, receipt):
+    """Atomically claim names; never unlink a replacement observed at cleanup."""
+    confirmed = True
+    quarantine = None
+    quarantine_fd = None
+    try:
+        for row in reversed(receipt['aliases']):
+            name = row['path'].rsplit('/', 1)[1]
+            if row['identity'] is None:
+                row['rollback'] = 'creation-custody-unconfirmed'; confirmed = False
+                continue
+            try:
+                current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                row['rollback'] = 'already-absent'
+                continue
+            if identity(current) != row['identity'] or not stat.S_ISLNK(current.st_mode) or os.readlink(name, dir_fd=parent) != row['target']:
+                row['rollback'] = 'foreign-preserved'; confirmed = False
+                continue
+            if quarantine is None:
+                quarantine = tempfile.mkdtemp(prefix='fleur-compiler-alias-cleanup-', dir='/var/tmp')
+                quarantine_fd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                value = os.fstat(quarantine_fd)
+                if not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o077:
+                    raise RuntimeError('Binutils cleanup quarantine custody differs')
+            os.rename(name, name, src_dir_fd=parent, dst_dir_fd=quarantine_fd)
+            claimed = os.stat(name, dir_fd=quarantine_fd, follow_symlinks=False)
+            if (claimed.st_dev, claimed.st_ino) != row['identity'][:2] or claimed.st_uid != 0 or not stat.S_ISLNK(claimed.st_mode) or os.readlink(name, dir_fd=quarantine_fd) != row['target']:
+                row['rollback'] = 'foreign-quarantined'; confirmed = False
+                receipt['retainedQuarantine'] = quarantine
+                continue
+            os.unlink(name, dir_fd=quarantine_fd)
+            row['rollback'] = 'owned-removed'
+    except Exception as error:
+        confirmed = False
+        receipt['cleanupError'] = str(error)
+        if quarantine is not None:
+            receipt['retainedQuarantine'] = quarantine
+    finally:
+        if quarantine_fd is not None:
+            try:
+                if not os.listdir(quarantine_fd):
+                    current = os.stat(quarantine, follow_symlinks=False)
+                    retained = os.fstat(quarantine_fd)
+                    if (current.st_dev, current.st_ino) != (retained.st_dev, retained.st_ino):
+                        raise RuntimeError('Binutils cleanup quarantine changed')
+                    os.rmdir(quarantine)
+                    receipt.pop('retainedQuarantine', None)
+            except Exception as error:
+                confirmed = False; receipt['cleanupError'] = str(error)
+            finally:
+                os.close(quarantine_fd)
+        receipt['cleanupConfirmed'] = confirmed
+    return confirmed
+
+
+@contextmanager
+def authenticated_binutils_aliases(command):
+    """Expose only the authenticated existing tools under generic compiler names."""
+    receipt = {'aliases': [], 'compilerSearch': {}, 'cleanupConfirmed': None}
+    STATE['binutilsAliases'] = receipt
+    retained = []
+    parent = None
+    try:
+        for directory in ('/', '/usr', '/usr/bin', '/usr/local', '/usr/local/bin', '/usr/local/sbin', '/usr/sbin'):
+            value = os.lstat(directory)
+            if not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
+                raise RuntimeError('Binutils ancestry is unsafe')
+        for directory, canonical in (('/bin', '/usr/bin'), ('/sbin', '/usr/sbin')):
+            value = os.lstat(directory)
+            if stat.S_ISLNK(value.st_mode):
+                if value.st_uid != 0 or os.readlink(directory) not in (canonical, canonical[1:]):
+                    raise RuntimeError('Binutils PATH ancestry is unsafe')
+            elif not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
+                raise RuntimeError('Binutils PATH ancestry is unsafe')
+        for name, pin in BINUTILS.items():
+            descriptor = os.open(pin['target'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            file = os.fdopen(descriptor, 'rb'); retained.append((file, pin))
+            before = os.fstat(file.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_mode & 0o022 or before.st_nlink != 1 or before.st_size != pin['bytes'] or not before.st_mode & 0o111:
+                raise RuntimeError('Binutils target custody differs')
+            body = file.read(pin['bytes'] + 1)
+            if len(body) != pin['bytes'] or hashlib.sha256(body).hexdigest() != pin['sha256'] or body[:6] != b'\x7fELF\x02\x01' or int.from_bytes(body[18:20], 'little') != 62 or identity(before) != identity(os.fstat(file.fileno())) or identity(before) != identity(os.stat(pin['target'], follow_symlinks=False)):
+                raise RuntimeError('Binutils target authenticated identity differs')
+            pin = {**pin, 'identity': identity(before)}; retained[-1] = (file, pin)
+        for name in BINUTILS:
+            for directory in COMMAND_PATH.split(':'):
+                try: os.lstat(directory + '/' + name)
+                except FileNotFoundError: continue
+                raise RuntimeError('Existing generic binutils tool was preserved')
+        parent = os.open('/usr/local/bin', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        parent_stat = os.fstat(parent)
+        if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0 or parent_stat.st_mode & 0o022:
+            raise RuntimeError('Binutils alias parent custody differs')
+        parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
+        for name, pin in BINUTILS.items():
+            os.symlink(pin['target'], name, dir_fd=parent)
+            row = {'path': '/usr/local/bin/' + name, 'target': pin['target'], 'targetSha256': pin['sha256'], 'targetBytes': pin['bytes'], 'elfMachine': 62, 'created': True, 'identity': None}
+            receipt['aliases'].append(row)
+            value = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISLNK(value.st_mode) or value.st_uid != 0 or os.readlink(name, dir_fd=parent) != pin['target']:
+                raise RuntimeError('New binutils alias custody differs')
+            row.update(device=value.st_dev, inode=value.st_ino, identity=identity(value))
+        current_parent = os.stat('/usr/local/bin', follow_symlinks=False)
+        if parent_identity != (current_parent.st_dev, current_parent.st_ino) or current_parent.st_uid != 0 or current_parent.st_mode & 0o022:
+            raise RuntimeError('Binutils alias parent changed')
+        for compiler in (COMPILER, str(ALIAS)):
+            receipt['compilerSearch'][compiler] = {}
+            for name in BINUTILS:
+                reported = command([compiler, '-print-prog-name=' + name], timeout=5).strip()
+                expected = '/usr/local/bin/' + name
+                if reported == name:
+                    resolved = None
+                    for directory in COMMAND_PATH.split(':'):
+                        try: os.lstat(directory + '/' + name)
+                        except FileNotFoundError: continue
+                        resolved = directory + '/' + name; break
+                else: resolved = os.path.normpath(reported) if reported.startswith('/') else None
+                if resolved != expected:
+                    raise RuntimeError('Compiler subtool search did not select the authenticated alias')
+                receipt['compilerSearch'][compiler][name] = resolved
+        def verify_retained():
+            for file, pin in retained:
+                file.seek(0)
+                body = file.read(pin['bytes'] + 1)
+                if len(body) != pin['bytes'] or hashlib.sha256(body).hexdigest() != pin['sha256'] or pin['identity'] != identity(os.fstat(file.fileno())) or pin['identity'] != identity(os.stat(pin['target'], follow_symlinks=False)):
+                    raise RuntimeError('Binutils target changed during helper compilation')
+            for row in receipt['aliases']:
+                name = row['path'].rsplit('/', 1)[1]
+                current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if identity(current) != row['identity'] or not stat.S_ISLNK(current.st_mode) or current.st_uid != 0 or os.readlink(name, dir_fd=parent) != row['target']:
+                    raise RuntimeError('Binutils alias changed during helper compilation')
+            current_parent = os.stat('/usr/local/bin', follow_symlinks=False)
+            if parent_identity != (current_parent.st_dev, current_parent.st_ino) or current_parent.st_uid != 0 or current_parent.st_mode & 0o022:
+                raise RuntimeError('Binutils alias parent changed during helper compilation')
+        verify_retained()
+        yield receipt
+        verify_retained()
+        receipt['retainedForRestriction'] = True
+    except Exception as error:
+        if parent is not None and not rollback_binutils_aliases(parent, receipt):
+            raise RuntimeError(str(error) + '; binutils alias cleanup could not be confirmed') from error
+        raise
+    finally:
+        for file, _ in retained: file.close()
+        if parent is not None: os.close(parent)
+
+
 def provision(package_directory, nonce, command=None):
     validate_guest(nonce)
     command = bounded_command if command is None else command
@@ -237,21 +391,22 @@ def provision(package_directory, nonce, command=None):
         compiler = verify_compiler(command)
         alias = ensure_alias()
         helpers = []
-        for name, flags in [('filter', ['-shared', '-fPIC']), ('abuse', [])]:
-            output = stage / ('filter.so' if name == 'filter' else 'abuse')
-            arguments = [str(ALIAS), *flags, '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', str(stage / (name + '.c')), '-o', str(output)]
-            command(arguments, timeout=30)
-            body = output.read_bytes()
-            if not 64 <= len(body) <= 2 * 1024 * 1024 or body[:6] != b'\x7fELF\x02\x01' or int.from_bytes(body[18:20], 'little') != 62:
-                raise RuntimeError('Compiled helper native ELF identity differs')
-            helpers.append({'name': output.name, 'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'elfMachine': 62, 'executed': False})
+        with authenticated_binutils_aliases(command) as binutils:
+            for name, flags in [('filter', ['-shared', '-fPIC']), ('abuse', [])]:
+                output = stage / ('filter.so' if name == 'filter' else 'abuse')
+                arguments = [str(ALIAS), *flags, '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', str(stage / (name + '.c')), '-o', str(output)]
+                command(arguments, timeout=30)
+                body = output.read_bytes()
+                if not 64 <= len(body) <= 2 * 1024 * 1024 or body[:6] != b'\x7fELF\x02\x01' or int.from_bytes(body[18:20], 'little') != 62:
+                    raise RuntimeError('Compiled helper native ELF identity differs')
+                helpers.append({'name': output.name, 'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'elfMachine': 62, 'executed': False})
         return {'formatVersion': 1, 'scope': 'verification-only-compiler-prerequisite', 'ok': True,
                 'fleurSetupAction': False, 'runtimeSupport': 'unverified', 'installationEvidence': 'pending',
                 'order': 'before-docker-baseline-and-session-deadline', 'manifestSha256': MANIFEST_SHA256,
                 'packageCount': len(paths), 'totalBytes': data['totalBytes'], 'packages': data['artifacts'],
                 'beforePackagesSha256': hashlib.sha256(before.encode()).hexdigest(),
                 'installedClosureSnapshotSha256': hashlib.sha256(installed.encode()).hexdigest(),
-                'compiler': compiler, 'alias': alias, 'helperBuild': helpers, 'helperSources': data['helperSources'], 'ownedPackageStageRemoved': True}
+                'compiler': compiler, 'alias': alias, 'binutilsAliases': binutils, 'helperBuild': helpers, 'helperSources': data['helperSources'], 'ownedPackageStageRemoved': True}
 
 
 def main():

@@ -83,11 +83,13 @@ class CandidateObservation(unittest.TestCase):
   source=Path(__file__).resolve().parents[3]/'scripts/fresh-linux-guest.py'
   tree=ast.parse(source.read_text());tree.body=[node for node in tree.body if not isinstance(node,ast.Try)]
   namespace={};exec(compile(tree,str(source),'exec'),namespace)
-  def runner(args,**kwargs):
-   return namespace['run']([sys.executable,'-c','import time;time.sleep(10)'],timeout=1)
-  result=self.observe(runner=runner)
-  self.assertEqual(result['outcome'],'unavailable');self.assertTrue(result['timedOut'])
-  self.assertFalse(result['accepted'])
+  for script in ('import time;time.sleep(10)','import os,time;os.close(1);os.close(2);time.sleep(10)'):
+   with self.subTest(script=script):
+    def runner(args,**kwargs):
+     return namespace['run']([sys.executable,'-c',script],timeout=1)
+    result=self.observe(runner=runner)
+    self.assertEqual(result['outcome'],'unavailable');self.assertTrue(result['timedOut'])
+    self.assertFalse(result['accepted'])
  def test_non_timeout_command_refusal_is_not_reported_as_timeout(self):
   result=self.observe(command_error=RuntimeError('Guest command output exceeded evidence limit'))
   self.assertEqual(result['outcome'],'unavailable');self.assertFalse(result['timedOut'])

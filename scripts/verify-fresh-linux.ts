@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { observeGuestSessions } from "./observe-fresh-linux-session.ts";
 import { observeBoot } from "./observe-fresh-linux-boot.ts";
+import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
 
 // Internal verification only. The source-owned ordinary production catalog stays empty.
 const imagePin = { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 };
@@ -88,7 +89,7 @@ async function poweroff(): Promise<void> {
     });
   });
 }
-async function execute(imagePath: string, bunArchivePath: string): Promise<void> {
+async function execute(imagePath: string, bunArchivePath: string, compilerDirectory?: string): Promise<void> {
   // Authenticate before tools interpret any supplied image or archive.
   await authenticate(imagePath, imagePin);
   await authenticate(bunArchivePath, bunPin);
@@ -97,6 +98,14 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   if (!available.hostPolicy.admitted || requiredTools.some((name) => !available.tools[name])) fail("INFRASTRUCTURE_UNAVAILABLE", "An admitted Linux x64 or Darwin x64 TCG verification host with its required existing tools is required.");
   scratch = await mkdtemp(join(tmpdir(), "fleur-fresh-linux-"));
   if (/[,\r\n]/.test(scratch) || Buffer.byteLength(join(scratch, "qmp.sock")) > 100) fail("INFRASTRUCTURE_UNAVAILABLE", "Private temporary path cannot be represented safely in QEMU options or Unix socket addresses.");
+  const compilerManifestSha256 = "11127a1f28b3bac544f79d0f0bc4f91a68afec74568c342bc4bb7c773dcf00d7";
+  const compilerBundle = compilerDirectory ? join(scratch, "compiler-debs") : undefined;
+  if (compilerBundle) {
+    if (Bun.CryptoHasher.hash("sha256", await readFile(join(repository, "scripts/guest-compiler-ubuntu24-amd64.json")), "hex") !== compilerManifestSha256) fail("ARTIFACT_MISMATCH", "Source-owned compiler manifest differs.");
+    await mkdir(compilerBundle, { mode: 0o700 });
+    for (const artifact of compilerManifest.artifacts) await authenticate(join(compilerDirectory!, artifact.file), { sha256: artifact.sha256, size: artifact.bytes }, join(compilerBundle, artifact.file));
+    report.compilerBundle = { scope: compilerManifest.scope, manifestSha256: compilerManifestSha256, packages: compilerManifest.artifacts.length, bytes: compilerManifest.totalBytes, authenticated: true, installedOnHost: false };
+  }
   // Retained private handles copy the exact authenticated bytes; original paths never reach QEMU.
   const base = join(scratch, "base.qcow2"); const runtime = join(scratch, "bun.zip");
   await authenticate(imagePath, imagePin, base); await authenticate(bunArchivePath, bunPin, runtime);
@@ -111,7 +120,7 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const archive = join(candidate, "fleur-internal-native-candidate.tgz");
   await authenticate(archive, { sha256: built.candidate.sha256, maxBytes: 8 * 1024 * 1024 });
   const clientKey = join(scratch, "client"); const hostKey = join(scratch, "host");
@@ -167,12 +176,21 @@ async function execute(imagePath: string, bunArchivePath: string): Promise<void>
   if (restriction.formatVersion !== 1 || restriction.scope !== "fresh-linux-restriction-archive" || restriction.ok !== true || restriction.commit !== sourceCommit || restriction.sha256 !== restrictionSha256) fail("ARTIFACT_MISMATCH", "Restriction archive did not establish its exact tracked source identity.");
   report.restrictionSource = restriction;
   const guestFiles = [archive, runtime, restrictionArchive, join(repository, "scripts/fresh-linux-guest.py"), join(repository, "scripts/prepare-fresh-linux-guest.py")];
+  if (compilerBundle) guestFiles.push(join(repository, "scripts/prepare-guest-compiler.py"), join(repository, "scripts/guest-compiler-ubuntu24-amd64.json"));
   await command(["scp", ...sshOptions, "-P", String(port), ...guestFiles, "fleur@127.0.0.1:lab/"], 120000);
+  if (compilerBundle) await command(["scp", ...sshOptions, "-r", "-P", String(port), compilerBundle, "fleur@127.0.0.1:lab/"], 120000);
   const prepare = await ssh("cd lab && python3 -I prepare-fresh-linux-guest.py && tar -xzf fleur-internal-native-candidate.tgz && tar -xf runtime-probe.tar");
   if (prepare.exitCode !== 0) fail("TRANSPORT_FAILED", "Guest artifact preparation failed.");
   const preparation = JSON.parse(prepare.stdout);
   if (preparation.formatVersion !== 1 || preparation.scope !== "guest-bun-preparation" || preparation.ok !== true || preparation.archiveSha256 !== bunPin.sha256 || !Number.isSafeInteger(preparation.executableBytes) || preparation.executableBytes <= 0 || preparation.executableBytes > 256 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(preparation.executableSha256)) fail("GUEST_REPORT_INVALID", "Guest Bun preparation did not establish its authenticated output identity.");
   report.guestPreparation = preparation;
+  if (compilerBundle) {
+    // A distinct verification prerequisite phase precedes all Docker baseline
+    // snapshots and the original session deadline. It has no network fallback.
+    const prepared = await command(["ssh", ...sshOptions, "-p", String(port), "fleur@127.0.0.1", `cd lab && sudo -n /usr/bin/python3 -I prepare-guest-compiler.py ${nonce}`], 250000, [0, 4]);
+    const compiler = JSON.parse(prepared.stdout); report.compilerPreparation = compiler;
+    if (prepared.exitCode !== 0 || compiler.formatVersion !== 1 || compiler.scope !== "verification-only-compiler-prerequisite" || compiler.ok !== true || compiler.fleurSetupAction !== false || compiler.runtimeSupport !== "unverified" || compiler.installationEvidence !== "pending" || compiler.manifestSha256 !== compilerManifestSha256 || compiler.packageCount !== 38 || compiler.totalBytes !== compilerManifest.totalBytes || compiler.order !== "before-docker-baseline-and-session-deadline" || compiler.ownedPackageStageRemoved !== true || compiler.compiler?.sha256 !== compilerManifest.compiler.sha256 || compiler.compiler?.version !== compilerManifest.compiler.version || compiler.compiler?.target !== compilerManifest.compiler.target || JSON.stringify(compiler.packages) !== JSON.stringify(compilerManifest.artifacts) || !Array.isArray(compiler.helperBuild) || compiler.helperBuild.length !== 2 || !["filter.so", "abuse"].every((name) => compiler.helperBuild.some((item: Record<string, unknown>) => item.name === name && item.elfMachine === 62 && item.executed === false && typeof item.sha256 === "string" && /^[a-f0-9]{64}$/.test(item.sha256)))) fail("GUEST_REPORT_INVALID", "Compiler verification prerequisite did not establish its exact authenticated closure, native identity, helper compilation and cleanup.");
+  }
   const cancelSession = () => sessionAbort.abort();
   process.once("SIGINT", cancelSession); process.once("SIGTERM", cancelSession);
   let sessions;
@@ -195,14 +213,14 @@ try {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "--observe") { report.capabilities = capabilities(); fail("INFRASTRUCTURE_UNAVAILABLE", "Observation does not establish fresh guest execution or native readiness."); }
   if (process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") fail("OWNED_HOST_REQUIRED", "Explicit owned disposable host opt-in is required.");
-  if (args.length !== 7 || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate source-owned --bun-archive <exact-Bun-zip>.");
+  if ((args.length !== 7 && args.length !== 9) || (args.length === 9 && args[7] !== "--compiler-debs") || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate source-owned --bun-archive <exact-Bun-zip> [--compiler-debs <exact-payload-directory>].");
   accelerator();
   // A candidate archive supplied by a caller is never executed. Build from this source.
   if (args[4] !== "source-owned") {
     await authenticate(args[2]!, imagePin);
     fail("ARGUMENT_INVALID", "Candidate must be source-owned; arbitrary archives or profile overrides are refused.");
   }
-  await execute(resolve(args[2]!), resolve(args[6]!));
+  await execute(resolve(args[2]!), resolve(args[6]!), args.length === 9 ? resolve(args[8]!) : undefined);
 } catch (error) {
   report.error = { code: (error as { code?: string }).code ?? "VERIFICATION_FAILED", message: error instanceof Error ? error.message : "Verification failed" };
   process.exitCode = 4;

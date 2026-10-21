@@ -108,3 +108,12 @@ for (const scenario of ["restriction-false", "restriction-missing", "restriction
     expect(proof.report.runs).toHaveLength(2);
   });
 }
+test("source-owned compiler input is accepted only as a directory of pinned payloads, and image integrity still precedes boot", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-compiler-host-"));
+  try {
+    const image = join(scratch, "image"); await writeFile(image, "altered image");
+    const result = await invoke(["--run", "--image", image, "--candidate", "source-owned", "--bun-archive", join(scratch, "bun.zip"), "--compiler-debs", join(scratch, "debs")], { PATH: scratch, HOME: scratch, FLEUR_OWNED_DISPOSABLE_HOST: "yes" });
+    expect(result.exit).toBe(4);
+    expect(JSON.parse(result.stdout)).toMatchObject({ executed: false, error: { code: "ARTIFACT_MISMATCH" } });
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});

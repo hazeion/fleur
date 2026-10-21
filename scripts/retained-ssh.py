@@ -89,18 +89,24 @@ def inventory(pid):
     found = False
     live = 0
     for line in data.decode("ascii").splitlines():
-        match = re.fullmatch(r"\s*([0-9]+)\s+([0-9]+)\s+([RSDTtXZIUW][<>NnLl+sSAEVWXCTJP-]*)\s*", line)
+        match = re.fullmatch(r"\s*([0-9]+)\s+([0-9]+)\s+([!-~]{1,32})\s*", line)
         if not match:
             raise RuntimeError("inventory schema")
         member, group, state = int(match[1]), int(match[2]), match[3]
         if member in seen or member > 2147483647 or group > 2147483647:
             raise RuntimeError("inventory identity")
         seen.add(member)
+        if member == pid and group != pid:
+            raise RuntimeError("leader group")
+        if group != pid:
+            continue
+        # State in another group supplies no authority about this group. The
+        # exact retained leader and every owned member still require known state.
+        if not re.fullmatch(r"[RSDTtXZIUW][<>NnLl+sSAEVWXCTJP-]*", state):
+            raise RuntimeError("inventory owned state")
         if member == pid:
-            if group != pid:
-                raise RuntimeError("leader group")
             found = True
-        elif group == pid and state[0] not in ("Z", "X"):
+        elif state[0] not in ("Z", "X"):
             live += 1
     if not found:
         raise RuntimeError("leader absent")
@@ -176,7 +182,7 @@ try:
 except Exception as error:
     try:
         stage = str(error)
-        allowed = {"inventory deadline", "inventory size", "inventory exit", "inventory schema", "inventory identity", "leader group", "leader absent", "release refused", "host closed", "host input bound", "host input schema", "waitid unavailable", "waitid child differs", "waitid ABI unsupported", "waitid ABI response"}
+        allowed = {"inventory deadline", "inventory size", "inventory exit", "inventory schema", "inventory identity", "inventory owned state", "leader group", "leader absent", "release refused", "host closed", "host input bound", "host input schema", "waitid unavailable", "waitid child differs", "waitid ABI unsupported", "waitid ABI response"}
         emit({"kind": "error", "stage": stage if stage in allowed else "unknown"})
     except OSError:
         pass

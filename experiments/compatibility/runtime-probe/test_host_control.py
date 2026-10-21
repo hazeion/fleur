@@ -51,3 +51,12 @@ class ExplicitHostMode(unittest.TestCase):
         for deadline in (None,100,102,float('nan'),float('inf')):
             with self.subTest(deadline=deadline),patch('time.monotonic',return_value=100),patch('os.open',side_effect=AssertionError('invalid absolute deadline reached files')):
                 with self.assertRaisesRegex(ValueError,'original.*deadline'):select_owned_context(**valid,remaining=1,deadline=deadline)
+
+    def test_root_payload_narrows_phase_absolute_without_extending_original(self):
+        import json
+        from host_control import HostControlContext
+        custody=OwnedGuestContext('12345678-1234-4234-8234-123456789abc','aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',1000,'a'*64,())
+        context=HostControlContext(custody,(custody.nonce,custody.boot_id,custody.uid,custody.manifest_sha256),123.0)
+        self.assertEqual(json.loads(context.root_payload(deadline=120.0))['deadlineMonotonic'],120.0)
+        self.assertEqual(json.loads(context.root_payload(deadline=130.0))['deadlineMonotonic'],123.0)
+        self.assertEqual(json.loads(context.root_payload())['deadlineMonotonic'],123.0)

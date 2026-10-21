@@ -211,7 +211,26 @@ async function poweroff(): Promise<void> {
     });
   });
 }
-async function execute(imagePath: string, bunArchivePath: string, compilerDirectory?: string, selection: "source-owned" | "ordinary-source-owned" = "source-owned"): Promise<void> {
+/** Fixed two-file verification input only; callers cannot choose pins or origin policy. */
+export async function stageRecordedHelperInputs(input: string, output: string) {
+  const source = `import json, pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+from helper_artifacts import recorded_helper_contract, ArtifactPin, PairSpec, stage_pair
+end=time.monotonic()+9
+metadata=recorded_helper_contract(end)
+pins={item['name']:ArtifactPin(item['bytes'],item['sha256']) for item in metadata['helpers']}
+result=stage_pair(pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[3]),PairSpec(pins['filter.so'],pins['abuse']),end)
+print(json.dumps({'manifestSha256':'26167bf5307aacabbec7f51e05e348418170d98075baa1964b971460988cf47b','files':{name:{'size':item['bytes'],'sha256':item['sha256']} for name,item in result['files'].items()}}))`;
+  try {
+    await mkdir(output, { mode: 0o700 });
+    const staged = await command(["python3", "-I", "-c", source, join(repository, "experiments/compatibility/runtime-probe"), input, output], 10000);
+    const receipt = JSON.parse(staged.stdout);
+    return receipt as { manifestSha256: string; files: Record<string, { size: number; sha256: string }> };
+  } catch (error) {
+    throw Object.assign(error instanceof Error ? error : new Error("Recorded helper staging failed"), { artifactCleanupConfirmed: false, artifactStagingRetained: true });
+  }
+}
+async function execute(imagePath: string, bunArchivePath: string, compilerDirectory?: string, selection: "source-owned" | "ordinary-source-owned" = "source-owned", recordedDirectory?: string): Promise<void> {
   // Authenticate before tools interpret any supplied image or archive.
   await authenticate(imagePath, imagePin);
   await authenticate(bunArchivePath, bunPin);
@@ -220,6 +239,11 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   if (!available.hostPolicy.admitted || requiredTools.some((name) => !available.tools[name])) fail("INFRASTRUCTURE_UNAVAILABLE", "An admitted Linux x64 or Darwin x64 TCG verification host with its required existing tools is required.");
   scratch = await mkdtemp(join(tmpdir(), "fleur-fresh-linux-"));
   if (/[,\r\n]/.test(scratch) || Buffer.byteLength(join(scratch, "qmp.sock")) > 100) fail("INFRASTRUCTURE_UNAVAILABLE", "Private temporary path cannot be represented safely in QEMU options or Unix socket addresses.");
+  const recordedBundle = recordedDirectory ? join(scratch, "recorded-helpers") : undefined;
+  if (recordedBundle) {
+    report.helperMode = "recorded-prebuilt";
+    report.recordedHelperInputs = await stageRecordedHelperInputs(recordedDirectory!, recordedBundle);
+  }
   const compilerManifestSha256 = "11127a1f28b3bac544f79d0f0bc4f91a68afec74568c342bc4bb7c773dcf00d7";
   const compilerBundle = compilerDirectory ? join(scratch, "compiler-debs") : undefined;
   if (compilerBundle) {
@@ -242,7 +266,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py", "experiments/compatibility/runtime-probe/helper_artifacts.py", "experiments/compatibility/runtime-probe/recorded-helper-origin.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const selectedArtifact = await selectVerificationArtifact(candidate, built, selection, scratch);
   const archive = selectedArtifact.path;
   report.executionArtifact = { kind: selectedArtifact.kind, sha256: selectedArtifact.sha256,
@@ -310,6 +334,11 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   if (compilerBundle) guestFiles.push(join(repository, "scripts/prepare-guest-compiler.py"), join(repository, "scripts/guest-compiler-ubuntu24-amd64.json"));
   await command(["scp", ...sshOptions, "-P", String(port), ...guestFiles, "fleur@127.0.0.1:lab/"], 120000);
   if (compilerBundle) await command(["scp", ...sshOptions, "-r", "-P", String(port), compilerBundle, "fleur@127.0.0.1:lab/"], 120000);
+  if (recordedBundle) {
+    // Only the two fixed authenticated inputs are copied; no compiler provisioning.
+    await ssh("mkdir -m 700 lab/recorded-helpers");
+    await command(["scp", ...sshOptions, "-P", String(port), join(recordedBundle, "filter.so"), join(recordedBundle, "abuse"), "fleur@127.0.0.1:lab/recorded-helpers/"], 120000);
+  }
   const preparationObservation = await observePreparation({ port, identity: clientKey, knownHosts, nonce });
   report.preparationObservation = preparationObservation;
   if (!preparationObservation.ok) fail(preparationObservation.error?.code ?? "PREPARATION_INCOMPLETE", preparationObservation.error?.message ?? "Guest artifact preparation did not complete.");
@@ -327,7 +356,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   process.once("SIGINT", cancelSession); process.once("SIGTERM", cancelSession);
   let sessions;
   try {
-    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding }, sessionAbort.signal);
+    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding, ...(recordedBundle ? { recordedHelpers: true as const } : {}) }, sessionAbort.signal);
     sessions = await sessionOperation;
   } finally { process.removeListener("SIGINT", cancelSession); process.removeListener("SIGTERM", cancelSession); }
   report.sessions = sessions;
@@ -347,14 +376,14 @@ try {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "--observe") { report.capabilities = capabilities(); fail("INFRASTRUCTURE_UNAVAILABLE", "Observation does not establish fresh guest execution or native readiness."); }
   if (process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") fail("OWNED_HOST_REQUIRED", "Explicit owned disposable host opt-in is required.");
-  if ((args.length !== 7 && args.length !== 9) || (args.length === 9 && args[7] !== "--compiler-debs") || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate <source-owned|ordinary-source-owned> --bun-archive <exact-Bun-zip> [--compiler-debs <exact-payload-directory>].");
+  if ((args.length !== 7 && args.length !== 9) || (args.length === 9 && args[7] !== "--compiler-debs" && args[7] !== "--recorded-helper-artifacts") || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate <source-owned|ordinary-source-owned> --bun-archive <exact-Bun-zip> [--compiler-debs <exact-payload-directory> | --recorded-helper-artifacts <fixed-pair-directory>].");
   accelerator();
   // A candidate archive supplied by a caller is never executed. Build from this source.
   if (args[4] !== "source-owned" && args[4] !== "ordinary-source-owned") {
     await authenticate(args[2]!, imagePin);
     fail("ARGUMENT_INVALID", "Candidate must be source-owned or ordinary-source-owned; arbitrary archives or profile overrides are refused.");
   }
-  await execute(resolve(args[2]!), resolve(args[6]!), args.length === 9 ? resolve(args[8]!) : undefined, args[4] === "ordinary-source-owned" ? "ordinary-source-owned" : "source-owned");
+  await execute(resolve(args[2]!), resolve(args[6]!), args[7] === "--compiler-debs" ? resolve(args[8]!) : undefined, args[4] === "ordinary-source-owned" ? "ordinary-source-owned" : "source-owned", args[7] === "--recorded-helper-artifacts" ? resolve(args[8]!) : undefined);
 } catch (error) {
   const recovery = error as { artifactCleanupConfirmed?: boolean; artifactRetainedCopyCandidate?: string; artifactStagingRetained?: boolean };
   if (recovery.artifactCleanupConfirmed === false) {
@@ -379,8 +408,20 @@ try {
   }
   report.cleanup = { ownedVmReaped: stopped, credentialsRemoved: false };
   if (scratch && stopped && !artifactRecoveryRequired) {
-    try { await rm(scratch, { recursive: true, force: true }); report.cleanup = { ownedVmReaped: true, credentialsRemoved: true }; }
+    try { await rm(scratch, { recursive: true, force: true });
+      if (report.helperMode === "recorded-prebuilt") {
+        const absent = async (path: string) => { try { await lstat(path); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
+        const scratchRemoved = await absent(scratch); const overlayRemoved = await absent(join(scratch, "overlay.qcow2"));
+        report.artifactDisposal = { scope: "owned-full-system-guest-filesystem", vmReaped: stopped, scratchRemoved, overlayRemoved, complete: stopped && scratchRemoved && overlayRemoved };
+        if (!scratchRemoved || !overlayRemoved) { report.ok = false; report.cleanupError = "Recorded helper VM filesystem disposal is unconfirmed."; process.exitCode = 5; }
+      }
+      if (report.helperMode !== "recorded-prebuilt" || (report.artifactDisposal as { complete?: unknown } | undefined)?.complete === true) report.cleanup = { ownedVmReaped: true, credentialsRemoved: true }; }
     catch { report.ok = false; report.cleanupError = "Owned guest scratch cleanup failed."; process.exitCode = 5; }
+  }
+  if (report.helperMode === "recorded-prebuilt" && (report.artifactDisposal as { complete?: unknown } | undefined)?.complete !== true) {
+    report.ok = false; report.artifactDisposal ??= { scope: "owned-full-system-guest-filesystem", complete: false };
+    report.error ??= { code: "ARTIFACT_DISPOSAL_UNCONFIRMED", message: "Recorded helper acceptance requires actual owned VM and filesystem disposal." };
+    process.exitCode = process.exitCode || 5;
   }
   process.stdout.write(JSON.stringify(report) + "\n");
 }

@@ -101,3 +101,20 @@ test("unconfirmed local expiry cleanup is terminal and never authorizes another 
     expect(result.elapsedMs).toBeLessThan(5000);
   } finally { await fixture.close(); }
 }, 10000);
+
+test("a sub-millisecond remainder never starts another SSH observation or replaces completed evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-readiness-fraction-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const calls=await Bun.file(root+'/calls').exists()?Number(await Bun.file(root+'/calls').text())+1:1;await Bun.write(root+'/calls',String(calls));process.on('SIGTERM',()=>process.exit(255));setTimeout(()=>process.exit(255),8000);\n`, { mode: 0o700 });
+    const target = { port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce };
+    const entry = `const {waitForGuestBoot}=await import(${JSON.stringify(script)});const originalNow=performance.now.bind(performance);const originalTimer=globalThis.setTimeout;const deadline=originalNow()+4500;let finalWake=false;let reads=0;Object.defineProperty(performance,'now',{value:()=>reads>0?(reads--,deadline-0.5):originalNow()});globalThis.setTimeout=((callback,delay,...args)=>originalTimer(()=>{if(!finalWake&&delay>500&&delay<1000){finalWake=true;reads=2;}callback(...args);},delay));const result=await waitForGuestBoot(${JSON.stringify(target)},{deadline,attemptTimeoutMs:1000});console.log(JSON.stringify({result,finalWake}));`;
+    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(0);
+    const observed = JSON.parse(stdout);
+    expect(observed.finalWake).toBe(true);
+    expect(observed.result).toMatchObject({ ok: false, error: { code: "BOOT_TIMEOUT" }, lastBootObservation: { transport: { deadlineFired: true, exitCode: 255, cleanupConfirmed: true } } });
+    expect(await Bun.file(join(root, "calls")).text()).toBe("2");
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);

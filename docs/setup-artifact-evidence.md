@@ -283,3 +283,40 @@ On native Intel macOS 15.7.7, the official Docker Desktop 4.96.1 build 244132 im
 The first attempt completed in 26.80 seconds with exit 0 and report SHA256 `bb8241fe2d942bebcd26254237146b7947be2c58a58f4ab4bdddc5e274802741`. Independent review checked the exact receipt, operations and retirement facts; root additionally performed full descriptor-held payload readback and checked retained file identity. A second byte-identical attempt completed in 29.69 seconds with exit 0 and report SHA256 `62012b54c67a712052c8938a0b04d9a2bb4422152be5c58ecb20219467010062`. Its strict receipt and full descriptor-held payload readback also passed, with a separate independent evidence review.
 
 This proves the retained DMG input only. No application was mounted, copied, launched or admitted to the source catalog, and no legal agreement or runtime qualification is claimed. The earlier 4.96.0 artifact evidence remains separate. The existing 4.96.1 installed-application trust observations do not establish that installation used this DMG.
+
+
+## Recorded-helper verification on the existing Ubuntu tuple
+
+Source `9b3018bae74e429ef58633c80eae652fda17dbd0` completed two recorded-helper attempts on the previously reviewed Ubuntu 24.04 x64 tuple using the same reviewed verifier and fixed inputs. It used the ordinary packed CLI, Bun 1.4.3 and the existing digest-pinned image. The fixed helper pair came from the recorded GCC 13.3.0 producer; no consumer-local compiler execution was claimed. The exact source-owned origin record, current C inputs and helper hashes were checked before building.
+
+| Evidence | SHA256 |
+|---|---|
+| First recorded-helper report | `73320be67ba34cf945cf9a58ea7e388fe960ca48a821fad927ddd7a34cf2c5ca` |
+| Repeated recorded-helper report | `cc3698ff55c86684a6133bf6a8de964087cc48d567b431988e4a16ebc67f68c6` |
+| Immutable helper-origin manifest | `26167bf5307aacabbec7f51e05e348418170d98075baa1964b971460988cf47b` |
+| Original compiler/export report | `de686cf6344410c3d29e1dcab19bcdabaddc05e4a7d4bdf50320f9c649282bbf` |
+| Exact tracked restriction archive | `34d96fb44088422e8ce5ac56cbf66c9068f1723ff723467bd35ad74299e26c07` |
+
+Each attempt used a fresh owned boot. Its initial and resumed sessions preserved the original custody binding and the exact helper-input identities. Two ordinary Doctor rounds and two ready setup reprobes returned exit 0 with the existing qualified Ubuntu profile, owned smoke cleanup, and unchanged snapshots and grants. Independent review verified both attempts' origin, resume/custody chains, source/archive provenance and actual final VM/filesystem disposal. The guest context remained explicitly pending local disposal until the host reaped the VM and confirmed removal of its scratch and overlay.
+
+Both reports record restriction-probe exit 0 with bounded-probe and cleanup predicates true. Independent runtime review accepted both attempts: six GC collections retaining 128 objects and 16,384 bytes with checksum 8,128; all 24 syscall and 12 event negatives; descriptor/thread and real resource enforcement; two normal and two idle 30-second lifecycles per attempt. Idle requests retained their 11-second pauses, and all eight physical pidfd exit measurements stayed within the original 250 ms lateness limit, spanning 27–74 ms. Worker, waiter and guard cleanup remained required. The outer diagnostic deliberately returned exit 4 with `DIAGNOSTIC_ONLY`; its global gate, CPU-performance proof and human-consent proof remain false. This introduces no new platform or release admission.
+
+The earlier attempt at `ce8b997fde5758fecde38c3d5f1b50278641d7e0` remains failed: report `ee7fd0c1da9c47cc84f4ba37f10dd86b2bdad43f3332719897470b09dcd17678` refused context metadata before Docker build. A separate custody-variable overwrite also invalidated its inventory comparison. The repair gives newly created recorded-context inputs fixed readable, non-group-writable permissions and preserves the original inventory variable; it does not weaken the filename, custody or runtime assertions. The earlier receipt did not identify an offending permission value, so its precise inherited-umask cause is not claimed as observed.
+
+At the final source, the full CLI suite passed 815 tests with zero failures; types and full lint also passed. The preceding full run remains recorded as 807 passes, eight failures and one between-test error. No assertions or deadlines changed. All 101 tests in the affected files passed in serial verification, and one finite four-case diagnostic confirmed local retirement while preserving the original deadline and survivor refusals. It found no transport defect in that collection and did not establish the historical failure's cause. Hosted CI and the remaining promised native-platform evidence remain open; this addition does not close issue #24.
+
+
+## Intel Desktop 4.96.1 private application placement
+
+Two native Intel macOS 15.7.7 attempts exercised source `e36532656e2630ea3e962fa0a2f45e01c0cfb207` through the public `setup --timeout 600` input, using separate owned application destinations. Both performed the original 14 native operations: fresh official download, exact DMG authentication, Apple/Docker signature and Gatekeeper assessments, read-only attachment, mounted/staged application checks, real copy, exclusive publication and normal owned image detach. Every native command retired, and the installed application was preserved. This evidence does not change the default 60-second setup input or the runtime deadlines.
+
+| Attempt | Duration | Receipt SHA256 |
+|---|---|---|
+| First private placement | 185.80 seconds | `c795b6d5c355afd705b3cdd76e42f1f5cc0b6225fa84a3968f1ddae51645791b` |
+| Repeated private placement | 293.13 seconds | `4b48f9de3b1df475d0231a6e4329fb984ef53e49c7794eac9e6d33fa8c7e5447` |
+
+Both source outcomes returned `HUMAN_ACTION_REQUIRED`, exit 3, after completed private placement with cleanup confirmed. Separate once-only image-acquisition and installation fixture grants matched their scoped plans, were consumed, and remained visible as revoked through public grant inspection. Fixture answers are not human-consent evidence. The published bundle identified Docker Desktop 4.96.1 build 244132, Docker Team ID `9BNSXJN65R` and native x86_64. Mounted, staged, published and installed core metadata and hashes agreed. The five-second cleanup reserve, command-specific budgets and normal-detach policy were unchanged.
+
+The first attempt's JSON telemetry rounded epoch nanoseconds through JavaScript numbers. Its native held-descriptor checks were exact before serialization; its accepted readback used exact safely represented identity fields, documented timestamp representation equivalence and fresh full core hashes. Historical raw nanoseconds cannot be recovered from that receipt. The repeated verifier changed only snapshot identity serialization to eight canonical decimal strings and an explicit encoding marker. Its strict consumer required all eight fields to match native identities exactly, with full held-descriptor core hashes and stable named-file checks. Independent review reran that read-only consumer successfully. No floating-point fallback or whole-application atomic-freeze claim was used for the repeat.
+
+The earlier explicit 180-second attempt remains failed: receipt `86250f963d27e9babcb5bbebfcb49a42c1f54ed4bb7ee7f704d00b3c36365c4c`. Its separate normal cleanup did not promote it to success. The 600-second attempts are distinct public-input cases. No global application placement, launch, privileged-helper configuration, legal acceptance, Desktop runtime/release qualification or ARM verification follows from these private placements. Those remaining issue #24 requirements stay open.

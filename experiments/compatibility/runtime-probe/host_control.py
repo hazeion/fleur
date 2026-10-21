@@ -4,9 +4,7 @@ import json
 import math
 import re
 import time
-from owned_guest import BOOT, NONCE, OwnedGuestContext, validate
-
-ROOT_VALIDATOR = '/usr/local/lib/fleur-owned-guest.py'
+from owned_guest import BOOT, NONCE, ROOT_VALIDATOR, OwnedGuestContext, validate
 
 
 @dataclass(frozen=True)

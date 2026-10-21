@@ -18,6 +18,7 @@ import time
 
 MARKER = '/etc/fleur-owned-guest'
 MANIFEST = '/etc/fleur-owned-guest.json'
+ROOT_VALIDATOR = '/usr/local/lib/fleur-owned-guest.py'
 NONCE = r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
 BOOT = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
 HOSTED = {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted', 'RUNNER_OS': 'Linux',
@@ -161,18 +162,29 @@ class OwnedGuestContext:
                 'manifestSha256': self.manifest_sha256, 'fixtureCustodyValidated': True}
 
 
-def validate(nonce, *, deadline=None):
+def validate(nonce, *, deadline=None, ordinary_uid=None):
     deadline = operation_deadline(deadline)
     if type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('explicit canonical owned nonce required')
     if any(key in os.environ for key in HOSTED):
         raise ValueError('ambiguous hosted and owned scope')
-    uid = os.getuid()
-    if uid <= 0:
-        raise ValueError('ordinary guest identity required')
+    if ordinary_uid is None:
+        uid = os.getuid()
+        if uid <= 0:
+            raise ValueError('ordinary guest identity required')
+    else:
+        if os.getuid() != 0 or type(ordinary_uid) is not int or not 0 < ordinary_uid < 2**31:
+            raise ValueError('root validator and original ordinary UID required')
+        uid = ordinary_uid
     boot_id = environment(deadline)
     marker, marker_identity = protected_read(MARKER, 36, 0o444, deadline=deadline)
     manifest, manifest_identity = protected_read(MANIFEST, 2048, 0o444, deadline=deadline)
+    producer, producer_identity = protected_read(ROOT_VALIDATOR, 32768, 0o444, deadline=deadline)
+    with open(__file__, 'rb') as source:
+        expected_source = source.read(32769)
+    if len(expected_source) > 32768 or hashlib.sha256(producer).digest() != hashlib.sha256(expected_source).digest():
+        raise ValueError('root validator source differs')
+    budget_remaining(deadline)
     parsed = json.loads(manifest, object_pairs_hook=object_pairs)
     if (marker != nonce.encode() or type(parsed) is not dict
             or set(parsed) != {'formatVersion', 'nonce', 'bootId', 'uid'}
@@ -181,7 +193,7 @@ def validate(nonce, *, deadline=None):
             or type(parsed['uid']) is not int or parsed['uid'] != uid):
         raise ValueError('owned manifest binding')
     context = OwnedGuestContext(nonce, boot_id, uid, hashlib.sha256(manifest).hexdigest(),
-                                (marker_identity, manifest_identity))
+                                (marker_identity, manifest_identity, producer_identity))
     budget_remaining(deadline)
     return context
 
@@ -226,6 +238,33 @@ def create(nonce, *, deadline=None):
             'manifestSha256': hashlib.sha256(body).hexdigest(), 'manifestCreated': True}
 
 
+def verify_root_control(text, *, deadline):
+    if os.getuid() != 0 or type(text) is not str or len(text.encode()) > 2048:
+        raise ValueError('fixed root validation invocation required')
+    value = json.loads(text, object_pairs_hook=object_pairs)
+    if (type(value) is not dict or set(value) != {'formatVersion', 'nonce', 'bootId', 'uid', 'manifestSha256', 'custodySha256', 'deadlineMonotonic'}
+            or type(value['formatVersion']) is not int or value['formatVersion'] != 1
+            or type(value['nonce']) is not str or re.fullmatch(NONCE, value['nonce']) is None
+            or type(value['bootId']) is not str or re.fullmatch(BOOT, value['bootId']) is None
+            or type(value['uid']) is not int or not 0 < value['uid'] < 2**31
+            or any(type(value[key]) is not str or re.fullmatch(r'[a-f0-9]{64}', value[key]) is None for key in ('manifestSha256', 'custodySha256'))
+            or type(value['deadlineMonotonic']) not in (int, float) or not math.isfinite(value['deadlineMonotonic'])):
+        raise ValueError('complete original root control binding required')
+    started = time.monotonic()
+    original = value['deadlineMonotonic']
+    if not started < original <= started + 600:
+        raise ValueError('original root control deadline expired or expanded')
+    end = min(deadline, original)
+    budget_remaining(end)
+    context = validate(value['nonce'], deadline=end, ordinary_uid=value['uid'])
+    if ((context.boot_id, context.uid, context.manifest_sha256, context.custody_digest())
+            != (value['bootId'], value['uid'], value['manifestSha256'], value['custodySha256'])):
+        raise ValueError('original root control custody changed')
+    budget_remaining(end)
+    return {**context.report(), 'custodySha256': context.custody_digest(),
+            'deadlineMonotonic': original, 'rootValidation': True}
+
+
 def main(arguments):
     started = time.monotonic()
     deadline = started + 10
@@ -243,9 +282,13 @@ def main(arguments):
             deadline = started + seconds
             arguments = arguments[:2]
         budget_remaining(deadline)
-        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create'):
+        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--verify-control'):
             raise ValueError('explicit invocation required')
-        if arguments[0] == '--create':
+        if arguments[0] == '--verify-control':
+            result['scope'] = 'owned-guest-root-control-validation'
+            result.update(verify_root_control(arguments[1], deadline=deadline))
+            deadline = min(deadline, result['deadlineMonotonic'])
+        elif arguments[0] == '--create':
             result['scope'] = 'owned-guest-boot-manifest'
             result.update(create(arguments[1], deadline=deadline))
         else:

@@ -32,7 +32,7 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
   const relay = warm.relay;
   let pid: number | undefined; let code: number | undefined; let survivor: boolean | undefined; let exitSignal: string | null = null; let pipes = false; let owned = true;
   let requested = false; let killed = false; let attempted = false; let stop: number | undefined; let signalError: Error | undefined;
-  let escalation: ReturnType<typeof setTimeout> | undefined;
+  let escalation: ReturnType<typeof setTimeout> | undefined; let retirement: ReturnType<typeof setTimeout> | undefined;
   let readyResolve: (pid: number) => void = () => {}; let readyReject: (error: Error) => void = () => {};
   let exitResolve: (code: number) => void = () => {}; let exitReject: (error: Error) => void = () => {};
   let pipesResolve: () => void = () => {}; let pipesReject: (error: Error) => void = () => {};
@@ -59,7 +59,10 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
   }
   function requestTermination() {
     stop ??= performance.now() + 3000;
-    if (requested) return; requested = true; sendTerm();
+    if (requested) return;
+    requested = true;
+    retirement = setTimeout(() => signalReject(new Error("Owned SSH process group cleanup is unconfirmed")), 3000);
+    sendTerm();
   }
   const write = (value: object) => { if (!relay.stdin?.writable) throw new Error("Owned SSH control channel closed"); relay.stdin.write(JSON.stringify(value) + "\n"); };
   relay.stdin?.on("error", () => { if (owned) fail(new Error("Owned SSH control channel failed")); });
@@ -120,7 +123,7 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
       owned = false; relay.stdin?.end();
       relay.stdout?.destroy(); relay.stderr?.destroy(); (relay.stdio[3] as Readable | null)?.destroy(); relay.unref();
       throw error;
-    } finally { clearTimeout(escalation); }
+    } finally { clearTimeout(escalation); clearTimeout(retirement); }
   }
   return { get signal() { return exitSignal; }, stdout: relay.stdout!, stderr: relay.stderr!, finished, pidReady, signalFailed, requestTermination, cleanup };
 }

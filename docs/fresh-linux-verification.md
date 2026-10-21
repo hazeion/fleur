@@ -132,3 +132,9 @@ The total two MiB limit includes discarded bytes and triggers immediate
 termination. Signal failures also enter finite cleanup immediately. Primary
 protocol evidence and any secondary cleanup uncertainty are both retained;
 neither a denied signal nor a cleanup failure becomes successful preparation.
+
+Bun cleanup telemetry is best effort only within the failure cleanup path. If an
+ordinary phase event cannot be delivered, preparation still fails, but another
+failed cleanup-event write cannot bypass the original owned-file claim/deletion
+or foreign-replacement preservation. A lost final result remains incomplete
+host evidence. No archive, retained-output or custody check is suppressed.

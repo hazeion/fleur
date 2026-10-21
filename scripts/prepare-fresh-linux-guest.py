@@ -26,6 +26,15 @@ def preparation_event(stage, state):
                          separators=(",", ":")), flush=True)
 
 
+def cleanup_event(state):
+    # Losing diagnostic delivery must not bypass owned-file cleanup. Ordinary
+    # stage events still fail preparation; cleanup runs even with a broken pipe.
+    try:
+        preparation_event("cleanup", state)
+    except Exception:
+        pass
+
+
 def identity(value):
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
@@ -134,7 +143,7 @@ try:
 except Exception:
     report["error"] = {"code": "PREPARATION_FAILED", "message": "Authenticated guest Bun preparation failed; no installation was attempted."}
     if created is not None:
-        preparation_event("cleanup", "started")
+        cleanup_event("started")
         try:
             current = os.stat("bun", dir_fd=parent, follow_symlinks=False)
             if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != created:
@@ -156,7 +165,7 @@ except Exception:
                 os.close(quarantine)
             os.rmdir(quarantine_name, dir_fd=parent)
             report["ownedPartialRemoved"] = True
-            preparation_event("cleanup", "completed")
+            cleanup_event("completed")
         except Exception:
             exit_code = 5
             report["error"] = {"code": "CLEANUP_UNCONFIRMED", "message": "Output ownership changed or cleanup failed; unrelated entries were preserved."}

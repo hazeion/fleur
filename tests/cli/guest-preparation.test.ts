@@ -156,3 +156,28 @@ test("preparation authenticates final retained output bytes before reporting exe
   expect(result.facts.outputExists).toBe(false);
   expect(result.result.ownedPartialRemoved).toBe(true);
 });
+
+async function eventPipeFault(directory: string, path: string, scenario: string) {
+  const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/guest-preparation-event-faults.py"), preparation, scenario], { cwd: directory, env: { HOME: directory, PATH: path }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000, killSignal: "SIGKILL" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { result: JSON.parse(stdout), stderr, exit };
+}
+
+test("a broken diagnostic event pipe cannot skip deletion of the actual owned Bun output", async () => {
+  const { directory, path } = await guest();
+  const observed = await eventPipeFault(directory, path, "event-pipe");
+  expect(observed.exit, observed.stderr).toBe(0);
+  expect(observed.result).toMatchObject({ eventFailureObserved: true, sourceFailure: "BrokenPipeError", resultFrameDelivered: false, outputExists: false, attemptedReport: { ok: false, ownedPartialRemoved: true } });
+  expect(observed.result.deliveredFrames.some((frame: { stage?: string; state?: string }) => frame.stage === "executable-extraction" && frame.state === "started")).toBe(true);
+  expect(await Bun.file(join(directory, "bun")).exists()).toBe(false);
+});
+
+test("a broken event pipe preserves a foreign replacement while reporting cleanup uncertainty", async () => {
+  const { directory, path } = await guest();
+  const observed = await eventPipeFault(directory, path, "event-pipe-foreign");
+  expect(observed.exit, observed.stderr).toBe(0);
+  expect(observed.result).toMatchObject({ eventFailureObserved: true, sourceFailure: "BrokenPipeError", resultFrameDelivered: false, replacementInjected: true, outputExists: true, attemptedReport: { ok: false, error: { code: "CLEANUP_UNCONFIRMED" } } });
+  expect(observed.result.foreignLocations).toEqual(["bun"]);
+  expect(await readFile(join(directory, "bun"), "utf8")).toBe("preserved foreign executable");
+  expect(observed.result.movedOwnedBytes).toBeGreaterThan(1024 * 1024);
+});

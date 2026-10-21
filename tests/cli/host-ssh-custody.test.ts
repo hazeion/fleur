@@ -97,3 +97,36 @@ test("boot returns bounded incomplete cleanup when accepted host signals do not 
     expect(performance.now() - started).toBeLessThan(5000);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 8000);
+
+
+test("unknown state in a different process group cannot invalidate the retained SSH group", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-foreign-ps-state-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.exit(75);\n`, { mode: 0o700 });
+    // External /bin/ps command boundary. The actual SSH child and waitid remain
+    // real. Only the unrelated host inventory row is a synthetic OS response.
+    await writeFile(join(tools, "python3"), `#!${python}\nimport subprocess,sys,runpy\noriginal=subprocess.Popen\nleader=None\ndef popen(args,*positional,**kwargs):\n global leader\n if args[:2]==['/bin/ps','-axo']:\n  rows=str(leader)+' '+str(leader)+' Z\\n'+str(leader+1)+' 1 ?E\\n'\n  return original([sys.executable,'-I','-c','import sys;sys.stdout.write('+repr(rows)+')'],*positional,**kwargs)\n child=original(args,*positional,**kwargs)\n if args[0]=='ssh':leader=child.pid\n return child\nsubprocess.Popen=popen\nrunpy.run_path(sys.argv[2],run_name='__main__')\n`, { mode: 0o700 });
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"), "--port", "2222", "--identity", join(root, "key"), "--known-hosts", join(root, "hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(3);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "pending" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);
+
+test("unknown state in the retained SSH group still refuses cleanup evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-owned-ps-state-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    const python = Bun.which("python3"); expect(python).not.toBeNull();
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.exit(75);\n`, { mode: 0o700 });
+    // External /bin/ps command boundary. The actual SSH child and waitid remain
+    // real. The synthetic unknown-state member belongs to the retained group.
+    await writeFile(join(tools, "python3"), `#!${python}\nimport subprocess,sys,runpy\noriginal=subprocess.Popen\nleader=None\ndef popen(args,*positional,**kwargs):\n global leader\n if args[:2]==['/bin/ps','-axo']:\n  rows=str(leader)+' '+str(leader)+' Z\\n'+str(leader+1)+' '+str(leader)+' ?E\\n'\n  return original([sys.executable,'-I','-c','import sys;sys.stdout.write('+repr(rows)+')'],*positional,**kwargs)\n child=original(args,*positional,**kwargs)\n if args[0]=='ssh':leader=child.pid\n return child\nsubprocess.Popen=popen\nrunpy.run_path(sys.argv[2],run_name='__main__')\n`, { mode: 0o700 });
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"), "--port", "2222", "--identity", join(root, "key"), "--known-hosts", join(root, "hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining("inventory owned state") } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);

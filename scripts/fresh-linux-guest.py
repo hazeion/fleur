@@ -5,6 +5,7 @@ consent nor acceptance of any legal agreement. No production grant API is added.
 """
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import pty
@@ -16,6 +17,7 @@ import stat
 import subprocess
 import sys
 import time
+from typing import NamedTuple
 
 ROOT = Path.home() / "lab"
 BUN = str(ROOT / "bun")
@@ -62,15 +64,23 @@ def stop_command_group(child):
         time.sleep(0.02)
 
 
-def run(args, timeout=60, allowed=(0,)):
+def run(args, timeout=60, allowed=(0,), *, absolute_deadline=None):
     timeout = budget_seconds(timeout)
+    work_deadline = None
+    if absolute_deadline is not None:
+        if type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline):
+            raise ValueError("Finite owned command deadline required")
+        started = time.monotonic()
+        if absolute_deadline <= started:
+            raise TimeoutError("Guest command deadline expired: " + args[0])
+        work_deadline = min(absolute_deadline, started + timeout)
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True)
     output = {child.stdout: bytearray(), child.stderr: bytearray()}
     selector = selectors.DefaultSelector()
     for stream in output:
         selector.register(stream, selectors.EVENT_READ)
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if work_deadline is None else work_deadline
     try:
         while selector.get_map():
             if time.monotonic() >= deadline:
@@ -87,6 +97,8 @@ def run(args, timeout=60, allowed=(0,)):
             if time.monotonic() >= deadline:
                 raise TimeoutError("Guest command deadline expired: " + args[0])
             time.sleep(0.02)
+        if work_deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Guest command deadline expired: " + args[0])
     finally:
         try:
             stop_command_group(child)
@@ -517,17 +529,75 @@ def capture_signed_indexes():
         os.close(directory)
 
 
+class OwnedGuestBinding(NamedTuple):
+    nonce: str
+    bootId: str
+    uid: int
+    manifestSha256: str
+
+
+def parse_guest_invocation(arguments):
+    resume = len(arguments) >= 3 and arguments[1] == '--resume'
+    prefix = 3 if resume else 1
+    if len(arguments) == 1 or len(arguments) == 3 and resume:
+        return arguments[0], arguments[2] if resume else None, None
+    tail = arguments[prefix:]
+    if not arguments or not any(value.startswith('--owned-guest-') for value in tail):
+        return '', None, None
+    if len(tail) != 6 or tail[::2] != ['--owned-guest-boot-id', '--owned-guest-uid', '--owned-guest-manifest-sha256']:
+        raise RuntimeError('Complete original owned guest binding required')
+    nonce = arguments[0]
+    boot_id, uid_text, manifest_sha = tail[1::2]
+    if (not re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}', nonce)
+            or not re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', boot_id)
+            or len(uid_text) > 10 or not re.fullmatch(r'[0-9]+', uid_text) or not 0 < int(uid_text) < 2**31
+            or not re.fullmatch(r'[a-f0-9]{64}', manifest_sha)):
+        raise RuntimeError('Complete canonical original owned guest binding required')
+    return nonce, arguments[2] if resume else None, OwnedGuestBinding(nonce, boot_id, int(uid_text), manifest_sha)
+
+
+def verify_owned_binding(binding, *, query=None):
+    if binding is None:
+        return None
+    if type(binding) is not OwnedGuestBinding or binding.uid != os.getuid() or binding.uid <= 0:
+        raise RuntimeError("Original ordinary owned guest binding required")
+    limit = math.floor(budget_seconds(10) * 1000) / 1000
+    end = time.monotonic() + limit
+    if GUEST_DEADLINE is not None:
+        end = min(end, GUEST_DEADLINE)
+    command = query if query is not None else lambda args, timeout, allowed: run(args, timeout, allowed, absolute_deadline=end)
+    code, text, _ = command(['/usr/bin/python3', '-I', '/usr/local/lib/fleur-owned-guest.py',
+                             '--owned-guest-nonce', binding.nonce, '--budget-seconds', format(limit, '.3f')],
+                            timeout=limit, allowed=(0, 4))
+    if time.monotonic() >= end:
+        raise TimeoutError("Original owned guest validation deadline expired")
+    if type(code) is not int or code != 0 or len(text.encode()) > 65536:
+        raise RuntimeError("Original owned guest fixture custody could not be revalidated")
+    observed = json.loads(text)
+    if (type(observed) is not dict or type(observed.get('formatVersion')) is not int or observed.get('formatVersion') != 1
+            or observed.get('scope') != 'owned-guest-custody-validation' or observed.get('ok') is not True
+            or observed.get('fixtureCustodyValidated') is not True or observed.get('runtimeSupport') != 'unverified'
+            or observed.get('runtimeAdmission') is not False or observed.get('humanConsentProof') is not False
+            or observed.get('nativeCpuPerformanceProof') is not False
+            or type(observed.get('uid')) is not int
+            or tuple(observed.get(key) for key in binding._fields) != tuple(binding)):
+        raise RuntimeError("Original owned guest fixture binding changed")
+    REPORT['ownedGuestCustody'] = {key: observed[key] for key in ('formatVersion', 'scope', 'ok', *binding._fields,
+        'fixtureCustodyValidated', 'runtimeSupport', 'runtimeAdmission', 'humanConsentProof', 'nativeCpuPerformanceProof')}
+    return binding
+
+
 def main():
     global GUEST_DEADLINE
     GUEST_DEADLINE = time.monotonic() + 900
-    resume = len(sys.argv) == 4 and sys.argv[2] == "--resume"
-    nonce = sys.argv[1] if len(sys.argv) == 2 or resume else ""
+    nonce, resume_digest, owned_binding = parse_guest_invocation(sys.argv[1:])
+    resume = resume_digest is not None
     if not re.fullmatch(r"[a-f0-9-]{36}", nonce) or Path("/etc/fleur-owned-guest").read_text().strip() != nonce:
         raise RuntimeError("Owned guest identity is absent")
     if os.getuid() == 0 or Path("/proc/1/comm").read_text().strip() != "systemd":
         raise RuntimeError("Ordinary guest account and its own systemd are required")
     if resume:
-        resume_guest(nonce, sys.argv[3])
+        resume_guest(nonce, resume_digest)
         return
     try:
         (ROOT / "fresh-linux-state.json").lstat()
@@ -688,11 +758,12 @@ def verify_smoke_and_restrictions(state):
         REPORT["sentinelCleanup"] = True
 
 
-try:
-    main()
-except Exception as error:
-    REPORT["ok"] = False
-    REPORT["error"] = {"code": "GUEST_VERIFICATION_FAILED", "message": str(error)}
-finally:
-    print(json.dumps(REPORT, separators=(",", ":")))
-    sys.exit(0 if REPORT["ok"] else 3 if REPORT.get("phase") == "new-login-required" and REPORT.get("checkpoint") and "error" not in REPORT else 4)
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        REPORT["ok"] = False
+        REPORT["error"] = {"code": "GUEST_VERIFICATION_FAILED", "message": str(error)}
+    finally:
+        print(json.dumps(REPORT, separators=(",", ":")))
+        sys.exit(0 if REPORT["ok"] else 3 if REPORT.get("phase") == "new-login-required" and REPORT.get("checkpoint") and "error" not in REPORT else 4)

@@ -112,6 +112,15 @@ CONTAINERD_BUILDS = {
     'v2.4.2':'b7a25261e029d68978bbf290df0a62fc819b3c51',
 }
 
+# Internal infrastructure identity audit only; not production runtime admission.
+CONTROL_PROFILES = {
+    'github-hosted': {'docker': ('28.0.4', '6430e49'), 'containerd': CONTAINERD_BUILDS,
+                      'runc': ('1.5.2', 'v1.5.2-0-g29dd3dc2')},
+    'owned-guest': {'docker': ('29.9.1', 'b26fb77'),
+                    'containerd': {'v2.4.2': 'b7a25261e029d68978bbf290df0a62fc819b3c51'},
+                    'runc': ('1.5.2', 'v1.5.2-0-g29dd3dc2')},
+}
+
 
 def _option(arguments, name):
     values = []
@@ -131,23 +140,25 @@ class ContainerdControlUnverified(ValueError):
         super().__init__('host containerd prerequisite unverified ('+category+')')
 
 
-def audit_containerd_control(arguments, config, server, ctr_detail):
+def audit_containerd_control(arguments, config, server, ctr_detail, *, host_scope='github-hosted'):
     facts={}
     def require(condition,category):
         if not condition: raise ContainerdControlUnverified(category,facts)
+    profile = CONTROL_PROFILES.get(host_scope) if type(host_scope) is str else None
+    require(profile is not None, 'host-profile')
     require(type(arguments) is list and all(type(value) is str for value in arguments)
             and type(config) is dict and type(server) is dict,'input-shape')
     address = _option(arguments,'--containerd') or config.get('containerd')
     namespace = _option(arguments,'--containerd-namespace') or config.get('containerd-namespace','moby')
     facts.update(address_configured=type(address) is str and address.startswith('/'),namespace_moby=namespace=='moby')
     require(facts['address_configured'] and facts['namespace_moby'],'address-namespace')
-    facts.update(docker_version_match=server.get('Version')=='28.0.4',docker_commit_match=server.get('GitCommit')=='6430e49')
+    facts.update(docker_version_match=server.get('Version')==profile['docker'][0],docker_commit_match=server.get('GitCommit')==profile['docker'][1])
     require(facts['docker_version_match'] and facts['docker_commit_match'] and type(server.get('Components')) is list,'docker-version')
     components=[row for row in server['Components'] if type(row) is dict and row.get('Name')=='containerd']
     facts['containerd_component_count']=len(components)
     require(len(components)==1,'containerd-component')
     containerd_version=components[0].get('Version')
-    containerd_commit=CONTAINERD_BUILDS.get(containerd_version) if type(containerd_version) is str else None
+    containerd_commit=profile['containerd'].get(containerd_version) if type(containerd_version) is str else None
     facts.update(containerd_version_match=containerd_commit is not None,
                  containerd_commit_match=containerd_commit is not None and type(components[0].get('Details')) is dict
                  and components[0]['Details'].get('GitCommit')==containerd_commit)
@@ -155,9 +166,9 @@ def audit_containerd_control(arguments, config, server, ctr_detail):
     runtimes=[row for row in server['Components'] if type(row) is dict and row.get('Name')=='runc']
     facts['runc_component_count']=len(runtimes)
     require(len(runtimes)==1,'runc-component')
-    facts.update(runc_version_match=runtimes[0].get('Version')=='1.5.2',
+    facts.update(runc_version_match=runtimes[0].get('Version')==profile['runc'][0],
                  runc_commit_match=type(runtimes[0].get('Details')) is dict and
-                 runtimes[0]['Details'].get('GitCommit')=='v1.5.2-0-g29dd3dc2')
+                 runtimes[0]['Details'].get('GitCommit')==profile['runc'][1])
     require(facts['runc_version_match'] and facts['runc_commit_match'],'runc-version')
     require(type(ctr_detail) is str and len(ctr_detail.encode())<=65536,'ctr-version-detail')
     sections={};current=None
@@ -175,8 +186,8 @@ def audit_containerd_control(arguments, config, server, ctr_detail):
         facts[prefix+'_revision_match']=sections[section].get('Revision')==containerd_commit
         require(facts[prefix+'_version_match'],prefix+'-version')
         require(facts[prefix+'_revision_match'],prefix+'-revision')
-    return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':'28.0.4','docker_commit':'6430e49',
-            'runc_version':'1.5.2','runc_commit':'v1.5.2-0-g29dd3dc2',
+    return {'ctr':'/usr/bin/ctr','address':address,'namespace':namespace,'docker_version':profile['docker'][0],'docker_commit':profile['docker'][1],
+            'runc_version':profile['runc'][0],'runc_commit':profile['runc'][1],
             'containerd_version':containerd_version[1:],'containerd_commit':containerd_commit,'ctr_revision_verified':True,'version_evidence':'single-client-server-query',
             'prerequisite_observations':facts,
             'namespace_source':'explicit' if _option(arguments,'--containerd-namespace') or 'containerd-namespace' in config else 'pinned-default'}

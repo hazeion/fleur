@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const script = resolve(import.meta.dir, "../../scripts/observe-fresh-linux-preparation.ts");
@@ -254,3 +254,41 @@ test("malformed evidence followed by a stall remains owned by the original work 
     expect(observed.result.lastStage).toMatchObject({ stage: "bun-preparation", state: "started" });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
+
+test("packed candidate preparation establishes private catalog custody despite a group-sharing login umask", async () => {
+  const { root, observe } = await fixture("success");
+  const guestRoot = await mkdtemp(join(tmpdir(), "fleur-prepared-catalog-guest-"));
+  try {
+    const output = join(root, "candidate");
+    const builder = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/build-native-candidate.ts"), "--out", output, "--fixture", "ubuntu26-amd64"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [built, builderError, builderExit] = await Promise.all([new Response(builder.stdout).text(), new Response(builder.stderr).text(), builder.exited]);
+    expect(builderExit, builderError + built).toBe(0);
+    await copyFile(join(output, "fleur-internal-native-candidate.tgz"), join(root, "lab/fleur-internal-native-candidate.tgz"));
+    const empty = join(root, "empty"); await mkdir(empty);
+    const tar = Bun.spawn(["/usr/bin/tar", "-cf", join(root, "lab/runtime-probe.tar"), "-C", empty, "."], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(await tar.exited, await new Response(tar.stderr).text()).toBe(0);
+    // The SSH adapter runs the actual source remote command under an ordinary
+    // group-sharing login mask; archive extraction is real, never mocked.
+    const ssh = join(root, "tools/ssh");
+    await writeFile(ssh, (await readFile(ssh, "utf8")).replace("prefix+remote", "'umask 002\\n'+prefix+remote"));
+    await writeFile(join(root, "tools/tar"), "#!/bin/sh\nexec /usr/bin/tar \"$@\"\n", { mode: 0o700 });
+    const prepared = await observe();
+    expect(prepared).toMatchObject({ exit: 0, result: { ok: true, localCleanup: { retired: true } } });
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), guestRoot, "owned26-target-valid", join(root, "lab/package")], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit, stderr + stdout).toBe(4);
+    const report = JSON.parse(stdout);
+    expect(report.error.message).toContain("TARGET_BOUNDARY_OBSERVED");
+    expect(report.executionArtifact).toEqual({ kind: "internal-candidate", catalogId: "ubuntu-26.04-amd64-docker-2026-10-19", catalogSha256: "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a" });
+    const state = await Bun.file(join(guestRoot, "protocol-state.json")).json();
+    expect(state.targetBoundaryObserved).toBe(true);
+    expect(state.installed).toBe(false);
+    expect(state.installPrompts).toEqual([]);
+    expect(state.enrollmentPrompts).toEqual([]);
+    expect(state.unexpected).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(guestRoot, { recursive: true, force: true });
+  }
+}, 45000);

@@ -38,7 +38,7 @@ test("candidate metadata cannot replace its internal boolean with numeric admiss
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
 
-for (const scenario of ["candidate-missing-catalog", "candidate-symlink-catalog", "candidate-self-rehashed-catalog", "candidate-artifact-mismatch", "candidate-missing-hash", "candidate-unknown-target"]) {
+for (const scenario of ["candidate-missing-catalog", "candidate-symlink-catalog", "candidate-self-rehashed-catalog", "candidate-artifact-mismatch", "candidate-missing-hash", "candidate-unknown-target", "candidate-writable-directory", "candidate-writable-marker", "candidate-writable-catalog"]) {
   test(`actual guest catalog authentication refuses ${scenario} before authority`, async () => {
     const root = await mkdtemp(join(tmpdir(), "fleur-guest-catalog-refusal-"));
     try {

@@ -11,12 +11,14 @@ from pathlib import Path
 import runpy
 import sys
 import stat
+import shutil
 import time
 from unittest.mock import patch
 
 source = Path(__file__).resolve().parents[3] / "scripts/fresh-linux-guest.py"
 root = Path(sys.argv[1]).resolve()
 scenario = sys.argv[2]
+prepared_package = Path(sys.argv[3]).resolve() if len(sys.argv) == 4 else None
 nonce = "12345678-1234-1234-1234-123456789abc"
 boot = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 uid = os.getuid() or 1000
@@ -60,6 +62,12 @@ metadata.update(internalArtifact=True, catalogSha256=hashlib.sha256(catalog_byte
 (lab / "package/bin/fleur.ts").write_text("// Owned protocol fixture, never the real runtime\n")
 (lab / "package/internal-native-candidate.json").write_text(json.dumps(metadata))
 (lab / "package/internal-native-candidate-catalog.json").write_bytes(catalog_bytes)
+if scenario == 'candidate-writable-directory':
+    (lab/'package').chmod(0o775)
+if scenario == 'candidate-writable-marker':
+    (lab/'package/internal-native-candidate.json').chmod(0o664)
+if scenario == 'candidate-writable-catalog':
+    (lab/'package/internal-native-candidate-catalog.json').chmod(0o664)
 if scenario == 'candidate-marker-boolean':
     metadata['legacyProfileAdmission']['verified'] = 1
     (lab / 'package/internal-native-candidate.json').write_text(json.dumps(metadata))
@@ -98,6 +106,12 @@ if scenario.startswith("ordinary-"):
         value=json.loads(target.read_text());value['entries'][0]['evidence']['sourceCommit']='0'*40;target.write_text(json.dumps(value))
 for name in ["fleur-internal-native-candidate.tgz", "runtime-probe.tar", "bun.zip"]:
     (lab / name).write_bytes(("owned fixture " + name).encode())
+
+# Consume the real preparation command's package without recreating its modes
+# or synthesizing its catalog metadata. Native account/services remain adapters.
+if prepared_package is not None:
+    shutil.rmtree(lab / 'package')
+    shutil.move(str(prepared_package), lab / 'package')
 
 TOOL = r'''import json,os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']);p=root/'protocol-state.json';s=json.loads(p.read_text());name=pathlib.Path(sys.argv[0]).name;args=sys.argv[1:];uid=s['uid'];package_checksum='a'*64;enrollment_checksum='b'*64

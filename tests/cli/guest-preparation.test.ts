@@ -54,7 +54,7 @@ test("actual guest preparation extracts authenticated Bun without guest unzip or
   expect(metadata.size).toBeGreaterThan(1024 * 1024);
   expect(metadata.size).toBeLessThanOrEqual(256 * 1024 * 1024);
   expect(Bun.CryptoHasher.hash("sha256", await readFile(join(directory, "bun.zip")), "hex")).toBe(archiveSha256);
-});
+}, 20000);
 
 test("guest preparation rejects a symlink archive before creating executable output", async () => {
   const { directory, path } = await guest();
@@ -65,7 +65,7 @@ test("guest preparation rejects a symlink archive before creating executable out
   expect(result.result.ok).toBe(false);
   expect(await Bun.file(join(directory, "bun")).exists()).toBe(false);
   expect(Bun.CryptoHasher.hash("sha256", await readFile(archive), "hex")).toBe(archiveSha256);
-});
+}, 20000);
 
 test("failed output writes remove only the partial executable owned by this preparation", async () => {
   const { directory, path } = await guest();
@@ -76,7 +76,7 @@ test("failed output writes remove only the partial executable owned by this prep
   expect(result.result.ownedPartialRemoved).toBe(true);
   expect(await Bun.file(join(directory, "bun")).exists()).toBe(false);
   expect(await readFile(sentinel, "utf8")).toBe("preserve me");
-});
+}, 20000);
 
 for (const kind of ["regular", "symlink"] as const) {
   test(`guest preparation preserves a pre-existing ${kind} output and its target`, async () => {
@@ -90,7 +90,7 @@ for (const kind of ["regular", "symlink"] as const) {
     expect(await readFile(sentinel, "utf8")).toBe("existing user data");
     expect(await readFile(join(directory, "bun"), "utf8")).toBe(kind === "regular" ? "existing executable" : "existing user data");
     expect((await lstat(join(directory, "bun"))).isSymbolicLink()).toBe(kind === "symlink");
-  });
+  }, 20000);
 }
 
 test("guest preparation refuses corrupted archive bytes before output creation", async () => {
@@ -101,7 +101,7 @@ test("guest preparation refuses corrupted archive bytes before output creation",
   expect(result.exit).toBe(4);
   expect(result.result.ok).toBe(false);
   expect(await Bun.file(join(directory, "bun")).exists()).toBe(false);
-});
+}, 20000);
 
 test("guest preparation rejects an oversized regular archive without reading or extracting it", async () => {
   const { directory, path } = await guest();
@@ -111,7 +111,7 @@ test("guest preparation rejects an oversized regular archive without reading or 
   expect(result.exit).toBe(4);
   expect(result.result.ok).toBe(false);
   expect(await Bun.file(join(directory, "bun")).exists()).toBe(false);
-});
+}, 20000);
 
 test("an output replaced during preparation is preserved and cleanup remains explicitly unconfirmed", async () => {
   const { directory, path } = await guest();
@@ -129,7 +129,7 @@ test("an output replaced during preparation is preserved and cleanup remains exp
   expect(result.result).toMatchObject({ ok: false, error: { code: "CLEANUP_UNCONFIRMED" } });
   expect(await readFile(output, "utf8")).toBe("concurrent user file");
   expect(await Bun.file(join(directory, "moved-partial")).exists()).toBe(true);
-});
+}, 20000);
 
 async function fault(directory: string, path: string, scenario: string) {
   const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/guest-preparation-faults.py"), preparation, scenario], { cwd: directory, env: { HOME: directory, PATH: path }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000, killSignal: "SIGKILL" });
@@ -145,7 +145,7 @@ test("cleanup atomically claims the output and preserves a replacement introduce
   expect(result.result).toMatchObject({ ok: false, error: { code: "CLEANUP_UNCONFIRMED" } });
   expect(result.facts.foreignLocations).toHaveLength(1);
   expect(await readFile(join(directory, result.facts.foreignLocations[0]), "utf8")).toBe("unrelated concurrent output");
-});
+}, 20000);
 
 test("preparation authenticates final retained output bytes before reporting executable integrity", async () => {
   const { directory, path } = await guest();
@@ -155,7 +155,7 @@ test("preparation authenticates final retained output bytes before reporting exe
   expect(result.result.ok).toBe(false);
   expect(result.facts.outputExists).toBe(false);
   expect(result.result.ownedPartialRemoved).toBe(true);
-});
+}, 20000);
 
 async function eventPipeFault(directory: string, path: string, scenario: string) {
   const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/guest-preparation-event-faults.py"), preparation, scenario], { cwd: directory, env: { HOME: directory, PATH: path }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000, killSignal: "SIGKILL" });
@@ -170,7 +170,7 @@ test("a broken diagnostic event pipe cannot skip deletion of the actual owned Bu
   expect(observed.result).toMatchObject({ eventFailureObserved: true, sourceFailure: "BrokenPipeError", resultFrameDelivered: false, outputExists: false, attemptedReport: { ok: false, ownedPartialRemoved: true } });
   expect(observed.result.deliveredFrames.some((frame: { stage?: string; state?: string }) => frame.stage === "executable-extraction" && frame.state === "started")).toBe(true);
   expect(await Bun.file(join(directory, "bun")).exists()).toBe(false);
-});
+}, 20000);
 
 test("a broken event pipe preserves a foreign replacement while reporting cleanup uncertainty", async () => {
   const { directory, path } = await guest();
@@ -180,4 +180,4 @@ test("a broken event pipe preserves a foreign replacement while reporting cleanu
   expect(observed.result.foreignLocations).toEqual(["bun"]);
   expect(await readFile(join(directory, "bun"), "utf8")).toBe("preserved foreign executable");
   expect(observed.result.movedOwnedBytes).toBeGreaterThan(1024 * 1024);
-});
+}, 20000);

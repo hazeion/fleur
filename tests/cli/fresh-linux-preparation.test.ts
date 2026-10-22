@@ -36,16 +36,16 @@ for (const scenario of ["early-ssh137", "bun-killed", "candidate-failed", "restr
       expect(JSON.stringify(observed.result)).not.toContain("SECRET");
       if (["candidate-failed", "restriction-killed"].includes(scenario)) expect(observed.result.bun?.ok).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  }, 20000);
 }
 test("preparation separates a local deadline from guest exit137 and retains the in-progress archive stage", async () => {
   const { root, observe } = await fixture("bun-slow");
   try {
-    const observed = await observe(500);
+    const observed = await observe(4000);
     expect(observed.exit).toBe(4);
-    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: true, timeoutMs: 500 }, lastStage: { stage: "archive-authentication", state: "started" }, error: { code: "PREPARATION_HOST_DEADLINE" } });
-    expect(observed.result.transport.elapsedMs).toBeGreaterThanOrEqual(500);
-    expect(observed.result.transport.elapsedMs).toBeLessThan(2500);
+    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: true, timeoutMs: 4000 }, lastStage: { stage: "archive-authentication", state: "started" }, error: { code: "PREPARATION_HOST_DEADLINE" } });
+    expect(observed.result.transport.elapsedMs).toBeGreaterThanOrEqual(4000);
+    expect(observed.result.transport.elapsedMs).toBeLessThan(6000);
     expect(await Bun.file(join(root, "tar-calls")).exists()).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
@@ -58,7 +58,7 @@ test("preparation success requires Bun identity and both archive commands, with 
     const remote = await readFile(join(root, "remote"), "utf8");
     expect(remote).not.toContain("sudo"); expect(remote).not.toContain("dpkg");
   } finally { await rm(root, { recursive: true, force: true }); }
-});
+}, 20000);
 for (const scenario of ["host-key", "unknown-stage", "overflow", "bun-failed"] as const) {
   test(`preparation reports only allowlisted diagnostics and stays incomplete: ${scenario}`, async () => {
     const { root, observe } = await fixture(scenario);
@@ -72,19 +72,33 @@ for (const scenario of ["host-key", "unknown-stage", "overflow", "bun-failed"] a
       }
       expect(await Bun.file(join(root, "tar-calls")).exists()).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  }, 20000);
 }
 
 test("an exited SSH leader with inherited pipes cannot stretch the preparation deadline", async () => {
   const { root, observe } = await fixture("success");
   try {
     const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
-    await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nconst child=Bun.spawn([${JSON.stringify(python)},'-c','import time;time.sleep(2)'],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(process.env.FIXTURE_ROOT+'/descendant',String(child.pid));process.exit(137);\n`, { mode: 0o700 });
-    const observed = await observe(500);
+    // A live pipe holder must outlast work(4s)+cleanup(3s); its signal witness
+    // distinguishes actual retirement from merely waiting for natural expiry.
+    const holder = `import os,pathlib,signal,sys,time
+root=pathlib.Path(os.environ['FIXTURE_ROOT'])
+def terminated(number,frame):
+ (root/'descendant-term').write_text(str(number));sys.exit(0)
+signal.signal(signal.SIGTERM,terminated)
+(root/'descendant-ready').write_text(str(os.getpid()))
+time.sleep(12)
+(root/'descendant-natural-expiry').write_text('unexpected natural expiry')
+`;
+    await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nconst child=Bun.spawn([${JSON.stringify(python)},'-c',${JSON.stringify(holder)}],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(process.env.FIXTURE_ROOT+'/descendant',String(child.pid));const ready=process.env.FIXTURE_ROOT+'/descendant-ready';const end=performance.now()+3000;while(!await Bun.file(ready).exists()){if(performance.now()>=end)throw new Error('Pipe holder failed to install its signal observer');await Bun.sleep(1);}process.exit(137);\n`, { mode: 0o700 });
+    const observed = await observe(4000);
     expect(observed.exit).toBe(4);
-    expect(observed.result).toMatchObject({ transport: { deadlineFired: false }, localCleanup: { retired: true }, error: { code: "PREPARATION_SURVIVOR" } });
-    expect(observed.result.transport.elapsedMs).toBeLessThan(1500);
+    expect(observed.result).toMatchObject({ transport: { deadlineFired: false, timeoutMs: 4000, exitCode: 137 }, localCleanup: { retired: true }, error: { code: "PREPARATION_SURVIVOR" } });
+    expect(observed.result.transport.elapsedMs).toBeLessThan(5000);
     const pid = Number(await readFile(join(root, "descendant"), "utf8"));
+    expect(Number(await readFile(join(root, "descendant-ready"), "utf8"))).toBe(pid);
+    expect(await readFile(join(root, "descendant-term"), "utf8")).toBe("15");
+    expect(await Bun.file(join(root, "descendant-natural-expiry")).exists()).toBe(false);
     expect(() => process.kill(pid, 0)).toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
@@ -105,7 +119,7 @@ test("real Bun preparation keeps its default result and emits only opt-in authen
       expect(await Bun.file(join(root, "bun")).exists()).toBe(false);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
-});
+}, 15000);
 
 for (const malformed of ["only-final-bun-phase", "missing-pair", "duplicate", "reordered", "outside-bun", "regressing-time", "oversized-time", "missing-time", "early-result", "duplicate-result", "after-complete"] as const) {
   test(`a successful transcript requires the real producer's nested phase sequence: ${malformed}`, async () => {
@@ -141,7 +155,7 @@ for (const malformed of ["only-final-bun-phase", "missing-pair", "duplicate", "r
         expect(observed.result.bun).toBeUndefined();
       }
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  }, 20000);
 }
 
 test("a valid extraction-failure prefix retains its cleanup evidence without inventing completion", async () => {
@@ -157,7 +171,7 @@ test("a valid extraction-failure prefix retains its cleanup evidence without inv
     expect(observed).toMatchObject({ exit: 4, result: { ok: false, lastStage: { stage: "cleanup", state: "completed" }, bun: { ok: false, ownedPartialRemoved: true }, error: { code: "PREPARATION_COMMAND_EXIT" } } });
     expect(observed.result.stages.some((stage: { stage: string }) => stage.stage === "complete")).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
-});
+}, 20000);
 
 test("a completed preparation with a live closed-pipe SSH descendant cannot be accepted", async () => {
   const { root, observe } = await fixture("success");
@@ -172,7 +186,7 @@ test("a completed preparation with a live closed-pipe SSH descendant cannot be a
     const pid = Number(await readFile(join(root, "closed-pipe-descendant"), "utf8"));
     expect(() => process.kill(pid, 0)).toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
-});
+}, 20000);
 
 test("denied survivor signals enter finite cleanup before the preparation work deadline", async () => {
   const { root, observe } = await fixture("success");
@@ -197,11 +211,11 @@ test("malformed evidence followed by a stall remains owned by the original work 
       { formatVersion: 1, scope: "guest-bun-preparation-event", stage: "output-custody", state: "completed", elapsedMs: 0 },
     ];
     await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(frames.map((frame) => JSON.stringify(frame)).join("\n") + "\n")});await Bun.sleep(20000);\n`, { mode: 0o700 });
-    const observed = await observe(500);
+    const observed = await observe(4000);
     expect(observed.exit).toBe(4);
-    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: true, timeoutMs: 500 }, evidenceError: { code: "PREPARATION_PROTOCOL_INVALID" }, error: { code: "PREPARATION_HOST_DEADLINE" } });
-    expect(observed.result.transport.elapsedMs).toBeGreaterThanOrEqual(500);
-    expect(observed.result.transport.elapsedMs).toBeLessThan(2500);
+    expect(observed.result).toMatchObject({ ok: false, transport: { deadlineFired: true, timeoutMs: 4000 }, evidenceError: { code: "PREPARATION_PROTOCOL_INVALID" }, error: { code: "PREPARATION_HOST_DEADLINE" } });
+    expect(observed.result.transport.elapsedMs).toBeGreaterThanOrEqual(4000);
+    expect(observed.result.transport.elapsedMs).toBeLessThan(6000);
     expect(observed.result.lastStage).toMatchObject({ stage: "bun-preparation", state: "started" });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);

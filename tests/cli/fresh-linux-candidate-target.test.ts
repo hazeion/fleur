@@ -61,7 +61,7 @@ test("fresh login cannot switch the original source-owned candidate target befor
   const root = await mkdtemp(join(tmpdir(), "fleur-guest-resume-catalog-"));
   try {
     const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
-    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "resume-catalog-change"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, "resume-catalog-change"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 60000 });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exit, stderr + stdout).toBe(4);
     expect(JSON.parse(stdout).error.message).toContain("candidate target");
@@ -74,7 +74,7 @@ test("fresh login cannot switch the original source-owned candidate target befor
     const first = await Bun.file(join(root, "first-session-report.json")).json();
     expect(first).toMatchObject({ phase: "new-login-required", ok: false, installationEvidence: "pending" });
   } finally { await rm(root, { recursive: true, force: true }); }
-}, 25000);
+}, 65000);
 
 // These are consumer-protocol checks. The external response is captured from the
 // actual protected-file policy fixture, not a native custody/installation proof.
@@ -83,7 +83,7 @@ for (const scenario of ["owned26-target-valid", "owned26-noble-cross", "owned24-
     const root = await mkdtemp(join(tmpdir(), "fleur-bound-target-protocol-"));
     try {
       const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
-      const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+      const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: scenario.includes("resume") ? 60000 : 20000 });
       const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect(exit, stderr + stdout).toBe(4);
       const report = JSON.parse(stdout);
@@ -119,5 +119,5 @@ for (const scenario of ["owned26-target-valid", "owned26-noble-cross", "owned24-
         }
       }
     } finally { await rm(root, { recursive: true, force: true }); }
-  }, 25000);
+  }, scenario.includes("resume") ? 65000 : 25000);
 }

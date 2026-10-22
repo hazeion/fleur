@@ -62,41 +62,93 @@ test("system Python retains an exited SSH leader until its pipe-holding descenda
 }, 15000);
 
 
-test("boot returns bounded incomplete cleanup when its stalled owned SSH group refuses host signals", async () => {
-  const root = await mkdtemp(join(tmpdir(), "fleur-boot-denied-retirement-"));
+async function stalledBootRetirement(mode: "denied" | "accepted") {
+  const root = await mkdtemp(join(tmpdir(), "fleur-boot-" + mode + "-retirement-"));
+  let driver: ReturnType<typeof Bun.spawn> | undefined;
   try {
     const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nsetTimeout(()=>process.exit(0),8000);\n`, { mode: 0o700 });
-    // Deny every destructive host signal. The actual owned fixture has its own
-    // finite lifetime; no unrelated PID is touched even on a failing run.
-    await writeFile(join(root, "denied.ts"), `const original=process.kill.bind(process);process.kill=((pid,signal)=>{if(pid<0&&signal!==0)throw Object.assign(new Error('Owned fixture EPERM'),{code:'EPERM'});return original(pid,signal);});\n`);
-    const entry = `const {observeBoot}=await import(${JSON.stringify(resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"))});console.log(JSON.stringify(await observeBoot(${JSON.stringify({ port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce })},1000)));`;
-    const started = performance.now();
-    const child = Bun.spawn([process.execPath, "--preload", join(root, "denied.ts"), "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 6000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+    // A real launch receipt precedes Bun startup; exec preserves that SSH PID.
+    // The finite stall outlasts the 4s work and unchanged 3s cleanup allowances.
+    await writeFile(join(tools, "ssh"), `#!/bin/sh\nprintf '{"pid":%s,"ppid":%s}\\n' "$$" "$PPID" > "$FIXTURE_ROOT/ssh-started"\nexec ${quote(process.execPath)} --eval 'setTimeout(()=>process.exit(0),12000)'\n`, { mode: 0o700 });
+    const entry = `
+import {mock} from 'bun:test';
+import * as actual from 'node:child_process';
+import {appendFileSync,writeFileSync} from 'node:fs';
+const originalSpawn=actual.spawn;const relays=[];
+mock.module('node:child_process',()=>({...actual,spawn:function(...args){
+ const child=originalSpawn.apply(this,args);
+ if(args[0]==='python3'&&args[1]?.[1]===${JSON.stringify(resolve(import.meta.dir, "../../scripts/retained-ssh.py"))}){
+  const receipt={pid:child.pid,closed:false,code:null,signal:null};
+  writeFileSync(process.env.FIXTURE_ROOT+'/relay-started',JSON.stringify(receipt));
+  const ended=new Promise(resolve=>child.once('close',(code,signal)=>{Object.assign(receipt,{closed:true,code,signal});writeFileSync(process.env.FIXTURE_ROOT+'/relay-closed',JSON.stringify(receipt));resolve();}));
+  relays.push({child,receipt,ended});
+ }
+ return child;
+}}));
+const originalKill=process.kill.bind(process);
+process.kill=((pid,signal)=>{
+ if(pid<0&&signal!==0){
+  appendFileSync(process.env.FIXTURE_ROOT+'/signals',JSON.stringify({pid,signal,mode:${JSON.stringify(mode)}})+'\\n');
+  ${mode === "denied" ? "throw Object.assign(new Error('Owned fixture EPERM'),{code:'EPERM'});" : "return true;"}
+ }
+ return originalKill(pid,signal);
+});
+const {observeBoot}=await import(${JSON.stringify(resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"))});
+const started=performance.now();
+try {
+ const observed=await observeBoot(${JSON.stringify({ port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce })},4000);
+ console.log(JSON.stringify({kind:'public',observed,elapsedMs:performance.now()-started}));
+} finally {
+ // Real EOF reaches the real Python fallback, which retains and reaps SSH.
+ // Fixture recovery cannot change the already-recorded public cleanup result.
+ for(const relay of relays)relay.child.stdin?.end();
+ let timer;
+ try{await Promise.race([Promise.all(relays.map(relay=>relay.ended)),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Fixture relay recovery is unconfirmed')),2000);})]);}
+ finally{clearTimeout(timer);}
+ console.log(JSON.stringify({kind:'recovery',relays:relays.map(relay=>relay.receipt)}));
+}
+`;
+    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    driver = child;
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    // Retain the real public result before consulting startup/signal markers.
+    console.info(stdout); if (stderr) console.error(stderr);
     expect(exit, stderr + stdout).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_OBSERVATION_FAILED", message: expect.stringContaining("cleanup is unconfirmed") } });
-    expect(performance.now() - started).toBeLessThan(5000);
-  } finally { await rm(root, { recursive: true, force: true }); }
-}, 8000);
+    const [publicReceipt, recovery] = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    expect(publicReceipt.kind).toBe("public");
+    expect(publicReceipt.observed).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_OBSERVATION_FAILED", message: expect.stringContaining("cleanup is unconfirmed") }, transport: { timeoutMs: 4000, deadlineFired: true, terminationRequested: true, cleanupConfirmed: false, stdoutBytes: 0, stderrBytes: 0 } });
+    expect(publicReceipt.elapsedMs).toBeGreaterThanOrEqual(4000);
+    expect(publicReceipt.elapsedMs).toBeLessThan(8000);
+    const launch = JSON.parse(await Bun.file(join(root, "ssh-started")).text());
+    expect(launch.pid).toBeGreaterThan(0);
+    const signals = (await Bun.file(join(root, "signals")).text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(signals.map((signal) => signal.signal)).toContain("SIGTERM");
+    expect(signals.map((signal) => signal.signal)).toContain("SIGKILL");
+    expect(signals.every((signal) => signal.pid === -launch.pid && signal.mode === mode)).toBe(true);
+    expect(recovery).toMatchObject({ kind: "recovery", relays: [{ pid: launch.ppid, closed: true, code: 0, signal: null }] });
+  } finally {
+    // Even if assertions or the driver fail, observe real fallback retirement
+    // before deleting fixture files. No stale numeric PID receives a signal.
+    if (driver) await driver.exited;
+    const paths = ["relay-started", "ssh-started"];
+    const pids: number[] = [];
+    for (const name of paths) if (await Bun.file(join(root, name)).exists()) pids.push(JSON.parse(await Bun.file(join(root, name)).text()).pid);
+    const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } };
+    const end = performance.now() + 2000;
+    while (pids.some((pid) => !gone(pid)) && performance.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(pids.every(gone), "Owned fixture processes must actually retire before removal").toBe(true);
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("boot returns bounded incomplete cleanup when its stalled owned SSH group refuses host signals", async () => {
+  await stalledBootRetirement("denied");
+}, 14000);
 
 test("boot returns bounded incomplete cleanup when accepted host signals do not retire its SSH group", async () => {
-  const root = await mkdtemp(join(tmpdir(), "fleur-boot-unretired-"));
-  try {
-    const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nsetTimeout(()=>process.exit(0),8000);\n`, { mode: 0o700 });
-    // Simulate accepted signals without completion. The owned fixture has its own
-    // finite lifetime; no unrelated PID is touched even on a failing run.
-    await writeFile(join(root, "accepted.ts"), `const original=process.kill.bind(process);process.kill=((pid,signal)=>{if(pid<0&&signal!==0)return true;return original(pid,signal);});\n`);
-    const entry = `const {observeBoot}=await import(${JSON.stringify(resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"))});console.log(JSON.stringify(await observeBoot(${JSON.stringify({ port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce })},1000)));`;
-    const started = performance.now();
-    const child = Bun.spawn([process.execPath, "--preload", join(root, "accepted.ts"), "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 6000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
-    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect(exit, stderr + stdout).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_OBSERVATION_FAILED", message: expect.stringContaining("cleanup is unconfirmed") } });
-    expect(performance.now() - started).toBeLessThan(5000);
-  } finally { await rm(root, { recursive: true, force: true }); }
-}, 8000);
+  await stalledBootRetirement("accepted");
+}, 14000);
 
 
 test("unknown state in a different process group cannot invalidate the retained SSH group", async () => {

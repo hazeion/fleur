@@ -106,3 +106,53 @@ test("late inventory setup cannot mint another one-second work window", async ()
     expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining("inventory deadline") } });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 10000);
+
+
+test("a failed third release inventory cannot become accepted physical cleanup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-inventory-release-failure-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.exit(75);\n`, { mode: 0o700 });
+    await writeFile(join(tools, "python3"), `#!${python}\nimport runpy;runpy.run_path(${JSON.stringify(resolve(import.meta.dir, "fixtures/retained-inventory-os.py"))},run_name='__main__')\n`, { mode: 0o700 });
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"), "--port", "2222", "--identity", join(root, "key"), "--known-hosts", join(root, "hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, INVENTORY_SCENARIO: "release-third-malformed" } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(await Bun.file(join(root, "release-query-fault.json")).json()).toEqual({ ordinal: 3, actualProbeCreated: true });
+    const queries = (await Bun.file(join(root, "inventory-queries.jsonl")).text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(queries.map((item) => item.ordinal)).toEqual([1, 2, 3]);
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining("inventory schema") }, transport: { cleanupConfirmed: false } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);
+
+
+test("a nonzero helper exit after genuine source release cannot authorize cleanup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-inventory-helper-exit-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.exit(75);\n`, { mode: 0o700 });
+    await writeFile(join(tools, "python3"), `#!${python}\nimport runpy;runpy.run_path(${JSON.stringify(resolve(import.meta.dir, "fixtures/retained-inventory-os.py"))},run_name='__main__')\n`, { mode: 0o700 });
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"), "--port", "2222", "--identity", join(root, "key"), "--known-hosts", join(root, "hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, INVENTORY_SCENARIO: "helper-nonzero-after-release" } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(await Bun.file(join(root, "source-release-completed.json")).json()).toEqual({ queries: 3, actualSshChildReaped: true, sourceExitCode: 0 });
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining("relay exited 23") }, transport: { cleanupConfirmed: false } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);
+
+
+test("truncated control after genuine source release cannot authorize cleanup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-inventory-control-eof-"));
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.exit(75);\n`, { mode: 0o700 });
+    await writeFile(join(tools, "python3"), `#!${python}\nimport runpy;runpy.run_path(${JSON.stringify(resolve(import.meta.dir, "fixtures/retained-inventory-os.py"))},run_name='__main__')\n`, { mode: 0o700 });
+    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/observe-fresh-linux-boot.ts"), "--port", "2222", "--identity", join(root, "key"), "--known-hosts", join(root, "hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, INVENTORY_SCENARIO: "helper-truncated-after-release" } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(await Bun.file(join(root, "source-release-completed.json")).json()).toEqual({ queries: 3, actualSshChildReaped: true, sourceExitCode: 0 });
+    expect(exit, stderr + stdout).toBe(4);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining("control output was incomplete") }, transport: { cleanupConfirmed: false } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 10000);

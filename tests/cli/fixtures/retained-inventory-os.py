@@ -13,6 +13,8 @@ import time
 root = Path(os.environ['FIXTURE_ROOT'])
 real_popen = subprocess.Popen
 leader = None
+ssh_child = None
+query_number = 0
 probe = None
 scenario = os.environ.get("INVENTORY_SCENARIO", "unrelated-rows")
 real_selector = selectors.DefaultSelector
@@ -35,14 +37,19 @@ if scenario == 'linux-no-waitid':
     ctypes.CDLL = cdll
 
 def popen(args, *positional, **kwargs):
-    global leader, probe, custody_lost
+    global leader, probe, custody_lost, query_number, ssh_child
     if args[0] == '/bin/ps':
         global_query = args == ['/bin/ps', '-axo', 'pid=,pgid=,stat=']
         group_query = args == ['/bin/ps', '-x', '-g', str(leader), '-o', 'pid=,pgid=,stat=']
         if not (global_query or group_query):
             raise RuntimeError('Unmodeled inventory command')
+        query_number += 1
         with (root/'inventory-queries.jsonl').open('a') as stream:
-            stream.write(json.dumps({'selection':'global' if global_query else 'owned-group'})+'\n')
+            stream.write(json.dumps({'selection':'global' if global_query else 'owned-group','ordinal':query_number})+'\n')
+        if scenario == 'release-third-malformed' and query_number == 3:
+            fault = real_popen([sys.executable, '-I', '-c', "import os;os.write(1,b'not-a-row\\n')"], *positional, **kwargs)
+            (root/'release-query-fault.json').write_text(json.dumps({'ordinal':query_number,'actualProbeCreated':True}))
+            return fault
         if scenario in ('selector-allocation', 'selector-register'):
             probe = real_popen([sys.executable, '-I', '-c', 'import time;time.sleep(2)'], *positional, **kwargs)
             (root/'actual-probe-created').write_text('created')
@@ -75,6 +82,7 @@ def popen(args, *positional, **kwargs):
         return real_popen([sys.executable, '-I', '-c', code, str(leader), 'global' if global_query else 'group'], *positional, **kwargs)
     child = real_popen(args, *positional, **kwargs)
     if args[0] == 'ssh':
+        ssh_child = child
         leader = child.pid
         # Initialize the genuine host waitid/LibSystem controller first. Only
         # the external selector metadata changes at this actual spawn boundary.
@@ -130,6 +138,16 @@ os.kill = kill
 subprocess.Popen = popen
 try:
     runpy.run_path(sys.argv[2], run_name='__main__')
+except SystemExit as completed:
+    if scenario in ('helper-nonzero-after-release', 'helper-truncated-after-release') and completed.code == 0:
+        if query_number != 3 or ssh_child is None or ssh_child.returncode != 75:
+            raise RuntimeError('Genuine source release was not completed')
+        (root/'source-release-completed.json').write_text(json.dumps({'queries':query_number,'actualSshChildReaped':True,'sourceExitCode':completed.code}))
+        if scenario == 'helper-nonzero-after-release':
+            raise SystemExit(23)
+        # A real trailing partial OS control write, after genuine source release.
+        os.write(3, b'{"kind":')
+    raise
 finally:
     if probe is not None:
         # Capture actual source retirement/stream state BEFORE fixture backup.

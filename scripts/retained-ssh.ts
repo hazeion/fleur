@@ -43,8 +43,11 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
   const signalFailed = new Promise<never>((_resolve, reject) => { signalReject = reject; });
   for (const promise of [pidReady, finished, closedPipes, signalFailed]) promise.catch(() => {});
   const inventories = new Map<number, { resolve: (live: number) => void; reject: (error: Error) => void }>(); let nextId = 0;
-  const fail = (error: Error) => { readyReject(error); exitReject(error); pipesReject(error); signalReject(error); for (const request of inventories.values()) request.reject(error); inventories.clear(); };
-  const relayClosed = new Promise<void>((resolve) => { relay.once("error", () => { fail(new Error("Owned SSH relay could not start")); resolve(); }); relay.once("close", () => { if (owned) { owned = false; clearTimeout(escalation); fail(new Error("Owned SSH retained custody was lost")); } resolve(); }); });
+  let terminalError: Error | undefined;
+  let controlTask: Promise<void> | undefined;
+  const fail = (error: Error) => { terminalError ??= error; readyReject(error); exitReject(error); pipesReject(error); signalReject(error); for (const request of inventories.values()) request.reject(error); inventories.clear(); };
+  let relayExitCode: number | null | undefined; let relayExitSignal: NodeJS.Signals | null | undefined;
+  const relayClosed = new Promise<void>((resolve) => { relay.once("error", () => { fail(new Error("Owned SSH relay could not start")); resolve(); }); relay.once("close", (status, signal) => { relayExitCode = status; relayExitSignal = signal; if (owned) { owned = false; clearTimeout(escalation); fail(new Error("Owned SSH retained custody was lost")); } resolve(); }); });
   function forceKill() {
     if (!owned || !pid || killed || (code !== undefined && survivor !== true)) return;
     attempted = true;
@@ -86,7 +89,8 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
     if (pending) throw new Error("Owned SSH control output was incomplete");
   }
   Promise.all([warm.ready, readyBarrier]).then(() => {
-    control().catch((error) => fail(error instanceof Error ? error : new Error("Owned SSH control failed")));
+    controlTask = control();
+    controlTask.catch((error) => fail(error instanceof Error ? error : new Error("Owned SSH control failed")));
     if (requested) { relay.stdin?.end(); fail(new Error("SSH session start was cancelled")); }
     else write({ kind: "start", args: ["ssh", ...args] });
   }).catch((error) => fail(error instanceof Error ? error : new Error("Owned SSH relay readiness failed")));
@@ -111,8 +115,11 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
       clearTimeout(escalation);
       while (await inspect()) { forceKill(); await within(new Promise((resolve) => setTimeout(resolve, 10))); }
       clearTimeout(escalation);
+      if (!controlTask) throw new Error("Owned SSH control completion is unavailable");
       owned = false; write({ kind: "release" }); relay.stdin!.end();
-      await within(relayClosed);
+      await within(Promise.all([relayClosed, controlTask]));
+      if (terminalError) throw terminalError;
+      if (relayExitCode !== 0 || relayExitSignal !== null) throw new Error(`Owned SSH relay exited ${relayExitSignal ?? String(relayExitCode)}`);
       // After release/reap, the old numeric group is observation-only.
       while (pid) {
         try { process.kill(-pid, 0); }

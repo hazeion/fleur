@@ -124,8 +124,11 @@ cleanup inspection and final release each require a fresh inventory. The
 one-second query work deadline includes tool startup and selector setup; late
 OS returns are refused without a new allowance. Query retirement still has its
 original separate bound, protects partial setup failures, and requires a fresh
-WNOWAIT ownership observation before signaling or reaping the probe. Portable
-OS-command fixtures cover these failure contracts; controlled same-UID native
+WNOWAIT ownership observation before signaling or reaping the probe. Successful
+retirement also requires complete error-free control EOF and actual helper exit
+zero without a signal, within the original cleanup deadline. Physical group
+absence cannot replace the third release check or conceal a late helper error.
+Portable OS-command fixtures cover these failure contracts; controlled same-UID native
 comparison evidence does not qualify every UID, platform or runtime profile.
 
 The report separates work elapsed time from local cleanup elapsed time. A detected live local survivor invalidates preparation even after confirmed retirement; that refusal is distinct from an expired work timer. This does not establish cleanup of remote guest work. The owned VM teardown

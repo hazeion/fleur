@@ -14,10 +14,12 @@ async function fixture(scenario: string) {
   await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;const remote=process.argv.at(-1);await Bun.write(root+'/remote',remote);if(scenario==='early-ssh137')process.exit(137);if(scenario==='bun-slow'){for(const frame of [{formatVersion:1,scope:'guest-artifact-preparation-event',stage:'bun-preparation',state:'started'},{formatVersion:1,scope:'guest-bun-preparation-event',stage:'archive-authentication',state:'started',elapsedMs:0}])process.stdout.write(JSON.stringify(frame)+'\\n');await Bun.sleep(20000);process.exit(0);}if(scenario==='host-key'){process.stderr.write('SECRET transport material');process.exit(255);}const prefix=${JSON.stringify("cd() { command cd \"$FIXTURE_ROOT/lab\"; }\ncat() { command cat \"$FIXTURE_ROOT/nonce\"; }\npython3() { \"$FIXTURE_ROOT/tools/guest-python3\" \"$@\"; }\n")};const child=Bun.spawn(['/bin/sh','-c',prefix+remote],{stdin:'ignore',stdout:'inherit',stderr:'inherit',env:process.env});process.exit(await child.exited);\n`, { mode: 0o700 });
   await writeFile(join(tools, "guest-python3"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const scenario=process.env.FIXTURE_SCENARIO;await Bun.write(root+'/python-called','yes');const frame=(stage,state)=>process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation-event',stage,state,elapsedMs:1})+'\\n');frame('archive-authentication','started');if(scenario==='bun-slow')await Bun.sleep(20000);if(scenario==='bun-killed')process.exit(137);if(scenario==='unknown-stage'){frame('SECRET','completed');process.exit(137);}if(scenario==='overflow'){await new Promise((resolve,reject)=>process.stdout.write('SECRET'.repeat(400000),error=>error?reject(error):resolve()));process.exit(137);}if(scenario==='bun-failed'){process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:false,error:{code:'PREPARATION_FAILED',message:'SECRET'}})+'\\n');process.exit(4);}for(const stage of ['archive-authentication','zip-entry-validation','executable-extraction','retained-output-authentication','archive-reauthentication','output-custody']){if(stage!=='archive-authentication')frame(stage,'started');frame(stage,'completed');}process.stdout.write(JSON.stringify({formatVersion:1,scope:'guest-bun-preparation',ok:true,archiveSha256:${JSON.stringify(archiveSha256)},archiveBytes:50000000,executableBytes:100000000,executableSha256:'a'.repeat(64)})+'\\n');\n`, { mode: 0o700 });
   await writeFile(join(tools, "tar"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const name=process.argv.at(-1);await Bun.write(root+'/tar-calls',(await Bun.file(root+'/tar-calls').exists()?await Bun.file(root+'/tar-calls').text():'')+name+'\\n');if(process.env.FIXTURE_SCENARIO==='candidate-failed'&&name==='fleur-internal-native-candidate.tgz')process.exit(2);if(process.env.FIXTURE_SCENARIO==='restriction-killed'&&name==='runtime-probe.tar')process.exit(137);\n`, { mode: 0o700 });
-  const observe = async (budget = 10000) => {
+  const observe = async (budget = 10000, started?: (child: ReturnType<typeof Bun.spawn>) => void) => {
     const preload = await Bun.file(join(root, "signal-denied.ts")).exists() ? ["--preload", join(root, "signal-denied.ts")] : [];
     const child = Bun.spawn([process.execPath, ...preload, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce, "--budget-ms", String(budget)], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { PATH: tools + ":/usr/bin:/bin", HOME: root, FIXTURE_ROOT: root, FIXTURE_SCENARIO: scenario }, timeout: 15000 });
+    started?.(child);
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    if (started) await writeFile(join(root, "public-observation.json"), JSON.stringify({ stdout, stderr, exit }));
     return { exit, stderr, result: JSON.parse(stdout) };
   };
   return { root, observe };
@@ -77,8 +79,14 @@ for (const scenario of ["host-key", "unknown-stage", "overflow", "bun-failed"] a
 
 test("an exited SSH leader with inherited pipes cannot stretch the preparation deadline", async () => {
   const { root, observe } = await fixture("success");
+  let driver: ReturnType<typeof Bun.spawn> | undefined;
   try {
     const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    // Receipt before exec preserves the actual relay PID without replacing its
+    // protocol or wait/reap implementation. Finally only observes these PIDs.
+    await rm(join(root, "tools/python3"));
+    await writeFile(join(root, "tools/python3"), `#!/bin/sh\nprintf '%s' "$$" > "$FIXTURE_ROOT/relay-pid"\nexec ${quote(python)} "$@"\n`, { mode: 0o700 });
     // A live pipe holder must outlast work(4s)+cleanup(3s); its signal witness
     // distinguishes actual retirement from merely waiting for natural expiry.
     const holder = `import os,pathlib,signal,sys,time
@@ -91,7 +99,7 @@ time.sleep(12)
 (root/'descendant-natural-expiry').write_text('unexpected natural expiry')
 `;
     await writeFile(join(root, "tools/ssh"), `#!${process.execPath}\nconst child=Bun.spawn([${JSON.stringify(python)},'-c',${JSON.stringify(holder)}],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(process.env.FIXTURE_ROOT+'/descendant',String(child.pid));const ready=process.env.FIXTURE_ROOT+'/descendant-ready';const end=performance.now()+3000;while(!await Bun.file(ready).exists()){if(performance.now()>=end)throw new Error('Pipe holder failed to install its signal observer');await Bun.sleep(1);}process.exit(137);\n`, { mode: 0o700 });
-    const observed = await observe(4000);
+    const observed = await observe(4000, (child) => { driver = child; });
     expect(observed.exit).toBe(4);
     expect(observed.result).toMatchObject({ transport: { deadlineFired: false, timeoutMs: 4000, exitCode: 137 }, localCleanup: { retired: true }, error: { code: "PREPARATION_SURVIVOR" } });
     expect(observed.result.transport.elapsedMs).toBeLessThan(5000);
@@ -100,8 +108,26 @@ time.sleep(12)
     expect(await readFile(join(root, "descendant-term"), "utf8")).toBe("15");
     expect(await Bun.file(join(root, "descendant-natural-expiry")).exists()).toBe(false);
     expect(() => process.kill(pid, 0)).toThrow();
-  } finally { await rm(root, { recursive: true, force: true }); }
-}, 10000);
+  } finally {
+    // The driver has its existing15s cap. Settle it even when parsing or an
+    // assertion fails; never remove files while retirement remains uncertain.
+    if (driver) await driver.exited;
+    const pids: number[] = [];
+    let receiptsComplete = true;
+    if (driver) for (const name of ["relay-pid", "descendant"]) {
+      const file = Bun.file(join(root, name));
+      if (!await file.exists()) { receiptsComplete = false; continue; }
+      const pid = Number(await file.text());
+      if (!Number.isSafeInteger(pid) || pid <= 0) { receiptsComplete = false; continue; }
+      pids.push(pid);
+    }
+    const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } };
+    const end = performance.now() + 2000;
+    while (pids.some((pid) => !gone(pid)) && performance.now() < end) await Bun.sleep(10);
+    expect(receiptsComplete && pids.every(gone), `Fixture retirement remains unconfirmed; preserved ${root}`).toBe(true);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);
 
 test("real Bun preparation keeps its default result and emits only opt-in authentication-stage evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-real-preparation-events-"));

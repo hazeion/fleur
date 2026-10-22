@@ -31,7 +31,7 @@ export function prepareRetainedSsh() {
 export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), readyBarrier?: Promise<void>) {
   const relay = warm.relay;
   let pid: number | undefined; let code: number | undefined; let survivor: boolean | undefined; let exitSignal: string | null = null; let pipes = false; let owned = true;
-  let requested = false; let killed = false; let attempted = false; let stop: number | undefined; let signalError: Error | undefined;
+  let requested = false; let cancelledBeforeStart = false; let killed = false; let attempted = false; let stop: number | undefined; let signalError: Error | undefined;
   let escalation: ReturnType<typeof setTimeout> | undefined; let retirement: ReturnType<typeof setTimeout> | undefined;
   let readyResolve: (pid: number) => void = () => {}; let readyReject: (error: Error) => void = () => {};
   let exitResolve: (code: number) => void = () => {}; let exitReject: (error: Error) => void = () => {};
@@ -72,6 +72,7 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
   async function control() {
     let pending = ""; let records = 0;
     for await (const chunk of relay.stdio[3] as Readable) {
+      if (cancelledBeforeStart) throw new Error("Owned idle SSH relay emitted unexpected control output");
       pending += Buffer.from(chunk).toString("utf8");
       if (pending.length > 4096) throw new Error("Owned SSH control output exceeded its bound");
       let end: number;
@@ -88,10 +89,16 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
     }
     if (pending) throw new Error("Owned SSH control output was incomplete");
   }
-  Promise.all([warm.ready, readyBarrier]).then(() => {
+  const startTask = Promise.all([warm.ready, readyBarrier]).then(() => {
     controlTask = control();
     controlTask.catch((error) => fail(error instanceof Error ? error : new Error("Owned SSH control failed")));
-    if (requested) { relay.stdin?.end(); fail(new Error("SSH session start was cancelled")); }
+    if (requested) {
+      // No start command was sent, so there is no SSH exit to manufacture or
+      // process group to signal. Cancellation still fails the observation.
+      cancelledBeforeStart = true; owned = false; relay.stdin?.end();
+      const error = new Error("SSH session start was cancelled");
+      readyReject(error); exitReject(error); pipesReject(error); signalReject(error);
+    }
     else write({ kind: "start", args: ["ssh", ...args] });
   }).catch((error) => fail(error instanceof Error ? error : new Error("Owned SSH relay readiness failed")));
   async function within<T>(promise: Promise<T>): Promise<T> {
@@ -107,6 +114,15 @@ export function startRetainedSsh(args: string[], warm = prepareRetainedSsh(), re
   async function cleanup() {
     stop ??= performance.now() + 3000;
     try {
+      await within(startTask);
+      if (cancelledBeforeStart) {
+        // EOF retires the idle helper. Confirm its actual control EOF and exit
+        // under the original retirement deadline before acknowledging cleanup.
+        await within(Promise.all([relayClosed, controlTask]));
+        if (terminalError) throw terminalError;
+        if (relayExitCode !== 0 || relayExitSignal !== null) throw new Error(`Owned SSH relay exited ${relayExitSignal ?? String(relayExitCode)}`);
+        return;
+      }
       if (code === undefined || survivor) requestTermination();
       if (attempted && !killed) forceKill();
       await within(Promise.all([finished, closedPipes]));

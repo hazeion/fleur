@@ -80,6 +80,7 @@ for (const scenario of ["host-key", "unknown-stage", "overflow", "bun-failed"] a
 test("an exited SSH leader with inherited pipes cannot stretch the preparation deadline", async () => {
   const { root, observe } = await fixture("success");
   let driver: ReturnType<typeof Bun.spawn> | undefined;
+  let retirementConfirmed = false;
   try {
     const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -109,24 +110,32 @@ time.sleep(12)
     expect(await Bun.file(join(root, "descendant-natural-expiry")).exists()).toBe(false);
     expect(() => process.kill(pid, 0)).toThrow();
   } finally {
-    // The driver has its existing15s cap. Settle it even when parsing or an
-    // assertion fails; never remove files while retirement remains uncertain.
-    if (driver) await driver.exited;
-    const pids: number[] = [];
-    let receiptsComplete = true;
-    if (driver) for (const name of ["relay-pid", "descendant"]) {
-      const file = Bun.file(join(root, name));
-      if (!await file.exists()) { receiptsComplete = false; continue; }
-      const pid = Number(await file.text());
-      if (!Number.isSafeInteger(pid) || pid <= 0) { receiptsComplete = false; continue; }
-      pids.push(pid);
+    // Preserve a primary protocol/assertion failure. Retirement uncertainty is
+    // logged separately and leaves the fixture intact, never overwritten by it.
+    try {
+      if (driver) await driver.exited; // Existing15s child cap still applies.
+      const pids: number[] = [];
+      let receiptsComplete = true;
+      if (driver) for (const name of ["relay-pid", "descendant"]) {
+        const file = Bun.file(join(root, name));
+        if (!await file.exists()) { receiptsComplete = false; continue; }
+        const pid = Number(await file.text());
+        if (!Number.isSafeInteger(pid) || pid <= 0) { receiptsComplete = false; continue; }
+        pids.push(pid);
+      }
+      const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } };
+      const end = performance.now() + 2000;
+      while (pids.some((pid) => !gone(pid)) && performance.now() < end) await Bun.sleep(10);
+      const absent = pids.map(gone);
+      retirementConfirmed = receiptsComplete && absent.every(Boolean);
+      console.info(JSON.stringify({ kind: "preparation-fixture-retirement", root, driverExit: driver?.exitCode, pids, absent, retired: retirementConfirmed }));
+      if (retirementConfirmed) await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      retirementConfirmed = false;
+      console.error(JSON.stringify({ kind: "preparation-fixture-retirement-uncertain", preserved: root, error: String(error) }));
     }
-    const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } };
-    const end = performance.now() + 2000;
-    while (pids.some((pid) => !gone(pid)) && performance.now() < end) await Bun.sleep(10);
-    expect(receiptsComplete && pids.every(gone), `Fixture retirement remains unconfirmed; preserved ${root}`).toBe(true);
-    await rm(root, { recursive: true, force: true });
   }
+  expect(retirementConfirmed, `Fixture retirement remains unconfirmed; preserved ${root}`).toBe(true);
 }, 20000);
 
 test("real Bun preparation keeps its default result and emits only opt-in authentication-stage evidence", async () => {

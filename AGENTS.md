@@ -30,6 +30,14 @@ For pull-request descriptions, read `.agents/skills/pr/SKILL.md` and use its Sum
 
 Keep additional skill installations project-scoped under `.agents/skills/`.
 
+## CI cost policy
+
+Always consider CI cost when changing workflows or running verification. Prefer targeted local checks while diagnosing failures and rerun only failed CI jobs when investigating the same commit. The final candidate still requires all applicable checks to pass.
+
+Cancel superseded pull-request runs within the same workflow and PR. Keep concurrency groups isolated across workflows and events, and preserve every main-branch verification run. Keep routine diagnostic artifacts for seven days; record durable sanitized evidence before it expires.
+
+Save compute by eliminating obsolete or demonstrably duplicate work, never by weakening assertions, deadlines, required platforms, repeat runs, isolation, cleanup or acceptance gates. Preserve unique coverage when consolidating jobs. A cancelled or skipped check is not passing evidence. Do not raise spending limits or change billing settings without explicit user authorization.
+
 ## Planning tracker
 
 Use docs/agents/issue-tracker.md. Keep decision detail in its issue and only a linked gist in the map. Research tickets may resolve independently; human decision tickets require live discussion. Do not resolve more than one human decision ticket per Wayfinder session.

@@ -3,6 +3,12 @@ name: Compatibility experiments
 on:
   pull_request:
 
+# Retire superseded PR work; retain every main-branch verification run.
+# Workflow and event namespaces prevent cross-workflow or PR/push cancellation.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

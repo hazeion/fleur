@@ -118,6 +118,16 @@ that the host timer fired or that any particular guest stage completed.
 
 The shared host-only Python helper retains the actual SSH leader unreaped after exit. A private descriptor carries its PID, exit tuple and bounded process inventory; TypeScript completes owned group signals before explicit release and reaping. The fixed /bin/ps inventory reads only PID, process-group and state columns, never command arguments. Its absolute executable availability is included in host capabilities, and both helper source hashes are included in verifier provenance. Local transport retirement has a separate bounded
 three-second cleanup period and reports uncertainty if retirement is unconfirmed.
+Darwin selects the complete retained process group, including its zombie leader
+and descendants without terminals; Linux retains the global query. Exit,
+cleanup inspection and final release each require a fresh inventory. The
+one-second query work deadline includes tool startup and selector setup; late
+OS returns are refused without a new allowance. Query retirement still has its
+original separate bound, protects partial setup failures, and requires a fresh
+WNOWAIT ownership observation before signaling or reaping the probe. Portable
+OS-command fixtures cover these failure contracts; controlled same-UID native
+comparison evidence does not qualify every UID, platform or runtime profile.
+
 The report separates work elapsed time from local cleanup elapsed time. A detected live local survivor invalidates preparation even after confirmed retirement; that refusal is distinct from an expired work timer. This does not establish cleanup of remote guest work. The owned VM teardown
 remains necessary. Success requires authenticated Bun output and completed
 candidate/restriction extraction in the expected order. These diagnostics do not

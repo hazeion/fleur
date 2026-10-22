@@ -67,7 +67,7 @@ test("lost query custody refuses proof without signaling its actually reaped PID
 }, 10000);
 
 
-for (const [scenario, reason] of [["owned-overcap", "inventory size"], ["malformed", "inventory schema"], ["missing-leader", "leader absent"], ["duplicate", "inventory identity"], ["linux-rows", "inventory size"]] as const) {
+for (const [scenario, reason] of [["owned-overcap", "inventory size"], ["malformed", "inventory schema"], ["missing-leader", "leader absent"], ["duplicate", "inventory identity"], ["linux-rows", "inventory size"], ["linux-no-waitid", "inventory size"]] as const) {
   test(`bounded inventory still refuses ${scenario}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "fleur-inventory-refusal-"));
     try {
@@ -81,7 +81,12 @@ for (const [scenario, reason] of [["owned-overcap", "inventory size"], ["malform
       expect(JSON.parse(stdout)).toMatchObject({ ok: false, state: "failed", error: { message: expect.stringContaining(reason) } });
       const queries = (await Bun.file(join(root, "inventory-queries.jsonl")).text()).trim().split("\n").map((line) => JSON.parse(line));
       expect(queries.length).toBeGreaterThan(0);
-      expect(queries.every((item) => item.selection === (scenario === "linux-rows" ? "global" : "owned-group"))).toBe(true);
+      expect(queries.every((item) => item.selection === (["linux-rows", "linux-no-waitid"].includes(scenario) ? "global" : "owned-group"))).toBe(true);
+      if (scenario === "linux-no-waitid") {
+        const capabilities = await Bun.file(join(root, "platform-capabilities.json")).json();
+        expect(capabilities).toMatchObject({ actualHost: process.platform, waitidHidden: process.platform === "darwin", libSystemLoaded: process.platform === "darwin", controllerPlatform: process.platform, selectorPlatform: "linux", controllerWaitidAvailable: process.platform !== "darwin" });
+        expect(typeof capabilities.initialWaitidAvailable).toBe("boolean");
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 10000);
 }

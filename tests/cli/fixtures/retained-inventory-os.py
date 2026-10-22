@@ -1,4 +1,5 @@
 """External inventory command model; actual SSH child/custody stay real."""
+import ctypes
 import errno
 import json
 import os
@@ -18,6 +19,20 @@ real_selector = selectors.DefaultSelector
 real_waitpid = os.waitpid
 real_kill = os.kill
 custody_lost = False
+actual_host = sys.platform
+capabilities = {'actualHost':actual_host, 'initialWaitidAvailable':hasattr(os, 'waitid'), 'waitidHidden':False, 'libSystemLoaded':False}
+real_cdll = ctypes.CDLL
+if scenario == 'linux-no-waitid':
+    if actual_host == 'darwin':
+        if hasattr(os, 'waitid'):
+            del os.waitid
+        capabilities['waitidHidden'] = True
+    def cdll(name, *args, **kwargs):
+        library = real_cdll(name, *args, **kwargs)
+        if name == '/usr/lib/libSystem.B.dylib':
+            capabilities['libSystemLoaded'] = True
+        return library
+    ctypes.CDLL = cdll
 
 def popen(args, *positional, **kwargs):
     global leader, probe, custody_lost
@@ -61,6 +76,14 @@ def popen(args, *positional, **kwargs):
     child = real_popen(args, *positional, **kwargs)
     if args[0] == 'ssh':
         leader = child.pid
+        # Initialize the genuine host waitid/LibSystem controller first. Only
+        # the external selector metadata changes at this actual spawn boundary.
+        if scenario == 'linux-no-waitid':
+            capabilities.update(controllerPlatform=sys.platform, controllerWaitidAvailable=hasattr(os, 'waitid'))
+        sys.platform = 'linux' if scenario in ('linux-rows', 'linux-no-waitid') else 'darwin'
+        if scenario == 'linux-no-waitid':
+            capabilities['selectorPlatform'] = sys.platform
+            (root/'platform-capabilities.json').write_text(json.dumps(capabilities))
     return child
 
 class SelectorFault:
@@ -102,9 +125,8 @@ def kill(pid, number):
 
 selectors.DefaultSelector = selector
 os.kill = kill
-# Explicit OS metadata seam keeps this Darwin behavior contract portable.
-# It does not establish native Darwin or Linux completeness.
-sys.platform = 'linux' if scenario == 'linux-rows' else 'darwin'
+# The actual host capabilities/platform initialize the unmodified controller.
+# Modeled query selection is not native Darwin or Linux completeness evidence.
 subprocess.Popen = popen
 try:
     runpy.run_path(sys.argv[2], run_name='__main__')
@@ -117,4 +139,3 @@ finally:
             probe.wait(timeout=3)
         probe.stdout.close()
         (root/"fixture-backup-finished").write_text("retired")
-

@@ -27,7 +27,13 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000,
     "cat /etc/fleur-owned-guest",
   ].join("; ");
   const child = startRetainedSsh(["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remote]);
-  const timer = setTimeout(() => { transport.deadlineFired = true; child.requestTermination(); }, transport.timeoutMs);
+  // Synchronous relay setup consumes the supplied work allowance too. Expire
+  // before yielding so buffered readiness cannot start SSH after that allowance.
+  const remainingWorkMs = started + transport.timeoutMs - performance.now();
+  const expire = () => { transport.deadlineFired = true; child.requestTermination(); };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (remainingWorkMs <= 0) expire();
+  else timer = setTimeout(expire, remainingWorkMs);
   const cancel = () => child.requestTermination();
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();

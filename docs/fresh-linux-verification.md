@@ -128,6 +128,12 @@ WNOWAIT ownership observation before signaling or reaping the probe. Successful
 retirement also requires complete error-free control EOF and actual helper exit
 zero without a signal, within the original cleanup deadline. Physical group
 absence cannot replace the third release check or conceal a late helper error.
+
+If cancellation arrives before the relay sends an SSH start request, the
+observation remains failed with a null SSH exit. Local cleanup is confirmed only
+after that idle relay reaches complete control EOF and actually exits zero
+without a signal, within the same original cleanup deadline. Unexpected idle
+control output, a nonzero helper exit or late retirement keeps cleanup unconfirmed.
 Portable OS-command fixtures cover these failure contracts; controlled same-UID native
 comparison evidence does not qualify every UID, platform or runtime profile.
 

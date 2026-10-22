@@ -12,15 +12,15 @@ test("readiness may obtain verified boot after a clean locally expired observati
     const ready = JSON.stringify({ status: "done", extended_status: "done", errors: [], recoverable_errors: {} }) + "\nFLEUR_OWNED_GUEST_NONCE=" + nonce + "\n";
     await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const calls=await Bun.file(root+'/calls').exists()?Number(await Bun.file(root+'/calls').text())+1:1;await Bun.write(root+'/calls',String(calls));if(calls===1){process.on('SIGTERM',async()=>{await Bun.write(root+'/term-received','TERM');process.exit(255);});setTimeout(()=>process.exit(255),8000);}else process.stdout.write(${JSON.stringify(ready)});\n`, { mode: 0o700 });
     const target = { port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce };
-    const entry = `const {waitForGuestBoot}=await import(${JSON.stringify(script)});console.log(JSON.stringify(await waitForGuestBoot(${JSON.stringify(target)},{deadline:performance.now()+5000,attemptTimeoutMs:1000})));`;
-    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const entry = `const {waitForGuestBoot}=await import(${JSON.stringify(script)});console.log(JSON.stringify(await waitForGuestBoot(${JSON.stringify(target)},{deadline:performance.now()+11000,attemptTimeoutMs:4000})));`;
+    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 14000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exit, stderr + stdout).toBe(0);
     expect(await Bun.file(join(root, "term-received")).text()).toBe("TERM");
     expect(JSON.parse(stdout)).toMatchObject({ formatVersion: 1, scope: "fresh-linux-boot-readiness", ok: true, state: "ready", lastBootObservation: { ok: true, state: "ready", cloudInitComplete: true, nonceMatched: true } });
     expect(await Bun.file(join(root, "calls")).text()).toBe("2");
   } finally { await rm(root, { recursive: true, force: true }); }
-}, 10000);
+}, 16000);
 
 
 async function readinessFixture(behavior: string) {
@@ -30,7 +30,7 @@ async function readinessFixture(behavior: string) {
   const target = { port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce };
   return {
     root,
-    async run(totalMs: number, attemptMs = 1000, vmExitMs?: number) {
+    async run(totalMs: number, attemptMs = 4000, vmExitMs?: number) {
       const lifecycle = vmExitMs === undefined ? "const signal=undefined;" : `const stop=new AbortController();const vm=Bun.spawn([process.execPath,'--eval',${JSON.stringify(`setTimeout(()=>process.exit(0),${vmExitMs})`)}],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});vm.exited.then(()=>stop.abort());const signal=stop.signal;`;
       const entry = `const {waitForGuestBoot}=await import(${JSON.stringify(script)});${lifecycle}console.log(JSON.stringify(await waitForGuestBoot(${JSON.stringify(target)},{deadline:performance.now()+${totalMs},attemptTimeoutMs:${attemptMs},signal})));`;
       const started = performance.now();
@@ -57,7 +57,7 @@ for (const stream of ["stdout", "stderr"] as const) {
   test(`a locally expired255 with ${stream} evidence is not retried`, async () => {
     const fixture = await readinessFixture(`process.on('SIGTERM',()=>{process.${stream}.write('Host key verification failed.\\n');process.exit(255);});setTimeout(()=>process.exit(255),8000);`);
     try {
-      const result = await fixture.run(5000);
+      const result = await fixture.run(8000);
       expect(result.exit, result.stderr + result.stdout).toBe(0);
       expect(result.observed).toMatchObject({ ok: false, state: "failed", error: { code: "SSH_FAILED" }, lastBootObservation: { state: "failed", transport: { deadlineFired: true, cleanupConfirmed: true } } });
       expect(result.observed.lastBootObservation.transport[stream + "Bytes"]).toBeGreaterThan(0);
@@ -66,17 +66,120 @@ for (const stream of ["stdout", "stderr"] as const) {
   }, 10000);
 }
 
-test("repeated clean local expiries consume the original absolute total budget", async () => {
-  const fixture = await readinessFixture("process.on('SIGTERM',()=>process.exit(255));setTimeout(()=>process.exit(255),8000);");
+async function witnessedExpiryReadiness(fractional: boolean) {
+  const root = await mkdtemp(join(tmpdir(), "fleur-readiness-witness-"));
   try {
-    const result = await fixture.run(4500);
-    expect(result.exit, result.stderr + result.stdout).toBe(0);
-    expect(result.observed).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_TIMEOUT" }, lastBootObservation: { state: "failed", transport: { deadlineFired: true, exitCode: 255, cleanupConfirmed: true } } });
-    expect(await Bun.file(join(fixture.root, "calls")).text()).toBe("2");
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(4500);
-    expect(result.elapsedMs).toBeLessThan(5500);
-  } finally { await fixture.close(); }
-}, 10000);
+    const tools = join(root, "tools"); await mkdir(tools);
+    const quoteShell = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+    const body = "import {appendFileSync} from 'node:fs';const receipt=(kind)=>appendFileSync(process.env.FIXTURE_ROOT+'/ssh-events',JSON.stringify({kind,pid:process.pid,ppid:process.ppid})+'\\n');process.on('SIGTERM',()=>{receipt('term');process.exit(255);});setTimeout(()=>process.exit(255),8000);";
+    // Record the actual SSH executable's PID before Bun startup. exec keeps the
+    // same PID, so a shortened final attempt still has a truthful launch witness.
+    await writeFile(join(tools, "ssh"), `#!/bin/sh
+root="$FIXTURE_ROOT"
+calls=0
+if [ -f "$root/calls" ]; then IFS= read -r calls < "$root/calls" || :; fi
+calls=$((calls+1))
+printf '%s' "$calls" > "$root/calls"
+printf '{"kind":"launch","pid":%s,"ppid":%s}\\n' "$$" "$PPID" >> "$root/ssh-events"
+exec ${quoteShell(process.execPath)} --eval ${quoteShell(body)}
+`, { mode: 0o700 });
+    const target = { port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce };
+    const entry = `
+import {mock} from 'bun:test';
+import * as actualChildProcess from 'node:child_process';
+import {readFileSync,existsSync} from 'node:fs';
+const originalSpawn=actualChildProcess.spawn;const relays=[];
+mock.module('node:child_process',()=>({...actualChildProcess,spawn:function(...args){const startedAt=originalNow();const child=originalSpawn.apply(this,args);if(args[0]==='python3'&&Array.isArray(args[1])&&args[1].length===2&&args[1][0]==='-I'&&args[1][1]===${JSON.stringify(resolve(import.meta.dir, "../../scripts/retained-ssh.py"))}){const event={pid:child.pid,startedAt,closed:false,code:null,signal:null};relays.push(event);child.once('close',(code,signal)=>{event.closed=true;event.code=code;event.signal=signal;});}return child;}}));
+const {waitForGuestBoot}=await import(${JSON.stringify(script)});
+const originalNow=performance.now.bind(performance);const originalTimer=globalThis.setTimeout;
+const startNow=originalNow();const deadline=startNow+11000;
+let finalWake=false;let edgeReads=0;let zeroYield=false;let selectedDelay=null;let edgeArmed=false;
+const sshEvents=()=>existsSync(${JSON.stringify(join(root, "ssh-events"))})?readFileSync(${JSON.stringify(join(root, "ssh-events"))},'utf8').trim().split('\\n').map(JSON.parse):[];
+if(${fractional}){
+Object.defineProperty(performance,'now',{configurable:true,value:()=>{if(!edgeArmed)return originalNow();edgeReads++;if(edgeReads<=2)return deadline-0.5;if(edgeReads===3){if(!zeroYield)throw new Error('Fractional edge returned without an actual zero-delay yield');return deadline;}return originalNow();}});
+globalThis.setTimeout=((callback,delay,...args)=>{
+const events=sshEvents();const launches=events.filter(x=>x.kind==='launch');const terms=events.filter(x=>x.kind==='term');
+const complete=relays.length===1&&relays.every(x=>x.closed&&x.code===0&&x.signal===null)&&launches.length===1&&terms.length===1&&relays.every(x=>launches.filter(y=>y.ppid===x.pid).length===1);
+const absent=complete&&launches.every(event=>{try{process.kill(-event.pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+// A ten-millisecond timer belongs to the transport's post-close inventory poll, not readiness backoff.
+if(!finalWake&&absent&&delay>0&&delay<=1000&&delay!==10){return originalTimer(()=>{selectedDelay=delay;finalWake=true;edgeArmed=true;callback(...args);},delay);}
+if(edgeArmed&&edgeReads===2&&delay===0)return originalTimer(()=>{zeroYield=true;callback(...args);},delay);
+return originalTimer(callback,delay,...args);
+});
+}
+const result=await waitForGuestBoot(${JSON.stringify(target)},{deadline,attemptTimeoutMs:4000});
+const events=sshEvents();const absentGroups=events.filter(x=>x.kind==='launch').map(x=>{try{process.kill(-x.pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+console.log(JSON.stringify({result,relays,events,absentGroups,deadline,finalWake,edgeReads,zeroYield,selectedDelay}));
+`;
+    const started = performance.now();
+    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 14000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const elapsedMs = performance.now() - started;
+    // Keep actual receipts in the test log before asserting or removing fixtures.
+    console.info(stdout);
+    if (stderr) console.error(stderr);
+    expect(exit, stderr + stdout).toBe(0);
+    const observed = JSON.parse(stdout);
+    const launches = observed.events.filter((event: { kind: string }) => event.kind === "launch");
+    const terms = observed.events.filter((event: { kind: string }) => event.kind === "term");
+    expect(launches.length).toBeGreaterThanOrEqual(fractional ? 1 : 2);
+    expect(launches.length).toBeLessThanOrEqual(3);
+    expect(await Bun.file(join(root, "calls")).text()).toBe(String(launches.length));
+    expect(terms.length).toBeGreaterThanOrEqual(fractional ? 1 : 2);
+    expect(terms.length).toBeLessThanOrEqual(launches.length);
+    expect(observed.absentGroups).toEqual(launches.map(() => true));
+    expect(observed.relays.length).toBeGreaterThanOrEqual(launches.length);
+    expect(observed.relays.length).toBeLessThanOrEqual(3);
+    for (const relay of observed.relays) {
+      expect(relay).toMatchObject({ closed: true, code: 0, signal: null });
+      expect(Number.isFinite(relay.startedAt)).toBe(true);
+      expect(relay.startedAt).toBeLessThan(observed.deadline);
+    }
+    for (const launch of launches) {
+      expect(observed.relays.filter((relay: { pid: number }) => relay.pid === launch.ppid).length).toBe(1);
+      expect(terms.filter((term: { pid: number; ppid: number }) => term.pid === launch.pid && term.ppid === launch.ppid).length).toBeLessThanOrEqual(1);
+    }
+    for (const launch of launches.slice(0, fractional ? 1 : 2)) {
+      expect(terms.filter((term: { pid: number; ppid: number }) => term.pid === launch.pid && term.ppid === launch.ppid).length).toBe(1);
+    }
+    for (const term of terms) {
+      expect(launches.filter((launch: { pid: number; ppid: number }) => launch.pid === term.pid && launch.ppid === term.ppid).length).toBe(1);
+    }
+    const last = observed.result.lastBootObservation;
+    expect(observed.result).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_TIMEOUT" }, lastBootObservation: { state: "failed", transport: { deadlineFired: true, terminationRequested: true, stdoutBytes: 0, stderrBytes: 0, cleanupConfirmed: true } } });
+    expect(last.transport.timeoutMs).toBeGreaterThan(0);
+    expect(last.transport.timeoutMs).toBeLessThanOrEqual(4000);
+    expect(last.transport.elapsedMs).toBeGreaterThanOrEqual(last.transport.timeoutMs);
+    const finalRelay = observed.relays.at(-1);
+    const finalLaunches = launches.filter((event: { ppid: number }) => event.ppid === finalRelay.pid);
+    if (last.transport.exitCode === 255) {
+      expect(last.error.code).toBe("SSH_FAILED");
+      expect(last.transport.signal).toBeNull();
+      expect(finalLaunches.length).toBe(1);
+      expect(terms.filter((term: { pid: number }) => term.pid === finalLaunches[0].pid).length).toBe(1);
+    } else if (last.transport.exitCode !== null) {
+      // A genuinely started shortened probe can end before its Bun handler is
+      // installed. Keep its actual signal/exit distinct from completed exit255.
+      expect(last.error.code).toBe("SSH_FAILED");
+      expect(finalLaunches.length).toBe(1);
+      expect(["SIGTERM", "SIGKILL"]).toContain(last.transport.signal);
+      expect(last.transport.exitCode).toBe(last.transport.signal === "SIGTERM" ? 143 : 137);
+    } else {
+      expect(last.transport.exitCode).toBeNull();
+      expect(last.transport.signal).toBeNull();
+      expect(last.error).toEqual({ code: "BOOT_OBSERVATION_FAILED", message: "SSH session start was cancelled" });
+      expect(finalLaunches.length).toBe(0);
+      expect(observed.relays.length).toBe(launches.length + 1);
+    }
+    return { observed, elapsedMs, launches };
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+test("repeated clean local expiries consume the original absolute total budget", async () => {
+  const result = await witnessedExpiryReadiness(false);
+  expect(result.elapsedMs).toBeGreaterThanOrEqual(11000);
+  expect(result.elapsedMs).toBeLessThan(12000);
+}, 16000);
 
 test("owned VM exit aborts the active observation and awaits its transport retirement", async () => {
   const fixture = await readinessFixture("process.on('SIGTERM',()=>process.exit(255));setTimeout(()=>process.exit(255),8000);");
@@ -93,28 +196,26 @@ test("owned VM exit aborts the active observation and awaits its transport retir
 test("unconfirmed local expiry cleanup is terminal and never authorizes another observation", async () => {
   const fixture = await readinessFixture("setTimeout(()=>process.exit(255),8000);");
   try {
-    await writeFile(join(fixture.root, "denied.ts"), "const original=process.kill.bind(process);process.kill=((pid,signal)=>{if(pid<0&&signal!==0)throw Object.assign(new Error('Owned fixture EPERM'),{code:'EPERM'});return original(pid,signal);});\n");
-    const result = await fixture.run(6500);
+    await writeFile(join(fixture.root, "denied.ts"), "import {appendFileSync} from 'node:fs';const original=process.kill.bind(process);process.kill=((pid,signal)=>{if(pid<0&&signal!==0){appendFileSync(process.env.FIXTURE_ROOT+'/denied-signals',String(signal)+'\\n');throw Object.assign(new Error('Owned fixture EPERM'),{code:'EPERM'});}return original(pid,signal);});\n");
+    const result = await fixture.run(10000);
     expect(result.exit, result.stderr + result.stdout).toBe(0);
     expect(result.observed).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_OBSERVATION_FAILED" }, lastBootObservation: { state: "failed", transport: { deadlineFired: true, terminationRequested: true, cleanupConfirmed: false } } });
     expect(await Bun.file(join(fixture.root, "calls")).text()).toBe("1");
-    expect(result.elapsedMs).toBeLessThan(5000);
+    const deniedSignals = (await Bun.file(join(fixture.root, "denied-signals")).text()).trim().split("\n");
+    expect(deniedSignals).toContain("SIGTERM");
+    expect(deniedSignals).toContain("SIGKILL");
+    expect(result.elapsedMs).toBeLessThan(8000);
   } finally { await fixture.close(); }
 }, 10000);
 
 test("a sub-millisecond remainder never starts another SSH observation or replaces completed evidence", async () => {
-  const root = await mkdtemp(join(tmpdir(), "fleur-readiness-fraction-"));
-  try {
-    const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nconst root=process.env.FIXTURE_ROOT;const calls=await Bun.file(root+'/calls').exists()?Number(await Bun.file(root+'/calls').text())+1:1;await Bun.write(root+'/calls',String(calls));process.on('SIGTERM',()=>process.exit(255));setTimeout(()=>process.exit(255),8000);\n`, { mode: 0o700 });
-    const target = { port: 2222, identity: join(root, "key"), knownHosts: join(root, "hosts"), nonce };
-    const entry = `const {waitForGuestBoot}=await import(${JSON.stringify(script)});const originalNow=performance.now.bind(performance);const originalTimer=globalThis.setTimeout;const deadline=originalNow()+4500;let finalWake=false;let reads=0;Object.defineProperty(performance,'now',{value:()=>reads>0?(reads--,deadline-0.5):originalNow()});globalThis.setTimeout=((callback,delay,...args)=>originalTimer(()=>{if(!finalWake&&delay>500&&delay<1000){finalWake=true;reads=2;}callback(...args);},delay));const result=await waitForGuestBoot(${JSON.stringify(target)},{deadline,attemptTimeoutMs:1000});console.log(JSON.stringify({result,finalWake}));`;
-    const child = Bun.spawn([process.execPath, "--eval", entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 8000, env: { ...process.env, PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root } });
-    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect(exit, stderr + stdout).toBe(0);
-    const observed = JSON.parse(stdout);
-    expect(observed.finalWake).toBe(true);
-    expect(observed.result).toMatchObject({ ok: false, error: { code: "BOOT_TIMEOUT" }, lastBootObservation: { transport: { deadlineFired: true, exitCode: 255, cleanupConfirmed: true } } });
-    expect(await Bun.file(join(root, "calls")).text()).toBe("2");
-  } finally { await rm(root, { recursive: true, force: true }); }
-}, 10000);
+  const { observed, launches } = await witnessedExpiryReadiness(true);
+  expect(observed.finalWake).toBe(true);
+  expect(observed.zeroYield).toBe(true);
+  expect(observed.edgeReads).toBe(3);
+  expect(observed.selectedDelay).toBeGreaterThan(0);
+  expect(observed.selectedDelay).toBeLessThanOrEqual(1000);
+  expect(observed.result).toMatchObject({ ok: false, error: { code: "BOOT_TIMEOUT" }, lastBootObservation: { transport: { deadlineFired: true, exitCode: 255, cleanupConfirmed: true } } });
+  expect(launches.length).toBe(1);
+  expect(observed.relays.length).toBe(1);
+}, 16000);

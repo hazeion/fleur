@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 import unittest
 import json
+import os
+import tempfile
 from unittest.mock import patch
 sys.dont_write_bytecode=True
 source=Path(sys.argv.pop(1))
@@ -69,10 +71,47 @@ class CallerBinding(unittest.TestCase):
             self.assertEqual(args[:3],['/usr/bin/python3','-I','/usr/local/lib/fleur-owned-guest.py'])
             self.assertEqual(args[3:5],['--owned-guest-nonce',NONCE])
             self.assertGreater(timeout,0);self.assertLessEqual(timeout,10);self.assertEqual(allowed,(0,4))
-            return 0,json.dumps({'formatVersion':1,'scope':'owned-guest-custody-validation','ok':True,'fixtureCustodyValidated':True,**binding._asdict(),'runtimeSupport':'unverified','runtimeAdmission':False,'humanConsentProof':False,'nativeCpuPerformanceProof':False}),''
+            return 0,json.dumps({'formatVersion':1,'scope':'owned-guest-custody-validation','ok':True,'fixtureCustodyValidated':True,**binding._asdict(),'runtimeSupport':'unverified','runtimeAdmission':False,'humanConsentProof':False,'nativeCpuPerformanceProof':False,'osRelease':{'id':'ubuntu','versionId':'24.04','sha256':'c'*64}}),''
         with patch('os.getuid',return_value=1000):
             verified=guest.verify_owned_binding(binding,query=query)
         self.assertEqual(verified,binding);self.assertTrue(calls)
+    def test_full_binding_never_falls_back_when_os_observation_is_missing_or_malformed(self):
+        binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]
+        base={'formatVersion':1,'scope':'owned-guest-custody-validation','ok':True,'fixtureCustodyValidated':True,**binding._asdict(),'runtimeSupport':'unverified','runtimeAdmission':False,'humanConsentProof':False,'nativeCpuPerformanceProof':False}
+        for observed_os in (None, {}, {'id':'debian','versionId':'26.04','sha256':'c'*64}, {'id':'ubuntu','versionId':'27.04','sha256':'c'*64}, {'id':'ubuntu','versionId':'26.04','sha256':True}, {'id':'ubuntu','versionId':'26.04','sha256':'c'*64,'profile':'caller'}):
+            with self.subTest(observed_os=observed_os):
+                result={**base,**({'osRelease':observed_os} if observed_os is not None else {})}
+                with patch('os.getuid',return_value=1000),self.assertRaisesRegex(RuntimeError,'OS binding is incomplete'):
+                    guest.verify_owned_binding(binding,query=lambda *args,**kwargs:(0,json.dumps(result),''))
+
+class CandidateBudget(unittest.TestCase):
+    def test_catalog_eof_delay_refuses_before_any_further_metadata_io(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-catalog-clock-') as home,patch.dict(os.environ,{'HOME':home}):
+            alternate=importlib.util.module_from_spec(spec);spec.loader.exec_module(alternate)
+            alternate.GUEST_DEADLINE=1000.0
+            package=Path(home)/'lab/package';package.mkdir(parents=True,mode=0o700)
+            raw=(source.parent/'native-candidate-ubuntu24-amd64.json').read_bytes()
+            catalog=json.loads(raw)
+            metadata={key:catalog[key] for key in ('formatVersion','catalogId','artifactAuthentication','installationEvidence','runtimeSupport','authentication','artifacts','limits')}
+            metadata.update(internalArtifact=True,catalogSha256='540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58',legacyProfileAdmission={'verified':True,'meaning':'internal-catalog-admission-only'})
+            (package/'internal-native-candidate.json').write_text(json.dumps(metadata))
+            (package/'internal-native-candidate-catalog.json').write_bytes(raw)
+            original_open=os.open;original_read=os.read;original_fstat=os.fstat
+            paths={};clock=[100.0];expired=[False]
+            def opened(name,*args,**kwargs):
+                fd=original_open(name,*args,**kwargs);paths[fd]=str(name);return fd
+            def read(fd,maximum):
+                block=original_read(fd,maximum)
+                if paths.get(fd)=='internal-native-candidate-catalog.json' and not block:
+                    clock[0]=111.0;expired[0]=True
+                return block
+            def fstat(fd):
+                if expired[0]:raise AssertionError('Catalog performed metadata I/O after its absolute phase end')
+                return original_fstat(fd)
+            with patch('time.monotonic',side_effect=lambda:clock[0]),patch.object(os,'open',side_effect=opened),patch.object(os,'read',side_effect=read),patch.object(os,'fstat',side_effect=fstat):
+                with self.assertRaises(TimeoutError):alternate.checked_internal_candidate()
+            self.assertTrue(expired[0])
+
 class RestrictionCaller(unittest.TestCase):
     def test_owned_restriction_uses_original_identity_and_absolute_guest_remainder(self):
         binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]

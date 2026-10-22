@@ -176,3 +176,38 @@ x64 tuple, with independent runtime, custody and disposal evidence review. See
 the [recorded-helper evidence](setup-artifact-evidence.md#recorded-helper-verification-on-the-existing-ubuntu-tuple).
 No new platform qualification or aggregate v1 compatibility claim follows from
 this input path.
+
+## Ubuntu 26 internal candidate
+
+`build-native-candidate.ts --out <new-owned-directory> --fixture ubuntu26-amd64`
+selects one fixed, authenticated Resolute catalog. The default remains
+`ubuntu24-amd64`; arbitrary catalog paths, hashes and profiles are refused. The
+internal archive carries the exact source catalog bytes under a fixed filename.
+The ordinary packed package and its Ubuntu 24 qualification records remain
+unchanged. Ubuntu 26 has no ordinary admission or Doctor 0 shortcut.
+
+The root NoCloud producer accepts only the source-owned Ubuntu 24 or 26 amd64
+target. Its default target is Ubuntu 24. Before creating the manifest, it checks
+the actual OS, architecture, init and virtualization. The protected manifest
+binds the original OS ID, release and full release-file hash; retained custody
+also binds the file and protected ancestry identities. Reopening the original
+nonce, boot ID, ordinary UID and manifest SHA cannot authorize a changed OS.
+These four public binding fields and the strict root-control reply stay intact.
+The ordinary custody observation separately includes validated OS metadata.
+
+Before setup authority or resumed account work, the guest authenticates catalog
+bytes against an independent source pin, compares the marker, artifacts and
+authentication record, and checks the original OS/architecture target. A marker
+cannot authorize its own replacement checksum. Missing or malformed OS metadata
+on a full binding is refused. The legacy nonce-only Ubuntu 24 fixture cannot
+select Ubuntu 26 or establish its full custody proof. The new catalog stat identities stay inside Python. Its new report fields
+contain only hashes and fixed strings.
+
+The Resolute record retains artifact authentication separately from pending
+installation evidence and unverified runtime support. Its scoped five-package
+maintainer-script digest differs from the historical six-profile digest, and
+both scopes are explicit. Portable artifact and command-protocol tests do not
+prove native installation or runtime behavior. Full Ubuntu 26 execution,
+independent evidence review, and any later ordinary admission remain pending.
+All existing setup grants, GC/idle, resource, isolation, physical deadline and
+owned disposal assertions remain required.

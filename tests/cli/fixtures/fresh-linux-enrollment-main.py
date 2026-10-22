@@ -26,12 +26,44 @@ tools = root / "tools"
 tools.mkdir(mode=0o700)
 state_path = root / "protocol-state.json"
 state_path.write_text(json.dumps({"installed": False, "enrolled": False, "installPrompts": [], "enrollmentPrompts": [], "staleReprobes": 0, "unexpected": [], "uid": uid, "scenario": scenario}))
-metadata = {"formatVersion": 1, "internalArtifact": True, "catalogId": "owned-protocol", "catalogSha256": "c" * 64, "installationEvidence": "pending", "runtimeSupport": "unverified", "provenance": {"ordinaryArchiveSha256": "d" * 64, "sourceFilesSha256": "e" * 64, "sourceFiles": []}, "artifacts": [{"name": name, "version": "fixture-version"} for name in ["docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"]]}
+catalog_file = source.parent / ('native-candidate-ubuntu26-amd64.json' if scenario == 'crossed-catalog' else 'native-candidate-ubuntu24-amd64.json')
+catalog_bytes = catalog_file.read_bytes()
+catalog = json.loads(catalog_bytes)
+metadata = {key: catalog[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}
+metadata.update(internalArtifact=True, catalogSha256=hashlib.sha256(catalog_bytes).hexdigest(),
+    legacyProfileAdmission={'verified':True, 'meaning':'internal-catalog-admission-only'},
+    provenance={'ordinaryArchiveSha256':'d'*64, 'sourceFilesSha256':'e'*64, 'sourceFiles':[]})
 (lab / "package/bin").mkdir(parents=True)
 (lab / "package/bin/fleur.ts").write_text("// Owned protocol fixture, never the real runtime\n")
 (lab / "package/internal-native-candidate.json").write_text(json.dumps(metadata))
+(lab / "package/internal-native-candidate-catalog.json").write_bytes(catalog_bytes)
+if scenario == 'candidate-marker-boolean':
+    metadata['legacyProfileAdmission']['verified'] = 1
+    (lab / 'package/internal-native-candidate.json').write_text(json.dumps(metadata))
+if scenario == 'candidate-missing-catalog':
+    (lab/'package/internal-native-candidate-catalog.json').unlink()
+if scenario == 'candidate-symlink-catalog':
+    (lab/'package/internal-native-candidate-catalog.json').rename(root/'retained-source-catalog.json')
+    (lab/'package/internal-native-candidate-catalog.json').symlink_to(root/'retained-source-catalog.json')
+if scenario == 'candidate-self-rehashed-catalog':
+    altered = dict(catalog)
+    altered['profile'] = {**catalog['profile'], 'release':'26.04'}
+    altered_bytes = json.dumps(altered).encode()
+    (lab/'package/internal-native-candidate-catalog.json').write_bytes(altered_bytes)
+    metadata['catalogSha256'] = hashlib.sha256(altered_bytes).hexdigest()
+    (lab/'package/internal-native-candidate.json').write_text(json.dumps(metadata))
+if scenario == 'candidate-artifact-mismatch':
+    metadata['artifacts'][0]['version'] = 'caller-version'
+    (lab/'package/internal-native-candidate.json').write_text(json.dumps(metadata))
+if scenario == 'candidate-missing-hash':
+    del metadata['catalogSha256']
+    (lab/'package/internal-native-candidate.json').write_text(json.dumps(metadata))
+if scenario == 'candidate-unknown-target':
+    metadata['catalogId'] = 'caller-candidate'
+    (lab/'package/internal-native-candidate.json').write_text(json.dumps(metadata))
 if scenario.startswith("ordinary-"):
     (lab / "package/internal-native-candidate.json").unlink()
+    (lab / "package/internal-native-candidate-catalog.json").unlink()
     (lab / "package/package.json").write_text(json.dumps({"name":"fleur"}))
     catalog=json.loads((source.parent/'native-candidate-ubuntu24-amd64.json').read_text())
     profile={"method":"docker-official-apt","verified":True,**catalog['profile'],
@@ -440,7 +472,7 @@ os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/u
 sys.argv = [str(source), nonce]
 with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance + (61 if scenario == "command-orphan-timeout" and (root / "orphan-heartbeat").exists() else 0)), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
-        if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+        if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()
             with contextlib.redirect_stdout(first_output):
                 try:
@@ -455,6 +487,14 @@ with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_ad
             state_path.write_text(json.dumps(state))
             if scenario == "resume-boot-change":
                 known["/proc/sys/kernel/random/boot_id"] = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee\n"
+            if scenario == 'resume-catalog-change':
+                replacement_bytes = (source.parent/'native-candidate-ubuntu26-amd64.json').read_bytes()
+                replacement = json.loads(replacement_bytes)
+                changed_metadata = {key: replacement[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}
+                changed_metadata.update(internalArtifact=True, catalogSha256=hashlib.sha256(replacement_bytes).hexdigest(),
+                    legacyProfileAdmission={'verified':True, 'meaning':'internal-catalog-admission-only'}, provenance=metadata['provenance'])
+                (lab/'package/internal-native-candidate.json').write_text(json.dumps(changed_metadata))
+                (lab/'package/internal-native-candidate-catalog.json').write_bytes(replacement_bytes)
             if scenario == "resume-artifact-change":
                 (lab / "package/bin/fleur.ts").write_text("Changed owned candidate after initial handoff\n")
             if scenario == "resume-state-symlink":

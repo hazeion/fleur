@@ -142,6 +142,7 @@ class OwnedGuestContext:
     uid: int
     manifest_sha256: str
     files: tuple
+    os_release: tuple = ()
 
     def verify(self, remaining=None, *, absolute_deadline=None):
         if remaining is not None and (type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0):
@@ -196,7 +197,8 @@ def validate(nonce, *, deadline=None, ordinary_uid=None):
             or type(parsed['uid']) is not int or parsed['uid'] != uid):
         raise ValueError('owned manifest binding')
     context = OwnedGuestContext(nonce, boot_id, uid, hashlib.sha256(manifest).hexdigest(),
-                                (marker_identity, manifest_identity, producer_identity, release_custody))
+                                (marker_identity, manifest_identity, producer_identity, release_custody),
+                                tuple(os_release[key] for key in ('id', 'versionId', 'sha256')))
     budget_remaining(deadline)
     return context
 
@@ -303,6 +305,8 @@ def main(arguments):
             context = validate(arguments[1], deadline=deadline)
             context.verify(budget_remaining(deadline), absolute_deadline=deadline)
             result.update(context.report())
+            # Ordinary observation only; the strict root-control reply is unchanged.
+            result['osRelease'] = dict(zip(('id', 'versionId', 'sha256'), context.os_release))
         budget_remaining(deadline)
         result['ok'] = True
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired):

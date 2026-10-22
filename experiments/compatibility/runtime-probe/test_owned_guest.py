@@ -142,6 +142,7 @@ class OwnedGuestCustody(unittest.TestCase):
         code, report = self.observe(release='26.04')
         self.assertEqual(code, 0)
         self.assertEqual(report['scope'], 'owned-guest-custody-validation')
+        self.assertEqual(report['osRelease'], {'id':'ubuntu', 'versionId':'26.04', 'sha256':hashlib.sha256(b'ID=ubuntu\nVERSION_ID="26.04"\n').hexdigest()})
         self.assertEqual((report['nonce'], report['bootId'], report['uid']), (NONCE, BOOT, 1000))
         self.assertTrue(report['fixtureCustodyValidated'])
         self.assertFalse(report['runtimeAdmission'])
@@ -177,6 +178,38 @@ class OwnedGuestCustody(unittest.TestCase):
                     control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
                 self.assertEqual(code, 0)
                 self.assertTrue(report['ok'])
+
+    def test_fresh_factory_refuses_changed_raw_os_bytes_with_same_tuple(self):
+        from host_control import select_owned_context
+        def changed(fixture):
+            release = fixture.root/'usr/lib/os-release'
+            release.chmod(0o644)
+            release.write_text('ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="changed description"\n')
+            release.chmod(0o444)
+            with self.assertRaises(ValueError):
+                select_owned_context(nonce=fixture.context.custody.nonce, boot_id=fixture.context.custody.boot_id,
+                    uid=fixture.context.custody.uid, manifest_sha256=fixture.context.custody.manifest_sha256,
+                    remaining=0.25, deadline=100.25)
+        code, report = self.observe(control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
+
+    def test_root_cli_refuses_reverse_ubuntu26_to24_original_os_drift(self):
+        def changed(fixture):
+            payload = fixture.context.root_payload()
+            release = fixture.root/'usr/lib/os-release'
+            release.chmod(0o644)
+            release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+            release.chmod(0o444)
+            response = fixture.root_cli(['--verify-control', payload, '--budget-seconds', '0.25'])
+            self.assertEqual(response.returncode, 4)
+            result = json.loads(response.stdout)
+            self.assertFalse(result['ok'])
+            self.assertNotIn('rootValidation', result)
+            self.assertFalse(result['runtimeAdmission'])
+        code, report = self.observe(release='26.04', control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
 
     def test_root_cli_agrees_on_exact_ubuntu26_original_binding(self):
         def verified(fixture):

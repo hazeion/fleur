@@ -20,13 +20,36 @@ scenario = sys.argv[2]
 nonce = "12345678-1234-1234-1234-123456789abc"
 boot = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 uid = os.getuid() or 1000
+# Consumer-protocol cases reuse a frame emitted by the actual root policy over
+# real protected fixture files. This does not claim root ownership or native proof.
+owned_cases = {
+    'owned26-target-valid': ('26.04', '26.04'),
+    'owned26-noble-cross': ('26.04', '24.04'),
+    'owned24-resolute-cross': ('24.04', '26.04'),
+    'owned26-resume-noble': ('26.04', '26.04'),
+    'owned24-resume-resolute': ('24.04', '24.04'),
+}
+owned_frame = None
+binding_arguments = []
+if scenario in owned_cases:
+    sys.path.insert(0, str(source.parent.parent/'experiments/compatibility/runtime-probe'))
+    try:
+        from test_owned_guest import OwnedGuestCustody, NONCE, BOOT
+        policy = OwnedGuestCustody()
+        code, owned_frame = policy.observe(release=owned_cases[scenario][0], ordinary_uid=uid)
+        if code != 0 or owned_frame.get('fixtureCustodyValidated') is not True:
+            raise RuntimeError('Actual protected-file policy did not produce the consumer fixture frame')
+    finally:
+        sys.path.pop(0)
+    nonce, boot = NONCE, BOOT
+    binding_arguments = ['--owned-guest-boot-id', boot, '--owned-guest-uid', str(uid), '--owned-guest-manifest-sha256', owned_frame['manifestSha256']]
 lab = root / "lab"
 lab.mkdir(mode=0o700)
 tools = root / "tools"
 tools.mkdir(mode=0o700)
 state_path = root / "protocol-state.json"
-state_path.write_text(json.dumps({"installed": False, "enrolled": False, "installPrompts": [], "enrollmentPrompts": [], "staleReprobes": 0, "unexpected": [], "uid": uid, "scenario": scenario}))
-catalog_file = source.parent / ('native-candidate-ubuntu26-amd64.json' if scenario == 'crossed-catalog' else 'native-candidate-ubuntu24-amd64.json')
+state_path.write_text(json.dumps({"rootPolicyFrame": owned_frame, "installed": False, "enrolled": False, "installPrompts": [], "enrollmentPrompts": [], "staleReprobes": 0, "unexpected": [], "uid": uid, "scenario": scenario}))
+catalog_file = source.parent / ('native-candidate-ubuntu26-amd64.json' if scenario == 'crossed-catalog' or scenario in owned_cases and owned_cases[scenario][1] == '26.04' else 'native-candidate-ubuntu24-amd64.json')
 catalog_bytes = catalog_file.read_bytes()
 catalog = json.loads(catalog_bytes)
 metadata = {key: catalog[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}
@@ -102,6 +125,10 @@ def ask(action,target,checksum,enrollment=False,method="docker-official-apt"):
   if s['scenario']=='prompt-checksum':checksum='f'*64
  print('Authorize '+action+' using '+method+' for '+target+'\nPlan '+checksum+"\nType 'once', 'remember', or 'deny': ",end='',flush=True)
  reply=sys.stdin.readline().strip();s['enrollmentPrompts' if enrollment else 'installPrompts'].append({'action':action,'target':target,'checksum':checksum,'reply':reply});save();return reply
+if name=='python3' and args[:3]==['-I','/usr/local/lib/fleur-owned-guest.py','--owned-guest-nonce'] and s.get('rootPolicyFrame'):
+ frame=s['rootPolicyFrame']
+ if len(args)<4 or args[3]!=frame['nonce']:raise RuntimeError('Root policy frame nonce differs')
+ print(json.dumps(frame));sys.exit(0)
 if name=='bun':
  if args==['--version']:print('1.4.3');sys.exit(0)
  if args and args[0]=='-e' and s['scenario'].startswith('ordinary-admitted'):sys.stdout.write('oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e');sys.exit(0)
@@ -165,6 +192,8 @@ if name=='uname' and s['scenario'] in ('command-orphan','command-orphan-timeout'
   (root/'orphan-heartbeat').write_text(str(time.monotonic()));time.sleep(0.02)
 if name=='uname':print('x86_64' if args==['-m'] else 'Linux 6.8.0-fixture x86_64 GNU/Linux');sys.exit(0)
 if name=='systemd-detect-virt':print('qemu');sys.exit(0)
+if name=='dpkg-query' and s['scenario']=='owned26-target-valid':
+ s['targetBoundaryObserved']=True;save();print('TARGET_BOUNDARY_OBSERVED',file=sys.stderr);sys.exit(42)
 if name=='dpkg-query':
  if '--show' not in args:raise RuntimeError('Unexpected package mutation/query')
  print('base-files\tfixture\tii ')
@@ -344,6 +373,7 @@ def lstat(path, *args, **kwargs):
     return observed
 
 original_open = os.open
+original_fstat = os.fstat
 original_fsync = os.fsync
 original_path_open = Path.open
 injected = set()
@@ -386,10 +416,15 @@ def path_open(path, *args, **kwargs):
     return original_path_open(path, *args, **kwargs)
 
 def descriptor_open(path, *args, **kwargs):
+    if str(path) == '/etc/os-release':
+        return original_open(os_release_alias, *args, **kwargs)
     if path == "/var/lib/apt/lists":
         return original_open(apt_lists, *args, **kwargs)
     if scenario.startswith("apt-index-") and kwargs.get("dir_fd") is not None and isinstance(path, str) and "/" not in path:
-        apt_open_witness(apt_lists / path)
+        held = original_fstat(kwargs['dir_fd'])
+        expected = original_stat(apt_lists)
+        if (held.st_dev, held.st_ino) == (expected.st_dev, expected.st_ino):
+            apt_open_witness(apt_lists / path)
     if isinstance(path, (str, os.PathLike)):
         apt_open_witness(path)
     source_fault(path)
@@ -431,6 +466,8 @@ def fsync(fd):
 original_stat = os.stat
 
 def apt_stat(path, *args, **kwargs):
+    if str(path) == '/etc/os-release':
+        return original_stat(os_release_alias, *args, **kwargs)
     if path == "/var/lib/apt/lists":
         return original_stat(apt_lists, *args, **kwargs)
     observed = original_stat(path, *args, **kwargs)
@@ -446,6 +483,11 @@ original_popen = __import__("subprocess").Popen
 original_monotonic = time.monotonic
 clock_advance = 0
 original_glob_glob = glob.glob
+os_release_file = root/'fixture-os-release'
+os_release_file.write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+os_release_file.chmod(0o444)
+os_release_alias = root/'fixture-os-release-alias'
+os_release_alias.symlink_to(os_release_file)
 known = {"/etc/fleur-owned-guest": nonce + "\n", "/proc/1/comm": "systemd\n", "/etc/os-release": 'ID=ubuntu\nVERSION_ID="24.04"\n', "/proc/sys/kernel/random/boot_id": boot + "\n"}
 
 def read_text(path, *args, **kwargs):
@@ -469,10 +511,10 @@ def popen(args, *positional, **kwargs):
     raise RuntimeError("Fixture refused a physical host command")
 
 os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/usr/bin:/bin")
-sys.argv = [str(source), nonce]
+sys.argv = [str(source), nonce, *binding_arguments]
 with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance + (61 if scenario == "command-orphan-timeout" and (root / "orphan-heartbeat").exists() else 0)), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
-        if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+        if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()
             with contextlib.redirect_stdout(first_output):
                 try:
@@ -487,8 +529,9 @@ with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_ad
             state_path.write_text(json.dumps(state))
             if scenario == "resume-boot-change":
                 known["/proc/sys/kernel/random/boot_id"] = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee\n"
-            if scenario == 'resume-catalog-change':
-                replacement_bytes = (source.parent/'native-candidate-ubuntu26-amd64.json').read_bytes()
+            if scenario in ('resume-catalog-change', 'owned26-resume-noble', 'owned24-resume-resolute'):
+                replacement_name = 'native-candidate-ubuntu24-amd64.json' if scenario == 'owned26-resume-noble' else 'native-candidate-ubuntu26-amd64.json'
+                replacement_bytes = (source.parent/replacement_name).read_bytes()
                 replacement = json.loads(replacement_bytes)
                 changed_metadata = {key: replacement[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}
                 changed_metadata.update(internalArtifact=True, catalogSha256=hashlib.sha256(replacement_bytes).hexdigest(),
@@ -510,7 +553,7 @@ with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_ad
             state = json.loads(state_path.read_text())
             state["resumeFixtureTransition"] = scenario
             state_path.write_text(json.dumps(state))
-            sys.argv = [str(source), nonce, "--resume", "0" * 64 if scenario == "resume-wrong-digest" else initial["checkpoint"]["sha256"]]
+            sys.argv = [str(source), nonce, "--resume", "0" * 64 if scenario == "resume-wrong-digest" else initial["checkpoint"]["sha256"], *binding_arguments]
             if scenario == "resume-replay":
                 with contextlib.redirect_stdout(io.StringIO()):
                     try:

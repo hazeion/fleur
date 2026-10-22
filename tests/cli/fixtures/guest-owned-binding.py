@@ -112,6 +112,69 @@ class CandidateBudget(unittest.TestCase):
                 with self.assertRaises(TimeoutError):alternate.checked_internal_candidate()
             self.assertTrue(expired[0])
 
+class CandidateOSRead(unittest.TestCase):
+    def test_oversized_legacy_os_snapshot_never_requests_an_unbounded_read(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-legacy-os-read-') as home,patch.dict(os.environ,{'HOME':home}):
+            alternate=importlib.util.module_from_spec(spec);spec.loader.exec_module(alternate)
+            alternate.GUEST_DEADLINE=alternate.time.monotonic()+5
+            record=Path(home)/'os-release'
+            record.write_text('ID=ubuntu\nVERSION_ID="24.04"\n'+'X'*17000)
+            original_path_open=Path.open;original_open=os.open
+            owner=self
+            class Stream:
+                def __init__(self,stream):self.stream=stream
+                def __enter__(self):return self
+                def __exit__(self,*args):return self.stream.__exit__(*args)
+                def __getattr__(self,name):return getattr(self.stream,name)
+                def read(self,size=-1):
+                    owner.assertGreaterEqual(size,0,'OS snapshot requested an unbounded read before its size cap')
+                    owner.assertLessEqual(size,16385)
+                    return self.stream.read(size)
+            def opened(path,*args,**kwargs):
+                return Stream(original_path_open(record,*args,**kwargs)) if str(path)=='/etc/os-release' else original_path_open(path,*args,**kwargs)
+            def descriptor(path,*args,**kwargs):
+                return original_open(record if str(path)=='/etc/os-release' else path,*args,**kwargs)
+            with patch.object(Path,'open',opened),patch.object(os,'open',side_effect=descriptor):
+                with self.assertRaisesRegex(RuntimeError,'OS release'):
+                    alternate.verify_guest_candidate_target(None)
+
+    def test_standard_os_alias_retains_exact_regular_file_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-legacy-os-alias-') as home:
+            record=Path(home)/'os-release';body=b'ID=ubuntu\nVERSION_ID="24.04"\n'
+            record.write_bytes(body);record.chmod(0o444)
+            alias=Path(home)/'alias';alias.symlink_to(record)
+            original_open=os.open;original_stat=os.stat
+            def opened(path,*args,**kwargs):return original_open(alias if str(path)=='/etc/os-release' else path,*args,**kwargs)
+            def observed(path,*args,**kwargs):return original_stat(alias if str(path)=='/etc/os-release' else path,*args,**kwargs)
+            with patch.object(os,'open',side_effect=opened),patch.object(os,'stat',side_effect=observed):
+                self.assertEqual(guest.legacy_os_release_snapshot().encode(),body)
+
+    def test_fifo_os_record_is_refused_without_a_blocking_read(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-legacy-os-fifo-') as home:
+            record=Path(home)/'os-release';os.mkfifo(record,0o600)
+            original_open=os.open
+            def opened(path,*args,**kwargs):return original_open(record if str(path)=='/etc/os-release' else path,*args,**kwargs)
+            with patch.object(os,'open',side_effect=opened),patch.object(os,'read',side_effect=AssertionError('FIFO reached a read')):
+                with self.assertRaisesRegex(RuntimeError,'OS release type or size'):
+                    guest.legacy_os_release_snapshot()
+
+    def test_late_os_eof_starts_no_further_metadata_io(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-legacy-os-clock-') as home:
+            record=Path(home)/'os-release';record.write_text('ID=ubuntu\nVERSION_ID="24.04"\n');record.chmod(0o444)
+            original_open=os.open;original_read=os.read;original_fstat=os.fstat
+            clock=[100.0];expired=[False]
+            def opened(path,*args,**kwargs):return original_open(record if str(path)=='/etc/os-release' else path,*args,**kwargs)
+            def read(fd,maximum):
+                block=original_read(fd,maximum)
+                if not block:clock[0]=111.0;expired[0]=True
+                return block
+            def observed(fd):
+                if expired[0]:raise AssertionError('OS record performed metadata I/O after its original phase end')
+                return original_fstat(fd)
+            with patch('time.monotonic',side_effect=lambda:clock[0]),patch.object(guest,'GUEST_DEADLINE',105.0),patch.object(os,'open',side_effect=opened),patch.object(os,'read',side_effect=read),patch.object(os,'fstat',side_effect=observed):
+                with self.assertRaises(TimeoutError):guest.legacy_os_release_snapshot()
+            self.assertTrue(expired[0])
+
 class RestrictionCaller(unittest.TestCase):
     def test_owned_restriction_uses_original_identity_and_absolute_guest_remainder(self):
         binding=guest.parse_guest_invocation([NONCE,*FIELDS])[2]

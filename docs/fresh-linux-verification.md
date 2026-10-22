@@ -194,6 +194,11 @@ also binds the file and protected ancestry identities. Reopening the original
 nonce, boot ID, ordinary UID and manifest SHA cannot authorize a changed OS.
 These four public binding fields and the strict root-control reply stay intact.
 The ordinary custody observation separately includes validated OS metadata.
+The guest reuses that protected observation for the target check instead of
+reading OS bytes again through another pathname. Its report identifies this
+evidence source; it does not claim a second raw OS observation. Legacy
+nonce-only Ubuntu 24 observations use a bounded regular-file snapshot that
+allows the standard OS-release alias and consumes the existing phase budget.
 
 Before setup authority or resumed account work, the guest authenticates catalog
 bytes against an independent source pin, compares the marker, artifacts and

@@ -798,27 +798,68 @@ def checked_internal_candidate():
         os.close(directory)
 
 
+def legacy_os_release_snapshot():
+    started = time.monotonic()
+    deadline = started + budget_seconds(10)
+    def check_budget():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Legacy OS release snapshot deadline expired')
+    check_budget()
+    # /etc/os-release normally aliases /usr/lib/os-release. Retain the opened
+    # regular target and compare its published identity; never block on a FIFO.
+    fd = os.open('/etc/os-release', os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        check_budget()
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_mode & 0o022 or not 0 < before.st_size <= 16384:
+            raise RuntimeError('Legacy OS release type or size is unsafe')
+        body = bytearray()
+        while len(body) <= before.st_size:
+            check_budget()
+            block = os.read(fd, min(4096, before.st_size+1-len(body)))
+            check_budget()
+            if not block:
+                break
+            body.extend(block)
+        check_budget()
+        after = os.fstat(fd)
+        check_budget()
+        named = os.stat('/etc/os-release')
+        check_budget()
+        if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(after) != file_identity(named):
+            raise RuntimeError('Legacy OS release snapshot changed')
+        return bytes(body).decode()
+    finally:
+        os.close(fd)
+
+
 def verify_guest_candidate_target(owned_binding):
-    os_release = Path('/etc/os-release').read_text()
-    body = os_release.encode()
-    if len(body) > 16384:
-        raise RuntimeError('Guest candidate target OS record exceeds its bound')
-    fields = {}
-    for line in os_release.splitlines():
-        if '=' in line:
-            key, value = line.split('=', 1)
-            if key in fields:
-                raise RuntimeError('Guest candidate target OS record is ambiguous')
-            fields[key] = value.strip('"')
     if owned_binding is not None:
+        # The original manifest and same protected read already authenticate
+        # these bytes. Do not replace that proof with another /etc pathname read.
         observed = REPORT.get('ownedGuestCustody', {}).get('osRelease')
-        if (type(observed) is not dict or observed != {'id':fields.get('ID'), 'versionId':fields.get('VERSION_ID'), 'sha256':hashlib.sha256(body).hexdigest()}):
+        if (type(observed) is not dict or set(observed) != {'id', 'versionId', 'sha256'}
+                or observed['id'] != 'ubuntu' or observed['versionId'] not in ('24.04', '26.04')
+                or type(observed['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', observed['sha256']) is None):
             raise RuntimeError('Original owned guest candidate target OS binding changed')
+        fields = {'ID':observed['id'], 'VERSION_ID':observed['versionId']}
         release = observed['versionId']
+        os_release = None  # No redundant raw-file observation is claimed.
+        os_evidence = {'source':'validated-owned-manifest', **observed}
     else:
+        os_release = legacy_os_release_snapshot()
+        fields = {}
+        for line in os_release.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                if key in fields:
+                    raise RuntimeError('Guest candidate target OS record is ambiguous')
+                fields[key] = value.strip('"')
         release = '24.04'
         if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') != release:
             raise RuntimeError('Legacy guest candidate target requires the original Ubuntu24 fixture')
+        os_evidence = {'source':'legacy-nonce-only-observation', 'fixtureCustodyValidated':False,
+                       'id':fields['ID'], 'versionId':release, 'sha256':hashlib.sha256(os_release.encode()).hexdigest()}
     if fields.get('ID') != 'ubuntu' or release not in ('24.04', '26.04') or run(['uname', '-m'])[1].strip() != 'x86_64':
         raise RuntimeError('Guest candidate target differs from the closed native tuple')
     try:
@@ -830,7 +871,7 @@ def verify_guest_candidate_target(owned_binding):
         catalog = checked_internal_candidate()
         if catalog['profile']['release'] != release:
             raise RuntimeError('Internal candidate target differs from the original guest OS')
-    return os_release
+    return os_release, os_evidence
 
 
 def installation_packages():
@@ -920,8 +961,8 @@ def main():
         (ROOT / "package/internal-native-candidate.json").lstat()
     except FileNotFoundError:
         ordinary_packages = installation_packages()
-    os_release = verify_guest_candidate_target(owned_binding)
-    REPORT["guest"] = {"osRelease": os_release, "kernel": run(["uname", "-srmo"])[1],
+    os_release, os_evidence = verify_guest_candidate_target(owned_binding)
+    REPORT["guest"] = {"osRelease": os_release, "osReleaseEvidence": os_evidence, "kernel": run(["uname", "-srmo"])[1],
                        "virtualization": run(["systemd-detect-virt"])[1].strip(), "bun": run([BUN, "--version"])[1].strip()}
     if REPORT["guest"]["virtualization"] not in ("qemu", "kvm") or REPORT["guest"]["bun"] != "1.4.3":
         raise RuntimeError("Guest virtualization/runtime identity differs")

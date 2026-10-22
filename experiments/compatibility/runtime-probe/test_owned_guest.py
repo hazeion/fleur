@@ -22,11 +22,11 @@ BOOT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
 
 class OwnedGuestCustody(unittest.TestCase):
-    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04'):
+    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04', ordinary_uid=1000):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             bodies = {'etc/fleur-owned-guest': NONCE,
-                      'etc/fleur-owned-guest.json': json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': 1000, 'osRelease': {'id':'ubuntu', 'versionId':release, 'sha256':hashlib.sha256(f'ID=ubuntu\nVERSION_ID="{release}"\n'.encode()).hexdigest()}}),
+                      'etc/fleur-owned-guest.json': json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': ordinary_uid, 'osRelease': {'id':'ubuntu', 'versionId':release, 'sha256':hashlib.sha256(f'ID=ubuntu\nVERSION_ID="{release}"\n'.encode()).hexdigest()}}),
                       'proc/sys/kernel/random/boot_id': BOOT+'\n',
                       'proc/1/comm': 'systemd\n',
                       'usr/lib/os-release': f'ID=ubuntu\nVERSION_ID="{release}"\n',
@@ -82,7 +82,7 @@ class OwnedGuestCustody(unittest.TestCase):
             virtualization_calls=0
             clock=[100.0]
             clock_script=[]
-            uid_state=[0 if scenario.startswith('produce') else 1000]
+            uid_state=[0 if scenario.startswith('produce') else ordinary_uid]
             def monotonic():
                 if clock_script:clock[0]=clock_script.pop(0)
                 return clock[0]
@@ -96,7 +96,7 @@ class OwnedGuestCustody(unittest.TestCase):
                     (root/'etc/unrelated-service-state').write_text('separate root-owned host state')
                 return SimpleNamespace(returncode=0,stdout=b'qemu\n',stderr=b'')
             output=io.StringIO()
-            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.os.geteuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1000)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
+            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.os.geteuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=ordinary_uid)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
                 if control_binding is None:
                     code=owned_guest.main(['--owned-guest-nonce',NONCE] if arguments is None else arguments)
                 else:

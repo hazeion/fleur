@@ -75,3 +75,49 @@ test("fresh login cannot switch the original source-owned candidate target befor
     expect(first).toMatchObject({ phase: "new-login-required", ok: false, installationEvidence: "pending" });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
+
+// These are consumer-protocol checks. The external response is captured from the
+// actual protected-file policy fixture, not a native custody/installation proof.
+for (const scenario of ["owned26-target-valid", "owned26-noble-cross", "owned24-resolute-cross", "owned26-resume-noble", "owned24-resume-resolute"]) {
+  test(`full original binding enforces the closed target at the guest boundary: ${scenario}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "fleur-bound-target-protocol-"));
+    try {
+      const python = Bun.which("python3"); if (!python) throw new Error("Existing Python required");
+      const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+      const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exit, stderr + stdout).toBe(4);
+      const report = JSON.parse(stdout);
+      expect(report).toMatchObject({ ok: false, installationEvidence: "pending", runtimeSupport: "unverified" });
+      const state = await Bun.file(join(root, "protocol-state.json")).json();
+      expect(report.ownedGuestCustody).toEqual(state.rootPolicyFrame);
+      expect(state.unexpected).toEqual([]);
+      if (scenario === "owned26-target-valid") {
+        expect(report.error.message).toContain("TARGET_BOUNDARY_OBSERVED");
+        expect(state.targetBoundaryObserved).toBe(true);
+        expect(report.guest.osRelease).toBeNull();
+        expect(report.guest.osReleaseEvidence).toEqual({ source: "validated-owned-manifest", ...state.rootPolicyFrame.osRelease });
+        expect(report.executionArtifact.catalogId).toBe("ubuntu-26.04-amd64-docker-2026-10-19");
+        expect(state.installed).toBe(false);
+        expect(state.installPrompts).toEqual([]);
+        expect(state.enrollmentPrompts).toEqual([]);
+      } else {
+        expect(report.error.message).toContain("candidate target");
+        expect(state.targetBoundaryObserved).toBeUndefined();
+        if (scenario.includes("resume")) {
+          expect(state.installed).toBe(true);
+          expect(state.enrollmentPrompts).toHaveLength(1);
+          expect(state.staleReprobes).toBe(2);
+          const first = await Bun.file(join(root, "first-session-report.json")).json();
+          expect(first).toMatchObject({ phase: "new-login-required", ok: false, installationEvidence: "pending" });
+          expect(first.ownedGuestCustody).toEqual(state.rootPolicyFrame);
+          expect(await Bun.file(join(root, "lab/fresh-linux-resume-started.json")).exists()).toBe(false);
+        } else {
+          expect(state.installed).toBe(false);
+          expect(state.installPrompts).toEqual([]);
+          expect(state.enrollmentPrompts).toEqual([]);
+          expect(await Bun.file(join(root, "lab/fresh-linux-state.json")).exists()).toBe(false);
+        }
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 25000);
+}

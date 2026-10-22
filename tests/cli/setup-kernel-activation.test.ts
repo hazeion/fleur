@@ -178,3 +178,154 @@ for (const inactive of [false, true]) test(`an initially ${inactive ? "inactive"
 test("a BOM-prefixed relative kernel NAME cannot supply identity for an absolute listener path", async () => {
   expectUnknown(await kernelScenario({ tape: syntheticTape([diagnosticRecord("\uFEFF" + protectedPath)]) }));
 });
+
+// This is a complete modeled public-Doctor host, not invented native suffix
+// evidence. The FIFO metadata/EACCES spelling is from the captured guest prefix.
+const cloudFifoPath = "/run/cloud-init/share/hook-hotplug-cmd";
+const cloudFifoUnit = "Id=cloud-init-hotplugd.socket\nTriggers=cloud-init-hotplugd.service\nLoadState=loaded\nActiveState=active\nSubState=listening\nListen=" + cloudFifoPath + " (FIFO)\n";
+test("a protected FIFO transport is excluded only after stable manager and selected-socket revalidation", async () => {
+  const result = await kernelScenario({ tape: syntheticTape(undefined, "28|2676"), respond: (args) => {
+    if (args.includes("list-units")) return commandResult("cloud-init-hotplugd.socket loaded active listening Cloud-init\n");
+    if (args.at(-1) === "cloud-init-hotplugd.socket") return commandResult(cloudFifoUnit);
+    if (args.at(-1) === cloudFifoPath) return commandResult("", 1, "stat: cannot statx '" + cloudFifoPath + "': Permission denied\n");
+    return undefined;
+  } });
+  expect(result.outcome.result.data).toMatchObject({ components: { daemon: { state: "ready" } } });
+  expect(result.channels).toHaveLength(0);
+  expect(result.calls.filter((args) => args.includes("list-units"))).toHaveLength(2);
+  expect(result.calls.filter((args) => args.at(-1) === "cloud-init-hotplugd.socket")).toHaveLength(2);
+  expect(result.calls.filter((args) => args.at(-1) === "/run/docker.sock")).toHaveLength(2);
+  expect(result.calls.some((args) => args.at(-1) === cloudFifoPath)).toBe(true);
+  expect(result.calls.filter((args) => args.includes("info"))).toHaveLength(1);
+  expect(result.calls.some((args) => args[0] === "sudo" || args[0] === "/usr/bin/sudo")).toBe(false);
+});
+
+async function protectedFifoScenario(options: KernelScenarioOptions = {}) {
+  return kernelScenario({ ...options, tape: options.tape ?? syntheticTape(undefined, "28|2676"), respond: (args, occurrence) => {
+    const override = options.respond?.(args, occurrence);
+    if (override) return override;
+    if (args.includes("list-units")) return commandResult("cloud-init-hotplugd.socket loaded active listening Cloud-init\n");
+    if (args.at(-1) === "cloud-init-hotplugd.socket") return commandResult(cloudFifoUnit);
+    if (args.at(-1) === cloudFifoPath) return commandResult("", 1, "stat: cannot statx '" + cloudFifoPath + "': Permission denied\n");
+    return undefined;
+  } });
+}
+for (const mode of ["uncertain", "timeout", "missing", "generic", "wrong-path", "extra-error", "stdout", "exit", "socket", "regular", "same-identity"] as const) test(`protected FIFO ${mode} evidence remains unknown without RPC`, async () => {
+  const result = await protectedFifoScenario({ respond: (args) => {
+    if (args.at(-1) !== cloudFifoPath) return undefined;
+    const denied = commandResult("", 1, "stat: cannot statx '" + cloudFifoPath + "': Permission denied\n");
+    if (mode === "uncertain") return { ...denied, terminationUnconfirmed: true };
+    if (mode === "timeout" || mode === "missing") return { status: mode, stdout: "", stderr: "" };
+    if (mode === "generic") return commandResult("", 1, "Permission denied");
+    if (mode === "wrong-path") return commandResult("", 1, "stat: cannot statx '/run/other': Permission denied\n");
+    if (mode === "extra-error") return { ...denied, stderr: denied.stderr + "additional error\n" };
+    if (mode === "stdout") return { ...denied, stdout: "unexpected" };
+    if (mode === "exit") return { ...denied, exitCode: 2 };
+    return commandResult(mode === "socket" ? "28|3000|socket\n" : mode === "regular" ? "28|3000|regular file\n" : "028|2676|fifo\n");
+  } });
+  expectUnknown(result); expect(result.channels).toHaveLength(0);
+});
+for (const mode of ["unloaded", "transitional", "missing-listen", "duplicate", "relative", "unknown-kind"] as const) test(`protected FIFO ${mode} manager metadata cannot authorize RPC`, async () => {
+  expectUnknown(await protectedFifoScenario({ respond: (args) => {
+    if (args.at(-1) !== "cloud-init-hotplugd.socket") return undefined;
+    let metadata = cloudFifoUnit;
+    if (mode === "unloaded") metadata = metadata.replace("LoadState=loaded", "LoadState=not-found");
+    if (mode === "transitional") metadata = metadata.replace("ActiveState=active", "ActiveState=activating");
+    if (mode === "missing-listen") metadata = metadata.replace("Listen=" + cloudFifoPath + " (FIFO)\n", "");
+    if (mode === "duplicate") metadata += "ActiveState=active\n";
+    if (mode === "relative") metadata = metadata.replace(cloudFifoPath, "relative-fifo");
+    if (mode === "unknown-kind") metadata = metadata.replace("(FIFO)", "(Unreviewed)");
+    return commandResult(metadata);
+  } }));
+});
+for (const mode of ["selected", "selected-missing", "selected-type", "inventory", "inventory-malformed", "fifo-kind", "fifo-state", "fifo-listen", "fifo-triggers"] as const) test(`protected FIFO ${mode} drift is rejected before RPC`, async () => {
+  expectUnknown(await protectedFifoScenario({ respond: (args, occurrence) => {
+    if (occurrence !== 2) return undefined;
+    if (args.at(-1) === "/run/docker.sock") {
+      if (mode === "selected") return commandResult("28|3000|socket\n");
+      if (mode === "selected-missing") return commandResult("", 1, "No such file or directory");
+      if (mode === "selected-type") return commandResult("28|2676|fifo\n");
+    }
+    if (args.includes("list-units")) {
+      if (mode === "inventory") return commandResult("cloud-init-hotplugd.socket loaded active listening Cloud-init\nother.socket loaded active listening Other\n");
+      if (mode === "inventory-malformed") return commandResult("malformed\n");
+    }
+    if (args.at(-1) === "cloud-init-hotplugd.socket") {
+      if (mode === "fifo-kind") return commandResult(cloudFifoUnit.replace("(FIFO)", "(Stream)"));
+      if (mode === "fifo-state") return commandResult(cloudFifoUnit.replace("ActiveState=active", "ActiveState=inactive").replace("SubState=listening", "SubState=dead"));
+      if (mode === "fifo-listen") return commandResult(cloudFifoUnit.replace(cloudFifoPath, "/run/changed.fifo"));
+      if (mode === "fifo-triggers") return commandResult(cloudFifoUnit.replace("cloud-init-hotplugd.service", "changed.service"));
+    }
+    return undefined;
+  } }));
+});
+test("an initially inactive unit participates in a protected FIFO revalidation bracket", async () => {
+  const result = await protectedFifoScenario({ respond: (args, occurrence) => {
+    if (args.includes("list-units")) return commandResult("other.socket loaded inactive dead Other\ncloud-init-hotplugd.socket loaded active listening Cloud-init\n");
+    if (args.at(-1) === "other.socket") return commandResult(`Id=other.socket\nLoadState=loaded\nActiveState=${occurrence === 1 ? "inactive" : "active"}\nSubState=${occurrence === 1 ? "dead" : "listening"}\nListen=/run/other.sock (Stream)\nTriggers=other.service\n`);
+    return undefined;
+  } });
+  expectUnknown(result);
+  expect(result.calls.filter((args) => args.at(-1) === "other.socket")).toHaveLength(2);
+});
+for (const path of ["/run/docker.sock", "/var/run/docker.sock"]) test(`the selected pathname ${path} cannot use protected FIFO exclusion`, async () => {
+  expectUnknown(await protectedFifoScenario({ respond: (args) => {
+    if (args.at(-1) === "cloud-init-hotplugd.socket") return commandResult(cloudFifoUnit.replace(cloudFifoPath, path));
+    if (args[0] === "/usr/bin/stat" && args.at(-1) === path && path !== "/run/docker.sock") return commandResult("", 1, "stat: cannot statx '" + path + "': Permission denied\n");
+    return undefined;
+  } }));
+});
+for (const mixed of [false, true]) test(`a protected FIFO cannot hide a ${mixed ? "mixed Listen" : "later"} UNIX alias with a stopped target`, async () => {
+  const result = await protectedFifoScenario({ respond: (args) => {
+    if (args.includes("list-units")) return commandResult("cloud-init-hotplugd.socket loaded active listening Cloud-init\n" + (mixed ? "" : "later.socket loaded active listening Later\n"));
+    if (mixed && args.at(-1) === "cloud-init-hotplugd.socket") return commandResult(cloudFifoUnit + "Listen=/run/alias.sock (Stream)\n");
+    if (args.at(-1) === "later.socket") return commandResult("Id=later.socket\nLoadState=loaded\nActiveState=active\nSubState=listening\nListen=/run/alias.sock (Stream)\nTriggers=later.service\n");
+    if (args.at(-1) === "/run/alias.sock") return commandResult("28|2676|socket\n");
+    if (args.at(-1) === (mixed ? "cloud-init-hotplugd.service" : "later.service")) return commandResult(`Id=${mixed ? "cloud-init-hotplugd.service" : "later.service"}\nLoadState=loaded\nActiveState=inactive\nSubState=dead\n`);
+    return undefined;
+  } });
+  expect(result.outcome.result.data).toMatchObject({ components: { service: { state: "activation-needed", sockets: [mixed ? "cloud-init-hotplugd.socket" : "later.socket"], triggers: [mixed ? "cloud-init-hotplugd.service" : "later.service"] } } });
+  expect(result.calls.some((args) => args.includes("info") || args[0] === "sudo" || args[0] === "/usr/bin/sudo")).toBe(false);
+});
+for (const fail of [false, true]) test(`a protected FIFO preserves ${fail ? "uncertain" : "both"} real UNIX kernel snapshots for bare stat errors`, async () => {
+  const result = await protectedFifoScenario({ closeFailure: fail, respond: (args) => {
+    if (args.includes("list-units")) return commandResult("cloud-init-hotplugd.socket loaded active listening Cloud-init\nguarded.socket loaded active listening Guarded\n");
+    if (args.at(-1) === protectedPath) return commandResult("", 1, "stat: cannot statx '" + protectedPath + "': Permission denied\n");
+    return undefined;
+  } });
+  if (fail) expectUnknown(result);
+  else {
+    expect(result.outcome.result.data).toMatchObject({ components: { daemon: { state: "ready" } } });
+    expect(result.channels).toHaveLength(2);
+  }
+});
+
+test("a protected running FIFO accepts only the exact absolute stat error spelling", async () => {
+  const result = await protectedFifoScenario({ respond: (args) => {
+    if (args.at(-1) === "cloud-init-hotplugd.socket") return commandResult(cloudFifoUnit.replace("SubState=listening", "SubState=running"));
+    if (args.at(-1) === cloudFifoPath) return commandResult("", 1, "/usr/bin/stat: cannot statx '" + cloudFifoPath + "': Permission denied\n");
+    return undefined;
+  } });
+  expect(result.outcome.result.data).toMatchObject({ components: { daemon: { state: "ready" } } });
+  expect(result.channels).toHaveLength(0);
+});
+for (const mode of ["inventory-timeout", "metadata-uncertain"] as const) test(`protected FIFO ${mode} revalidation never gains grace or RPC`, async () => {
+  expectUnknown(await protectedFifoScenario({ respond: (args, occurrence) => {
+    if (occurrence !== 2) return undefined;
+    if (mode === "inventory-timeout" && args.includes("list-units")) return { status: "timeout", stdout: "", stderr: "" };
+    if (mode === "metadata-uncertain" && args.at(-1) === "cloud-init-hotplugd.socket") return { ...commandResult(cloudFifoUnit), terminationUnconfirmed: true };
+    return undefined;
+  } }));
+});
+for (const mode of ["missing-capability", "missing-binding", "wrong-kind", "filtered", "changed-cookie"] as const) test(`protected FIFO cannot hide ${mode} UNIX kernel evidence`, async () => {
+  let records = [diagnosticRecord(protectedPath)];
+  if (mode === "missing-binding") records = [];
+  if (mode === "wrong-kind") records = [diagnosticRecord(protectedPath, 2002, 7, 90, 2, 7)];
+  if (mode === "filtered") records[0]!.writeUInt16LE(0x22, 6);
+  const result = await protectedFifoScenario({ noCapability: mode === "missing-capability", tape: syntheticTape(records, "28|2676"), ...(mode === "changed-cookie" ? { second: [diagnosticRecord(protectedPath, 2002, 7, 92), diagnosticDone()] } : {}), respond: (args) => {
+    if (args.includes("list-units")) return commandResult("cloud-init-hotplugd.socket loaded active listening Cloud-init\nguarded.socket loaded active listening Guarded\n");
+    if (args.at(-1) === protectedPath) return commandResult("", 1, "stat: cannot statx '" + protectedPath + "': Permission denied\n");
+    return undefined;
+  } });
+  expectUnknown(result);
+});

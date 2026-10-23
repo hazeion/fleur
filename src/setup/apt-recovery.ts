@@ -68,7 +68,7 @@ function manifest(value: unknown, profile: AptInstallProfile): { root: string; e
     requireState(typeof entry.path === "string" && (entry.path === "." || /^[A-Za-z0-9._~+%:-]+(?:\/[A-Za-z0-9._~+%:-]+)*$/.test(entry.path) && !entry.path.split("/").some((part) => part === "." || part === "..")));
     requireState([entry.dev, entry.ino].every((part) => typeof part === "string" && /^(0|[1-9][0-9]{0,19})$/.test(part) && BigInt(part) <= 18446744073709551615n));
     requireState(entry.uid === process.getuid!() && typeof entry.auxiliary === "boolean");
-    requireState(entry.directory ? entry.mode === 0o700 || entry.mode === 0o755 : entry.mode === 0o600 && entry.auxiliary === false && Number.isSafeInteger(entry.size) && Number(entry.size) >= 0 && Number(entry.size) <= 268435456 && typeof entry.sha256 === "string" && sha.test(entry.sha256));
+    requireState(entry.directory ? entry.mode === 0o700 || entry.mode === 0o755 : (entry.mode === 0o600 || entry.mode === 0o644) && entry.auxiliary === false && Number.isSafeInteger(entry.size) && Number(entry.size) >= 0 && Number(entry.size) <= 268435456 && typeof entry.sha256 === "string" && sha.test(entry.sha256));
     return entry as unknown as Entry;
   });
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
@@ -76,8 +76,8 @@ function manifest(value: unknown, profile: AptInstallProfile): { root: string; e
   const fixedDirectories = new Map([[".", 0o700], ["archives", 0o700], ["archives/partial", 0o700], ["local-lists", 0o755], ["local-lists/auxfiles", 0o755], ["local-only.parts", 0o700]]);
   for (const [path, mode] of fixedDirectories) { const entry = byPath.get(path); requireState(entry?.directory && entry.mode === mode && entry.auxiliary === ["archives/partial", "local-lists/auxfiles"].includes(path)); }
   const fixedFiles = new Map([["archives/lock", ""], ["local-only.list", ""], ["local-only.conf", "#clear APT::Sources::With;\n"]]);
-  for (const [path, bytes] of fixedFiles) { const entry = byPath.get(path); requireState(entry && !entry.directory && entry.size === Buffer.byteLength(bytes) && entry.sha256 === hash(bytes)); }
-  const plan = byPath.get("apt-plan.json"); requireState(plan && !plan.directory && plan.size! > 0 && plan.size! <= 65536);
+  for (const [path, bytes] of fixedFiles) { const entry = byPath.get(path); requireState(entry && !entry.directory && entry.mode === 0o600 && entry.size === Buffer.byteLength(bytes) && entry.sha256 === hash(bytes)); }
+  const plan = byPath.get("apt-plan.json"); requireState(plan && !plan.directory && plan.mode === 0o600 && plan.size! > 0 && plan.size! <= 65536);
   const accepted = new Set([...fixedDirectories.keys(), ...fixedFiles.keys(), "apt-plan.json"]);
   let selected = 0;
   for (const [name, artifact] of Object.entries(profile.artifacts)) {
@@ -85,9 +85,11 @@ function manifest(value: unknown, profile: AptInstallProfile): { root: string; e
     requireState(directory.directory && directory.mode === 0o700 && !directory.auxiliary); accepted.add(name); selected++;
     const files = entries.filter((entry) => dirname(entry.path) === name);
     requireState(files.length === 1); const source = files[0]!;
+    // Native APT may publish public downloads as 0644 inside the owned 0700
+    // package directory. Only these authenticated source files admit that mode.
     requireState(!source.directory && source.path.endsWith(".deb") && source.size === artifact.size && source.sha256 === artifact.sha256);
     const copyPath = "archives/" + source.path.slice(name.length + 1); const copy = byPath.get(copyPath);
-    requireState(copy && !copy.directory && copy.size === artifact.size && copy.sha256 === artifact.sha256);
+    requireState(copy && !copy.directory && copy.mode === 0o600 && copy.size === artifact.size && copy.sha256 === artifact.sha256);
     accepted.add(source.path); accepted.add(copyPath);
   }
   requireState(selected > 0 && accepted.size === entries.length && entries.every((entry) => accepted.has(entry.path)));

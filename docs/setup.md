@@ -387,3 +387,9 @@ require manual action; Fleur never changes the selected provider. Existing
 regular-file sudo checks remain in place for other reviewed layouts. Two owned Ubuntu 26.04 installation/runtime attempts exercised this layout;
 ordinary packed verification is recorded separately in the artifact evidence. Ubuntu documents the
 provider choice in its [user-management guide](https://ubuntu.com/server/docs/how-to/security/user-management/).
+
+Interrupted APT recovery preserves each downloaded source package's recorded
+permissions. Authenticated source packages may have mode `0600` or `0644` inside
+their original owned `0700` package directories. Cache copies, the plan, lock and
+local configuration files require `0600`. Recovery never changes these permissions
+and refuses any current mode that differs from the original record.

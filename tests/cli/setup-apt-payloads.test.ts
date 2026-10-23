@@ -13,6 +13,9 @@ const profile = { method: "docker-official-apt" as const, verified: true as cons
 type CacheFault = "bytes" | "symlink" | "hardlink" | "inode" | "root" | "extra" | "lock-inode" | "lock-bytes" | "partial-inode" | "partial-extra" | "auxfiles-inode" | "auxfiles-extra" | "mode" | "source-bytes";
 interface PayloadOptions {
   readonly bootId?: string | null;
+  readonly downloadMode?: number;
+  readonly recordedControlMode?: string;
+  readonly recordedSourceMode?: number;
   readonly inspectRecovery?: boolean;
   readonly changeIdentityDuringConsent?: boolean;
   readonly reboot?: boolean;
@@ -212,6 +215,9 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         }
         const artifact = await aptArtifactProtocol(args, context, selectedPackages, tamper, options.apt283Wire);
         if (artifact) {
+          if (options.downloadMode !== undefined && args[0] === "apt-get" && args.includes("download") && !args.includes("--print-uris")) {
+            for (const name of await readdir(context!.cwd!)) if (name.endsWith(".deb")) await chmod(join(context!.cwd!, name), options.downloadMode);
+          }
           if (args[0] === "dpkg-deb") {
             controlReads++;
             if (options.cacheCollision && controlReads === Object.keys(selectedPackages).length) {
@@ -340,6 +346,19 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
       if (fault === "changed-artifact") await writeFile(join(evidence, "local-only.conf"), "preserve changed evidence");
       if (fault === "replaced-artifact") { await rename(join(evidence, "local-only.conf"), join(directory, "original-local-conf")); await writeFile(join(evidence, "local-only.conf"), "#clear APT::Sources::With;\n", { mode: 0o600 }); }
       if (fault === "foreign-receipt") await writeFile(join(directory, "state", `apt-reconciled-${pending.operationId}.json`), '{"foreign":"preserve"}', { mode: 0o600 });
+      if (options.recordedControlMode) {
+        const altered = JSON.parse(JSON.stringify(pending));
+        const entry = altered.artifacts.entries.find((item: { path: string }) => options.recordedControlMode === "cache" ? item.path.startsWith("archives/") && item.path.endsWith(".deb") : item.path === options.recordedControlMode);
+        entry.mode = 0o644;
+        await chmod(join(evidence, entry.path), 0o644);
+        await writeFile(join(directory, "state", "apt-transaction-pending.json"), JSON.stringify(altered));
+      }
+      if (options.recordedSourceMode !== undefined) {
+        const altered = JSON.parse(JSON.stringify(pending));
+        const entry = altered.artifacts.entries.find((item: { path: string }) => item.path.endsWith(".deb") && !item.path.startsWith("archives/"));
+        entry.mode = options.recordedSourceMode;
+        await writeFile(join(directory, "state", "apt-transaction-pending.json"), JSON.stringify(altered));
+      }
       resumed = await runCli(["setup", ...(options.inspectionConsent ? [] : ["--json"]), ...(options.recoveryDeadline ? ["--timeout", "0.5"] : [])], { cwd: directory, handlers });
       entriesAtCrash = await readdir(join(directory, "state"));
       if (options.recoveryRetry) {
@@ -907,5 +926,61 @@ test("changed retained auxiliary evidence prevents reuse of a prior inspection r
   expect(result.resumed?.exitCode).toBe(5);
   expect(result.recoveryRetried?.exitCode).toBe(5);
   expect(result.inspections).toBe(1);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+
+// Native APT 3.2 downloads public package bytes as 0644 inside the owned 0700 stage.
+test("retained native APT download permissions reach separately scoped inspection after reboot", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, downloadMode: 0o644 });
+  expect(result.pending.artifacts.entries.filter((entry: { path: string; directory: boolean }) => !entry.directory && entry.path.endsWith(".deb") && !entry.path.startsWith("archives/"))).toHaveLength(5);
+  expect(result.pending.artifacts.entries.filter((entry: { path: string }) => entry.path.endsWith(".deb") && !entry.path.startsWith("archives/")).every((entry: { mode: number }) => entry.mode === 0o644)).toBe(true);
+  expect(result.resumed?.exitCode).toBe(3);
+  expect(result.resumed?.result.data).toMatchObject({ plan: { action: "recovery-inspect" }, grantsCreated: false });
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.privilegedInstalls).toBe(1);
+});
+
+test("native source permissions reconcile under a fresh once inspection grant", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", downloadMode: 0o644 });
+  expect(result.resumed?.exitCode).toBe(4);
+  expect(result.inspections).toBe(1);
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
+  expect(result.entries).not.toContain("apt-transaction-pending.json");
+  expect(result.privilegedInstalls).toBe(1);
+});
+test.each([0o666, 0o755])("unsafe recorded source mode %i cannot authorize recovery inspection", async (downloadMode) => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, downloadMode });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.inspections).toBe(0);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+test.each(["apt-plan.json", "archives/lock", "local-only.list", "local-only.conf", "cache"])("recorded 0644 %s cannot inherit source archive mode policy", async (recordedControlMode) => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, recordedControlMode });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.inspections).toBe(0);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+
+// macOS clears setuid on ordinary chmod; exercise the persisted cross-platform record directly.
+test("a special-bit source mode in retained evidence cannot request inspection", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, recordedSourceMode: 0o4644 });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.inspections).toBe(0);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+test("a source archive still requires its exact recorded mode during recovery", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, downloadMode: 0o644, recordedSourceMode: 0o600 });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.inspections).toBe(0);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
   expect(result.entries).toContain("apt-transaction-pending.json");
 });

@@ -533,3 +533,37 @@ retaining the specific manual-recovery result; that diagnostic routing also need
 correction. Automated disposable-guest consent fixtures supply no human or legal
 consent proof. Other platform installation/runtime paths and issue #24 remain
 open.
+
+## Native read-only APT inspector conformance
+
+One owned Ubuntu 26.04 x64 VM observation at source
+`e9400db90868eb90221ed2883ad38c9ffc10ccd9` exercised the production inspector
+against nine separate retained-directory fixtures. Report SHA256:
+`cf1ee53f6bdd9820a81b0daeb1ac2e8a1d7648e0ec827529bfd9e18aafc96209`.
+Independent review verified source provenance, original installation preservation,
+reboot custody and complete VM, credential, scratch and overlay disposal.
+
+The actual root inspector confirmed the empty fixture and refused nonempty,
+account-digest, parent-start and descriptor cases. The production custody factory
+refused replaced-inode and symlink cases before privileged execution. A
+completed native inspection whose completion was withheld from the caller retained
+all five parent descriptors. A private negative control removing only that
+uncertainty guard reproduced descriptor loss after the actual root read retired.
+These were owned disposable fixtures; they did not inspect or repair the original
+installation stage and do not prove human consent.
+
+The same run interrupted the real package installation, preserved its five healthy
+package additions, and rebooted with a separately validated current custody
+binding. Setup then safely returned recovery-required before requesting inspection
+authority. The five original downloaded package files were mode `0644`, whereas
+cache copies and controls were `0600`. The recovery writer recorded these exact
+modes, but its reader required every file to be `0600`. This run therefore remains
+incomplete recovery evidence. It does not qualify assisted recovery or repeated
+post-recovery Doctor, setup and runtime behavior.
+
+The subsequent reader correction admits `0600` or `0644` only for authenticated
+source package files inside their original owned `0700` directories. Cache
+archives, lock, plan and configuration files remain `0600`; every current file must
+still match its recorded mode exactly. A public setup regression reproduced the
+native refusal before the correction and then reached the separately scoped
+inspection plan. Native end-to-end recovery still requires a new observation.

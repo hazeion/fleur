@@ -129,5 +129,7 @@ test("packed prerequisite commands use the real executable and isolated user sta
 test("packed release carries its offline creation and prerequisite documentation", async () => {
   expect(await Bun.file(join(scratch, "package/docs/project-creation.md")).exists()).toBe(true);
   expect(await Bun.file(join(scratch, "package/docs/setup.md")).exists()).toBe(true);
-  expect(await Bun.file(join(scratch, "package/docs/setup.md")).text()).toContain("Assisted package installation remains blocked.");
+  const setupDocumentation = await Bun.file(join(scratch, "package/docs/setup.md")).text();
+  expect(setupDocumentation).toContain("The source-owned catalog includes exact Ubuntu 24.04 and 26.04 x64 prerequisite tuples.");
+  expect(setupDocumentation).toContain("Platforms without an admitted installer row require manual setup.");
 });

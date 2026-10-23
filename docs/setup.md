@@ -14,13 +14,13 @@ See [Docker Desktop application placement](setup-desktop.md) for its separate au
 
 ## Current evidence and remaining work
 
-Observed CLI, daemon, Compose and smoke readiness do not automatically admit a release profile. Doctor returns success only when the native host, Bun, Docker CLI build, authoritative Engine/kernel/containerd/runc tuple, Compose and pinned image match a reviewed source-owned readiness policy, the same daemon identity and recorded cgroup driver/operating mode/security options remain observable, advertised CPU/memory/PID enforcement is available, and the owned smoke completes with confirmed cleanup. Advertised capability flags are current-state guards, not a replacement for the recorded isolation experiment. Installation profiles and human grants are separate authority. No user argument, project file or environment variable selects a readiness policy. The source-owned catalog includes an exact Ubuntu 24.04 x64 prerequisite tuple: Bun 1.4.3, Docker CLI/Engine 29.9.1, kernel 6.8.0-147-generic, containerd 2.4.2, runc 1.5.2 and Compose 5.6.0. Its recorded cgroup v2 systemd rootful mode and security options must also match. Other tuples retain exit 4 with release state unverified after smoke readiness. The record cites actual readiness and isolation evidence; test policies never admit a platform. The ordinary packed path has now passed matching Ubuntu VM verification, including repeated Doctor/setup success, preserved grants/state and the original bounded restriction checks. The exact evidence and remaining platform limits are recorded below. Native Debian/Arch installation and other unmeasured targets remain outside existing evidence.
+Observed CLI, daemon, Compose and smoke readiness do not automatically admit a release profile. Doctor returns success only when the native host, Bun, Docker CLI build, authoritative Engine/kernel/containerd/runc tuple, Compose and pinned image match a reviewed source-owned readiness policy, the same daemon identity and recorded cgroup driver/operating mode/security options remain observable, advertised CPU/memory/PID enforcement is available, and the owned smoke completes with confirmed cleanup. Advertised capability flags are current-state guards, not a replacement for the recorded isolation experiment. Installation profiles and human grants are separate authority. No user argument, project file or environment variable selects a readiness policy. The source-owned catalog includes exact Ubuntu 24.04 and 26.04 x64 prerequisite tuples. The Ubuntu 24.04 tuple uses Bun 1.4.3, Docker CLI/Engine 29.9.1, kernel 6.8.0-147-generic, containerd 2.4.2, runc 1.5.2 and Compose 5.6.0. Ubuntu 26.04 uses the same component builds with kernel 7.0.0-38-generic. Their recorded cgroup v2 systemd rootful mode and security options must also match. Other tuples retain exit 4 with release state unverified after smoke readiness. The record cites actual readiness and isolation evidence; test policies never admit a platform. The ordinary packed Ubuntu 24.04 path has passed matching VM verification, including repeated Doctor/setup success, preserved grants/state and the original bounded restriction checks. The exact evidence and remaining platform limits are recorded below. Native Debian/Arch installation and other unmeasured targets remain outside existing evidence.
 
-The exact Ubuntu 24.04 x64 official APT package set is mapped in the fixed packaged `verified-apt-profiles.json` catalog with authenticated payload hashes and native evidence references. It exposes a plan without granting permission; each package/configuration/access/service action still requires its own matching human grant. An unavailable stable machine identity returns a human action before reading grants or inspecting packages. The ordinary packed installation path has passed the exact Ubuntu VM proof recorded in the artifact evidence document.
+The exact Ubuntu 24.04 and 26.04 x64 official APT package sets are mapped in the fixed packaged `verified-apt-profiles.json` catalog with authenticated payload hashes and native evidence references. Each exposes a plan without granting permission; each package/configuration/access/service action still requires its own matching human grant. An unavailable stable machine identity returns a human action before reading grants or inspecting packages. The ordinary packed Ubuntu 24.04 installation path has passed its exact VM proof; Ubuntu 26.04 ordinary verification is pending. Both are recorded in the artifact evidence document.
 
 ### Installer profiles awaiting qualification
 
-Assisted package installation remains blocked. Platforms without an admitted installer row require manual setup. The permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication and the exact Ubuntu guest installation are recorded separately in the artifact evidence document. Research candidates do not become executable merely by appearing in that inventory. A missing or incompatible source-owned profile requires manual action; the remaining platform evidence leaves this acceptance criterion incomplete.
+Platforms without an admitted installer row require manual setup. The permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication and the exact Ubuntu guest installation are recorded separately in the artifact evidence document. Research candidates do not become executable merely by appearing in that inventory. A missing or incompatible source-owned profile requires manual action; the remaining platform evidence leaves this acceptance criterion incomplete.
 
 Installation, repository changes, service starting/enabling, Docker access privileges, PATH/configuration and agreement acceptance require separate authority. Package post-install scripts and Desktop installation can have these side effects; an install grant cannot silently cover them. Fleur never removes conflicts, upgrades or replaces existing installations, edits profiles/context, changes Docker permissions or accepts legal terms automatically.
 
@@ -28,7 +28,7 @@ Official method references: [macOS](https://docs.docker.com/desktop/setup/instal
 
 ### Native apt adapter checkpoint
 
-The compiled native profile catalog includes the admitted exact Ubuntu row described
+The compiled native profile catalog includes the admitted exact Ubuntu rows described
 above. Research candidate metadata cannot authorize execution. The apt
 adapter handles the compatible missing subset of an exact package set against
 the exact official Docker repository. Fully configured exact versions with a
@@ -303,7 +303,7 @@ startup observations require it to be active when declared, using an explicit
 checksum and rejects declaration changes after authorization. No mount operation
 is authorized; arbitrary mount dependencies remain refused.
 
-For the internal Ubuntu 26.04 APT candidate, service/access provenance also accepts
+For the measured Ubuntu 26.04 APT profile, service/access provenance also accepts
 Ubuntu's default sudo-rs alternatives layout. It requires the exact root-owned
 `/usr/bin/sudo` → `/etc/alternatives/sudo` → `/usr/lib/cargo/bin/sudo` chain,
 protected canonical provider directories, a root-owned single-link setuid target,
@@ -312,6 +312,6 @@ checks cover all path ancestors and run again after human confirmation. They do
 not provide an atomic guarantee against concurrent changes by another root
 administrator. Unknown aliases and altered providers
 require manual action; Fleur never changes the selected provider. Existing
-regular-file sudo checks remain in place for other reviewed layouts. This is
-command-fixture coverage, not Ubuntu 26.04 native admission. Ubuntu documents the
+regular-file sudo checks remain in place for other reviewed layouts. Two owned Ubuntu 26.04 installation/runtime attempts exercised this layout;
+ordinary packed verification is recorded separately in the artifact evidence. Ubuntu documents the
 provider choice in its [user-management guide](https://ubuntu.com/server/docs/how-to/security/user-management/).

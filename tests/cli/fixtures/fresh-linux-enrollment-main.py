@@ -25,6 +25,12 @@ uid = os.getuid() or 1000
 # Consumer-protocol cases reuse a frame emitted by the actual root policy over
 # real protected fixture files. This does not claim root ownership or native proof.
 owned_cases = {
+    'ordinary-admitted26': ('26.04', '26.04'),
+    'ordinary-admitted26-os-cross': ('24.04', '26.04'),
+    'ordinary-admitted26-invalid-evidence': ('26.04', '26.04'),
+    'ordinary-admitted26-duplicate': ('26.04', '26.04'),
+    'ordinary-admitted26-foreign-row': ('26.04', '26.04'),
+    'ordinary-admitted26-unknown-target': ('26.04', '26.04'),
     'owned26-target-valid': ('26.04', '26.04'),
     'owned26-noble-cross': ('26.04', '24.04'),
     'owned24-resolute-cross': ('24.04', '26.04'),
@@ -102,6 +108,17 @@ if scenario.startswith("ordinary-"):
              "artifacts":{item['name']:{"architecture":"amd64",**{key:item[key] for key in ("name","version","url","sha256","size")}} for item in catalog['artifacts']}}
     target=lab / "package/src/setup/verified-apt-profiles.json";target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(json.dumps({"formatVersion":1,"entries":[{"evidence":{"reportSha256":"75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2","sourceCommit":"a9606d74fd55b252c0aab8432ff72ec513457a5e","artifactCatalogSha256":"540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58"},"profile":profile}]}))
+    if scenario.startswith('ordinary-admitted26'):
+        rows = json.loads((source.parent.parent/'src/setup/verified-apt-profiles.json').read_text())
+        target.write_text(json.dumps({'formatVersion':1,'entries':[entry for entry in rows['entries'] if entry['profile']['release']=='26.04']}))
+        if scenario == 'ordinary-admitted26-invalid-evidence':
+            rows=json.loads(target.read_text());rows['entries'][0]['evidence']['sourceCommit']='0'*40;target.write_text(json.dumps(rows))
+        if scenario == 'ordinary-admitted26-foreign-row':
+            rows=json.loads(target.read_text());foreign=json.loads((source.parent.parent/'src/setup/verified-apt-profiles.json').read_text())['entries'][0];foreign['evidence']['sourceCommit']='0'*40;rows['entries'].append(foreign);target.write_text(json.dumps(rows))
+        if scenario == 'ordinary-admitted26-unknown-target':
+            rows=json.loads(target.read_text());rows['entries'][0]['profile']['release']='27.04';target.write_text(json.dumps(rows))
+        if scenario == 'ordinary-admitted26-duplicate':
+            rows=json.loads(target.read_text());rows['entries'].append(rows['entries'][0]);target.write_text(json.dumps(rows))
     if scenario == "ordinary-invalid-evidence":
         value=json.loads(target.read_text());value['entries'][0]['evidence']['sourceCommit']='0'*40;target.write_text(json.dumps(value))
 for name in ["fleur-internal-native-candidate.tgz", "runtime-probe.tar", "bun.zip"]:
@@ -125,6 +142,8 @@ def admitted(command):
  if command=='setup' and s.get('ordinaryReadySetupCalls',0)>=2 and s['scenario']=='ordinary-admitted-grant-change':
   grant=root/'.local/state/fleur/setup/grants.json';grant.parent.mkdir(parents=True,exist_ok=True);grant.write_text('{"fixtureForeignGrant":true}');grant.chmod(0o600)
  data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
+ if s['scenario'].startswith('ordinary-admitted26'):
+  evidence='5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07';data['components']['release']={'state':'verified','profile':'ubuntu-26.04-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
  if command=='doctor' and s['scenario']=='ordinary-admitted-release-refused':
   data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
  print(json.dumps({'formatVersion':1,'command':command,'ok':True,'data':data,'error':None,'truncated':False}));save();sys.exit(0)
@@ -241,7 +260,7 @@ if name=='docker':
   if query in (['info','--format','{{json .}}'],['version','--format','{{json .Server}}']):
    s.setdefault('ordinaryDaemonQueries',[]).append(query);save()
    if query[0]=='info':
-    info={'ServerVersion':'29.9.1','KernelVersion':'6.8.0-147-generic','OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor,profile=default','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
+    info={'ServerVersion':'29.9.1','KernelVersion':'7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic','OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor,profile=default','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
     if s['scenario']=='ordinary-admitted-security-duplicate':info['SecurityOptions']=['name=apparmor','name=apparmor']
     if s['scenario']=='ordinary-admitted-security-mixed':info['SecurityOptions']=['name=apparmor','name=apparmor,profile=default']
     if s['scenario']=='ordinary-admitted-security-malformed':info['SecurityOptions']=[True]
@@ -250,7 +269,7 @@ if name=='docker':
     if s['scenario']=='ordinary-admitted-security-apparmor-unconfined':info['SecurityOptions']=['name=apparmor,profile=unconfined']
     if s['scenario']=='ordinary-admitted-security-apparmor-docker-default':info['SecurityOptions']=['name=apparmor,profile=docker-default']
     print(json.dumps(info))
-   else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':'6.8.0-147-generic','Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
+   else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':'7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic','Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
    sys.exit(0)
  if s['scenario'].startswith('ordinary-admitted') and args[:2]==['--host','unix:///var/run/docker.sock']:
   call=args[2:]

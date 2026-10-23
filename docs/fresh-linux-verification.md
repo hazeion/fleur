@@ -229,11 +229,32 @@ on a full binding is refused. The legacy nonce-only Ubuntu 24 fixture cannot
 select Ubuntu 26 or establish its full custody proof. The new catalog stat identities stay inside Python. Its new report fields
 contain only hashes and fixed strings.
 
-The Resolute record retains artifact authentication separately from pending
-installation evidence and unverified runtime support. Its scoped five-package
+The historical Resolute catalog retains its pending installation and unverified
+runtime labels separately from artifact authentication. Its scoped five-package
 maintainer-script digest differs from the historical six-profile digest, and
 both scopes are explicit. Portable artifact and command-protocol tests do not
-prove native installation or runtime behavior. Full Ubuntu 26 execution,
-independent evidence review, and any later ordinary admission remain pending.
+prove native installation or runtime behavior. Two full native Ubuntu 26 runs
+and their independent evidence reviews are complete; the proposed source entries
+record their exact installation and runtime tuple. Ordinary packed verification
+of those entries remains pending.
 All existing setup grants, GC/idle, resource, isolation, physical deadline and
 owned disposal assertions remain required.
+
+### Exact Ubuntu 26.04 x64 verification
+
+The runner accepts a final `--fixture ubuntu26-amd64` option. It binds the fixed
+859,090,944-byte Ubuntu 26 image (SHA256
+`5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5`),
+the frozen Resolute catalog and the original protected Ubuntu 26 OS record.
+The default remains `ubuntu24-amd64`; arbitrary targets and profile paths are
+refused. Selecting a fixture grants no installation permission or admission.
+
+On an owned eligible Linux x64 verification host with existing tools, use the
+same command as Ubuntu 24 and append `--fixture ubuntu26-amd64`. Supply the exact
+Bun archive, image and `--recorded-helper-artifacts` pair. The Ubuntu 24 compiler
+DEB closure is refused for this target. `--candidate ordinary-source-owned`
+exercises the packed release and requires verified ordinary Doctor/setup results;
+`--candidate source-owned` retains the internal candidate's unverified labels.
+Both paths retain original host custody, installer/enrollment/image permission,
+fresh-login, repeated smoke, runtime restriction, resource, physical-deadline and
+disposal checks. Observation alone is not a successful execution.

@@ -64,6 +64,70 @@
           }
         }
       }
+    },
+    {
+      "evidence": {
+        "reportSha256": "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07",
+        "sourceCommit": "ad3869c6d34e01bebd16a248adeb8c3e53d53d8a",
+        "artifactCatalogSha256": "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a"
+      },
+      "profile": {
+        "method": "docker-official-apt",
+        "verified": true,
+        "distribution": "ubuntu",
+        "release": "26.04",
+        "architecture": "x64",
+        "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+        "packages": {
+          "docker-ce": "5:29.9.1-1~ubuntu.26.04~resolute",
+          "docker-ce-cli": "5:29.9.1-1~ubuntu.26.04~resolute",
+          "containerd.io": "2.4.2-2~ubuntu.26.04~resolute",
+          "docker-buildx-plugin": "0.38.0-1~ubuntu.26.04~resolute",
+          "docker-compose-plugin": "5.6.0-1~ubuntu.26.04~resolute"
+        },
+        "artifacts": {
+          "docker-ce": {
+            "name": "docker-ce",
+            "version": "5:29.9.1-1~ubuntu.26.04~resolute",
+            "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-ce_29.9.1-1~ubuntu.26.04~resolute_amd64.deb",
+            "sha256": "cb283f77ac1a9e010d1dbe656be58063617e1360ca9f48e5ebe61cf72d2ac96b",
+            "size": 24584460,
+            "architecture": "amd64"
+          },
+          "docker-ce-cli": {
+            "name": "docker-ce-cli",
+            "version": "5:29.9.1-1~ubuntu.26.04~resolute",
+            "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-ce-cli_29.9.1-1~ubuntu.26.04~resolute_amd64.deb",
+            "sha256": "3a72d12eccd38f5e0e7b4752ea1912ff36de7238acf7344badebe1c58ae36c82",
+            "size": 17593804,
+            "architecture": "amd64"
+          },
+          "containerd.io": {
+            "name": "containerd.io",
+            "version": "2.4.2-2~ubuntu.26.04~resolute",
+            "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/containerd.io_2.4.2-2~ubuntu.26.04~resolute_amd64.deb",
+            "sha256": "6bb52a00ac068d78f0fc090b69bb8e5efe355d2069b9f90d2ebbae23b9d5b36b",
+            "size": 23265404,
+            "architecture": "amd64"
+          },
+          "docker-buildx-plugin": {
+            "name": "docker-buildx-plugin",
+            "version": "0.38.0-1~ubuntu.26.04~resolute",
+            "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~ubuntu.26.04~resolute_amd64.deb",
+            "sha256": "c1c3fe824d9425d247e99a61b0bb52e1d591fb4d95c5607563a857e7dd49b6be",
+            "size": 17784024,
+            "architecture": "amd64"
+          },
+          "docker-compose-plugin": {
+            "name": "docker-compose-plugin",
+            "version": "5.6.0-1~ubuntu.26.04~resolute",
+            "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-compose-plugin_5.6.0-1~ubuntu.26.04~resolute_amd64.deb",
+            "sha256": "a0b9c82230ed64bed886f7ac569641fd6aa4e30598c72318ce3bf94cfbe884e6",
+            "size": 8081212,
+            "architecture": "amd64"
+          }
+        }
+      }
     }
   ]
 }

@@ -865,13 +865,67 @@ def verify_guest_candidate_target(owned_binding):
     try:
         (ROOT/'package/internal-native-candidate.json').lstat()
     except FileNotFoundError:
-        if release != '24.04':
+        if release not in ORDINARY_QUALIFICATIONS:
             raise RuntimeError('Ordinary guest candidate target is not admitted')
     else:
         catalog = checked_internal_candidate()
         if catalog['profile']['release'] != release:
             raise RuntimeError('Internal candidate target differs from the original guest OS')
     return os_release, os_evidence
+
+
+ORDINARY_QUALIFICATIONS = {
+    '24.04': {'suite':'noble', 'reportSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
+              'sourceCommit':'a9606d74fd55b252c0aab8432ff72ec513457a5e',
+              'artifactCatalogSha256':'540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'},
+    '26.04': {'suite':'resolute', 'reportSha256':'5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07',
+              'sourceCommit':'ad3869c6d34e01bebd16a248adeb8c3e53d53d8a',
+              'artifactCatalogSha256':'e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a'},
+}
+
+
+def ordinary_target_release():
+    custody = REPORT.get('ownedGuestCustody')
+    if custody is None:
+        # Legacy nonce-only fixtures remain limited to Ubuntu24 by the OS gate.
+        return '24.04'
+    os_release = custody.get('osRelease') if type(custody) is dict else None
+    if (type(os_release) is not dict or os_release.get('id') != 'ubuntu'
+            or os_release.get('versionId') not in ORDINARY_QUALIFICATIONS):
+        raise RuntimeError('Original ordinary target OS is unavailable')
+    return os_release['versionId']
+
+
+def checked_ordinary_profile(entry):
+    if type(entry) is not dict or set(entry) != {'evidence', 'profile'} or type(entry['profile']) is not dict:
+        raise RuntimeError('Compiled ordinary profile evidence differs')
+    profile = entry['profile']
+    release = profile.get('release')
+    if type(release) is not str or release not in ORDINARY_QUALIFICATIONS:
+        raise RuntimeError('Compiled ordinary profile target differs')
+    qualification = ORDINARY_QUALIFICATIONS[release]
+    evidence = {key:qualification[key] for key in ('reportSha256', 'sourceCommit', 'artifactCatalogSha256')}
+    if entry['evidence'] != evidence:
+        raise RuntimeError('Compiled ordinary profile evidence differs')
+    suite = qualification['suite']
+    expected = {'docker-ce': f'5:29.9.1-1~ubuntu.{release}~{suite}', 'docker-ce-cli': f'5:29.9.1-1~ubuntu.{release}~{suite}',
+                'containerd.io': f'2.4.2-2~ubuntu.{release}~{suite}', 'docker-buildx-plugin': f'0.38.0-1~ubuntu.{release}~{suite}',
+                'docker-compose-plugin': f'5.6.0-1~ubuntu.{release}~{suite}'}
+    if (set(profile) != {'method', 'verified', 'distribution', 'release', 'architecture', 'repositoryFingerprint', 'packages', 'artifacts'}
+            or profile['method'] != 'docker-official-apt' or profile['verified'] is not True or profile['distribution'] != 'ubuntu'
+            or profile['architecture'] != 'x64'
+            or profile['repositoryFingerprint'] != '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' or profile['packages'] != expected
+            or type(profile['artifacts']) is not dict or set(profile['artifacts']) != set(expected)):
+        raise RuntimeError('Compiled ordinary profile tuple differs')
+    for name, version in expected.items():
+        item = profile['artifacts'][name]
+        if (type(item) is not dict or set(item) != {'name', 'version', 'architecture', 'url', 'sha256', 'size'}
+                or item['name'] != name or item['version'] != version or item['architecture'] != 'amd64'
+                or type(item['url']) is not str or not item['url'].startswith(f'https://download.docker.com/linux/ubuntu/dists/{suite}/pool/stable/amd64/')
+                or type(item['sha256']) is not str or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])
+                or type(item['size']) is not int or item['size'] <= 0):
+            raise RuntimeError('Compiled ordinary profile artifact differs')
+    return release, expected
 
 
 def installation_packages():
@@ -901,33 +955,20 @@ def installation_packages():
     finally:
         os.close(fd)
     value = json.loads(body)
-    evidence = {'reportSha256': '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
-                'sourceCommit': 'a9606d74fd55b252c0aab8432ff72ec513457a5e',
-                'artifactCatalogSha256': '540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'}
     if (type(value) is not dict or set(value) != {'formatVersion', 'entries'} or type(value['formatVersion']) is not int
-            or value['formatVersion'] != 1 or type(value['entries']) is not list or len(value['entries']) != 1):
+            or value['formatVersion'] != 1 or type(value['entries']) is not list or not 1 <= len(value['entries']) <= len(ORDINARY_QUALIFICATIONS)):
         raise RuntimeError('Exact compiled ordinary profile record required')
-    entry = value['entries'][0]
-    if type(entry) is not dict or set(entry) != {'evidence', 'profile'} or entry['evidence'] != evidence:
-        raise RuntimeError('Compiled ordinary profile evidence differs')
-    profile = entry['profile']
-    expected = {'docker-ce': '5:29.9.1-1~ubuntu.24.04~noble', 'docker-ce-cli': '5:29.9.1-1~ubuntu.24.04~noble',
-                'containerd.io': '2.4.2-2~ubuntu.24.04~noble', 'docker-buildx-plugin': '0.38.0-1~ubuntu.24.04~noble',
-                'docker-compose-plugin': '5.6.0-1~ubuntu.24.04~noble'}
-    if (type(profile) is not dict or set(profile) != {'method', 'verified', 'distribution', 'release', 'architecture', 'repositoryFingerprint', 'packages', 'artifacts'}
-            or profile['method'] != 'docker-official-apt' or profile['verified'] is not True or profile['distribution'] != 'ubuntu'
-            or profile['release'] != '24.04' or profile['architecture'] != 'x64'
-            or profile['repositoryFingerprint'] != '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' or profile['packages'] != expected
-            or type(profile['artifacts']) is not dict or set(profile['artifacts']) != set(expected)):
-        raise RuntimeError('Compiled ordinary profile tuple differs')
-    for name, version in expected.items():
-        item = profile['artifacts'][name]
-        if (type(item) is not dict or set(item) != {'name', 'version', 'architecture', 'url', 'sha256', 'size'}
-                or item['name'] != name or item['version'] != version or item['architecture'] != 'amd64'
-                or type(item['url']) is not str or not item['url'].startswith('https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/')
-                or type(item['sha256']) is not str or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])
-                or type(item['size']) is not int or item['size'] <= 0):
-            raise RuntimeError('Compiled ordinary profile artifact differs')
+    profiles = {}
+    for entry in value['entries']:
+        release, packages = checked_ordinary_profile(entry)
+        if release in profiles:
+            raise RuntimeError('Duplicate compiled ordinary profile target')
+        profiles[release] = packages
+    release = ordinary_target_release()
+    if release not in profiles:
+        raise RuntimeError('Compiled ordinary profile differs from the original OS target')
+    expected = profiles[release]
+    evidence = ORDINARY_QUALIFICATIONS[release]
     REPORT['executionArtifact'] = {'kind': 'ordinary', 'packageName': 'fleur', 'admissionMetadataSha256': hashlib.sha256(body).hexdigest(),
                                   'artifactCatalogSha256': evidence['artifactCatalogSha256']}
     return [name + '=' + version for name, version in expected.items()]
@@ -1096,10 +1137,11 @@ def admitted_readiness(observed, command):
             or type(envelope['data']) is not dict or type(envelope['data'].get('components')) is not dict):
         return False
     components = envelope['data']['components']
-    evidence = '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'
+    release = ordinary_target_release()
+    evidence = ORDINARY_QUALIFICATIONS[release]['reportSha256']
     return (all(type(components.get(name)) is dict and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
             and components['smoke'].get('cleanup') is True
-            and components.get('release') == {'state': 'verified', 'profile': 'ubuntu-24.04-x64-docker-29.9.1',
+            and components.get('release') == {'state': 'verified', 'profile': f'ubuntu-{release}-x64-docker-29.9.1',
                                                'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
 
 

@@ -320,3 +320,57 @@ Both source outcomes returned `HUMAN_ACTION_REQUIRED`, exit 3, after completed p
 The first attempt's JSON telemetry rounded epoch nanoseconds through JavaScript numbers. Its native held-descriptor checks were exact before serialization; its accepted readback used exact safely represented identity fields, documented timestamp representation equivalence and fresh full core hashes. Historical raw nanoseconds cannot be recovered from that receipt. The repeated verifier changed only snapshot identity serialization to eight canonical decimal strings and an explicit encoding marker. Its strict consumer required all eight fields to match native identities exactly, with full held-descriptor core hashes and stable named-file checks. Independent review reran that read-only consumer successfully. No floating-point fallback or whole-application atomic-freeze claim was used for the repeat.
 
 The earlier explicit 180-second attempt remains failed: receipt `86250f963d27e9babcb5bbebfcb49a42c1f54ed4bb7ee7f704d00b3c36365c4c`. Its separate normal cleanup did not promote it to success. The 600-second attempts are distinct public-input cases. No global application placement, launch, privileged-helper configuration, legal acceptance, Desktop runtime/release qualification or ARM verification follows from these private placements. Those remaining issue #24 requirements stay open.
+
+
+## Ubuntu 26.04 x64 installation and runtime evidence
+
+Source `ad3869c6d34e01bebd16a248adeb8c3e53d53d8a` completed two fresh owned
+Ubuntu 26.04.1 x64 VM attempts using native Intel HVF execution, Bun 1.4.3, the
+frozen Resolute internal candidate and the authenticated recorded helper pair.
+The original tracked guest, builder and full restriction probe ran unchanged.
+The attempts took 260.72 and 291.63 seconds. Report SHA256 values:
+
+- `f25ad02baf4e5e3d3678da93ce526eead4809504955ba1d9f2cc7cd182da29ac`
+- `5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07`
+
+Each completed exact five-package installation, separately authorized Docker
+membership enrollment, stale-login refusal, genuine fresh-login recovery, two
+ordinary-user smoke rounds, unrelated-state preservation and the complete
+restriction/resource/GC/idle/deadline probe. All eight physical exits met the
+unchanged 250 ms bound: 61, 62, 31, 66 ms in the first attempt and 39, 32, 78,
+64 ms in the second. Both disposed of the owned VM, credentials, scratch and
+overlay; independent review confirmed the exact scratch names were absent.
+
+The second attempt separately collected bounded read-only metadata after all
+original gates. Its 390 ms guest observation and 1,605 ms retired SSH transport
+preserved original custody before/after and matched that same run's runtime
+control builds. The observed tuple is kernel 7.0.0-38-generic; Docker client
+29.9.1/dfc520d and Engine 29.9.1/b26fb77; containerd
+v2.4.2/b7a25261e029d68978bbf290df0a62fc819b3c51; runc
+1.5.2/v1.5.2-0-g29dd3dc2; and Compose 5.6.0. Docker reported overlayfs, systemd
+cgroup v2, rootful mode, all recorded resource capability flags and exactly
+`name=apparmor,profile=default`, `name=seccomp,profile=builtin`, `name=cgroupns`.
+The image remained the existing digest-pinned amd64 Bun image.
+
+Independent origin/custody/authority/disposal review and runtime/control review
+accepted both actual reports. The latter ran the pinned pure restriction,
+thread and resource oracles and rejected six altered runtime records per
+attempt plus four altered metadata records. Metadata's fresh allowance did not
+extend historical verification deadlines. It proves tuple consistency rather
+than an atomic guarantee against concurrent root administration.
+
+The internal Doctor results correctly retained exit 4 and release-unverified
+status; fixture PTY replies remain `humanConsentProof:false`. Source catalog
+entries now reference the second report for exact installer/readiness evidence.
+Ordinary packed verification of those entries remains pending. No other kernel,
+architecture, Debian/Arch/Desktop target, real human consent, global performance
+gate or complete issue #24 acceptance is inferred.
+
+The earlier source `0a83622d132ce782f1a3748b6656116a33a6479d` attempt remained a
+failure before enrollment: its report SHA256 is
+`e0b5dc27178e2238f9d9c525febd7305f5cbab1033ebffd181c7362bf49efb35`.
+It installed the exact packages but rejected Ubuntu 26's sudo alternative as an
+unexpected file layout. Its outer observer also reported cleanup uncertainty;
+inner VM disposal did not repair that receipt. Bounded read-only diagnostics
+identified the rejected predicate and provider provenance before the reviewed
+sudo-rs fix. The failed history remains separate from these later successes.

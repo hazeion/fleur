@@ -214,15 +214,16 @@ test("nested security policy arrays are copied before command execution", async 
   expect(fixture.containers.size).toBe(0);
 });
 
-function ubuntuFixture() {
+function ubuntuFixture(release: "24.04" | "26.04" = "24.04") {
+  const kernel = release === "24.04" ? "6.8.0-147-generic" : "7.0.0-38-generic";
   const fixture = desktopFixture();
-  Object.assign(fixture.info, { ServerVersion: "29.9.1", KernelVersion: "6.8.0-147-generic", CgroupDriver: "systemd", SecurityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"] });
-  Object.assign(fixture.server, { Version: "29.9.1", GitCommit: "b26fb77", KernelVersion: "6.8.0-147-generic", Platform: { Name: "Docker Engine - Community" } });
+  Object.assign(fixture.info, { ServerVersion: "29.9.1", KernelVersion: kernel, CgroupDriver: "systemd", SecurityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"] });
+  Object.assign(fixture.server, { Version: "29.9.1", GitCommit: "b26fb77", KernelVersion: kernel, Platform: { Name: "Docker Engine - Community" } });
   fixture.server.Components[0]!.Version = "29.9.1";
   fixture.server.Components[0]!.Details.GitCommit = "b26fb77";
   const host: SetupHost = {
     ...fixture.host,
-    host: async () => ({ system: "linux", distribution: "ubuntu", architecture: "x64", translated: false, release: "24.04", machineId: "c".repeat(64) }),
+    host: async () => ({ system: "linux", distribution: "ubuntu", architecture: "x64", translated: false, release, machineId: "c".repeat(64) }),
     run: async (args, timeout, context) => args.join(" ") === "docker --version"
       ? { status: "completed", exitCode: 0, stdout: "Docker version 29.9.1, build dfc520d", stderr: "" }
       : fixture.host.run(args, timeout, context),
@@ -293,4 +294,46 @@ test("legacy and default-profile AppArmor descriptors cannot become two distinct
   expect(outcome.exitCode).toBe(4);
   expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
   expect(fixture.containers.size).toBe(0);
+});
+
+test("ordinary Doctor admits the measured Ubuntu 26 x64 tuple only after smoke cleanup", async () => {
+  const fixture = ubuntuFixture("26.04");
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "ubuntu-26.04-x64-docker-29.9.1", evidence: { readinessSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07", isolationSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" } } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+test.each(["kernel", "engine-build", "rootless", "cgroup-driver"])("Ubuntu 26 qualification refuses unmeasured %s drift", async (kind) => {
+  const fixture = ubuntuFixture("26.04");
+  if (kind === "kernel") { fixture.info.KernelVersion = "7.0.0-39-generic"; fixture.server.KernelVersion = "7.0.0-39-generic"; }
+  if (kind === "engine-build") { fixture.server.GitCommit = "f00beef"; fixture.server.Components[0]!.Details.GitCommit = "f00beef"; }
+  if (kind === "rootless") fixture.info.SecurityOptions.push("name=rootless");
+  if (kind === "cgroup-driver") fixture.info.CgroupDriver = "cgroupfs";
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, data: { components: { release: { state: "unverified" } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+test.each(["x64", "arm64"])("ordinary Ubuntu 26 %s setup retains exact installer admission and separate grants", async (architecture) => {
+  const { mkdtemp, rm, readdir } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-source-owned-resolute-");
+  const commands: string[][] = [];
+  try {
+    const host: SetupHost = {
+      stateDirectory: directory,
+      host: async () => ({ system: "linux", distribution: "ubuntu", release: "26.04", architecture, translated: false, machineId: "c".repeat(64) }),
+      run: async (args) => { commands.push([...args]); return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 1, stdout: "", stderr: "" }; },
+    };
+    const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+    expect(outcome.exitCode).toBe(3);
+    if (architecture === "x64") {
+      expect(outcome.result).toMatchObject({ error: { code: "AUTHORITY_REQUIRED" }, data: { plan: { verified: true, requiredAuthorities: ["install", "configuration", "docker-access", "service-start", "service-enable"] } } });
+      expect(commands.map((args) => args[0])).toEqual(["docker", "dpkg-query"]);
+      expect(await readdir(directory)).toEqual(["setup.lock"]);
+    } else {
+      expect(outcome.result).toMatchObject({ error: { code: "HUMAN_ACTION_REQUIRED" }, data: { plan: { verified: false } } });
+      expect(commands).toEqual([["docker", "--version"]]);
+      expect(await readdir(directory)).toEqual([]);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

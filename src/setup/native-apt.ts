@@ -39,7 +39,12 @@ function exactSimulation(stdout: string, packages: Readonly<Record<string, strin
 }
 
 export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
-  if (!validAptProfile(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
+  if (!validAptProfile(profile)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
+  if (!identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 3, {
+    code: "HUMAN_ACTION_REQUIRED",
+    message: "Setup cannot bind human grants to a stable machine identity. No installation plan was authorized.",
+    actions: [{ command: "fleur doctor", description: "Inspect host identity and complete the documented official setup manually if identity cannot be verified." }],
+  }, { plan: { method: profile.method, verified: false, reason: "Stable machine identity is unavailable." }, grantsCreated: false, resumable: true });
   const requiredAuthorities = ["install", "configuration", "docker-access", "service-start", "service-enable"] as const;
   const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify(profile), "hex");
   const target = `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`;

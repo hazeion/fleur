@@ -1,8 +1,9 @@
+import recordedOrigin from "../experiments/compatibility/runtime-probe/recorded-helper-origin.json";
 import { copyOwnedGuestBinding, type OwnedGuestBinding } from "./owned-guest-seed.ts";
 import { isDeepStrictEqual } from "node:util";
 import { prepareRetainedSsh, startRetainedSsh } from "./retained-ssh.ts";
 import type { Readable } from "node:stream";
-export interface SessionTarget { port: number; identity: string; knownHosts: string; nonce: string; ownedGuestBinding?: OwnedGuestBinding }
+export interface SessionTarget { port: number; identity: string; knownHosts: string; nonce: string; ownedGuestBinding?: OwnedGuestBinding; recordedHelpers?: true }
 export interface SessionObservation { formatVersion: 1; scope: "fresh-linux-session-observation"; ok: boolean; guest?: Record<string, unknown>; initialGuest?: Record<string, unknown>; error?: { code: string; message: string } }
 const failure = (code: string, message: string): SessionObservation => ({ formatVersion: 1, scope: "fresh-linux-session-observation", ok: false, error: { code, message } });
 async function bounded(stream: Readable, prefix = "", started?: () => void): Promise<string> {
@@ -24,6 +25,35 @@ async function bounded(stream: Readable, prefix = "", started?: () => void): Pro
 function numericGroups(value: unknown): value is number[] {
   return Array.isArray(value) && value.every((gid) => Number.isSafeInteger(gid) && gid >= 0) && new Set(value).size === value.length;
 }
+function checkRecordedInputs(guest: Record<string, unknown>, selected: boolean): void {
+  if (!selected) {
+    if (guest.helperMode !== undefined || guest.recordedHelperInputs !== undefined) throw new Error("Unexpected recorded helper input binding");
+    return;
+  }
+  const inputs = guest.recordedHelperInputs as { manifestSha256?: unknown; files?: Record<string, { size?: unknown; sha256?: unknown; identity?: unknown }>; directoryIdentity?: unknown } | undefined;
+  const identity = (value: unknown) => Array.isArray(value) && value.length === 8 && value.every((part) => typeof part === "string" && /^(0|[1-9][0-9]{0,23})$/.test(part));
+  if (guest.helperMode !== "recorded-prebuilt" || !inputs || inputs.manifestSha256 !== "26167bf5307aacabbec7f51e05e348418170d98075baa1964b971460988cf47b"
+      || !identity(inputs.directoryIdentity) || !inputs.files || !isDeepStrictEqual(Object.keys(inputs.files).sort(), ["abuse", "filter.so"])
+      || !recordedOrigin.helpers.every((pin) => inputs.files?.[pin.name]?.size === pin.bytes && inputs.files[pin.name]?.sha256 === pin.sha256 && identity(inputs.files[pin.name]?.identity))) throw new Error("Guest recorded helper input binding is incomplete or differs");
+}
+function checkRecordedTerminal(guest: Record<string, unknown>, binding: Readonly<OwnedGuestBinding>): void {
+  if (guest.ok !== true) return;
+  const proof = (guest.restrictionProbe as { result?: Record<string, unknown> } | undefined)?.result;
+  const custody = proof?.owned_host_control as Record<string, unknown> | undefined;
+  const context = proof?.helper_artifact_context as Record<string, unknown> | undefined;
+  const expectedOrigin = { mode: "recorded-prebuilt", manifest_sha256: "26167bf5307aacabbec7f51e05e348418170d98075baa1964b971460988cf47b", architecture: recordedOrigin.architecture, base_image: recordedOrigin.baseImage, local_compiler_executed: false, producer: recordedOrigin.producer, source_sha256: Object.fromEntries(recordedOrigin.sources.map((item) => [item.file, item.sha256])), helpers: recordedOrigin.helpers };
+  const elf = { class: 64, endianness: "little", machine: 62 };
+  if (!proof || proof.compiler_status !== "prebuilt-origin" || proof.compiler_pin_verified !== false || "gcc" in proof
+      || proof.expected_gcc !== recordedOrigin.producer.compiler.version || proof.expected_gcc_binary_sha256 !== recordedOrigin.producer.compiler.sha256
+      || proof.architecture !== recordedOrigin.architecture || proof.base_image !== recordedOrigin.baseImage || !isDeepStrictEqual(proof.helper_origin, expectedOrigin)
+      || !recordedOrigin.sources.every((item) => (proof.source_sha256 as Record<string, unknown> | undefined)?.[item.file] === item.sha256)
+      || proof.helper_sha256 !== recordedOrigin.helpers[0]!.sha256 || proof.abuse_sha256 !== recordedOrigin.helpers[1]!.sha256
+      || !isDeepStrictEqual(proof.helper_elf, elf) || !isDeepStrictEqual(proof.abuse_elf, elf)
+      || proof.helper_origin_verified !== true || proof.owned_artifact_disposal_scope_verified !== true
+      || !custody || !Object.entries(binding).every(([key, value]) => custody[key] === value) || custody.fixtureCustodyValidated !== true || custody.hostControlScope !== "owned-guest" || custody.runtimeAdmission !== false
+      || context?.state !== "retained-for-owned-guest-disposal" || context.disposal_scope !== "owned-full-system-guest-filesystem" || context.local_disposal !== "pending"
+      || context.cleanup_confirmed !== false || context.retained !== true || context.ledger_verified !== true) throw new Error("Guest recorded helper origin or owned disposal scope differs");
+}
 function checkTerminalProof(code: number, guest: Record<string, unknown>): void {
   if (typeof guest.ok !== "boolean" || (code === 0) !== guest.ok) throw new Error("Guest final proof contradicts its exit status");
   if (!guest.ok) return;
@@ -32,6 +62,15 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>): void 
   for (const item of guest.runs) {
     const observed = item as { exitCode?: unknown; result?: { formatVersion?: unknown; command?: unknown; ok?: unknown; truncated?: unknown; error?: { code?: unknown }; data?: { components?: Record<string, { state?: unknown; cleanup?: unknown }> } } };
     const envelope = observed?.result; const components = envelope?.data?.components;
+    const artifact = guest.executionArtifact as { kind?: unknown; packageName?: unknown } | undefined;
+    if (artifact?.kind === "ordinary") {
+      const evidence = "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2";
+      if (artifact.packageName !== "fleur" || observed?.exitCode !== 0 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== true || envelope.error !== null || envelope.truncated !== false
+          || !isDeepStrictEqual(Object.keys(envelope).sort(), ["formatVersion", "command", "ok", "data", "error", "truncated"].sort())
+          || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true
+          || !isDeepStrictEqual(components?.release, { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: evidence, isolationSha256: evidence } })) throw new Error("Guest final proof lacks exact admitted ordinary doctor rounds");
+      continue;
+    }
     if (observed?.exitCode !== 4 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== false || envelope.truncated !== false || envelope.error?.code !== "PREREQUISITE_UNAVAILABLE"
         || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true || components?.release?.state !== "unverified") throw new Error("Guest final proof lacks the complete release-unverified doctor rounds");
   }
@@ -44,8 +83,10 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
     try { ownedBinding = copyOwnedGuestBinding(target.ownedGuestBinding, target.nonce); }
     catch { return failure("ARGUMENT_INVALID", "Complete canonical original owned guest binding required."); }
   }
+  if (target.recordedHelpers !== undefined && (target.recordedHelpers !== true || !ownedBinding)) return failure("ARGUMENT_INVALID", "Recorded helpers require explicit full original owned guest binding.");
   target = Object.freeze({ ...target, ownedGuestBinding: ownedBinding });
   const ownedArguments = ownedBinding ? ` --owned-guest-boot-id ${ownedBinding.bootId} --owned-guest-uid ${ownedBinding.uid} --owned-guest-manifest-sha256 ${ownedBinding.manifestSha256}` : "";
+  const recordedArguments = target.recordedHelpers ? " --recorded-helpers" : "";
   const deadline = performance.now() + 900000;
   const remaining = () => { const value = deadline - performance.now(); if (value <= 0 || signal?.aborted) throw new Error("Guest session aggregate deadline expired or was cancelled"); return Math.ceil(value); };
   // At most one resume connection is possible. Its idle helper owns no SSH.
@@ -83,8 +124,9 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
   const observe = async (): Promise<SessionObservation> => {
     let initialGuest: Record<string, unknown> | undefined;
     try {
-      const observed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce}${ownedArguments}`);
+      const observed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce}${ownedArguments}${recordedArguments}`);
       const guest = observed.guest; initialGuest = guest;
+      checkRecordedInputs(guest, target.recordedHelpers === true);
       if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false) throw new Error("Guest metadata differs from its declared scope");
       if (observed.code === 3 || guest.phase !== undefined) {
         const checkpoint = guest.checkpoint as { sha256?: unknown; bytes?: unknown } | undefined;
@@ -95,14 +137,18 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
             || after?.user?.name !== "fleur" || typeof after.user.uid !== "number" || !Number.isSafeInteger(after.user.uid) || after.user.uid <= 0 || typeof after.group?.gid !== "number"
             || !numericGroups(after.accountGroups) || !numericGroups(after.sessionGroups) || !after.accountGroups.includes(after.group.gid) || after.sessionGroups.includes(after.group.gid)) throw new Error("Intermediate guest handoff is invalid");
         const expectedGroups = after.accountGroups;
-        const resumed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce} --resume ${checkpoint.sha256}${ownedArguments}`);
+        const resumed = await ssh(`python3 lab/fresh-linux-guest.py ${target.nonce} --resume ${checkpoint.sha256}${ownedArguments}${recordedArguments}`);
         const final = resumed.guest;
+        checkRecordedInputs(final, target.recordedHelpers === true);
+        if (target.recordedHelpers && !isDeepStrictEqual(final.recordedHelperInputs, guest.recordedHelperInputs)) throw new Error("Resumed recorded helper input binding changed");
         const access = final.accessResume as { checkpointSha256?: unknown; sessionGroups?: unknown } | undefined;
         if (resumed.code === 3 || final.phase !== undefined || final.formatVersion !== 1 || final.runtimeSupport !== "unverified" || final.humanConsentProof !== false || !isDeepStrictEqual(final.baseline, guest.baseline)
             || access?.checkpointSha256 !== checkpoint.sha256 || !numericGroups(access.sessionGroups) || access.sessionGroups.length !== expectedGroups.length || !access.sessionGroups.every((gid) => expectedGroups.includes(gid))) throw new Error("Resumed ordinary login report differs from its anchored handoff");
+        if (target.recordedHelpers) checkRecordedTerminal(final, ownedBinding!);
         checkTerminalProof(resumed.code, final);
         return { formatVersion: 1, scope: "fresh-linux-session-observation", ok: resumed.code === 0 && final.ok === true, initialGuest: guest, guest: final };
       }
+      if (target.recordedHelpers) checkRecordedTerminal(guest, ownedBinding!);
       checkTerminalProof(observed.code, guest);
       return { formatVersion: 1, scope: "fresh-linux-session-observation", ok: observed.code === 0 && guest.ok === true, guest };
     } catch (error) { return { ...failure("SESSION_FAILED", error instanceof Error ? error.message : "Guest session failed"), ...(initialGuest ? { initialGuest } : {}) }; }

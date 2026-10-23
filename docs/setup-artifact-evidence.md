@@ -194,6 +194,16 @@ The unchanged 38-package compiler closure and exact GCC pin compiled the origina
 
 The private Darwin x64 HVF diagnostic used explicit host CPU selection without fallback; it supplies no native CPU performance proof. Its outer result intentionally remained exit `4`, `ok: false`, `DIAGNOSTIC_ONLY`, `gateProof: false` and `v1_gate_passed: false`, even after guest success. Runtime support remains unverified and the ordinary catalog stays disabled. Human-consent proof is false. The hosted matrix is still blocked; this run does not establish hosted CI, another OS/architecture tuple, release admission or completed issue #24 acceptance.
 
+## Intel Desktop existing-installation observation, 2026-10-21
+
+On native Intel macOS 15.7.7 with Bun 1.4.3, the packed ordinary CLI observed an existing Docker Desktop 4.96.1 (244132), Docker CLI 29.9.2/a82e528, Linux Engine 29.9.2/0367cbe and Compose 5.6.0. Source commit: `aa43191a559b1514477b93f7928920a5aed65d5c`. Report SHA256: `904097eb3d1b3bbf3a655375c4cb139a4844145e70efc0fc30e3819312269b56`; verifier SHA256: `635c919556868182406fdf26b053441d95df7aad73d5e6446fef6b9d2ca9cbcb`.
+
+The operator completed Desktop startup. A separately authorized one-time Fleur setup action acquired the exact x64 smoke digest. The existing-only verifier performed no acquisition, installation, startup or configuration change. Both packed doctor rounds reported CLI, daemon, Compose and owned smoke ready with cleanup confirmed. The stopped sentinel remained unchanged, and final cleanup restored the original container inventory and context. An independent reviewer checked the source/report pins and scoped result.
+
+Both doctor results honestly retained exit 4 and release state unverified. This proves repeated existing-tool readiness and preservation for the observed tuple, not assisted DMG installation, human legal acceptance, Desktop application-runtime isolation, Apple Silicon or other release admission. The compiled readiness policy must not infer support from this observation alone.
+
+Repeating the existing-only verifier against ordinary-catalog candidate `37513637b2c6b7e264edfcc36cd02181fc859c1d` produced report `1b5e9ee287d063a0e4d5f48fa325d87280755f0a90ac863eb4b49ad66586d21e`. Both packed rounds again completed smoke cleanup and retained unverified release state. The verifier acquired no image, preserved the stopped sentinel and restored the original container inventory and context. Its wrapper completed in 13.78 seconds without timeout. This confirms that the Ubuntu candidate does not qualify the observed Desktop tuple.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.
@@ -221,3 +231,92 @@ native CPU performance evidence. The account has sudo; this is not a trust proof
 against a privileged adversary. Runtime observer/control integration and binding
 the later enrollment/resume chain to this context require separate review. The
 existing restriction, lifecycle and cleanup gates remain mandatory.
+
+
+## Ubuntu ordinary-catalog source mapping
+
+The exact Ubuntu 24.04 x64 prerequisite and official APT records now map the reviewed report `75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2` to source commit `a9606d74fd55b252c0aab8432ff72ec513457a5e` and artifact catalog `540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58`. The older diagnostic catalog and its historical pending labels are preserved. This source row covers one prerequisite tuple; it does not promote the global runtime gate or other platforms.
+
+The ordinary Doctor contract additionally binds current daemon resource flags, cgroup driver, rootful/rootless mode and exact security options. The complete Ubuntu systemd/rootful/AppArmor tuple was absent from the older report and has now been captured and checked by the ordinary packed VM run below. Focused synthetic OS fixtures verify selection and rejection behavior, not native execution. Fresh ordinary setup, ready reprobes, exact metadata and cleanup passed in that run. Existing enrollment resume is not evidence of termination during a privileged package transaction; interruption and recovery contracts require their separate tests.
+
+
+### AppArmor wire-format regression
+
+The first ordinary-catalog VM run at `49978478855cf900e0347d93ec710bb8276ea420` produced report `cf3309135256313884258b17c9477cf268d599a76492c93c94821e32b80e8481`. Official installation, separate enrollment, fresh-session resume and smoke image acquisition completed, but the security-option observer refused an unknown descriptor before the repeated readiness and restriction proof. VM reaping and credential removal were confirmed. The report retained the proposed Engine/kernel/component tuple, systemd cgroup v2 and available resource flags. It redacted the unknown descriptor, so that run does not prove its exact contents or complete ordinary qualification.
+
+The [serializer at the exact Engine build](https://github.com/moby/moby/blob/b26fb77d3e7b01f9d21b89539c1ab428f5ca431f/daemon/info.go#L198) emits `name=apparmor,profile=default` for its standard AppArmor template. The proposed record originally used the older bare descriptor. The matcher and observer now recognize only this additional exact standard literal; custom and unconfined profiles remain unavailable, and legacy/default forms cannot count as distinct mechanisms. The row binds the modern literal. The second actual VM run below captured it and passed the unchanged ordinary qualification and restriction checks. Upstream format evidence alone did not establish what the first redacted runtime value was.
+
+
+## Qualified ordinary Ubuntu prerequisite tuple
+
+Source `28a223cf625a01841fd850accb87de4f8553bb92` completed the ordinary packed proof on a fresh Ubuntu 24.04 x64 guest using Intel HVF with explicit host CPU selection. Report SHA256: `62d29dba9c06b896d5b56503638cc1f261d2282ae9f6e4b931ce3dca238c96ae`. An independent reviewer checked actual report contents, artifact/source hashes and acceptance results.
+
+| Field | Observed exact value |
+|---|---|
+| Native guest / Bun | Ubuntu 24.04 x64 / 1.4.3 |
+| CLI / Engine | 29.9.1/dfc520d / 29.9.1/b26fb77 |
+| Kernel / platform | 6.8.0-147-generic / Docker Engine - Community |
+| containerd / runc | v2.4.2/b7a25261e029d68978bbf290df0a62fc819b3c51 / 1.5.2/v1.5.2-0-g29dd3dc2 |
+| Compose | 5.6.0 |
+| Enforcement metadata | systemd, cgroup v2, rootful; CPU period/quota, memory, swap and PID capabilities true |
+| Security options | `name=apparmor,profile=default`, `name=seccomp,profile=builtin`, `name=cgroupns` |
+
+Both packed ordinary Doctor rounds returned exit 0 with profile `ubuntu-24.04-x64-docker-29.9.1` and confirmed smoke cleanup. Two ready setup reprobes also returned exit 0 while preserving package/service/source snapshots and grants. The stopped sentinel and original Docker inventory/context were preserved; sentinel cleanup completed. Actual installation used the five authenticated official APT packages, separate action scopes, separate account enrollment, stale-login refusal and a fresh-session resume. The original candidate catalog and its historical labels remain unchanged. The source row retains the earlier installation/restriction report as its evidence reference; this later report additionally proves the ordinary success path and complete enforcement tuple.
+
+The unchanged restriction probe exited 0 with `bounded_probe_passed` and `cleanup_complete` true. It recorded six GC collections with 128 retained objects, 16,384 retained bytes and checksum 8,128. All 24 syscall negatives and twelve event negatives returned `-1`; descriptor/thread restrictions, CPU throttling, memory OOM and the 64-PID bound passed. Normal and idle lifecycle groups each passed two repetitions under the original 30-second deadline. Both idle groups retained the registered request across the required 11-second pause, observed at 11,000 and 11,001 ms. Healthy work completed while the busy worker remained active. All four Linux pidfd physical exits were confirmed, at 32, 33, 66 and 32 ms after their deadlines, with guards reaped. Event replacement was rejected as `class-mismatch` before application evaluation, event execution or startup acknowledgment.
+
+| Provenance | SHA256 |
+|---|---|
+| Ordinary packed archive | `4d57352791b4ea4e77f23f7b44d4402c666c0f99df60f2dbe7f571931c200d90` |
+| Packaged admission metadata | `e046c4e79d54e7bf95fa76e10f31387874b02309f480de4ed824e54df45728a3` |
+| Tracked verifier | `b92e6b4f543ffbacfafe7e598cbf5adb993f7d2c9211ba7d9bcb8f09c945b2ba` |
+| Private HVF diagnostic | `3760d41665ab2c962bbf7c9dfea6c1b5fc460f20fea8d3517f4b38c2a00d6a66` |
+| Audited launcher | `10b930c371ccd41e1325477e086605808f80bc46e4c5b6f7270076ce80335922` |
+
+Worker/image/resource cleanup, compiler-stage removal, final VM reaping and credential removal were confirmed. The private wrapper deliberately ended with `DIAGNOSTIC_ONLY`, exit 4, after successful guest proof. Its global v1 gate, CPU-performance proof and human-consent proof remain false. Those labels do not negate this individually reviewed prerequisite tuple, and they do not qualify other OS/architecture rows, the future full application or assisted Desktop installation. Other promised native platforms and blocked hosted CI remain open. Existing contract tests cover partial-package failure, pending-fence recovery, repository resume and serialization; successful fresh-login resume is not a claim that this VM run terminated during a privileged package transaction.
+
+
+## Intel Desktop 4.96.1 disk-image authentication
+
+On native Intel macOS 15.7.7, the official Docker Desktop 4.96.1 build 244132 image passed exact byte and SHA256 verification, strict Apple/Docker signature assessment and Gatekeeper open assessment as Notarized Developer ID. The image is 659,125,733 bytes with SHA256 `3d35634cf3dd0373d37d986de10eb744950d3822124615e774335f7be2a1d27a`. The fixed signature requirement includes Docker Team ID `9BNSXJN65R`. Both assessment processes were reaped and their owned process groups were confirmed absent. The original 60-second acceptance allowance and 55-second work fence were preserved.
+
+The first attempt completed in 26.80 seconds with exit 0 and report SHA256 `bb8241fe2d942bebcd26254237146b7947be2c58a58f4ab4bdddc5e274802741`. Independent review checked the exact receipt, operations and retirement facts; root additionally performed full descriptor-held payload readback and checked retained file identity. A second byte-identical attempt completed in 29.69 seconds with exit 0 and report SHA256 `62012b54c67a712052c8938a0b04d9a2bb4422152be5c58ecb20219467010062`. Its strict receipt and full descriptor-held payload readback also passed, with a separate independent evidence review.
+
+This proves the retained DMG input only. No application was mounted, copied, launched or admitted to the source catalog, and no legal agreement or runtime qualification is claimed. The earlier 4.96.0 artifact evidence remains separate. The existing 4.96.1 installed-application trust observations do not establish that installation used this DMG.
+
+
+## Recorded-helper verification on the existing Ubuntu tuple
+
+Source `9b3018bae74e429ef58633c80eae652fda17dbd0` completed two recorded-helper attempts on the previously reviewed Ubuntu 24.04 x64 tuple using the same reviewed verifier and fixed inputs. It used the ordinary packed CLI, Bun 1.4.3 and the existing digest-pinned image. The fixed helper pair came from the recorded GCC 13.3.0 producer; no consumer-local compiler execution was claimed. The exact source-owned origin record, current C inputs and helper hashes were checked before building.
+
+| Evidence | SHA256 |
+|---|---|
+| First recorded-helper report | `73320be67ba34cf945cf9a58ea7e388fe960ca48a821fad927ddd7a34cf2c5ca` |
+| Repeated recorded-helper report | `cc3698ff55c86684a6133bf6a8de964087cc48d567b431988e4a16ebc67f68c6` |
+| Immutable helper-origin manifest | `26167bf5307aacabbec7f51e05e348418170d98075baa1964b971460988cf47b` |
+| Original compiler/export report | `de686cf6344410c3d29e1dcab19bcdabaddc05e4a7d4bdf50320f9c649282bbf` |
+| Exact tracked restriction archive | `34d96fb44088422e8ce5ac56cbf66c9068f1723ff723467bd35ad74299e26c07` |
+
+Each attempt used a fresh owned boot. Its initial and resumed sessions preserved the original custody binding and the exact helper-input identities. Two ordinary Doctor rounds and two ready setup reprobes returned exit 0 with the existing qualified Ubuntu profile, owned smoke cleanup, and unchanged snapshots and grants. Independent review verified both attempts' origin, resume/custody chains, source/archive provenance and actual final VM/filesystem disposal. The guest context remained explicitly pending local disposal until the host reaped the VM and confirmed removal of its scratch and overlay.
+
+Both reports record restriction-probe exit 0 with bounded-probe and cleanup predicates true. Independent runtime review accepted both attempts: six GC collections retaining 128 objects and 16,384 bytes with checksum 8,128; all 24 syscall and 12 event negatives; descriptor/thread and real resource enforcement; two normal and two idle 30-second lifecycles per attempt. Idle requests retained their 11-second pauses, and all eight physical pidfd exit measurements stayed within the original 250 ms lateness limit, spanning 27–74 ms. Worker, waiter and guard cleanup remained required. The outer diagnostic deliberately returned exit 4 with `DIAGNOSTIC_ONLY`; its global gate, CPU-performance proof and human-consent proof remain false. This introduces no new platform or release admission.
+
+The earlier attempt at `ce8b997fde5758fecde38c3d5f1b50278641d7e0` remains failed: report `ee7fd0c1da9c47cc84f4ba37f10dd86b2bdad43f3332719897470b09dcd17678` refused context metadata before Docker build. A separate custody-variable overwrite also invalidated its inventory comparison. The repair gives newly created recorded-context inputs fixed readable, non-group-writable permissions and preserves the original inventory variable; it does not weaken the filename, custody or runtime assertions. The earlier receipt did not identify an offending permission value, so its precise inherited-umask cause is not claimed as observed.
+
+At the final source, the full CLI suite passed 815 tests with zero failures; types and full lint also passed. The preceding full run remains recorded as 807 passes, eight failures and one between-test error. No assertions or deadlines changed. All 101 tests in the affected files passed in serial verification, and one finite four-case diagnostic confirmed local retirement while preserving the original deadline and survivor refusals. It found no transport defect in that collection and did not establish the historical failure's cause. Hosted CI and the remaining promised native-platform evidence remain open; this addition does not close issue #24.
+
+
+## Intel Desktop 4.96.1 private application placement
+
+Two native Intel macOS 15.7.7 attempts exercised source `e36532656e2630ea3e962fa0a2f45e01c0cfb207` through the public `setup --timeout 600` input, using separate owned application destinations. Both performed the original 14 native operations: fresh official download, exact DMG authentication, Apple/Docker signature and Gatekeeper assessments, read-only attachment, mounted/staged application checks, real copy, exclusive publication and normal owned image detach. Every native command retired, and the installed application was preserved. This evidence does not change the default 60-second setup input or the runtime deadlines.
+
+| Attempt | Duration | Receipt SHA256 |
+|---|---|---|
+| First private placement | 185.80 seconds | `c795b6d5c355afd705b3cdd76e42f1f5cc0b6225fa84a3968f1ddae51645791b` |
+| Repeated private placement | 293.13 seconds | `4b48f9de3b1df475d0231a6e4329fb984ef53e49c7794eac9e6d33fa8c7e5447` |
+
+Both source outcomes returned `HUMAN_ACTION_REQUIRED`, exit 3, after completed private placement with cleanup confirmed. Separate once-only image-acquisition and installation fixture grants matched their scoped plans, were consumed, and remained visible as revoked through public grant inspection. Fixture answers are not human-consent evidence. The published bundle identified Docker Desktop 4.96.1 build 244132, Docker Team ID `9BNSXJN65R` and native x86_64. Mounted, staged, published and installed core metadata and hashes agreed. The five-second cleanup reserve, command-specific budgets and normal-detach policy were unchanged.
+
+The first attempt's JSON telemetry rounded epoch nanoseconds through JavaScript numbers. Its native held-descriptor checks were exact before serialization; its accepted readback used exact safely represented identity fields, documented timestamp representation equivalence and fresh full core hashes. Historical raw nanoseconds cannot be recovered from that receipt. The repeated verifier changed only snapshot identity serialization to eight canonical decimal strings and an explicit encoding marker. Its strict consumer required all eight fields to match native identities exactly, with full held-descriptor core hashes and stable named-file checks. Independent review reran that read-only consumer successfully. No floating-point fallback or whole-application atomic-freeze claim was used for the repeat.
+
+The earlier explicit 180-second attempt remains failed: receipt `86250f963d27e9babcb5bbebfcb49a42c1f54ed4bb7ee7f704d00b3c36365c4c`. Its separate normal cleanup did not promote it to success. The 600-second attempts are distinct public-input cases. No global application placement, launch, privileged-helper configuration, legal acceptance, Desktop runtime/release qualification or ARM verification follows from these private placements. Those remaining issue #24 requirements stay open.

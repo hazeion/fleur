@@ -4,6 +4,7 @@ PTY replies below are automated test inputs. They prove neither real human
 consent nor acceptance of any legal agreement. No production grant API is added.
 """
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -28,6 +29,8 @@ REPORT = {"formatVersion": 1, "ok": False, "installationEvidence": "pending",
 
 
 GUEST_DEADLINE = None
+RECORDED_HELPERS = False
+_RECORDED_MODULE = None
 
 def budget_seconds(limit):
     remaining = limit if GUEST_DEADLINE is None else min(limit, GUEST_DEADLINE - time.monotonic())
@@ -238,8 +241,12 @@ def file_identity(info):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def observed_input(path, limit, expected=None):
-    budget_seconds(900)
+def observed_input(path, limit, expected=None, *, absolute_deadline=None):
+    def check_budget():
+        budget_seconds(900)
+        if absolute_deadline is not None and (type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline) or time.monotonic() >= absolute_deadline):
+            raise TimeoutError('Handoff original input deadline expired')
+    check_budget()
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
@@ -248,7 +255,7 @@ def observed_input(path, limit, expected=None):
         digest = hashlib.sha256()
         size = 0
         while True:
-            budget_seconds(900)
+            check_budget()
             chunk = stream.read(1024 * 1024)
             if not chunk:
                 break
@@ -259,7 +266,67 @@ def observed_input(path, limit, expected=None):
         after = os.fstat(stream.fileno())
         if size != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
             raise RuntimeError("Handoff input bytes or pathname identity changed")
+        check_budget()
         return {"sha256": digest.hexdigest(), "size": size}
+
+
+def _recorded_helper_module():
+    global _RECORDED_MODULE
+    if _RECORDED_MODULE is None:
+        # Ordinary host-only source from the authenticated Git restriction archive.
+        # Privileged root validation still uses its fixed root-owned program.
+        directory = ROOT/'experiments/compatibility/runtime-probe'
+        name = '_fleur_recorded_helpers_' + hashlib.sha256(str(directory).encode()).hexdigest()[:16]
+        spec = importlib.util.spec_from_file_location(name, directory/'helper_artifacts.py')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        sys.path.insert(0, str(directory))
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+        _RECORDED_MODULE = module
+    return _RECORDED_MODULE
+
+
+def recorded_helper_handoff():
+    started = time.monotonic()
+    budget_seconds(10)
+    if type(GUEST_DEADLINE) not in (int, float) or not math.isfinite(GUEST_DEADLINE):
+        raise RuntimeError('Recorded helper original guest deadline required')
+    deadline = min(GUEST_DEADLINE, started+10)
+    contract = _recorded_helper_module()
+    metadata = contract.recorded_helper_contract(deadline)
+    root = ROOT/'recorded-helpers'
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(directory)
+        if not stat.S_ISDIR(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
+            raise RuntimeError('Recorded helper handoff custody differs')
+        if sorted(os.listdir(directory)) != ['abuse', 'filter.so']:
+            raise RuntimeError('Recorded helper handoff entries differ')
+        files = {}
+        for pin in metadata['helpers']:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Recorded helper original handoff deadline expired')
+            info = os.stat(pin['name'], dir_fd=directory, follow_symlinks=False)
+            if info.st_size != pin['bytes']:
+                raise RuntimeError('Recorded helper handoff bytes differ')
+            if info.st_mode & 0o077:
+                raise RuntimeError('Recorded helper handoff custody differs')
+            observed = observed_input(root/pin['name'], pin['bytes'], expected=info, absolute_deadline=deadline)
+            if observed != {'size':pin['bytes'], 'sha256':pin['sha256']}:
+                raise RuntimeError('Recorded helper handoff bytes differ')
+            files[pin['name']] = {**observed, 'identity':[str(value) for value in file_identity(info)]}
+        for name, observed in files.items():
+            if [str(value) for value in file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False))] != observed['identity']:
+                raise RuntimeError('Recorded helper handoff custody changed')
+        if file_identity(before) != file_identity(os.fstat(directory)) or file_identity(before) != file_identity(root.lstat()) or time.monotonic() >= deadline:
+            raise RuntimeError('Recorded helper handoff custody changed')
+        return {'manifestSha256':contract.RECORDED_MANIFEST_SHA256, 'files':files,
+                'directoryIdentity':[str(value) for value in file_identity(before)]}
+    finally:
+        os.close(directory)
 
 
 def handoff_artifacts():
@@ -272,6 +339,11 @@ def handoff_artifacts():
     paths = {"candidateArchive": (ROOT / "fleur-internal-native-candidate.tgz", 8 * 1024 * 1024), "bunArchive": (ROOT / "bun.zip", 160 * 1024 * 1024), "restrictionArchive": (ROOT / "runtime-probe.tar", 16 * 1024 * 1024), "bunExecutable": (ROOT / "bun", 256 * 1024 * 1024), "guestSource": (Path(__file__), 256 * 1024)}
     for label, (path, limit) in paths.items():
         records[label] = observed_input(path, limit)
+    if RECORDED_HELPERS:
+        observed = recorded_helper_handoff()
+        if 'recordedHelperInputs' in REPORT and observed != REPORT['recordedHelperInputs']:
+            raise RuntimeError('Original recorded helper input binding changed')
+        records['recordedHelpers'] = observed
     files = []
     total = 0
     entries = 0
@@ -322,11 +394,24 @@ def check_handoff_owned_binding(payload, binding):
         raise RuntimeError("Resume original owned fixture binding changed")
 
 
+def check_handoff_recorded_mode(payload, recorded):
+    if type(payload) is not dict or type(recorded) is not bool or type(payload.get('report', {})) is not dict:
+        raise RuntimeError('Original recorded helper mode changed')
+    evidence = payload.get('report', {})
+    if recorded:
+        if payload.get('helperMode') != 'recorded-prebuilt' or evidence.get('helperMode') != 'recorded-prebuilt':
+            raise RuntimeError('Original recorded helper mode changed')
+    elif 'helperMode' in payload or 'helperMode' in evidence:
+        raise RuntimeError('Legacy checkpoint cannot acquire recorded helper mode')
+
+
 def publish_handoff(nonce, evidence, owned_binding=None):
     payload = {"formatVersion": 1, "phase": "new-login-required", "nonce": nonce, "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "uid": os.getuid(), "guestDeadlineMonotonic": GUEST_DEADLINE, "artifacts": handoff_artifacts(), "report": evidence}
     if owned_binding is not None:
         payload['ownedGuestBinding'] = owned_binding._asdict()
+    if RECORDED_HELPERS:payload['helperMode'] = 'recorded-prebuilt'
     check_handoff_owned_binding(payload, owned_binding)
+    check_handoff_recorded_mode(payload, RECORDED_HELPERS)
     if not re.fullmatch(r"[a-f0-9-]{36}", payload["bootId"]):
         raise RuntimeError("Guest boot identity is unavailable")
     body = json.dumps(payload, separators=(",", ":")).encode()
@@ -434,6 +519,7 @@ def resume_guest(nonce, expected_digest, owned_binding=None):
                 or evidence.get("phase") != "new-login-required" or evidence.get("ok") is not False or evidence.get("installationEvidence") != "pending" or evidence.get("runtimeSupport") != "unverified" or evidence.get("humanConsentProof") is not False or not evidence.get("baseline") or evidence.get("runs") != []):
             raise RuntimeError("Resume checkpoint binding or original deadline is invalid")
         check_handoff_owned_binding(payload, owned_binding)
+        check_handoff_recorded_mode(payload, RECORDED_HELPERS)
         GUEST_DEADLINE = deadline
         budget_seconds(900)
         verify_owned_binding(owned_binding)
@@ -573,6 +659,18 @@ def parse_guest_invocation(arguments):
     return nonce, arguments[2] if resume else None, OwnedGuestBinding(nonce, boot_id, int(uid_text), manifest_sha)
 
 
+def parse_recorded_guest_invocation(arguments):
+    recorded = '--recorded-helpers' in arguments
+    if recorded:
+        if arguments[-1] != '--recorded-helpers' or arguments.count('--recorded-helpers') != 1:
+            raise RuntimeError('Exact recorded helper selection required')
+        arguments = arguments[:-1]
+    nonce, resume, binding = parse_guest_invocation(arguments)
+    if recorded and binding is None:
+        raise RuntimeError('Recorded helpers require complete original owned binding')
+    return nonce, resume, binding, recorded
+
+
 def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
     if binding is None:
         return None
@@ -611,10 +709,72 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
     return binding
 
 
+def installation_packages():
+    marker = ROOT / "package/internal-native-candidate.json"
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        # Preserve the existing internal-candidate artifact contract.
+        metadata = json.loads(marker.read_text())
+        REPORT['executionArtifact'] = {'kind': 'internal-candidate'}
+        return [item['name'] + '=' + item['version'] for item in metadata['artifacts']]
+    package = json.loads((ROOT / 'package/package.json').read_text())
+    if type(package) is not dict or package.get('name') != 'fleur' or 'fleurInternalNativeCandidate' in package:
+        raise RuntimeError('Ordinary verification requires the real Fleur package without an internal marker')
+    path = ROOT / 'package/src/setup/verified-apt-profiles.json'
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= 65536:
+            raise RuntimeError('Compiled ordinary profile metadata custody is invalid')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            body = stream.read(65537)
+        after = os.fstat(fd)
+        if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
+            raise RuntimeError('Compiled ordinary profile metadata changed')
+    finally:
+        os.close(fd)
+    value = json.loads(body)
+    evidence = {'reportSha256': '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
+                'sourceCommit': 'a9606d74fd55b252c0aab8432ff72ec513457a5e',
+                'artifactCatalogSha256': '540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'}
+    if (type(value) is not dict or set(value) != {'formatVersion', 'entries'} or type(value['formatVersion']) is not int
+            or value['formatVersion'] != 1 or type(value['entries']) is not list or len(value['entries']) != 1):
+        raise RuntimeError('Exact compiled ordinary profile record required')
+    entry = value['entries'][0]
+    if type(entry) is not dict or set(entry) != {'evidence', 'profile'} or entry['evidence'] != evidence:
+        raise RuntimeError('Compiled ordinary profile evidence differs')
+    profile = entry['profile']
+    expected = {'docker-ce': '5:29.9.1-1~ubuntu.24.04~noble', 'docker-ce-cli': '5:29.9.1-1~ubuntu.24.04~noble',
+                'containerd.io': '2.4.2-2~ubuntu.24.04~noble', 'docker-buildx-plugin': '0.38.0-1~ubuntu.24.04~noble',
+                'docker-compose-plugin': '5.6.0-1~ubuntu.24.04~noble'}
+    if (type(profile) is not dict or set(profile) != {'method', 'verified', 'distribution', 'release', 'architecture', 'repositoryFingerprint', 'packages', 'artifacts'}
+            or profile['method'] != 'docker-official-apt' or profile['verified'] is not True or profile['distribution'] != 'ubuntu'
+            or profile['release'] != '24.04' or profile['architecture'] != 'x64'
+            or profile['repositoryFingerprint'] != '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' or profile['packages'] != expected
+            or type(profile['artifacts']) is not dict or set(profile['artifacts']) != set(expected)):
+        raise RuntimeError('Compiled ordinary profile tuple differs')
+    for name, version in expected.items():
+        item = profile['artifacts'][name]
+        if (type(item) is not dict or set(item) != {'name', 'version', 'architecture', 'url', 'sha256', 'size'}
+                or item['name'] != name or item['version'] != version or item['architecture'] != 'amd64'
+                or type(item['url']) is not str or not item['url'].startswith('https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/')
+                or type(item['sha256']) is not str or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])
+                or type(item['size']) is not int or item['size'] <= 0):
+            raise RuntimeError('Compiled ordinary profile artifact differs')
+    REPORT['executionArtifact'] = {'kind': 'ordinary', 'packageName': 'fleur', 'admissionMetadataSha256': hashlib.sha256(body).hexdigest(),
+                                  'artifactCatalogSha256': evidence['artifactCatalogSha256']}
+    return [name + '=' + version for name, version in expected.items()]
+
+
 def main():
-    global GUEST_DEADLINE
+    global GUEST_DEADLINE, RECORDED_HELPERS
     GUEST_DEADLINE = time.monotonic() + 900
-    nonce, resume_digest, owned_binding = parse_guest_invocation(sys.argv[1:])
+    nonce, resume_digest, owned_binding, RECORDED_HELPERS = parse_recorded_guest_invocation(sys.argv[1:])
+    if RECORDED_HELPERS:
+        REPORT['helperMode'] = 'recorded-prebuilt'
     resume = resume_digest is not None
     if not re.fullmatch(r"[a-f0-9-]{36}", nonce) or Path("/etc/fleur-owned-guest").read_text().strip() != nonce:
         raise RuntimeError("Owned guest identity is absent")
@@ -624,12 +784,19 @@ def main():
         resume_guest(nonce, resume_digest, owned_binding)
         return
     verify_owned_binding(owned_binding)
+    if RECORDED_HELPERS:
+        REPORT['recordedHelperInputs'] = recorded_helper_handoff()
     try:
         (ROOT / "fresh-linux-state.json").lstat()
     except FileNotFoundError:
         pass
     else:
         raise RuntimeError("An existing enrollment checkpoint requires explicit resume; initial authority was refused")
+    ordinary_packages = None
+    try:
+        (ROOT / "package/internal-native-candidate.json").lstat()
+    except FileNotFoundError:
+        ordinary_packages = installation_packages()
     os_release = Path("/etc/os-release").read_text()
     if 'ID=ubuntu\n' not in os_release or 'VERSION_ID="24.04"' not in os_release or run(["uname", "-m"])[1].strip() != "x86_64":
         raise RuntimeError("Guest differs from frozen Ubuntu24 amd64 tuple")
@@ -650,8 +817,7 @@ def main():
         raise RuntimeError("Denied setup altered baseline or did not preserve authority boundary")
     REPORT["authorizedFixtureSetup"] = setup_pty("once")
     REPORT["afterSetup"] = snapshot()
-    metadata = json.loads((ROOT / "package/internal-native-candidate.json").read_text())
-    packages = [item["name"] + "=" + item["version"] for item in metadata["artifacts"]]
+    packages = ordinary_packages if ordinary_packages is not None else installation_packages()
     simulation = run(["apt-get", "--simulate", "--no-install-recommends", "--no-remove", "--no-upgrade", "install"] + packages, allowed=(0, 100))
     REPORT["actualDependencySimulation"] = {"exitCode": simulation[0], "stdout": simulation[1], "stderr": simulation[2]}
     capture_signed_indexes()
@@ -708,6 +874,8 @@ def finish_ready_guest(state, owned_binding=None):
 
 
 def restriction_invocation(owned_binding):
+    if RECORDED_HELPERS and owned_binding is None:
+        raise RuntimeError('Recorded helpers require original owned restriction binding')
     args = ["python3", str(ROOT / "experiments/compatibility/runtime-probe/run.py"), "--architecture", "amd64", "--healthy-containerd-exit", "--idle-runtime-stress"]
     if owned_binding is None:
         return args, None
@@ -720,7 +888,114 @@ def restriction_invocation(owned_binding):
     args += ['--owned-guest-nonce', owned_binding.nonce, '--owned-guest-boot-id', owned_binding.bootId,
              '--owned-guest-uid', str(owned_binding.uid), '--owned-guest-manifest-sha256', owned_binding.manifestSha256,
              '--owned-guest-deadline', str(end)]
+    if RECORDED_HELPERS:
+        args += ['--recorded-helper-artifacts', str(ROOT/'recorded-helpers')]
     return args, end
+
+
+def grant_snapshot():
+    budget_seconds(10)
+    path = Path.home() / '.local/state/fleur/setup/grants.json'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) & 0o077 or not 0 <= before.st_size <= 1024 * 1024):
+            raise RuntimeError('Ready setup grant custody is invalid')
+        parts = []
+        count = 0
+        while True:
+            budget_seconds(10)
+            part = os.read(fd, min(65536, before.st_size + 1 - count))
+            if not part:
+                break
+            parts.append(part)
+            count += len(part)
+            if count > before.st_size:
+                raise RuntimeError('Ready setup grants changed during read')
+        after = os.fstat(fd)
+        if count != before.st_size or file_identity(before) != file_identity(after) or file_identity(path.lstat()) != file_identity(after):
+            raise RuntimeError('Ready setup grant custody changed')
+        return {'identity': file_identity(after), 'sha256': hashlib.sha256(b''.join(parts)).hexdigest()}
+    finally:
+        os.close(fd)
+
+
+def admitted_readiness(observed, command):
+    if type(observed) is not dict or type(observed.get('exitCode')) is not int or observed['exitCode'] != 0:
+        return False
+    envelope = observed.get('result')
+    if (type(envelope) is not dict or set(envelope) != {'formatVersion', 'command', 'ok', 'data', 'error', 'truncated'}
+            or type(envelope['formatVersion']) is not int or envelope['formatVersion'] != 1 or envelope['command'] != command
+            or envelope['ok'] is not True or envelope['error'] is not None or envelope['truncated'] is not False
+            or type(envelope['data']) is not dict or type(envelope['data'].get('components')) is not dict):
+        return False
+    components = envelope['data']['components']
+    evidence = '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'
+    return (all(type(components.get(name)) is dict and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
+            and components['smoke'].get('cleanup') is True
+            and components.get('release') == {'state': 'verified', 'profile': 'ubuntu-24.04-x64-docker-29.9.1',
+                                               'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
+
+
+def observe_ordinary_daemon(docker):
+    def object_result(arguments):
+        observed = json.loads(run(docker + arguments, timeout=10)[1])
+        if type(observed) is not dict:
+            raise RuntimeError('Ordinary daemon observation is not an object')
+        return observed
+    def text(value):
+        if type(value) is not str or not re.fullmatch(r'[\x20-\x7e]{1,256}', value):
+            raise RuntimeError('Ordinary daemon identity field is invalid')
+        return value
+    raw_info = object_result(['info', '--format', '{{json .}}'])
+    info = {key: text(raw_info.get(key)) for key in ('ServerVersion', 'KernelVersion', 'OSType', 'Architecture', 'Driver', 'CgroupDriver', 'CgroupVersion')}
+    for key in ('MemoryLimit', 'SwapLimit', 'CpuCfsPeriod', 'CpuCfsQuota', 'PidsLimit'):
+        if type(raw_info.get(key)) is not bool:
+            raise RuntimeError('Ordinary daemon capability field is invalid')
+        info[key] = raw_info[key]
+    allowed_security = {'name=apparmor': 'apparmor', 'name=apparmor,profile=default': 'apparmor',
+                        'name=selinux': 'selinux', 'name=cgroupns': 'cgroupns', 'name=rootless': 'rootless',
+                        'name=userns': 'userns', 'name=seccomp,profile=builtin': 'seccomp'}
+    raw_security = raw_info.get('SecurityOptions')
+    security = {'state': 'unavailable', 'category': 'malformed', 'knownOptions': []}
+    if type(raw_security) is list and len(raw_security) <= 16:
+        known = [entry for entry in raw_security if type(entry) is str and entry in allowed_security]
+        security['knownOptions'] = sorted(set(known))
+        if any(type(entry) is not str for entry in raw_security):
+            security['category'] = 'malformed'
+        elif len(known) != len(raw_security):
+            security['category'] = 'unknown'
+        elif len({allowed_security[entry] for entry in known}) != len(known):
+            security['category'] = 'duplicate'
+        else:
+            info['SecurityOptions'] = list(raw_security)
+            security = {'state': 'recorded', 'operatingMode': 'rootless' if 'name=rootless' in known else 'rootful'}
+    raw_server = object_result(['version', '--format', '{{json .Server}}'])
+    server = {key: text(raw_server.get(key)) for key in ('Version', 'GitCommit', 'KernelVersion', 'Os', 'Arch')}
+    platform = raw_server.get('Platform')
+    if type(platform) is not dict:
+        raise RuntimeError('Ordinary daemon platform is invalid')
+    server['Platform'] = {'Name': text(platform.get('Name'))}
+    components = raw_server.get('Components')
+    if type(components) is not list or len(components) > 32:
+        raise RuntimeError('Ordinary daemon component list is invalid')
+    selected = {}
+    for item in components:
+        if type(item) is not dict or item.get('Name') not in ('Engine', 'containerd', 'runc'):
+            continue
+        name = item['Name']
+        if name in selected or type(item.get('Details')) is not dict:
+            raise RuntimeError('Ordinary daemon component identity is ambiguous')
+        selected[name] = {'Name': name, 'Version': text(item.get('Version')), 'Details': {'GitCommit': text(item['Details'].get('GitCommit'))}}
+    if set(selected) != {'Engine', 'containerd', 'runc'}:
+        raise RuntimeError('Ordinary daemon component identity is incomplete')
+    server['Components'] = [selected[name] for name in ('Engine', 'containerd', 'runc')]
+    return {'formatVersion': 1, 'scope': 'ordinary-daemon-readiness-observation', 'runtimeAdmission': False,
+            'source': 'ordinary-user-local-docker-cli', 'info': info, 'server': server, 'securityOptionsEvidence': security}
 
 
 def verify_smoke_and_restrictions(state, owned_binding=None):
@@ -729,6 +1004,10 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
     if not re.fullmatch(r"unix:///[^\s?#]+", endpoint):
         raise RuntimeError("Guest endpoint is not a local Unix socket")
     docker = ["docker", "--host", endpoint]
+    if REPORT.get('executionArtifact', {}).get('kind') == 'ordinary':
+        REPORT['ordinaryDaemonObservation'] = observe_ordinary_daemon(docker)
+        if REPORT['ordinaryDaemonObservation']['securityOptionsEvidence']['state'] != 'recorded':
+            raise RuntimeError('Ordinary daemon security option observation is unavailable')
     image = run([BUN, "-e", "import {smokeImages} from " + json.dumps(str(ROOT / "package/src/setup/profiles.ts")) + ";process.stdout.write(smokeImages.x64)"])[1]
     if not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", image):
         raise RuntimeError("Smoke image is not digest-pinned")
@@ -749,6 +1028,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
     try:
         for _ in range(2):
             before = snapshot()
+            ordinary = REPORT.get('executionArtifact', {}).get('kind') == 'ordinary'
+            grants_before = grant_snapshot() if ordinary else None
             observed = command_json("doctor")
             envelope = observed.get("result", {})
             components = object_field(command_data(envelope), "components")
@@ -764,6 +1045,15 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
                              for name in ("cli", "daemon", "compose", "smoke"))
                      and object_field(components, "smoke").get("cleanup") is True
                      and object_field(components, "release").get("state") == "unverified")
+            if ordinary:
+                ready = admitted_readiness(observed, 'doctor')
+                if ready:
+                    reprobe = command_json('setup')
+                    snapshots_equal = snapshot() == before
+                    grants_equal = grant_snapshot() == grants_before
+                    REPORT.setdefault('readySetupReprobes', []).append({**reprobe, 'snapshotPreserved': snapshots_equal, 'grantsPreserved': grants_equal})
+                    if not admitted_readiness(reprobe, 'setup') or not snapshots_equal or not grants_equal:
+                        raise RuntimeError('Ordinary ready setup reprobe changed state or requested new authority')
             if not ready or snapshot() != before or sentinel_snapshot() != before_sentinel or run(["docker", "context", "show"])[1].strip() != context:
                 raise RuntimeError("Repeat ordinary-user smoke or host state preservation failed")
             REPORT["runs"].append(observed)
@@ -781,6 +1071,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         finally:
             sys.path.pop(0)
         # Execute the existing gate without skipping any GC, idle, resource or deadline assertion.
+        if RECORDED_HELPERS and recorded_helper_handoff() != REPORT.get('recordedHelperInputs'):
+            raise RuntimeError('Original recorded helper input binding changed')
         probe_args, restriction_deadline = restriction_invocation(owned_binding)
         verify_owned_binding(owned_binding, absolute_deadline=restriction_deadline)
         if restriction_deadline is None:
@@ -788,6 +1080,20 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         else:
             code, text, _ = run(probe_args, timeout=600, allowed=(0, 1), absolute_deadline=restriction_deadline)
         REPORT["restrictionProbe"] = {"exitCode": code, "result": json.loads(text)}
+        if RECORDED_HELPERS:
+            proof = REPORT['restrictionProbe']['result']
+            owned_control = proof.get('owned_host_control', {})
+            context = proof.get('helper_artifact_context', {})
+            if (not _recorded_helper_module().accept_helper_origin(proof, True, restriction_deadline)
+                    or proof.get('owned_artifact_disposal_scope_verified') is not True
+                    or type(owned_control.get('uid')) is not int or owned_control.get('fixtureCustodyValidated') is not True
+                    or owned_control.get('hostControlScope') != 'owned-guest' or owned_control.get('runtimeAdmission') is not False
+                    or tuple(owned_control.get(field) for field in owned_binding._fields) != tuple(owned_binding)
+                    or context.get('state') != 'retained-for-owned-guest-disposal'
+                    or context.get('disposal_scope') != 'owned-full-system-guest-filesystem'
+                    or context.get('local_disposal') != 'pending' or context.get('cleanup_confirmed') is not False
+                    or context.get('retained') is not True or context.get('ledger_verified') is not True):
+                raise RuntimeError('Recorded helper origin or owned disposal scope differs')
         if code != 0 or REPORT["restrictionProbe"]["result"].get("cleanup_complete") is not True or REPORT["restrictionProbe"]["result"].get("bounded_probe_passed") is not True:
             REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Inspect restrictionProbe for the observed exit status and bounded result."}
             return

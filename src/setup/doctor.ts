@@ -1,17 +1,19 @@
+import { nativeReadinessProfiles, snapshotReadinessProfiles, readinessCandidates, matchReadinessServer, sameReadinessDaemon, type VerifiedReadinessProfile } from "./readiness.ts";
 import { hasPendingLinuxAccess } from "./access-pending.ts";
 import { hasPendingArchService, hasPendingAptService } from "./service-pending.ts";
 import { observeEndpointActivation } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
-import { failure, type CliOutcome } from "../cli/result.ts";
+import { failure, success, type CliOutcome } from "../cli/result.ts";
 import type { CommandInput } from "../cli/catalog.ts";
 import type { SetupHost, HostCommandResult } from "./commands.ts";
 import { smokeContainer } from "./smoke.ts";
 import { smokeImages, installationMethod } from "./profiles.ts";
 /** Endpoint callback stays within trusted prerequisite orchestration, never CLI JSON. */
-export async function doctor({ args, timeoutSeconds }: CommandInput, host: SetupHost, localEndpoint?: (endpoint: string) => void): Promise<CliOutcome> {
+export async function doctor({ args, timeoutSeconds }: CommandInput, host: SetupHost, localEndpoint?: (endpoint: string) => void, readinessProfiles: readonly VerifiedReadinessProfile[] = nativeReadinessProfiles): Promise<CliOutcome> {
     const invalid = validateSetupArguments("doctor", args);
     if (invalid) return invalid;
     const deadline = performance.now() + timeoutSeconds * 1000;
+    const policy = snapshotReadinessProfiles(readinessProfiles);
     const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
     const run = (args: readonly string[]) => remaining() > 0 ? host.run(args, remaining()) : Promise.resolve<HostCommandResult>({ status: "timeout", stdout: "", stderr: "" });
     const identity = await host.host();
@@ -55,7 +57,27 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
           const reserve = Math.min(2000, Math.floor(remaining() / 3));
           const work = (args: readonly string[]) => remaining() > reserve ? host.run(args, remaining() - reserve) : Promise.resolve<HostCommandResult>({ status: "timeout", stdout: "", stderr: "" });
           const smoke = await smokeContainer(work, endpoint, image, imageState.stdout, identity.architecture, run);
-          return failure("doctor", smoke.cleanup ? 4 : 5, { code: smoke.cleanup ? "PREREQUISITE_UNAVAILABLE" : "RECOVERY_REQUIRED", message: smoke.cleanup ? "Observed readiness does not yet establish a verified native release profile." : "Owned smoke container cleanup could not be confirmed.", actions: [] }, { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: compose.status === "completed" && compose.exitCode === 0 ? "ready" : "missing" }, smoke: { ...smoke }, release: { state: "unverified" } } });
+          const components = { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: compose.status === "completed" && compose.exitCode === 0 ? "ready" : "missing" }, smoke: { ...smoke }, release: { state: "unverified" } };
+          if (smoke.state === "ready" && smoke.cleanup && compose.status === "completed" && compose.exitCode === 0) {
+            const candidates = readinessCandidates(policy, identity, Bun.version, cli.stdout, compose.stdout, image, daemonIdentity);
+            if (candidates.length) {
+              const version = await run(["docker", "--host", endpoint, "version", "--format", "{{json .Server}}"]);
+              if (version.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Runtime qualification exceeded the operation deadline.", actions: [] }, { components });
+              let server: unknown;
+              try { server = version.status === "completed" && version.exitCode === 0 ? JSON.parse(version.stdout) : undefined; } catch { server = undefined; }
+              const profile = matchReadinessServer(candidates, identity, server);
+              if (profile) {
+                const final = await run(["docker", "--host", endpoint, "info", "--format", "{{json .}}"]);
+                if (final.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Final daemon identity exceeded the operation deadline.", actions: [] }, { components });
+                let observed: unknown;
+                try { observed = final.status === "completed" && final.exitCode === 0 ? JSON.parse(final.stdout) : undefined; } catch { observed = undefined; }
+                const unchanged = sameReadinessDaemon(daemonIdentity, observed);
+                if (remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Final daemon metadata validation exceeded the operation deadline.", actions: [] }, { components });
+                if (unchanged) return success("doctor", { components: { ...components, release: { state: "verified", profile: profile.id, evidence: { ...profile.evidence } } } });
+              }
+            }
+          }
+          return failure("doctor", smoke.cleanup ? 4 : 5, { code: smoke.cleanup ? "PREREQUISITE_UNAVAILABLE" : "RECOVERY_REQUIRED", message: smoke.cleanup ? "Observed readiness does not yet establish a verified native release profile." : "Owned smoke container cleanup could not be confirmed.", actions: [] }, { components });
         }
       }
     }

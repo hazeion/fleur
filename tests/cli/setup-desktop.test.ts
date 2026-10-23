@@ -14,10 +14,12 @@ const profile: DesktopInstallProfile = {
 };
 test("Desktop setup exposes authenticated acquisition and placement without granting legal or launch authority", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-desktop-denied-"));
+  await mkdir(join(root, "Applications"));
   const calls: string[][] = [];
   try {
     const outcome = await runCli(["setup", "--json"], { cwd: root, handlers: setupCommands({
       stateDirectory: join(root, "state"),
+      desktopApplicationsDirectory: join(root, "Applications"),
       host: async () => ({ system: "darwin", architecture: "x64", translated: false, release: "15.7.7", machineId: "a".repeat(64) }),
       run: async (args) => { calls.push([...args]); return { status: "missing", stdout: "", stderr: "" }; },
     }, [profile]) });

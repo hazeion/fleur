@@ -1,0 +1,109 @@
+{
+  "formatVersion": 1,
+  "id": "ubuntu24-amd64-gcc13.3-recorded-helpers-v1",
+  "scope": "internal-recorded-helper-origin",
+  "architecture": "amd64",
+  "baseImage": "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e",
+  "bunVersion": "1.4.3",
+  "producer": {
+    "reportSha256": "de686cf6344410c3d29e1dcab19bcdabaddc05e4a7d4bdf50320f9c649282bbf",
+    "sourceCommit": "da52bcfa38f2dfc0b0efc89c66e9af07c6ecf2aa",
+    "originalPreparerSha256": "72ac71d3d06aafc263e5adf0ef5250036a44166867af84875144e403b0e887bd",
+    "actualPreparerSha256": "66d342266e4e3ec96919ed45d19dfe6e32971a56575061b74f0fe257aea6b175",
+    "compilerExecuted": true,
+    "helpersExecutedDuringExport": false,
+    "compiler": {
+      "version": "13.3.0",
+      "target": "x86_64-linux-gnu",
+      "sha256": "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26",
+      "path": "/usr/bin/x86_64-linux-gnu-gcc-13"
+    },
+    "closure": {
+      "manifestSha256": "11127a1f28b3bac544f79d0f0bc4f91a68afec74568c342bc4bb7c773dcf00d7",
+      "packageCount": 38,
+      "totalBytes": 59127120
+    }
+  },
+  "sources": [
+    {
+      "file": "filter.c",
+      "bytes": 21484,
+      "sha256": "533a20d7d4e151f023146a216cc802231669c08113533fde09253892030043dc"
+    },
+    {
+      "file": "abuse.c",
+      "bytes": 4793,
+      "sha256": "610850ac43bff233b887e27626cee91f93fd2c74c98befe1f03ae92a7d7b179a"
+    }
+  ],
+  "compileArguments": {
+    "filter.so": [
+      "/usr/local/bin/gcc",
+      "-shared",
+      "-fPIC",
+      "-O2",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "{source}/filter.c",
+      "-o",
+      "{output}/filter.so"
+    ],
+    "abuse": [
+      "/usr/local/bin/gcc",
+      "-O2",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "{source}/abuse.c",
+      "-o",
+      "{output}/abuse"
+    ]
+  },
+  "helpers": [
+    {
+      "name": "filter.so",
+      "bytes": 30648,
+      "sha256": "99e38df6acbde709100bfcf80c02eee49d364abd8b89838c006e572344da7ab4",
+      "elfMachine": 62
+    },
+    {
+      "name": "abuse",
+      "bytes": 16928,
+      "sha256": "67e15a766caaae73f1068cec21150160c8d9d80fcdf527e461d3ed35fae4a1c8",
+      "elfMachine": 62
+    }
+  ],
+  "abi": {
+    "elfClass": 64,
+    "endianness": "little",
+    "machine": 62,
+    "elfType": 3,
+    "needed": [
+      "libc.so.6"
+    ],
+    "abuseInterpreter": "/lib64/ld-linux-x86-64.so.2",
+    "rpath": false,
+    "runpath": false,
+    "requiredGlibcMaximum": "2.38",
+    "readelfSha256": "64c58e15274bbbb5153f31078e455e9e77ee5f51489e709bba5bb788ce9df2b0",
+    "evidence": [
+      {
+        "name": "filter.so",
+        "stdoutSha256": "d45debd7f49b5e1a2a794c2a74164ca51411b8cfe15843ff203c1213e79d14d4"
+      },
+      {
+        "name": "abuse",
+        "stdoutSha256": "3f6cebaeddaae74622ff44f10e3da48781a649dd9cae6fdfe79c0f5454d15960"
+      }
+    ]
+  },
+  "historicalRuntimeReportSha256": "62d29dba9c06b896d5b56503638cc1f261d2282ae9f6e4b931ce3dca238c96ae",
+  "runtimeAdmission": false,
+  "nativeCpuPerformanceProof": false,
+  "humanConsentProof": false
+}

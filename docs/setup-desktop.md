@@ -11,3 +11,12 @@ Application placement does not start Docker Desktop, run its installer, accept i
 Every external operation and image-hash loop shares the command deadline, reserving time for owned image cleanup. Cleanup checks the recorded image path, mountpoint and device identity before normal detachment. Unknown ownership or a busy image produces recovery-required status; setup never forces unmounts or removes unrelated resources. Once grants are consumed durably before acquisition and cannot replay after a failed attempt.
 
 The Desktop fixture tests execute real temporary filesystem placement: Darwin uses `renameatx_np(RENAME_EXCL)` and Linux uses `renameat2(RENAME_NOREPLACE)`. Download, signing tools, mounts and copying are simulated at the approved host boundary. These tests do not install Docker, launch its app or prove native Desktop readiness. Native macOS Intel and Apple Silicon installation, agreement and daemon/runtime verification remain open requirements.
+
+
+## Verify an existing Desktop installation
+
+For development verification on a personal native macOS host, finish Docker Desktop's own startup and human prompts, then run `fleur doctor`. If its pinned smoke image is absent, use interactive `fleur setup` to inspect and expressly authorize that exact acquisition. Doctor never downloads it implicitly.
+
+After acquisition, run `FLEUR_EXISTING_DOCKER_ONLY=yes FLEUR_NATIVE_REPORT=<private-report-path> bun scripts/verify-native-setup.ts` from the source checkout. This mode requires an existing local endpoint and image, runs the packed CLI twice, preserves context and container inventory, and removes only its independently verified owned sentinel. It performs no image pull, package installation, app startup, permission or configuration change. Its report records the verifier hash and observed readiness, while leaving installation, release-profile and human-consent proof false. The invoking verification supervisor must bind the actual source commit; this command cannot admit a release profile.
+
+The older `FLEUR_OWNED_DISPOSABLE_HOST=yes` Linux CI mode retains its explicit pinned-image acquisition. Do not label a personal Mac disposable to invoke that path.

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { machine, tmpdir } from "node:os";
 import { join } from "node:path";
 
 let scratch: string;
@@ -101,8 +101,20 @@ test("packed prerequisite commands use the real executable and isolated user sta
   expect(diagnosed.exit).toBe(4);
   expect(JSON.parse(diagnosed.stdout)).toMatchObject({ command: "doctor", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { components: { cli: { state: "missing" } } } });
   const setup = await cli("--json", "setup");
-  expect(setup.exit).toBe(3);
-  expect(JSON.parse(setup.stdout)).toMatchObject({ command: "setup", ok: false, error: { code: "HUMAN_ACTION_REQUIRED" }, data: { grantsCreated: false, resumable: true } });
+  // This approved tuple now inspects package state before asking for grants.
+  // With dpkg-query deliberately absent, it must refuse unknown packages.
+  // Derive the expected contract from host facts, never from setup's response.
+  const release = process.platform === "linux" ? await Bun.file("/etc/os-release").text() : "";
+  const machineId = process.platform === "linux" && await Bun.file("/etc/machine-id").exists() ? (await Bun.file("/etc/machine-id").text()).trim() : "";
+  const qualifiedAptHost = process.platform === "linux" && process.arch === "x64" && machine() === "x86_64"
+    && /^ID=["']?ubuntu["']?$/m.test(release) && /^VERSION_ID=["']?24\.04["']?$/m.test(release) && /^[a-f0-9]{32}$/i.test(machineId);
+  if (qualifiedAptHost) {
+    expect(setup.exit).toBe(4);
+    expect(JSON.parse(setup.stdout)).toMatchObject({ command: "setup", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { packageState: { state: "unavailable", present: [], missing: [] } } });
+  } else {
+    expect(setup.exit).toBe(3);
+    expect(JSON.parse(setup.stdout)).toMatchObject({ command: "setup", ok: false, error: { code: "HUMAN_ACTION_REQUIRED" }, data: { grantsCreated: false, resumable: true } });
+  }
   await writeFile(join(scratch, "fleur.json"), "broken project metadata");
   try {
     const revoked = await cli("--json", "setup", "grants", "revoke", "00000000-0000-0000-0000-000000000000");

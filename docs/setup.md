@@ -14,9 +14,13 @@ See [Docker Desktop application placement](setup-desktop.md) for its separate au
 
 ## Current evidence and remaining work
 
-Observed CLI, daemon, Compose and smoke readiness do not yet establish a verified native release installation profile. Doctor therefore reports the release profile as unverified and returns exit 4 even after a successful smoke check. This is an explicit implementation limitation, not a passed release gate. Native Docker Desktop installation/readiness and native Debian/Arch Docker installations were not established by the earlier compatibility userspace fixtures.
+Observed CLI, daemon, Compose and smoke readiness do not automatically admit a release profile. Doctor returns success only when the native host, Bun, Docker CLI build, authoritative Engine/kernel/containerd/runc tuple, Compose and pinned image match a reviewed source-owned readiness policy, the same daemon identity and recorded cgroup driver/operating mode/security options remain observable, advertised CPU/memory/PID enforcement is available, and the owned smoke completes with confirmed cleanup. Advertised capability flags are current-state guards, not a replacement for the recorded isolation experiment. Installation profiles and human grants are separate authority. No user argument, project file or environment variable selects a readiness policy. The source-owned catalog includes an exact Ubuntu 24.04 x64 prerequisite tuple: Bun 1.4.3, Docker CLI/Engine 29.9.1, kernel 6.8.0-147-generic, containerd 2.4.2, runc 1.5.2 and Compose 5.6.0. Its recorded cgroup v2 systemd rootful mode and security options must also match. Other tuples retain exit 4 with release state unverified after smoke readiness. The record cites actual readiness and isolation evidence; test policies never admit a platform. The ordinary packed path has now passed matching Ubuntu VM verification, including repeated Doctor/setup success, preserved grants/state and the original bounded restriction checks. The exact evidence and remaining platform limits are recorded below. Native Debian/Arch installation and other unmeasured targets remain outside existing evidence.
 
-Assisted package installation remains blocked. Its permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication has been researched separately, as recorded in the artifact evidence document. Native installation behavior remains unverified. The ordinary release catalog is empty, so setup does not execute these research candidates. A missing or incompatible profile requires manual action and leaves this acceptance criterion incomplete.
+The exact Ubuntu 24.04 x64 official APT package set is mapped in the fixed packaged `verified-apt-profiles.json` catalog with authenticated payload hashes and native evidence references. It exposes a plan without granting permission; each package/configuration/access/service action still requires its own matching human grant. An unavailable stable machine identity returns a human action before reading grants or inspecting packages. The ordinary packed installation path has passed the exact Ubuntu VM proof recorded in the artifact evidence document.
+
+### Installer profiles awaiting qualification
+
+Assisted package installation remains blocked. Platforms without an admitted installer row require manual setup. The permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication and the exact Ubuntu guest installation are recorded separately in the artifact evidence document. Research candidates do not become executable merely by appearing in that inventory. A missing or incompatible source-owned profile requires manual action; the remaining platform evidence leaves this acceptance criterion incomplete.
 
 Installation, repository changes, service starting/enabling, Docker access privileges, PATH/configuration and agreement acceptance require separate authority. Package post-install scripts and Desktop installation can have these side effects; an install grant cannot silently cover them. Fleur never removes conflicts, upgrades or replaces existing installations, edits profiles/context, changes Docker permissions or accepts legal terms automatically.
 
@@ -24,8 +28,8 @@ Official method references: [macOS](https://docs.docker.com/desktop/setup/instal
 
 ### Native apt adapter checkpoint
 
-The compiled native profile catalog remains empty until release verification admits
-an exact platform row. Candidate metadata cannot authorize execution. The apt
+The compiled native profile catalog includes the admitted exact Ubuntu row described
+above. Research candidate metadata cannot authorize execution. The apt
 adapter handles the compatible missing subset of an exact package set against
 the exact official Docker repository. Fully configured exact versions with a
 normal dpkg error flag are preserved. Wrong versions, half-configured packages,
@@ -140,8 +144,8 @@ A confirmed terminal failure re-probes actual package state; compatible complete
 packages can be preserved and missing packages resumed with fresh authority.
 Fence creation and removal both require file/directory durability. Unknown or
 modified private entries are retained rather than recursively deleted. None of
-these checks activates the ordinary empty production catalog or proves a native
-installation.
+these fixture checks alone admits a native platform. The separately recorded
+Ubuntu guest execution and completed ordinary packed qualification apply only to the exact admitted row.
 
 See [Linux service startup](setup-arch-services.md) for the separate startup
 authority and the native verification still required before profile admission.

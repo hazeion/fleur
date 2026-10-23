@@ -567,3 +567,81 @@ archives, lock, plan and configuration files remain `0600`; every current file m
 still match its recorded mode exactly. A public setup regression reproduced the
 native refusal before the correction and then reached the separately scoped
 inspection plan. Native end-to-end recovery still requires a new observation.
+
+## Repeated Ubuntu 26 assisted APT recovery
+
+Two fresh owned Ubuntu 26.04 x64 VM attempts at source
+`88f182f20dc371c398b670ea40353fd94702b1cd` completed the interrupted-installation
+recovery path with separately scoped read-only inspection. Both used the ordinary
+packed CLI, Bun 1.4.3, native Intel HVF execution with CPU-host mode, the existing
+pinned image and the authenticated recorded helper pair. Assertions, deadlines,
+repeat counts and disposal requirements were unchanged.
+
+| Attempt | Report SHA256 | Outer observation |
+| --- | --- | --- |
+| First | `7e58375037fb22416973d54ec72fe03b82a97e4419a49c529b9e4b19ab729827` | 359.74 seconds |
+| Second | `21163f4abea61773876a45c44803f17e928a84449d84cbdbb4ffebf5bda2b13e` | 359.08 seconds |
+
+Each attempt observed a real installation child live across its owned CLI parent's
+stop, then reaped that parent after SIGKILL. The original transaction's terminal
+outcome remained unknown. All five exact package additions were fully configured,
+with the baseline package rows and groups preserved. Same-boot Doctor and setup
+refused recovery and retained the original fence and grants.
+
+A real reboot established a different kernel boot ID while retaining the same
+owned VM, held overlay inode, continuous QMP connection and pinned SSH identity.
+Protected original and renewed custody bindings were independently checked. After
+reboot, noninteractive setup returned exit 3 with the exact read-only inspection
+plan and no new grant. One automated disposable-fixture reply supplied a separate
+once inspection grant. Its receipt bound the original fence and profile, current
+boot, fixed inspector source, authenticated executable, live CLI parent, protected
+account database and five retained directory descriptors. The inspector confirmed
+that both original auxiliary directories were empty. Their ownership and modes
+were preserved; no administrator repair or historical grant replay occurred.
+
+The durable receipt retained the unknown historical outcome. Original artifacts
+and all six historical grant records remained unchanged, with exactly one new
+consumed inspection grant. Setup retired the pending marker only after repeated
+current-state checks. Docker access enrollment, fresh login and image acquisition
+remained separate subsequent actions. Both Doctor rounds and both ready setup
+reprobes returned exit 0 with smoke cleanup, snapshot preservation and unchanged
+grants. Strict runtime, thread, resource and control checks also passed. Separate
+specification and standards reviews accepted both actual reports, including source
+provenance, custody, inspection authority, preservation and disposal. The four
+physical-exit latenesses were 37/33/34/31 ms and 79/61/31/37 ms respectively, all
+within the unchanged 250 ms limit.
+
+Both guests, credentials, scratch directories and overlays were disposed, and the
+outer children and inherited groups retired without timeout. Source files remained
+unchanged throughout execution. This qualifies the tested completed-effects case
+with a missing parent receipt and separately authorized inspection. It does not
+establish automatic recovery, real human consent, other interruption windows,
+other platform installations, global release admission or native performance.
+The source candidate also passed all three CI workflows, including 1,064 CLI tests
+with zero failures, types, full lint and the production build.
+
+## Debian 13 x64 retained image input
+
+A bounded artifact-only acquisition retained the immutable official
+[Debian 13 genericcloud image](https://cloud.debian.org/images/cloud/trixie/20261017-2634/debian-13-genericcloud-amd64-20261017-2634.qcow2).
+The [Debian cloud publication guidance](https://cloud.debian.org/images/cloud/)
+specifies TLS image and checksum downloads for current per-distribution images;
+this observation claims neither OpenPGP verification nor DNSSEC validation.
+The authenticated HTTPS redirect selected the same image path at
+`gemmei.ftp.acc.umu.se`. The original official checksum response matched its
+previously recorded SHA256.
+
+| Input property | Observed value |
+| --- | --- |
+| Image bytes | 342,818,816 |
+| SHA512 from official checksum set | `ec584ccabfef7120b4c4f7482adf0e615894d9292cedec446b64194b951ebe5dd97c336b5dcbae458333764b0edd516334506017f33c4f2020ef8d38b569ffe3` |
+| SHA256 from retained-descriptor readback | `87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02` |
+| Format / virtual size | QCOW2 / 3,221,225,472 bytes |
+
+The worker completed and was reaped in 21.09 seconds under its original 120-second
+work bound. Independent readback verified the digest and unchanged device/inode,
+owner, private mode, size and timestamps. The previously audited, checksum-pinned
+`qemu-img` reported no backing chain, external data, encryption or internal
+snapshots and zero check errors. Independent review accepted this retained input.
+No VM was booted and no Debian installation, runtime support or catalog admission
+follows from these artifact checks.

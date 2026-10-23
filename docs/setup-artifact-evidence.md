@@ -256,7 +256,17 @@ daemon instance.
 The compiled readiness catalog maps these exact observations to separate ARM64
 and x64 entries. Ordinary Doctor/setup fixture tests require their own evidence
 references and reject neighboring kernel, client, containerd and rootless values.
-Fresh native verification of the admitted Doctor responses remains pending.
+The [follow-up native workflow](https://github.com/hazeion/fleur/actions/runs/40029022728)
+passed at source `908443e1152c1c0b7044098bf67cd3af51470c8a`. Its tested merge
+`f366cdaff1f90bdf5b3851defe3c3a575f55944d` has the same tree. Both native
+architectures returned verified Doctor readiness twice, preserved the correlated
+daemon/build and sentinel, and confirmed owned smoke and sentinel cleanup.
+Independent review accepted ARM64 report
+`4f68d3904a38e2fecdf17c2504aebbcc0c8c4a07ab9c1855e5c0ecc41f24dc12`
+and x64 report
+`90697e649879f4c081dec6daba85f6e94224d42497723820968b31331727b743`.
+The original evidence hashes remain the catalog references; these follow-up
+reports confirm ordinary Doctor behavior after catalog admission.
 No Docker installation, package upgrade, interrupted-setup recovery, human
 consent or broader platform qualification follows from these runner reports.
 

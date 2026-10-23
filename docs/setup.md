@@ -117,7 +117,7 @@ and Arch transaction records on Arch, before running host commands. An existing
 or unreadable record returns `RECOVERY_REQUIRED` with exit 5 even if Docker
 would otherwise be ready. Malformed records, directories and dangling symlinks
 remain blocking evidence. This check preserves pending state, grants and private
-artifacts; it does not reconcile an interrupted transaction. Legacy records lack
+artifacts. Doctor never reconciles an interrupted transaction. Legacy records lack
 the boot and artifact identity needed for safe automatic recovery.
 
 New APT package actions require an observed kernel boot UUID before requesting
@@ -127,8 +127,31 @@ owned installer files and directories. Device/inode values retain their full
 precision; files include their verified digest and size. Stage files and
 directories are synced before the pending record and its parent directory, and
 all of that precedes privileged APT. A durability failure prevents launch and
-retains the private evidence. This supplies recovery custody, not a completed
-reconciliation path; both legacy and unresolved format-2 records still block.
+retains the private evidence. After a verified different kernel boot, setup can reconcile an exact format-2
+record under its normal setup lock. It requires matching machine, user, source
+profile, historical grants and retained artifact identities, every exact package
+fully configured, a healthy complete dpkg inventory, and clear passive kernel
+observations of the known package-manager locks. Repeated package/configuration
+observations must agree. These samples do not exclude concurrent administrator
+package changes. The original action uses private source/cache paths only as
+command arguments; recovery also refuses observed APT configuration references
+to that retained stage. This is not a universal scan of administrator-created
+references outside the supported setup contract.
+
+Reconciliation preserves the unknown historical command outcome. It creates no
+grants and performs no acquisition, simulation, install, privileged repair or
+artifact deletion. A protected durable receipt binds the original marker digest
+and operation, profile, machine, user and boot identities before the active marker
+is retired. The original files remain evidence and cannot become inputs to later
+setup actions. A matching prior receipt supports restart after interrupted
+publication. Foreign receipts or changed evidence remain blocked.
+
+Doctor runs again after reconciliation; service, access and image authority
+requirements remain independent. Same-boot uncertainty, legacy records, partial
+packages, contention and changed or unreadable artifacts require manual recovery.
+The current resolver conservatively refuses even original auxiliary directories
+whose owner changed during APT. Native interrupted-install/reboot qualification
+and separately justified auxiliary owner transitions remain open.
 
 ### Frozen APT payload gate
 

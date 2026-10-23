@@ -1,3 +1,4 @@
+import { observeAptLocks } from "./apt-locks.ts";
 import { aptHealthArgs } from "./apt-health.ts";
 import { readFile } from "node:fs/promises";
 import { machine, release } from "node:os";
@@ -107,4 +108,4 @@ async function confirmHuman(plan: { readonly action: string; readonly method: st
   } catch { return "deny"; }
   finally { terminal.close(); process.stdin.pause(); }
 }
-export function productionHost(): SetupHost { return { host: identity, run, unixSocketSnapshot: async (timeoutMs) => process.platform === "linux" ? (await import("./unix-diag-native.ts")).unixSocketSnapshot(timeoutMs) : { state: "unavailable" }, environment: { ...process.env }, interactive: process.stdin.isTTY === true && process.stdout.isTTY === true, confirmHuman }; }
+export function productionHost(): SetupHost { return { host: identity, run, aptPackageLocks: observeAptLocks, unixSocketSnapshot: async (timeoutMs) => process.platform === "linux" ? (await import("./unix-diag-native.ts")).unixSocketSnapshot(timeoutMs) : { state: "unavailable" }, environment: { ...process.env }, interactive: process.stdin.isTTY === true && process.stdout.isTTY === true, confirmHuman }; }

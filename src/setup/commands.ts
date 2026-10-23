@@ -27,6 +27,8 @@ export interface HostCommandResult {
 }
 export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number }
 export interface SetupHost {
+  /** Passive host package lock observation; missing evidence blocks reconciliation. */
+  readonly aptPackageLocks?: (timeoutMs: number) => Promise<"clear" | "busy" | "unknown">;
   /** Private passive Linux kernel observation; no application or caller-selected messages. */
   readonly unixSocketSnapshot?: (timeoutMs: number) => Promise<UnixSocketSnapshot>;
   readonly host: () => Promise<HostIdentity>;

@@ -132,7 +132,11 @@ async function build(output: string) {
     ownedOutput = await outputDirectory(output);
     const ordinary = join(scratch, "fleur-ordinary.tgz");
     await run([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", ordinary], repository);
-    await run(["/usr/bin/tar", "-xzf", ordinary, "-C", scratch], repository);
+    // GNU tar resolves gzip through PATH, unlike macOS libarchive. Decode with
+    // the already selected Bun runtime so isolated callers need no extra tool.
+    const ordinaryTar = join(scratch, "fleur-ordinary.tar");
+    await writeFile(ordinaryTar, Bun.gunzipSync(await readFile(ordinary)), { flag: "wx", mode: 0o600 });
+    await run(["/usr/bin/tar", "-xf", ordinaryTar, "-C", scratch], repository);
     const staged = join(scratch, "package");
     const sourceFiles = await files(staged);
     if (sourceFiles.some(({ path }) => path.startsWith("scripts/") || path === markerName || path === "bin/native-candidate-catalog.ts")) throw new Error("Ordinary release unexpectedly contains internal candidate tooling.");

@@ -29,7 +29,11 @@ async function run(args: string[], cwd: string, expected = 0): Promise<string> {
 try {
   const archive = join(scratch, "release.tgz");
   await run([process.execPath, "pm", "pack", "--filename", archive], repository);
-  await run(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch);
+  // GNU tar's gzip helper uses PATH, which is intentionally Bun-only here.
+  // Keep that isolation and decode our own packed archive with the pinned Bun.
+  const uncompressed = join(scratch, "release.tar");
+  await writeFile(uncompressed, Bun.gunzipSync(await readFile(archive)), { flag: "wx", mode: 0o600 });
+  await run(["/usr/bin/tar", "-xf", uncompressed, "-C", scratch], scratch);
   const project = join(scratch, "application");
   const created = JSON.parse(await run([process.execPath, join(scratch, "package", "bin", "fleur.ts"), "new", project, "--no-git", "--json"], scratch));
   if (created.formatVersion !== 1 || created.ok !== true) throw new Error("Packed creation did not return success JSON.");

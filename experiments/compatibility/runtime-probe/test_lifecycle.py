@@ -252,6 +252,78 @@ class LifecycleTests(unittest.TestCase):
    self.assertEqual(row['retirement_confirmation']['source'],'verified-default-engine-unix-api')
    self.assertEqual(row['retirement_confirmation']['transport']['source'],'fixture-engine-api')
 
+ def test_engine_running_snapshot_can_converge_only_after_physical_exit_within_original_confirmation_budget(self):
+  calls={}
+  def reader(cid,remaining):
+   self.assertGreater(remaining,0);self.assertLessEqual(remaining,10)
+   name='owned-busy-'+str({'c':0,'d':1}[cid[0]])
+   data=json.loads((self.root/name).read_text())
+   calls[cid]=calls.get(cid,0)+1
+   if calls[cid]==1:
+    data['State'].update(Status='running',Pid=47,Running=True,ExitCode=0,FinishedAt='0001-01-01T00:00:00Z')
+   return data,{'source':'fixture-engine-api','connection_closed':True,'deadline_timer_reaped':True}
+  result=self.run_probe(inspect_worker_state=reader)
+  self.assertTrue(result['passed']);self.assertEqual(calls,{'c'*64:2,'d'*64:2})
+  for row in result['repeats']:
+   self.assertLessEqual(row['termination']['physical_exit_lateness_ms'],250)
+   confirmation=row['retirement_confirmation']
+   self.assertEqual(confirmation['budget_seconds'],10);self.assertTrue(confirmation['passed'])
+   self.assertTrue(confirmation['observations'][0]['Running'])
+   self.assertFalse(confirmation['observations'][-1]['Running'])
+   self.assertEqual(confirmation['observations'][-1]['ExitCode'],137)
+
+ def test_engine_running_snapshot_never_substitutes_for_terminal_confirmation(self):
+  def reader(cid,remaining):
+   data=json.loads((self.root/'owned-busy-0').read_text())
+   data['State'].update(Status='running',Pid=47,Running=True,ExitCode=0,FinishedAt='0001-01-01T00:00:00Z')
+   return data,{'source':'fixture-engine-api'}
+  with patch('lifecycle.RETIREMENT_CONFIRMATION_BUDGET_SECONDS',.1),self.assertRaisesRegex(RuntimeError,'confirmation deadline expired') as caught:
+   self.run_probe(inspect_worker_state=reader)
+  self.assertTrue(caught.exception.worker_diagnostics['termination']['physical_exit_confirmed'])
+  self.assertFalse(caught.exception.worker_diagnostics['retirement_confirmation']['passed'])
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_engine_running_snapshot_with_different_pid_fails_without_reobservation(self):
+  calls=[]
+  def reader(cid,remaining):
+   calls.append(cid);data=json.loads((self.root/'owned-busy-0').read_text())
+   data['State'].update(Status='running',Pid=48,Running=True,ExitCode=0,FinishedAt='0001-01-01T00:00:00Z')
+   return data,{'source':'fixture-engine-api'}
+  with self.assertRaisesRegex(RuntimeError,'termination unconfirmed') as caught:
+   self.run_probe(inspect_worker_state=reader)
+  self.assertEqual(len(calls),1)
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_nonzero_year_one_finish_is_not_a_pending_engine_snapshot(self):
+  calls=[]
+  def reader(cid,remaining):
+   calls.append(cid);name='owned-busy-'+str({'c':0,'d':1}[cid[0]]);data=json.loads((self.root/name).read_text())
+   if len(calls)==1:
+    data['State'].update(Status='running',Pid=47,Running=True,ExitCode=0,FinishedAt='0001-02-01T00:00:00Z')
+   return data,{'source':'fixture-engine-api'}
+  with self.assertRaisesRegex(RuntimeError,'termination unconfirmed') as caught:
+   self.run_probe(inspect_worker_state=reader)
+  self.assertEqual(len(calls),1)
+  self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
+ def test_identity_is_revalidated_after_each_pending_engine_snapshot(self):
+  for field in ('Id','Image','owner'):
+   with self.subTest(field=field):
+    calls=[]
+    def reader(cid,remaining):
+     calls.append(cid);data=json.loads((self.root/'owned-busy-0').read_text())
+     if len(calls)==1:
+      data['State'].update(Status='running',Pid=47,Running=True,ExitCode=0,FinishedAt='0001-01-01T00:00:00Z')
+     elif field=='owner':data['Config']['Labels']['fleur.compatibility.runtime-owner']='foreign'
+     elif field=='Image':data['Image']='sha256:'+'f'*64
+     else:data['Id']='f'*64
+     return data,{'source':'fixture-engine-api'}
+    with self.assertRaisesRegex(RuntimeError,'identity mismatch') as caught:
+     self.run_probe(inspect_worker_state=reader)
+    self.assertEqual(len(calls),2)
+    self.assertFalse(caught.exception.worker_diagnostics['retirement_confirmation']['passed'])
+    self.assertTrue(caught.exception.lifecycle_cleanup_verified)
+
  def test_trusted_state_reader_cannot_substitute_another_worker_or_wrong_exit(self):
   for field,value in (('Id','f'*64),('Image','sha256:'+'f'*64),('ExitCode',0)):
    with self.subTest(field=field):

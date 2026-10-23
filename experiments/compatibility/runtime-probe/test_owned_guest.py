@@ -22,6 +22,14 @@ BOOT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
 
 class OwnedGuestCustody(unittest.TestCase):
+    def setUp(self):
+        # The synthetic guest has its own environment. Explicit mixed-scope
+        # negative tests still inject hosted markers inside this fixture scope.
+        environment = patch.dict(os.environ, {key: value for key, value in os.environ.items()
+                                              if key not in owned_guest.HOSTED}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
@@ -216,7 +224,9 @@ class OwnedGuestCustody(unittest.TestCase):
 
     def with_context(self, action, *, deadline=700.0):
         # Callback runs while real fixture files and external metadata seams exist.
-        code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},action=action,context_deadline=deadline)
+        with patch.dict(os.environ, {key: value for key, value in os.environ.items()
+                                     if key not in owned_guest.HOSTED}, clear=True):
+            code,report=self.observe(control_binding={'nonce':NONCE,'boot_id':BOOT,'uid':1000,'manifest_sha256':'fixture'},action=action,context_deadline=deadline)
         self.assertEqual(code,0,report)
         return report
 

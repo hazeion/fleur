@@ -277,38 +277,53 @@ def run_lifecycle(image_id, tag, architecture, environment, observe_worker,
             # Physical termination is already proved by the retained pidfd.
             # Docker's eventual exit status and resource retirement remain
             # mandatory independent checks, never the deadline oracle.
-            # Docker wait contributes no additional accepted proof: its output
-            # was discarded and Docker's not-running wait takes the same state
-            # lock as inspect. Spend the existing aggregate host budget on the
-            # required immutable owned state itself, once, without retries.
+            # Reobserve only a strictly identified still-running Engine snapshot:
+            # pidfd exit can precede the daemon's terminal-state publication.
+            # Reads and their pauses share the existing aggregate host budget.
             confirmation_started=time.monotonic()
             confirmation_deadline=confirmation_started+RETIREMENT_CONFIRMATION_BUDGET_SECONDS
             confirmation={'budget_seconds':RETIREMENT_CONFIRMATION_BUDGET_SECONDS,
                           'duration_ms':0,'passed':False}
             busy_diagnostics['retirement_confirmation']=confirmation
             try:
-                if inspect_worker_state is None:
-                    state=metadata(busy_name,prepared[busy_name],confirmation_deadline,
-                                   RETIREMENT_CONFIRMATION_BUDGET_SECONDS,'retirement confirmation')['State']
-                    confirmation['source']='docker-cli-inspect'
-                else:
+                confirmation['observations']=[]
+                confirmation['observations_count']=0
+                while True:
                     remaining_confirmation=confirmation_deadline-time.monotonic()
                     if remaining_confirmation<=0:
                         raise RuntimeError('lifecycle retirement confirmation deadline expired')
-                    try:
-                        value,transport=inspect_worker_state(prepared[busy_name],remaining_confirmation)
-                        confirmation['transport']=transport
-                    except EngineStateUnverified as error:
-                        confirmation['transport']=dict(error.observations)
-                        raise
-                    state=checked_metadata(value,busy_name,prepared[busy_name])['State']
-                    confirmation['source']='verified-default-engine-unix-api'
-                safe=safe_worker_state(state)
-                if (safe.get('Running') is not False or safe.get('ExitCode')!=137
-                        or safe.get('FinishedAt','0001-').startswith('0001-')):
-                    raise RuntimeError('daemon worker termination unconfirmed')
-                if time.monotonic()>=confirmation_deadline:
-                    raise RuntimeError('lifecycle retirement confirmation deadline expired')
+                    if inspect_worker_state is None:
+                        state=metadata(busy_name,prepared[busy_name],confirmation_deadline,
+                                       remaining_confirmation,'retirement confirmation')['State']
+                        confirmation['source']='docker-cli-inspect'
+                    else:
+                        try:
+                            value,transport=inspect_worker_state(prepared[busy_name],remaining_confirmation)
+                            confirmation['transport']=transport
+                        except EngineStateUnverified as error:
+                            confirmation['transport']=dict(error.observations)
+                            raise
+                        state=checked_metadata(value,busy_name,prepared[busy_name])['State']
+                        confirmation['source']='verified-default-engine-unix-api'
+                    safe=safe_worker_state(state)
+                    confirmation['observations_count']+=1
+                    snapshots=confirmation['observations']
+                    if len(snapshots)<8:
+                        snapshots.append(safe)
+                    else:
+                        snapshots[-1]=safe
+                    if time.monotonic()>=confirmation_deadline:
+                        raise RuntimeError('lifecycle retirement confirmation deadline expired')
+                    if (safe.get('Running') is False and safe.get('ExitCode')==137
+                            and not safe.get('FinishedAt','0001-').startswith('0001-')):
+                        break
+                    pending=(safe.get('Running') is True and safe.get('ExitCode')==0
+                             and re.fullmatch(r'0001-01-01T00:00:00(?:\.0{1,9})?Z',safe.get('FinishedAt','')) is not None
+                             and state.get('Status')=='running' and type(state.get('Pid')) is int
+                             and state['Pid']==observed[busy_name]['configuration']['host_init_pid'])
+                    if not pending:
+                        raise RuntimeError('daemon worker termination unconfirmed')
+                    time.sleep(min(.05,max(0,confirmation_deadline-time.monotonic())))
                 confirmation['passed']=True
             finally:
                 confirmation['duration_ms']=round(1000*(time.monotonic()-confirmation_started))

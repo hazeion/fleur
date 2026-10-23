@@ -19,9 +19,9 @@
     "bun": "1.4.3"
   },
   "scripts": {
-    "test": "bun test tests/cli",
+    "test": "bun test tests/cli tests/ci",
     "types": "bun ./node_modules/typescript/bin/tsc --noEmit",
-    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli scripts"
+    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli tests/ci scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli tests/ci scripts"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",

@@ -17,6 +17,7 @@
     "bin/**/*.ts",
     "src/**/*.ts",
     "tests/cli/**/*.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "tests/ci/**/*.ts"
   ]
 }

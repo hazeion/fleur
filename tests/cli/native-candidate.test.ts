@@ -5,10 +5,15 @@ import { join, resolve } from "node:path";
 
 const repository = resolve(import.meta.dir, "../..");
 const digest = (bytes: Uint8Array) => Bun.CryptoHasher.hash("sha256", bytes, "hex");
-async function command(args: string[], cwd: string, environment: Record<string, string>) {
-  const child = Bun.spawn(args, { cwd, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000, killSignal: "SIGKILL" });
+async function command(args: string[], cwd: string, environment: Record<string, string>, input?: Uint8Array) {
+  const child = Bun.spawn(args, { cwd, env: environment, stdin: input ? "pipe" : "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000, killSignal: "SIGKILL" });
+  if (input) { child.stdin?.write(input); child.stdin?.end(); }
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, exit };
+}
+
+async function extract(archive: string, destination: string, cwd: string, environment: Record<string, string>) {
+  return command(["/usr/bin/tar", "-xf", "-", "-C", destination], cwd, environment, Bun.gunzipSync(await readFile(archive)));
 }
 
 test("internal native candidate archive preserves the ordinary release and executes the real Bun entry with pending-proof disclosure", async () => {
@@ -30,8 +35,8 @@ test("internal native candidate archive preserves the ordinary release and execu
     expect(report.candidate.sha256).toBe(digest(await readFile(internalArchive)));
     const ordinary = join(scratch, "ordinary"); const internal = join(scratch, "internal");
     await mkdir(ordinary); await mkdir(internal);
-    expect((await command(["/usr/bin/tar", "-xzf", ordinaryArchive, "-C", ordinary], scratch, environment)).exit).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", internalArchive, "-C", internal], scratch, environment)).exit).toBe(0);
+    expect((await extract(ordinaryArchive, ordinary, scratch, environment)).exit).toBe(0);
+    expect((await extract(internalArchive, internal, scratch, environment)).exit).toBe(0);
     const ordinaryPackage = join(ordinary, "package"); const internalPackage = join(internal, "package");
     expect(await readFile(join(ordinaryPackage, "bin/fleur.ts"))).toEqual(before[0]!);
     expect(await readFile(join(ordinaryPackage, "src/setup/native.ts"))).toEqual(before[1]!);
@@ -95,7 +100,7 @@ test("candidate provenance hashes actual copied source and unexpected entry shap
     const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
     const archive = join(scratch, "source.tgz");
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
+    expect((await extract(archive, scratch, scratch, environment)).exit).toBe(0);
     const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
     for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     const script = join(source, "scripts/build-native-candidate.ts");
@@ -124,7 +129,7 @@ test.each(["output", "parent"] as const)("replacing the %s directory during pack
     const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
     const archive = join(scratch, "source.tgz");
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
+    expect((await extract(archive, scratch, scratch, environment)).exit).toBe(0);
     const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
     for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     const parent = join(scratch, "outside"); await mkdir(parent);
@@ -168,7 +173,7 @@ test.each(["inventoried", "opened"] as const)("replacing the %s parent before ou
     const environment = { PATH: "", HOME: scratch, TMPDIR: scratch };
     const archive = join(scratch, "source.tgz");
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", scratch], scratch, environment)).exit).toBe(0);
+    expect((await extract(archive, scratch, scratch, environment)).exit).toBe(0);
     const source = join(scratch, "package"); await mkdir(join(source, "scripts"));
     for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     await mkdir(join(scratch, "outside"));
@@ -213,7 +218,7 @@ test("produced candidate observes the unchanged privileged local-plan command re
     const output = join(scratch, "artifacts");
     const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
     expect(built.exit, built.stderr).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", scratch], scratch, environment)).exit).toBe(0);
+    expect((await extract(join(output, "fleur-internal-native-candidate.tgz"), scratch, scratch, environment)).exit).toBe(0);
     const tools = join(scratch, "tools"); await mkdir(tools);
     await writeFile(join(tools, "sudo"), `#!${process.execPath}\nawait Bun.write(${JSON.stringify(join(scratch, "invocation.json"))},JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()}));await Bun.write(${JSON.stringify(join(scratch, 'calls'))},(await Bun.file(${JSON.stringify(join(scratch, 'calls'))}).exists()?await Bun.file(${JSON.stringify(join(scratch, 'calls'))}).text():'')+'called\\n');process.stdout.write(process.env.OBS_TEXT??'local plan diagnostic\\n');process.stderr.write(process.env.OBS_TEXT??'E: fixture resolver refused\\n');process.exit(100);\n`, { mode: 0o700 });
     const args = ["sudo", "-n", "apt-get", "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", "/owned/frozen.deb"];
@@ -291,7 +296,7 @@ test("a closed diagnostic pipe preserves the original candidate command outcome"
     const output = join(scratch, "artifacts");
     const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
     expect(built.exit, built.stderr).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", scratch], scratch, environment)).exit).toBe(0);
+    expect((await extract(join(output, "fleur-internal-native-candidate.tgz"), scratch, scratch, environment)).exit).toBe(0);
     const tools = join(scratch, "tools"); await mkdir(tools);
     await writeFile(join(tools, "sudo"), `#!${process.execPath}\nconst until=Date.now()+3000;while(!await Bun.file(process.env.PROBE_GATE).exists()){if(Date.now()>until)process.exit(124);await Bun.sleep(10);}process.stdout.write('owned-command-result\\n');process.stderr.write('owned-command-error\\n');process.exit(100);\n`, { mode: 0o700 });
     for (const [observed, full] of [[false, false], [true, false], [true, true]]) {
@@ -317,7 +322,7 @@ test("produced candidate install phase observes one unchanged external command",
     const output = join(scratch, "artifacts");
     const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", output], repository, environment);
     expect(built.exit, built.stderr).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", scratch], scratch, environment)).exit).toBe(0);
+    expect((await extract(join(output, "fleur-internal-native-candidate.tgz"), scratch, scratch, environment)).exit).toBe(0);
     const tools = join(scratch, "tools"); await mkdir(tools);
     const witness = join(scratch, "calls.json");
     await writeFile(join(tools, "sudo"), `#!${process.execPath}\nconst file=Bun.file(${JSON.stringify(witness)});const calls=await file.exists()?await file.json():[];calls.push({args:process.argv.slice(2),cwd:process.cwd()});await Bun.write(file,JSON.stringify(calls));if(process.env.PROBE_GATE){const until=Date.now()+3000;while(!await Bun.file(process.env.PROBE_GATE).exists()){if(Date.now()>until)process.exit(124);await Bun.sleep(5);}}process.stdout.write(process.env.OBS_TEXT??'actual install output\\n');process.stderr.write(process.env.OBS_TEXT??'actual install failure\\n');process.exit(100);\n`, { mode: 0o700 });
@@ -390,5 +395,18 @@ finally:
     expect(JSON.parse(ptyResult.stderr.trim().slice("FLEUR_NATIVE_COMMAND_OBSERVATION ".length))).toMatchObject({ phase: "apt-local-archive-install", exitCode: 100 }); executed++;
     expect((await Bun.file(witness).json()).length).toBe(executed);
 
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 20000);
+
+test("candidate packaging does not resolve gzip or Node through the caller PATH", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "fleur-candidate-compression-"));
+  try {
+    const tools = join(scratch, "tools"); await mkdir(tools);
+    const witness = join(scratch, "unexpected-tool");
+    for (const name of ["gzip", "node"]) await writeFile(join(tools, name), `#!/bin/sh\necho unexpected > '${witness}'\nexit 99\n`, { mode: 0o700 });
+    const built = await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", join(scratch, "artifacts")], repository, { PATH: tools, HOME: scratch, TMPDIR: scratch });
+    expect(built.exit, built.stderr).toBe(0);
+    expect(await Bun.file(witness).exists()).toBe(false);
+    expect(JSON.parse(built.stdout)).toMatchObject({ installationEvidence: "pending", runtimeSupport: "unverified" });
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }, 20000);

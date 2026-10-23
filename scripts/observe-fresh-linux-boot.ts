@@ -70,25 +70,25 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000,
 export interface BootReadinessOptions { deadline: number; attemptTimeoutMs?: number; signal?: AbortSignal }
 export interface BootReadinessObservation { formatVersion: 1; scope: "fresh-linux-boot-readiness"; ok: boolean; state: "ready" | "failed"; lastBootObservation?: BootObservation; error?: { code: string; message: string } }
 /** Complete bounded readiness operation; a child observation alone is not readiness. */
-export async function waitForGuestBoot(target: BootTarget, options: BootReadinessOptions): Promise<BootReadinessObservation> {
+export async function waitForGuestBoot(target: BootTarget, options: BootReadinessOptions, monotonicNow: () => number = () => performance.now()): Promise<BootReadinessObservation> {
   let lastBootObservation: BootObservation | undefined;
   const finish = (error?: { code: string; message: string }): BootReadinessObservation => ({ formatVersion: 1, scope: "fresh-linux-boot-readiness", ok: !error, state: error ? "failed" : "ready", ...(lastBootObservation ? { lastBootObservation } : {}), ...(error ? { error } : {}) });
-  const started = performance.now(); const attemptTimeoutMs = options.attemptTimeoutMs ?? 10000;
+  const started = monotonicNow(); const attemptTimeoutMs = options.attemptTimeoutMs ?? 10000;
   if (!Number.isFinite(options.deadline) || !Number.isFinite(attemptTimeoutMs) || attemptTimeoutMs <= 0 || attemptTimeoutMs > 10000) return finish({ code: "ARGUMENT_INVALID", message: "A finite absolute boot deadline and at most ten-second attempts are required." });
   const deadline = Math.min(options.deadline, started + 180000);
   while (true) {
     if (options.signal?.aborted) return finish({ code: "BOOT_FAILED", message: "Owned QEMU exited or boot observation was cancelled." });
-    if (performance.now() >= deadline) return finish({ code: "BOOT_TIMEOUT", message: "Guest did not become ready within its original boot deadline." });
+    if (monotonicNow() >= deadline) return finish({ code: "BOOT_TIMEOUT", message: "Guest did not become ready within its original boot deadline." });
     // Timers may wake before a fractional deadline. Do not round the remaining
     // work budget up to observeBoot's one-millisecond minimum or replace evidence.
-    const remainingBudgetMs = Math.floor(deadline - performance.now());
+    const remainingBudgetMs = Math.floor(deadline - monotonicNow());
     if (remainingBudgetMs <= 0) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       continue;
     }
     lastBootObservation = await observeBoot(target, Math.min(attemptTimeoutMs, remainingBudgetMs), options.signal);
     if (options.signal?.aborted) return finish({ code: "BOOT_FAILED", message: "Owned QEMU exited or boot observation was cancelled." });
-    if (performance.now() >= deadline) return finish({ code: "BOOT_TIMEOUT", message: "Guest did not become ready within its original boot deadline." });
+    if (monotonicNow() >= deadline) return finish({ code: "BOOT_TIMEOUT", message: "Guest did not become ready within its original boot deadline." });
     const transport = lastBootObservation.transport;
     // Retry only the completed empty probe whose own local watchdog expired.
     // This is not a claim that the request caused SSH's exit, nor readiness.
@@ -99,7 +99,7 @@ export async function waitForGuestBoot(target: BootTarget, options: BootReadines
       && transport.timeoutMs > 0 && transport.timeoutMs <= 10000 && transport.elapsedMs >= transport.timeoutMs;
     if (lastBootObservation.state === "failed" && !locallyExpired) return finish(lastBootObservation.error ?? { code: "BOOT_FAILED", message: "Guest boot observation failed." });
     if (lastBootObservation.state === "ready") return finish();
-    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, deadline - performance.now()))));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(0, deadline - monotonicNow()))));
   }
 }
 

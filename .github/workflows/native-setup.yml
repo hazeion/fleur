@@ -1,12 +1,42 @@
 name: Native prerequisite setup
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
+# Retire superseded PR work; retain every main-branch verification run.
+# Workflow and event namespaces prevent cross-workflow or PR/push cancellation.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 jobs:
+  scope:
+    name: CI change scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.selection.outputs.full }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Checksum-pinned Bun for CI policy checks
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-ci-policy-bun"
+          echo "$RUNNER_TEMP/fleur-ci-policy-bun" >> "$GITHUB_PATH"
+      - name: Verify CI selection and workflow wiring
+        run: bun test tests/ci
+      - name: Inspect complete change scope
+        id: selection
+        run: bun scripts/ci-scope.ts
+
   existing-docker:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -39,3 +69,23 @@ jobs:
             ${{ runner.temp }}/fleur-native-platform.json
             ${{ runner.temp }}/fleur-native-setup.json
           if-no-files-found: error
+          retention-days: 7
+
+  verification:
+    name: Native setup verification
+    if: ${{ always() }}
+    needs: ["scope", "existing-docker"]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Checksum-pinned Bun for verification summary
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-ci-summary-bun"
+          echo "$RUNNER_TEMP/fleur-ci-summary-bun" >> "$GITHUB_PATH"
+      - name: Require scope and every applicable check to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: bun scripts/ci-scope.ts --check-results

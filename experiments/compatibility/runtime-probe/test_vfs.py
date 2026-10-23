@@ -114,6 +114,19 @@ class Counterfactual(unittest.TestCase):
         self.assertNotIn('daemon',result)
 
 class CleanupDiagnostics(unittest.TestCase):
+    def test_cleanup_phase_and_natural_completion_are_typed_and_redacted(self):
+        from types import SimpleNamespace
+        from vfs import cleanup_diagnostics
+        for stage in ('forced-retirement','natural-drain'):
+            result=cleanup_diagnostics(SimpleNamespace(cleanup_observations={
+                'cleanup_failure_stage':stage,'natural_completion_after_timeout':True}))
+            self.assertEqual(result['daemon_cleanup_observations'],{
+                'cleanup_failure_stage':stage,'natural_completion_after_timeout':True})
+        result=cleanup_diagnostics(SimpleNamespace(cleanup_observations={
+            'cleanup_failure_stage':'SECRET/private/path','natural_completion_after_timeout':1}))
+        self.assertEqual(result['daemon_cleanup_observations'],{})
+        self.assertNotIn('SECRET',str(result))
+
     def test_cleanup_failure_retains_only_bounded_safe_observations(self):
         from contextlib import contextmanager
         import json,tempfile

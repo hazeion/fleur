@@ -32,7 +32,7 @@ Keep additional skill installations project-scoped under `.agents/skills/`.
 
 ## CI cost policy
 
-Always consider CI cost when changing workflows or running verification. Prefer targeted local checks while diagnosing failures and rerun only failed CI jobs when investigating the same commit. The final candidate still requires all applicable checks to pass.
+Always consider CI cost when changing workflows or running verification. Prefer targeted local checks while diagnosing failures and rerun only failed CI jobs when investigating the same commit. The final candidate still requires all applicable checks to pass. See [CI scope and verification](docs/ci.md) for the conservative change classifier, full-run fallback and required summary checks.
 
 Cancel superseded pull-request runs within the same workflow and PR. Keep concurrency groups isolated across workflows and events, and preserve every main-branch verification run. Keep routine diagnostic artifacts for seven days; record durable sanitized evidence before it expires.
 

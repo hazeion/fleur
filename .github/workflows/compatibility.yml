@@ -2,6 +2,7 @@ name: Compatibility experiments
 
 on:
   pull_request:
+  workflow_dispatch:
 
 # Retire superseded PR work; retain every main-branch verification run.
 # Workflow and event namespaces prevent cross-workflow or PR/push cancellation.
@@ -19,7 +20,30 @@ defaults:
     shell: bash
 
 jobs:
+  scope:
+    name: CI change scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.selection.outputs.full }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Checksum-pinned Bun for CI policy checks
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-ci-policy-bun"
+          echo "$RUNNER_TEMP/fleur-ci-policy-bun" >> "$GITHUB_PATH"
+      - name: Verify CI selection and workflow wiring
+        run: bun test tests/ci
+      - name: Inspect complete change scope
+        id: selection
+        run: bun scripts/ci-scope.ts
+
   distro-fixtures:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: Frozen userspace fixtures (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -47,6 +71,8 @@ jobs:
           retention-days: 7
 
   database-broker:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: PostgreSQL and restricted broker compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -71,6 +97,8 @@ jobs:
           retention-days: 7
 
   isolation-diagnostic:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: Isolation diagnostic only
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -98,6 +126,8 @@ jobs:
           retention-days: 7
 
   native-platforms:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: Native fixtures (${{ matrix.runner }})
     strategy:
       fail-fast: false
@@ -159,6 +189,8 @@ jobs:
           retention-days: 7
 
   tooling:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: Full tooling experiment
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -195,6 +227,8 @@ jobs:
           retention-days: 7
 
   rendering:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: Rendering, types, full experiment lint and Chromium
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -252,6 +286,8 @@ jobs:
           retention-days: 7
 
   runtime-probe:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: Native pre-evaluation probe (${{ matrix.architecture }})
     strategy:
       fail-fast: false
@@ -294,6 +330,8 @@ jobs:
           retention-days: 7
 
   runtime-vfs-counterfactual:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
     name: VFS storage counterfactual (${{ matrix.architecture }})
     strategy:
       fail-fast: false
@@ -340,3 +378,22 @@ jobs:
           name: runtime-vfs-counterfactual-${{ matrix.architecture }}
           path: ${{ runner.temp }}/fleur-vfs-evidence/
           retention-days: 7
+
+  verification:
+    name: Compatibility verification
+    if: ${{ always() }}
+    needs: ["scope", "distro-fixtures", "database-broker", "isolation-diagnostic", "native-platforms", "tooling", "rendering", "runtime-probe", "runtime-vfs-counterfactual"]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Checksum-pinned Bun for verification summary
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-ci-summary-bun"
+          echo "$RUNNER_TEMP/fleur-ci-summary-bun" >> "$GITHUB_PATH"
+      - name: Require scope and every applicable check to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: bun scripts/ci-scope.ts --check-results

@@ -44,7 +44,13 @@ if scenario in owned_cases:
     try:
         from test_owned_guest import OwnedGuestCustody, NONCE, BOOT
         policy = OwnedGuestCustody()
-        code, owned_frame = policy.observe(release=owned_cases[scenario][0], ordinary_uid=uid)
+        try:
+            # This synthetic guest owns a separate environment. Use the policy
+            # fixture's normal setup/cleanup instead of inheriting CI host scope.
+            policy.setUp()
+            code, owned_frame = policy.observe(release=owned_cases[scenario][0], ordinary_uid=uid)
+        finally:
+            policy.doCleanups()
         if code != 0 or owned_frame.get('fixtureCustodyValidated') is not True:
             raise RuntimeError('Actual protected-file policy did not produce the consumer fixture frame')
     finally:

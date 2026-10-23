@@ -6,7 +6,7 @@ async function observe(scenario: string) {
   const root = await mkdtemp(join(tmpdir(), "fleur-ordinary26-protocol-"));
   try {
     const python = Bun.which("python3"); if (!python) throw new Error("Existing Python is required");
-    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+    const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "fixtures/fresh-linux-enrollment-main.py"), root, scenario], { env: { ...process.env, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted", RUNNER_OS: "Linux" }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     if (stderr) throw new Error(stderr);
     return { exit, report: JSON.parse(stdout), state: await Bun.file(join(root, "protocol-state.json")).json() };

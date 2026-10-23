@@ -3,10 +3,13 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } f
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const repository = resolve(import.meta.dir, "../..");
-async function command(args: string[], cwd: string, env: Record<string, string>) {
-  const child = Bun.spawn(args, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
+async function command(args: string[], cwd: string, env: Record<string, string>, input?: Uint8Array) {
+  const child = Bun.spawn(args, { cwd, env, stdin: input ? Buffer.from(input) : "ignore", stdout: "pipe", stderr: "pipe", timeout: 20000 });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, exit };
+}
+async function extract(archive: string, destination: string, cwd: string, environment: Record<string, string>) {
+  return command(["/usr/bin/tar", "-xf", "-", "-C", destination], cwd, environment, Bun.gunzipSync(await readFile(archive)));
 }
 test("the fixed Ubuntu26 builder emits only Resolute internal policy while ordinary admission stays unchanged", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-candidate-ubuntu26-"));
@@ -19,8 +22,10 @@ test("the fixed Ubuntu26 builder emits only Resolute internal policy while ordin
     const report = JSON.parse(built.stdout);
     expect(report).toMatchObject({ catalogId: "ubuntu-26.04-amd64-docker-2026-10-19", internalArtifact: true, artifactAuthentication: "authenticated", installationEvidence: "pending", runtimeSupport: "unverified" });
     const internal = join(root, "internal"); const ordinary = join(root, "ordinary"); await mkdir(internal); await mkdir(ordinary);
-    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-internal-native-candidate.tgz"), "-C", internal], root, environment)).exit).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", join(output, "fleur-ordinary.tgz"), "-C", ordinary], root, environment)).exit).toBe(0);
+    const extractedInternal = await extract(join(output, "fleur-internal-native-candidate.tgz"), internal, root, environment);
+    const extractedOrdinary = await extract(join(output, "fleur-ordinary.tgz"), ordinary, root, environment);
+    expect(extractedInternal.exit, extractedInternal.stderr).toBe(0);
+    expect(extractedOrdinary.exit, extractedOrdinary.stderr).toBe(0);
     const sourceCatalog = join(internal, "package/internal-native-candidate-catalog.json");
     expect(await Bun.file(sourceCatalog).exists()).toBe(true);
     expect(Bun.CryptoHasher.hash("sha256", await readFile(sourceCatalog), "hex")).toBe("e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a");
@@ -56,7 +61,8 @@ test("modified Resolute policy bytes fail before any candidate output is created
     const environment = { PATH: "", HOME: root, TMPDIR: root };
     const archive = join(root, "source.tgz");
     expect((await command([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", archive], repository, environment)).exit).toBe(0);
-    expect((await command(["/usr/bin/tar", "-xzf", archive, "-C", root], root, environment)).exit).toBe(0);
+    const extracted = await extract(archive, root, root, environment);
+    expect(extracted.exit, extracted.stderr).toBe(0);
     const source = join(root, "package"); await mkdir(join(source, "scripts"));
     for (const name of ["build-native-candidate.ts", "native-candidate-ubuntu24-amd64.json", "native-candidate-ubuntu26-amd64.json", "candidate-command-observer.ts"]) await copyFile(join(repository, "scripts", name), join(source, "scripts", name));
     const record = join(source, "scripts/native-candidate-ubuntu26-amd64.json");

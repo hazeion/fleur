@@ -8,7 +8,7 @@ import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
 import { observePreparation } from "./observe-fresh-linux-preparation.ts";
 import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
 import { observeOwnedGuestCustody } from "./observe-owned-guest-custody.ts";
-import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding } from "./owned-guest-seed.ts";
+import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding, copyOwnedGuestOsRelease } from "./owned-guest-seed.ts";
 
 // Internal verification only. Catalog admission requires separately reviewed source.
 const fixtures = {
@@ -349,6 +349,8 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
     } });
   report.ownedGuestCustody = custody;
   const ownedGuestBinding = copyOwnedGuestBinding({ nonce: custody.nonce, bootId: custody.bootId, uid: custody.uid, manifestSha256: custody.manifestSha256 }, nonce);
+  const ownedGuestOsRelease = copyOwnedGuestOsRelease(custody.osRelease);
+  if (ownedGuestOsRelease.versionId !== (selectedFixture.id === "ubuntu24-amd64" ? "24.04" : "26.04")) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Original protected OS differs from the selected fixed image fixture.");
   await ssh("mkdir -m 700 lab");
   const restrictionArchive = join(scratch, "runtime-probe.tar");
   const sourceCommit = (await command(["git", "-C", repository, "rev-parse", "HEAD"])).stdout.trim();
@@ -383,7 +385,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   process.once("SIGINT", cancelSession); process.once("SIGTERM", cancelSession);
   let sessions;
   try {
-    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding, ...(recordedBundle ? { recordedHelpers: true as const } : {}) }, sessionAbort.signal);
+    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding, ownedGuestOsRelease, ...(recordedBundle ? { recordedHelpers: true as const } : {}) }, sessionAbort.signal);
     sessions = await sessionOperation;
   } finally { process.removeListener("SIGINT", cancelSession); process.removeListener("SIGTERM", cancelSession); }
   report.sessions = sessions;

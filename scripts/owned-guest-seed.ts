@@ -3,6 +3,17 @@ import { resolve } from "node:path";
 
 export interface OwnedGuestBinding { nonce: string; bootId: string; uid: number; manifestSha256: string }
 
+export interface OwnedGuestOsRelease { readonly id: "ubuntu"; readonly versionId: "24.04" | "26.04"; readonly sha256: string }
+
+/** Original root-attested OS data stays separate from the four-field binding. */
+export function copyOwnedGuestOsRelease(value: unknown): Readonly<OwnedGuestOsRelease> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).sort().join(",") !== "id,sha256,versionId") throw new Error("Complete canonical original owned guest OS record required.");
+  const { id, versionId, sha256 } = value as Record<string, unknown>;
+  if (id !== "ubuntu" || (versionId !== "24.04" && versionId !== "26.04") || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Complete canonical original owned guest OS record required.");
+  return Object.freeze({ id, versionId, sha256 });
+}
+
 /** A copied data binding is not a runtime-control capability. */
 export function copyOwnedGuestBinding(value: unknown, expectedNonce: string): Readonly<OwnedGuestBinding> {
   const invalid = (): never => { throw Object.assign(new Error("Complete canonical original owned guest binding required."), { code: "ARGUMENT_INVALID" }); };

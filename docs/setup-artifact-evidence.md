@@ -374,3 +374,15 @@ unexpected file layout. Its outer observer also reported cleanup uncertainty;
 inner VM disposal did not repair that receipt. Bounded read-only diagnostics
 identified the rejected predicate and provider provenance before the reviewed
 sudo-rs fix. The failed history remains separate from these later successes.
+
+Two ordinary attempts at source `ddfae43fd853acf3f3f36067138a4f10edd8a5ba`
+also remain failed. Report
+`42125b58b8d3f10edbaaafc3f689e902d0840ea7934e1e18b402cb52399808eb`
+stopped on an unrecognized SSH boot connection close before setup. Report
+`4bc4243ea9a7bab027bb6df93245fefd3a06bdd19caa874d7d8beaf722a43c81`
+reached host terminal validation, which still required Ubuntu 24's ordinary
+profile. The rejected final guest report was not retained; no completed ordinary
+proof can be reconstructed from that attempt. Both disposed of their owned VM
+and artifacts, with independent cleanup review. Correcting the host profile check
+requires a new source-pinned native execution; cleanup and later code changes do
+not promote either failed report.

@@ -258,3 +258,10 @@ exercises the packed release and requires verified ordinary Doctor/setup results
 Both paths retain original host custody, installer/enrollment/image permission,
 fresh-login, repeated smoke, runtime restriction, resource, physical-deadline and
 disposal checks. Observation alone is not a successful execution.
+
+The host compares the root-attested OS with the fixed image fixture before guest
+work. It carries a separate copied OS record alongside the unchanged four-field
+custody binding and checks both against the initial and resumed guest reports.
+Ordinary terminal profile/evidence selection uses only that original OS record.
+Legacy sessions without an original OS record remain Ubuntu 24-only; an explicit
+Ubuntu 26 report cannot adopt that fallback.

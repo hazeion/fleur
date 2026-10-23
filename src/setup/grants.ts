@@ -27,7 +27,7 @@ function isGrant(value: unknown): value is Grant {
     && Object.keys(grant).length === fields.length
     && Object.keys(grant).every((key) => fields.includes(key))
     && typeof grant.id === "string" && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(grant.id)
-    && typeof grant.action === "string" && ["install", "service-start", "service-enable", "docker-access", "configuration", "repository-configuration", "image-acquire"].includes(grant.action)
+    && typeof grant.action === "string" && ["install", "service-start", "service-enable", "docker-access", "configuration", "repository-configuration", "image-acquire", "recovery-inspect"].includes(grant.action)
     && typeof grant.method === "string" && ["docker-desktop-official-dmg", "docker-official-apt", "arch-official-pacman", "docker-digest-pull"].includes(grant.method)
     && typeof grant.target === "string" && grant.target.length > 0 && grant.target.length <= 512 && [...grant.target].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
     && typeof grant.planChecksum === "string" && /^[a-f0-9]{64}$/.test(grant.planChecksum)

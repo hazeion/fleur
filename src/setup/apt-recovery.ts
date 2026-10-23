@@ -1,3 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
+import type { Json } from "../cli/result.ts";
+import { authorizeAptInspection, verifyAptInspectionReceipt, retainAptAuxiliaries, type AptAuxiliaryCustody } from "./apt-auxiliary.ts";
+import type { CommandInput } from "../cli/catalog.ts";
 import { constants } from "node:fs";
 import { lstat, open, readdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -91,11 +95,13 @@ function manifest(value: unknown, profile: AptInstallProfile): { root: string; e
 }
 
 /** Evidence is inspected and retained, never reconstructed into an executable or disposable stage. */
-async function verifyArtifacts(directory: string, evidence: { root: string; entries: Entry[] }, remaining: () => number): Promise<void> {
+async function verifyArtifacts(directory: string, evidence: { root: string; entries: Entry[] }, remaining: () => number, custody?: AptAuxiliaryCustody): Promise<void> {
   const root = join(directory, evidence.root);
+  await custody?.unchanged();
   // Parents first: no path may traverse an unchecked retained directory.
   for (const entry of [...evidence.entries].sort((a, b) => a.path.split("/").length - b.path.split("/").length || a.path.localeCompare(b.path))) {
     requireState(remaining() > 0);
+    if (entry.auxiliary && custody?.request !== null && custody !== undefined) continue;
     const path = join(root, entry.path);
     const info = await lstat(path, { bigint: true });
     const matches = (current: typeof info) => current.dev === BigInt(entry.dev) && current.ino === BigInt(entry.ino) && current.uid === BigInt(entry.uid) && (current.mode & 0o7777n) === BigInt(entry.mode) && !current.isSymbolicLink() && (entry.directory ? current.isDirectory() : current.isFile() && current.nlink === 1n && current.size === BigInt(entry.size!));
@@ -133,7 +139,7 @@ async function publishReceipt(directory: string, name: string, bytes: string, sy
 }
 
 /** Caller receives permission only to reprobe current readiness, never to replay installation. */
-export async function reconcileApt(host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number): Promise<void> {
+export async function reconcileApt(host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, input?: CommandInput): Promise<void> {
   requireState(validAptProfile(profile) && identity.system === "linux" && identity.translated === false && identity.machineId && sha.test(identity.machineId) && identity.bootId && uuid.test(identity.bootId));
   const directory = stateDirectory(host); const pendingPath = join(directory, "apt-transaction-pending.json");
   // Invalid and same-boot evidence remains a read-only refusal, even when no
@@ -170,7 +176,9 @@ export async function reconcileApt(host: SetupHost, identity: HostIdentity, prof
         return result.stdout;
       };
       const before = await currentHealth();
-      await verifyArtifacts(directory, artifacts, remaining);
+      const custody = await (host.aptAuxiliaries ? host.aptAuxiliaries(directory, artifacts, remaining) : retainAptAuxiliaries(host, directory, artifacts, profile, remaining));
+      try {
+      await verifyArtifacts(directory, artifacts, remaining, custody);
       const inspectConfig = async () => {
         requireState(remaining() > 0);
         const config = await host.run(["apt-config", "dump"], remaining());
@@ -180,24 +188,43 @@ export async function reconcileApt(host: SetupHost, identity: HostIdentity, prof
       const originalConfig = await inspectConfig();
       requireState(await currentHealth() === before);
       await pending.unchanged();
+      const revalidate = async (consumedGrantId?: string) => {
+        await pending.unchanged();
+        await verifyArtifacts(directory, artifacts, remaining, custody);
+        requireState(await inspectConfig() === originalConfig && await currentHealth() === before);
+        const current = await readGrants(host);
+        for (const grant of grants) requireState(current.some((item) => item.id === grant.id && Object.entries(grant).every(([key, value]) => item[key as keyof Grant] === (key === "revoked" && grant.id === consumedGrantId ? true : value))));
+      };
       const receiptName = `apt-reconciled-${record.operationId}.json`;
-      const expected = { formatVersion: 1, operationId: record.operationId, pendingSha256: pending.digest, machine: identity.machineId, user: process.getuid!(), checksum, originalBootId: record.bootId, historicalOutcome: "unknown", artifacts: "retained" };
       let receipt;
       try { receipt = await protectedRecord(join(directory, receiptName), remaining); }
       catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+      let inspection: Json | undefined;
+      if (custody.request !== null) {
+        if (receipt) {
+          try {
+            requireState(typeof receipt.value.reconciledBootId === "string" && uuid.test(receipt.value.reconciledBootId) && receipt.value.reconciledBootId !== record.bootId);
+            inspection = receipt.value.inspection as Json;
+            await verifyAptInspectionReceipt(inspection, host, { ...identity, bootId: receipt.value.reconciledBootId }, String(record.operationId), pending.digest, checksum, custody);
+          }
+          catch (error) { await receipt.close(); throw error; }
+        } else inspection = await authorizeAptInspection(input!, host, identity, String(record.operationId), pending.digest, checksum, custody, remaining, revalidate);
+      }
+      const expected = { formatVersion: 1, operationId: record.operationId, pendingSha256: pending.digest, machine: identity.machineId, user: process.getuid!(), checksum, originalBootId: record.bootId, historicalOutcome: "unknown", artifacts: "retained", ...(inspection === undefined ? {} : { inspection }) };
       if (receipt) {
-        try { keys(receipt.value, Object.keys(expected).join(",") + ",reconciledBootId"); requireState(Object.entries(expected).every(([key, value]) => receipt.value[key] === value) && typeof receipt.value.reconciledBootId === "string" && uuid.test(receipt.value.reconciledBootId) && receipt.value.reconciledBootId !== record.bootId); await receipt.unchanged(); }
+        try { keys(receipt.value, Object.keys(expected).join(",") + ",reconciledBootId"); requireState(Object.entries(expected).every(([key, value]) => isDeepStrictEqual(receipt.value[key], value)) && typeof receipt.value.reconciledBootId === "string" && uuid.test(receipt.value.reconciledBootId) && receipt.value.reconciledBootId !== record.bootId); await receipt.unchanged(); }
         finally { await receipt.close(); }
         await (host.syncDirectory ?? syncStateDirectory)(directory);
       } else await publishReceipt(directory, receiptName, JSON.stringify({ ...expected, reconciledBootId: identity.bootId }) + "\n", host.syncDirectory ?? syncStateDirectory);
       // Recheck all retained evidence and the live package observations after receipt publication.
-      await verifyArtifacts(directory, artifacts, remaining);
+      await verifyArtifacts(directory, artifacts, remaining, custody);
       requireState(await inspectConfig() === originalConfig);
       requireState(await currentHealth() === before);
       await pending.unchanged();
       requireState(remaining() > 0);
       await unlink(pendingPath);
       await (host.syncDirectory ?? syncStateDirectory)(directory);
+      } finally { await custody?.close(); }
     }, host.syncDirectory);
   } finally { await preflight.close(); }
 }

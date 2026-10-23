@@ -1,3 +1,4 @@
+import type { AptAuxiliaryCustody, AptAuxiliaryManifest } from "./apt-auxiliary.ts";
 import { nativeReadinessProfiles, snapshotReadinessProfiles, type VerifiedReadinessProfile } from "./readiness.ts";
 import type { UnixSocketSnapshot } from "./unix-diag.ts";
 import { validateSetupArguments } from "./syntax.ts";
@@ -25,8 +26,9 @@ export interface HostCommandResult {
   /** The direct child was killed; privileged descendants may still be live. */
   readonly terminationUnconfirmed?: boolean;
 }
-export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number }
+export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number; readonly cleanEnvironment?: true }
 export interface SetupHost {
+  readonly aptAuxiliaries?: (directory: string, manifest: AptAuxiliaryManifest, remaining: () => number) => Promise<AptAuxiliaryCustody>;
   /** Passive host package lock observation; missing evidence blocks reconciliation. */
   readonly aptPackageLocks?: (timeoutMs: number) => Promise<"clear" | "busy" | "unknown">;
   /** Private passive Linux kernel observation; no application or caller-selected messages. */

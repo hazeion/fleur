@@ -16,6 +16,16 @@ interface PayloadOptions {
   readonly inspectRecovery?: boolean;
   readonly changeIdentityDuringConsent?: boolean;
   readonly reboot?: boolean;
+  readonly recoveryInspection?: boolean;
+  readonly inspectionConsent?: "once" | "remembered" | "deny";
+  readonly inspectionFailure?: "uncertain" | "changed";
+  readonly inspectionCrash?: boolean;
+  readonly inspectionPublishCrash?: boolean;
+  readonly inspectionUseGrant?: boolean;
+  readonly inspectionGrantMismatch?: "boot" | "operation" | "remembered" | "helper";
+  readonly inspectionReceiptChanged?: boolean;
+  readonly inspectionConsentMutation?: boolean;
+  readonly inspectionConsumptionDurability?: boolean;
   readonly recoveryFault?: "machine" | "user" | "checksum" | "legacy" | "unknown-field" | "missing-boot" | "partial" | "unrelated" | "busy" | "unknown-locks" | "uncertain-inventory" | "global-reference" | "config-unavailable" | "extra-artifact" | "changed-artifact" | "replaced-artifact" | "foreign-receipt" | "authority-null" | "authority-malformed" | "authority-array" | "authority-duplicate";
   readonly recoveryCrash?: "receipt" | "retirement" | "receipt-retry";
   readonly recoveryRetry?: boolean;
@@ -56,6 +66,8 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   let recoverySyncs = 0;
   let crashInjected = false;
   let recoveryHealthReads = 0;
+  let inspections = 0;
+  let retryingInspection = false;
   let globalConfigChanged = false;
   const guardResults: HostCommandResult[] = [];
   let plannedScope: string[] | undefined;
@@ -137,8 +149,20 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
   try {
     const handlers = setupCommands({
-      stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => { prompts++; if (options.changeIdentityDuringConsent) hostIdentity.bootId = "22222222-2222-4222-8222-222222222222"; return "once"; },
-      ...(options.durability || options.recoveryCrash || options.recoveryConfigMutation || (options.cacheFault && !options.cacheFaultAt) || (options.sourceTamper && !options.afterPlan) ? { syncDirectory: async (path: string) => {
+      stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async (plan) => { prompts++; if (plan.action === "recovery-inspect") {
+        if (options.inspectionConsentMutation) { const pending = JSON.parse(await readFile(join(directory, "state", "apt-transaction-pending.json"), "utf8")); await writeFile(join(directory, "state", pending.artifacts.root, "local-only.conf"), "preserve consent-time mutation\n"); }
+        return options.inspectionConsent ?? "deny";
+      } if (options.changeIdentityDuringConsent) hostIdentity.bootId = "22222222-2222-4222-8222-222222222222"; return "once"; },
+      ...(options.durability || options.recoveryCrash || options.recoveryConfigMutation || options.inspectionCrash || options.inspectionPublishCrash || options.inspectionConsumptionDurability || (options.cacheFault && !options.cacheFaultAt) || (options.sourceTamper && !options.afterPlan) ? { syncDirectory: async (path: string) => {
+        if (recovering && options.inspectionConsumptionDurability && !crashInjected) {
+          const current = JSON.parse(await readFile(join(path, "grants.json"), "utf8")).grants;
+          if (current.some((grant: { action: string; revoked: boolean }) => grant.action === "recovery-inspect" && grant.revoked)) { crashInjected = true; throw new Error("Inspection consumption was not durable"); }
+        }
+        if (recovering && options.inspectionPublishCrash && !crashInjected) {
+          const current = JSON.parse(await readFile(join(path, "grants.json"), "utf8")).grants;
+          if (current.some((grant: { action: string; revoked: boolean }) => grant.action === "recovery-inspect" && !grant.revoked)) { crashInjected = true; throw new Error("Interrupted after inspection grant publication"); }
+        }
+        if (recovering && options.inspectionCrash && !crashInjected && (await readdir(path)).some((name) => name.startsWith("apt-reconciled-"))) { crashInjected = true; throw new Error("Interrupted receipt directory durability"); }
         if (recovering && (options.recoveryCrash || options.recoveryConfigMutation) && path === join(directory, "state")) {
           recoverySyncs++;
           if (options.recoveryConfigMutation) globalConfigChanged = true;
@@ -153,6 +177,12 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         if (options.durability === "create" && marker) throw Object.assign(new Error("Injected pending fence fsync failure"), { code: "EIO" });
         if (options.durability === "remove") { if (marker) markerSeen = true; else if (markerSeen) throw Object.assign(new Error("Injected fence removal fsync failure"), { code: "EIO" }); }
       } } : {}),
+      ...(options.recoveryInspection ? { aptAuxiliaries: async () => ({
+        request: { formatVersion: 1, scope: "fixed-two-apt-auxiliaries", inspectorSha256: (retryingInspection && options.inspectionGrantMismatch === "helper" ? "c" : "b").repeat(64), descriptors: "trusted external filesystem fixture" },
+        inspectorSha256: (retryingInspection && options.inspectionGrantMismatch === "helper" ? "c" : "b").repeat(64),
+        inspect: async () => { inspections++; if (options.inspectionFailure) throw new Error("External privileged inspection is uncertain"); return { formatVersion: 1, empty: true, directories: ["archives/partial", "local-lists/auxfiles"] }; },
+        verifyReceipt: async () => { if (options.inspectionReceiptChanged) throw new Error("Retained auxiliary evidence changed since its prior inspection"); }, unchanged: async () => {}, close: async () => {},
+      }) } : {}),
       host: async () => hostIdentity,
       aptPackageLocks: async (timeoutMs) => options.kernelLocks !== undefined ? observeAptLocks(timeoutMs, {
         system: "linux",
@@ -310,12 +340,19 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
       if (fault === "changed-artifact") await writeFile(join(evidence, "local-only.conf"), "preserve changed evidence");
       if (fault === "replaced-artifact") { await rename(join(evidence, "local-only.conf"), join(directory, "original-local-conf")); await writeFile(join(evidence, "local-only.conf"), "#clear APT::Sources::With;\n", { mode: 0o600 }); }
       if (fault === "foreign-receipt") await writeFile(join(directory, "state", `apt-reconciled-${pending.operationId}.json`), '{"foreign":"preserve"}', { mode: 0o600 });
-      resumed = await runCli(["setup", "--json", ...(options.recoveryDeadline ? ["--timeout", "0.5"] : [])], { cwd: directory, handlers });
+      resumed = await runCli(["setup", ...(options.inspectionConsent ? [] : ["--json"]), ...(options.recoveryDeadline ? ["--timeout", "0.5"] : [])], { cwd: directory, handlers });
       entriesAtCrash = await readdir(join(directory, "state"));
-      if (options.recoveryRetry) recoveryRetried = await runCli(["setup", "--json"], { cwd: directory, handlers });
+      if (options.recoveryRetry) {
+        retryingInspection = true;
+        if (options.inspectionGrantMismatch === "boot") hostIdentity.bootId = "33333333-3333-4333-8333-333333333333";
+        if (options.inspectionGrantMismatch === "operation") { const file = join(directory, "state", "apt-transaction-pending.json"); const pending = JSON.parse(await readFile(file, "utf8")); await writeFile(file, JSON.stringify({ ...pending, operationId: "33333333-3333-4333-8333-333333333333" })); }
+        if (options.inspectionGrantMismatch === "remembered") { const file = join(directory, "state", "grants.json"); const store = JSON.parse(await readFile(file, "utf8")); store.grants = store.grants.map((grant: { action: string }) => grant.action === "recovery-inspect" ? { ...grant, mode: "remembered" } : grant); await writeFile(file, JSON.stringify(store)); }
+        const supplied = options.inspectionUseGrant ? ["--grant", JSON.parse(await readFile(join(directory, "state", "grants.json"), "utf8")).grants.find((grant: { action: string }) => grant.action === "recovery-inspect").id] : [];
+        recoveryRetried = await runCli(["setup", "--json", ...supplied], { cwd: directory, handlers });
+      }
       preservation = { artifactsBefore, artifactsAfter: await snapshot(), grantsBefore, grantsAfter: await readFile(join(directory, "state", "grants.json"), "utf8"), calls: calls.slice(callsBefore), prompts: prompts - promptsBefore };
     }
-    return { outcome, resumed, recoveryRetried, entriesAtCrash, preservation, pending, recoveryGrants, guardResults, cacheMutated, cacheForeignBytes: cacheForeign ? await readFile(cacheForeign, "utf8") : undefined, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")).catch((error: { code?: string }) => { if (error.code === "ENOENT") return []; throw error; }) };
+    return { outcome, inspections, resumed, recoveryRetried, entriesAtCrash, preservation, pending, recoveryGrants, guardResults, cacheMutated, cacheForeignBytes: cacheForeign ? await readFile(cacheForeign, "utf8") : undefined, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")).catch((error: { code?: string }) => { if (error.code === "ENOENT") return []; throw error; }) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 test("interrupted APT setup retains original boot, scoped authority and owned artifact identities", async () => {
@@ -774,4 +811,101 @@ test("private cache and list scope is identical for local planning and installat
   for (const args of result.calls.filter((args) => args[0] === "apt-get")) expect(scope(args)).toEqual([]);
   expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(false);
   expect(result.entries).not.toContain("apt-transaction-pending.json");
+});
+
+// The trusted host fixture models the native filesystem's unreadable retained
+// auxiliary directories. Public setup must request separate scoped authority.
+test("unreadable retained APT evidence requires a fresh inspection grant without replaying installation", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true });
+  expect(result.resumed?.exitCode).toBe(3);
+  expect(result.resumed?.result.error?.code).toBe("AUTHORITY_REQUIRED");
+  expect(result.resumed?.result.data).toMatchObject({ plan: { action: "recovery-inspect", method: "docker-official-apt" }, resumable: true, grantsCreated: false });
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.calls.some((args) => ["sudo", "apt-get", "dpkg-deb"].includes(args[0]!))).toBe(false);
+  expect(result.privilegedInstalls).toBe(1);
+});
+
+test("a fresh once inspection grant reconciles current state without changing historical authority", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once" });
+  expect(result.resumed?.exitCode).toBe(4);
+  expect(result.resumed?.result.data).toMatchObject({ recovery: { state: "reconciled", historicalOutcome: "unknown", artifacts: "retained" } });
+  expect(result.inspections).toBe(1);
+  const before = JSON.parse(result.preservation!.grantsBefore).grants;
+  const after = JSON.parse(result.preservation!.grantsAfter).grants;
+  expect(after.filter((grant: { action: string }) => grant.action !== "recovery-inspect")).toEqual(before);
+  expect(after.filter((grant: { action: string }) => grant.action === "recovery-inspect")).toEqual([expect.objectContaining({ mode: "once", revoked: true })]);
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
+  expect(result.entries).not.toContain("apt-transaction-pending.json");
+  expect(result.privilegedInstalls).toBe(1);
+});
+test.each(["remembered", "deny"] as const)("%s cannot authorize a retained APT inspection", async (inspectionConsent) => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent });
+  expect(result.resumed?.exitCode).toBe(3);
+  expect(result.inspections).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+});
+test("an uncertain inspection consumes only its fresh grant and preserves the original fence", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionFailure: "uncertain", recoveryRetry: true });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.recoveryRetried?.exitCode).toBe(3);
+  expect(result.inspections).toBe(1);
+  expect(JSON.parse(result.preservation!.grantsAfter).grants.filter((grant: { action: string }) => grant.action === "recovery-inspect")).toEqual([expect.objectContaining({ mode: "once", revoked: true })]);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.entries.some((name) => name.startsWith("apt-reconciled-"))).toBe(false);
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
+});
+
+test("a durable inspected receipt can resume retirement without consuming another inspection grant", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionCrash: true, recoveryRetry: true });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.recoveryRetried?.exitCode).toBe(4);
+  expect(result.inspections).toBe(1);
+  expect(result.entries).not.toContain("apt-transaction-pending.json");
+  expect(JSON.parse(result.preservation!.grantsAfter).grants.filter((grant: { action: string }) => grant.action === "recovery-inspect")).toHaveLength(1);
+});
+
+test.each(["implicit", "--grant"])("a published fresh inspection grant remains consumable after interruption via %s", async (selection) => {
+  const inspectionUseGrant = selection === "--grant";
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionPublishCrash: true, recoveryRetry: true, inspectionUseGrant });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.recoveryRetried?.exitCode).toBe(4);
+  expect(result.inspections).toBe(1);
+  expect(JSON.parse(result.preservation!.grantsAfter).grants.filter((grant: { action: string }) => grant.action === "recovery-inspect")).toEqual([expect.objectContaining({ mode: "once", revoked: true })]);
+  expect(result.entries).not.toContain("apt-transaction-pending.json");
+});
+
+test("consent-time artifact mutation prevents inspection and creation of new authority", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionConsentMutation: true });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.inspections).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.entries.some((name) => name.startsWith("apt-reconciled-"))).toBe(false);
+});
+test("failed durable inspection consumption prevents the privileged read and never restores its grant", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionConsumptionDurability: true });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.inspections).toBe(0);
+  expect(JSON.parse(result.preservation!.grantsAfter).grants.filter((grant: { action: string }) => grant.action === "recovery-inspect")).toEqual([expect.objectContaining({ mode: "once", revoked: true })]);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
+});
+
+test.each(["boot", "operation", "remembered", "helper"] as const)("a prior inspection grant cannot cover a different %s binding", async (inspectionGrantMismatch) => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionPublishCrash: true, recoveryRetry: true, inspectionUseGrant: true, inspectionGrantMismatch });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.recoveryRetried?.exitCode).toBe(3);
+  expect(result.inspections).toBe(0);
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(JSON.parse(result.preservation!.grantsAfter).grants.filter((grant: { action: string }) => grant.action !== "recovery-inspect")).toEqual(JSON.parse(result.preservation!.grantsBefore).grants);
+});
+test("changed retained auxiliary evidence prevents reuse of a prior inspection receipt", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryInspection: true, inspectionConsent: "once", inspectionCrash: true, recoveryRetry: true, inspectionReceiptChanged: true });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.recoveryRetried?.exitCode).toBe(5);
+  expect(result.inspections).toBe(1);
+  expect(result.entries).toContain("apt-transaction-pending.json");
 });

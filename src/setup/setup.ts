@@ -1,3 +1,4 @@
+import { AptInspectionRequired } from "./apt-auxiliary.ts";
 import { hasPendingPackageTransaction } from "./package-pending.ts";
 import { reconcileApt } from "./apt-recovery.ts";
 import { nativeReadinessProfiles, snapshotReadinessProfiles, type VerifiedReadinessProfile } from "./readiness.ts";
@@ -32,9 +33,9 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
     const recoveryProfile = selectNativeProfile(identity, profiles);
     if (recoveryProfile?.method === "docker-official-apt" && await hasPendingPackageTransaction(host, identity)) {
       try {
-        await reconcileApt(host, Object.freeze({ ...identity }), recoveryProfile, remaining);
+        await reconcileApt(host, Object.freeze({ ...identity }), recoveryProfile, remaining, input);
         return reframe(await probe(), { recovery: { state: "reconciled", historicalOutcome: "unknown", artifacts: "retained" } });
-      } catch (error) { return failure("setup", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Interrupted APT setup remains blocked. Reconciliation requires a verified reboot, matching original evidence, exact healthy packages and no observed package-manager contention. Preserve the private evidence; inspect package state manually before retrying.", actions: [] }, { resumable: true }); }
+      } catch (error) { if (error instanceof AptInspectionRequired) return error.outcome; return failure("setup", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Interrupted APT setup remains blocked. Reconciliation requires a verified reboot, matching original evidence, exact healthy packages and no observed package-manager contention. Preserve the private evidence; inspect package state manually before retrying.", actions: [] }, { resumable: true }); }
     }
   }
   if (observed.result.ok) return reframe(observed);

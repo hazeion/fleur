@@ -138,20 +138,51 @@ command arguments; recovery also refuses observed APT configuration references
 to that retained stage. This is not a universal scan of administrator-created
 references outside the supported setup contract.
 
-Reconciliation preserves the unknown historical command outcome. It creates no
-grants and performs no acquisition, simulation, install, privileged repair or
-artifact deletion. A protected durable receipt binds the original marker digest
-and operation, profile, machine, user and boot identities before the active marker
-is retired. The original files remain evidence and cannot become inputs to later
-setup actions. A matching prior receipt supports restart after interrupted
-publication. Foreign receipts or changed evidence remain blocked.
+Reconciliation preserves the unknown historical command outcome. It performs no
+acquisition, simulation, installation, repair or artifact deletion. If the
+original files and auxiliary directories remain readable with their original
+ownership and contents, reconciliation needs no new grant.
+
+Only the original `archives/partial` and `local-lists/auxfiles` directory inodes
+may instead require a separately scoped `recovery-inspect` action using
+`docker-official-apt`. Their fixed modes and protected ancestry must match. The
+current owner must be root, the invoking user or the `_apt` account resolved from
+the protected local account database. This verifies allowed current state; it does
+not identify who changed ownership. Other ownership changes remain blocked.
+
+A human must authorize a fresh once-only inspection grant. Its plan binds the
+operation, original pending record and profile, machine, user, current boot,
+inspector source, Bun executable, account database and current directory
+metadata. Remembered and cross-operation permission cannot cover inspection.
+JSON/noninteractive setup creates no grant and returns exit 3 with its plan;
+`--grant` can supply a matching existing once grant. Grant inspection and
+revocation remain available. Installation grants are never restored or reused.
+
+The fixed read-only inspector uses noninteractive sudo and held directory
+references. It verifies the live parent process, executable identity, directory
+ancestry and exact inodes, then proves that both directories are empty without
+traversing or reading children. It rechecks identity, ownership, modes and
+nanosecond change timestamps. The grant is durably consumed before invocation.
+Missing OS authentication returns exit 3 and requires a fresh grant. Unknown
+contents, changed evidence, invalid output or uncertain termination returns 5;
+no reconciliation receipt or cleanup claim follows from an uncertain inspection.
+The inspector and all rechecks share the original setup deadline. These are
+sampled observations, not atomic exclusion of concurrent administrator activity.
+
+A protected durable receipt binds the original marker digest and operation,
+profile, machine, user and boot identities before the active marker is retired.
+When inspection was required it also retains the consumed inspection grant,
+source, execution binding and observed auxiliary metadata. The original files
+remain evidence and cannot become inputs to later setup actions. A matching prior
+receipt can complete interrupted retirement after rechecking current evidence,
+without repeating the privileged inspection or restoring its grant. Foreign
+receipts or changed evidence remain blocked.
 
 Doctor runs again after reconciliation; service, access and image authority
 requirements remain independent. Same-boot uncertainty, legacy records, partial
-packages, contention and changed or unreadable artifacts require manual recovery.
-The current resolver conservatively refuses even original auxiliary directories
-whose owner changed during APT. Native interrupted-install/reboot qualification
-and separately justified auxiliary owner transitions remain open.
+packages, contention, nonempty auxiliary directories and unexplained artifact
+changes require manual recovery. Successful native interrupted-install/reboot
+qualification for the inspection path remains pending.
 
 ### Frozen APT payload gate
 

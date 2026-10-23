@@ -9,7 +9,7 @@ async function observe(scenario = "valid26") {
   try {
     const nonce = "12345678-1234-4234-8234-123456789abc";
     const binding = { nonce, bootId: "87654321-4321-4321-8321-cba987654321", uid: 1000, manifestSha256: "b".repeat(64) };
-    const os = { id: "ubuntu", versionId: scenario === "valid24" ? "24.04" : "26.04", sha256: "a".repeat(64) };
+    const os = { id: scenario === "debian-ordinary" ? "debian" : "ubuntu", versionId: scenario === "debian-ordinary" ? "13" : scenario === "valid24" ? "24.04" : "26.04", sha256: "a".repeat(64) };
     const target: Record<string, unknown> = { port: 2222, identity: "key", knownHosts: "pins", nonce, ownedGuestBinding: binding, ownedGuestOsRelease: structuredClone(os) };
     const custody = { ...binding, osRelease: structuredClone(os), formatVersion: 1, scope: "owned-guest-custody-validation", ok: true, fixtureCustodyValidated: true, runtimeSupport: "unverified", runtimeAdmission: false, humanConsentProof: false, nativeCpuPerformanceProof: false };
     const baseline = { packages: "original baseline" };
@@ -72,3 +72,11 @@ for (const [scenario, connections] of [["missing-binding", 0], ["extra-os-field"
     expect(observed.calls).toHaveLength(connections);
   }, 15000);
 }
+
+test("Debian custody cannot select an Ubuntu ordinary qualification", async () => {
+  const observed = await observe("debian-ordinary");
+  expect(observed.exit).toBe(4);
+  expect(observed.result.ok).toBe(false);
+  expect(observed.result.error.message).toContain("Ordinary qualification is unavailable");
+  expect(observed.calls).toHaveLength(2);
+});

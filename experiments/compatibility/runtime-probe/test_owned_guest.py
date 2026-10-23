@@ -30,14 +30,14 @@ class OwnedGuestCustody(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04', ordinary_uid=1000):
+    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04', ordinary_uid=1000, distribution='ubuntu', architecture='x86_64'):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             bodies = {'etc/fleur-owned-guest': NONCE,
-                      'etc/fleur-owned-guest.json': json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': ordinary_uid, 'osRelease': {'id':'ubuntu', 'versionId':release, 'sha256':hashlib.sha256(f'ID=ubuntu\nVERSION_ID="{release}"\n'.encode()).hexdigest()}}),
+                      'etc/fleur-owned-guest.json': json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': ordinary_uid, 'osRelease': {'id':distribution, 'versionId':release, 'sha256':hashlib.sha256(f'ID={distribution}\nVERSION_ID="{release}"\n'.encode()).hexdigest()}}),
                       'proc/sys/kernel/random/boot_id': BOOT+'\n',
                       'proc/1/comm': 'systemd\n',
-                      'usr/lib/os-release': f'ID=ubuntu\nVERSION_ID="{release}"\n',
+                      'usr/lib/os-release': f'ID={distribution}\nVERSION_ID="{release}"\n',
                       'usr/bin/systemd-detect-virt': 'owned root tool protocol fixture',
                       'usr/local/lib/fleur-owned-guest.py': Path(owned_guest.__file__).read_text()}
             if scenario=='wrong-boot': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace(BOOT,'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee')
@@ -104,7 +104,7 @@ class OwnedGuestCustody(unittest.TestCase):
                     (root/'etc/unrelated-service-state').write_text('separate root-owned host state')
                 return SimpleNamespace(returncode=0,stdout=b'qemu\n',stderr=b'')
             output=io.StringIO()
-            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.os.geteuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=ordinary_uid)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value='x86_64'),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
+            with patch('time.monotonic',side_effect=monotonic),patch('owned_guest.os.open',side_effect=opened),patch('owned_guest.os.fstat',side_effect=fstat),patch('owned_guest.os.stat',side_effect=observed_stat),patch('owned_guest.os.getuid',side_effect=lambda:uid_state[0]),patch('owned_guest.os.geteuid',side_effect=lambda:uid_state[0]),patch('owned_guest.pwd.getpwnam',return_value=SimpleNamespace(pw_uid=ordinary_uid)),patch('owned_guest.platform.system',return_value='Linux'),patch('owned_guest.platform.machine',return_value=architecture),patch('owned_guest.subprocess.run',side_effect=virtualized),contextlib.redirect_stdout(output):
                 if control_binding is None:
                     code=owned_guest.main(['--owned-guest-nonce',NONCE] if arguments is None else arguments)
                 else:
@@ -156,6 +156,50 @@ class OwnedGuestCustody(unittest.TestCase):
         self.assertFalse(report['runtimeAdmission'])
         self.assertFalse(report['humanConsentProof'])
         self.assertFalse(report['nativeCpuPerformanceProof'])
+
+    def test_exact_debian13_cli_custody_remains_nonadmitting(self):
+        code, report = self.observe(distribution='debian', release='13')
+        self.assertEqual(code, 0)
+        self.assertEqual(report['scope'], 'owned-guest-custody-validation')
+        self.assertEqual(report['osRelease'], {'id':'debian', 'versionId':'13', 'sha256':hashlib.sha256(b'ID=debian\nVERSION_ID="13"\n').hexdigest()})
+        self.assertEqual((report['nonce'], report['bootId'], report['uid']), (NONCE, BOOT, 1000))
+        self.assertTrue(report['fixtureCustodyValidated'])
+        self.assertFalse(report['runtimeAdmission'])
+        self.assertFalse(report['humanConsentProof'])
+        self.assertFalse(report['nativeCpuPerformanceProof'])
+
+    def test_crossed_or_unapproved_guest_tuples_are_refused_before_virtualization(self):
+        for distribution, release, architecture in (('ubuntu','13','x86_64'), ('debian','24.04','x86_64'),
+                ('debian','26.04','x86_64'), ('debian','14','x86_64'), ('debian','13','aarch64')):
+            with self.subTest(distribution=distribution, release=release, architecture=architecture):
+                code, report = self.observe(distribution=distribution, release=release, architecture=architecture)
+                self.assertEqual(code, 4)
+                self.assertFalse(report['ok'])
+                self.assertFalse(report['runtimeAdmission'])
+                self.assertEqual(self.virtualization_timeouts, [])
+
+    def test_explicit_seed_targets_never_fall_back_to_another_distribution(self):
+        for distribution, release, option in (('ubuntu','24.04','--create-debian13'),
+                ('ubuntu','26.04','--create-debian13'), ('debian','13','--create'),
+                ('debian','13','--create-ubuntu26'), ('debian','13','--create-debian14')):
+            with self.subTest(distribution=distribution, release=release, option=option):
+                code, report = self.observe('produce', distribution=distribution, release=release, arguments=[option,NONCE])
+                self.assertEqual(code, 4)
+                self.assertFalse(report['ok'])
+                self.assertIsNone(self.produced_manifest)
+
+    def test_original_debian_os_bytes_cannot_drift_to_another_admitted_target(self):
+        def changed(fixture):
+            release = fixture.root/'usr/lib/os-release'
+            release.chmod(0o644)
+            release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+            release.chmod(0o444)
+            with self.assertRaises(ValueError):
+                fixture.context.verify(0.25)
+        code, report = self.observe(distribution='debian', release='13',
+            control_binding={'nonce':NONCE, 'boot_id':BOOT, 'uid':1000, 'manifest_sha256':'fixture'}, action=changed)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
 
     def test_retained_original_os_change_between_allowed_releases_is_refused(self):
         def changed(fixture):
@@ -284,6 +328,14 @@ class OwnedGuestCustody(unittest.TestCase):
         self.assertTrue(report['manifestCreated'])
         self.assertEqual(self.produced_manifest, {'formatVersion':1, 'nonce':NONCE, 'bootId':BOOT, 'uid':1000,
             'osRelease':{'id':'ubuntu', 'versionId':'26.04', 'sha256':hashlib.sha256(b'ID=ubuntu\nVERSION_ID="26.04"\n').hexdigest()}})
+        self.assertFalse(report['runtimeAdmission'])
+
+    def test_explicit_debian13_seed_produces_the_bound_os_manifest(self):
+        code, report = self.observe('produce', distribution='debian', release='13', arguments=['--create-debian13', NONCE])
+        self.assertEqual(code, 0)
+        self.assertTrue(report['ok'])
+        self.assertEqual(self.produced_manifest, {'formatVersion':1, 'nonce':NONCE, 'bootId':BOOT, 'uid':1000,
+            'osRelease':{'id':'debian', 'versionId':'13', 'sha256':hashlib.sha256(b'ID=debian\nVERSION_ID="13"\n').hexdigest()}})
         self.assertFalse(report['runtimeAdmission'])
 
     def test_explicit_ubuntu26_seed_cannot_produce_on_ubuntu24(self):

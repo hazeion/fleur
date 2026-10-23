@@ -108,7 +108,7 @@ def environment(deadline=None):
             if key in fields:
                 raise ValueError('duplicate release field')
             fields[key] = value.strip('"')
-    if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') not in ('24.04', '26.04'):
+    if (fields.get('ID'), fields.get('VERSION_ID')) not in (('ubuntu', '24.04'), ('ubuntu', '26.04'), ('debian', '13')):
         raise ValueError('guest distribution')
     if protected_read('/proc/1/comm', 64, deadline=deadline)[0] != b'systemd\n':
         raise ValueError('guest init')
@@ -207,11 +207,11 @@ def create(nonce, *, deadline=None, fixture='ubuntu24-amd64'):
     deadline = operation_deadline(deadline)
     if os.getuid() != 0 or os.geteuid() != 0 or type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('root boot producer and canonical nonce required')
-    if type(fixture) is not str or fixture not in ('ubuntu24-amd64', 'ubuntu26-amd64'):
+    if type(fixture) is not str or fixture not in ('ubuntu24-amd64', 'ubuntu26-amd64', 'debian13-amd64'):
         raise ValueError('source-owned guest fixture required')
     boot_id, _release_custody, os_release = environment(deadline)
-    expected_release = '24.04' if fixture == 'ubuntu24-amd64' else '26.04'
-    if os_release['id'] != 'ubuntu' or os_release['versionId'] != expected_release:
+    target = {'ubuntu24-amd64': ('ubuntu', '24.04'), 'ubuntu26-amd64': ('ubuntu', '26.04'), 'debian13-amd64': ('debian', '13')}[fixture]
+    if (os_release['id'], os_release['versionId']) != target:
         raise ValueError('guest differs from source-owned seed target')
     if protected_read(MARKER, 36, 0o444, deadline=deadline)[0] != nonce.encode():
         raise ValueError('seed nonce differs')
@@ -292,15 +292,15 @@ def main(arguments):
             deadline = started + seconds
             arguments = arguments[:2]
         budget_remaining(deadline)
-        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--create-ubuntu26', '--verify-control'):
+        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--create-ubuntu26', '--create-debian13', '--verify-control'):
             raise ValueError('explicit invocation required')
         if arguments[0] == '--verify-control':
             result['scope'] = 'owned-guest-root-control-validation'
             result.update(verify_root_control(arguments[1], deadline=deadline))
             deadline = min(deadline, result['deadlineMonotonic'])
-        elif arguments[0] in ('--create', '--create-ubuntu26'):
+        elif arguments[0] in ('--create', '--create-ubuntu26', '--create-debian13'):
             result['scope'] = 'owned-guest-boot-manifest'
-            result.update(create(arguments[1], deadline=deadline, fixture='ubuntu26-amd64' if arguments[0] == '--create-ubuntu26' else 'ubuntu24-amd64'))
+            result.update(create(arguments[1], deadline=deadline, fixture={'--create':'ubuntu24-amd64', '--create-ubuntu26':'ubuntu26-amd64', '--create-debian13':'debian13-amd64'}[arguments[0]]))
         else:
             context = validate(arguments[1], deadline=deadline)
             context.verify(budget_remaining(deadline), absolute_deadline=deadline)

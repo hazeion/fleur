@@ -79,6 +79,7 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>, origin
     const envelope = observed?.result; const components = envelope?.data?.components;
     const artifact = guest.executionArtifact as { kind?: unknown; packageName?: unknown } | undefined;
     if (artifact?.kind === "ordinary") {
+      if (originalOs?.id === "debian") throw new Error("Ordinary qualification is unavailable for this guest distribution.");
       const { profile, evidence } = ordinaryQualifications[originalOs?.versionId ?? "24.04"];
       if (artifact.packageName !== "fleur" || observed?.exitCode !== 0 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== true || envelope.error !== null || envelope.truncated !== false
           || !isDeepStrictEqual(Object.keys(envelope).sort(), ["formatVersion", "command", "ok", "data", "error", "truncated"].sort())

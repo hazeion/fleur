@@ -645,3 +645,10 @@ owner, private mode, size and timestamps. The previously audited, checksum-pinne
 snapshots and zero check errors. Independent review accepted this retained input.
 No VM was booted and no Debian installation, runtime support or catalog admission
 follows from these artifact checks.
+
+The first Debian verification preparation admits only the explicit Debian 13 x64
+seed and protected custody tuple alongside the existing Ubuntu targets. Original
+OS bytes, boot and ordinary-user identity remain bound; crossed distributions,
+releases, architectures and unknown fixture choices refuse before guest work.
+This changes neither the Ubuntu default nor ordinary Debian admission. Catalog,
+guest verification, boot, installation and runtime qualification remain pending.

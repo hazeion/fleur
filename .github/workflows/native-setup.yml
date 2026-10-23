@@ -55,6 +55,16 @@ jobs:
         run: |
           python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture '${{ matrix.architecture }}' --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-native-bun" > "$RUNNER_TEMP/fleur-native-platform.json"
           echo "$RUNNER_TEMP/fleur-native-bun" >> "$GITHUB_PATH"
+      - name: Observe fixed KVM device without creating a VM
+        timeout-minutes: 1
+        run: |
+          python3 -I scripts/observe-native-virtualization.py > "$RUNNER_TEMP/fleur-virtualization-user.json"
+          if timeout 10s sudo -n /usr/bin/python3 -I scripts/observe-native-virtualization.py > "$RUNNER_TEMP/fleur-virtualization-root.json"; then
+            :
+          else
+            status=$?
+            printf '{"formatVersion":1,"scope":"native-runner-virtualization-observation","nativeQualification":false,"vmCreated":false,"kvmUsable":"unproven","rootTransport":"unavailable","exitCode":%d}\n' "$status" > "$RUNNER_TEMP/fleur-virtualization-root.json"
+          fi
       - name: Packed doctor and owned Docker smoke twice
         env:
           FLEUR_OWNED_DISPOSABLE_HOST: "yes"
@@ -68,6 +78,8 @@ jobs:
           path: |
             ${{ runner.temp }}/fleur-native-platform.json
             ${{ runner.temp }}/fleur-native-setup.json
+            ${{ runner.temp }}/fleur-virtualization-user.json
+            ${{ runner.temp }}/fleur-virtualization-root.json
           if-no-files-found: error
           retention-days: 7
 

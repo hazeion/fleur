@@ -494,3 +494,42 @@ and the CLI build before native execution. These observations qualify only the
 recorded Ubuntu 26.04 x64 tuple. Fresh-login handoff is not proof of interrupted
 privileged-transaction recovery. Other platform installation/runtime paths and
 interrupted-setup recovery remain open under issue #24.
+
+## Ubuntu 26 interrupted APT transaction and reboot refusal
+
+At source `cc34888a2917a324da0a3dd42e5ceabaa7ac69b1`, a disposable native
+Ubuntu 26.04 x64 guest exercised the real, exact local-archive installation.
+Report SHA256:
+`8764020054451f34ad535a54892a6bdc45408127f873049c5551649c0d9f3b1e`.
+The bounded outer observation completed in 107.89 seconds. This is interruption,
+reboot and preservation evidence; successful recovery remains unqualified.
+
+Five guest process-control conformance cases passed, including descendants born
+after the parent was stopped, rapid exit, a live nested subreaper, a surviving
+child and refusal before launch when the supervisor was not idle. The real
+installation child remained live across the CLI stop. The owned CLI was killed
+and reaped separately; adopted descendants retired. The original privileged
+command's terminal outcome remains unknown. Exact configured Docker package
+additions, all baseline package rows and ordinary session groups were preserved.
+
+Doctor and setup returned `RECOVERY_REQUIRED`, exit 5, on the original boot.
+A real kernel reboot retained the same owned VM, held overlay inode, continuous
+QMP connection and pinned SSH key. The original machine identity and OS matched;
+explicit protected transition evidence bound distinct original/current boots and
+manifests. Package inventory remained exact and healthy across reboot.
+
+After reboot, setup again returned 5. The retained `archives/partial` and
+`local-lists/auxfiles` directory inodes were observed owned by UID 42. This report does not authenticate the account mapping
+or the actor that changed ownership. The former remained mode 0700 and unreadable to the ordinary user; its
+contents are unknown. The resolver requires original ownership and exact
+contents, so this observation cannot qualify successful reconciliation. No
+ownership restoration, package replay, grant restoration or administrator repair
+was performed. The original artifacts and grants remained preserved.
+
+Independent review verified the source/archive bindings, actual observations and
+complete VM, credential, scratch and overlay disposal, plus outer child/group
+retirement. The private resume observer reported a generic handoff error while
+retaining the specific manual-recovery result; that diagnostic routing also needs
+correction. Automated disposable-guest consent fixtures supply no human or legal
+consent proof. Other platform installation/runtime paths and issue #24 remain
+open.

@@ -5,8 +5,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type catalogShape from "./native-candidate-ubuntu24-amd64.json";
 import { productionHost } from "../src/setup/host.ts";
 
-const catalogSha256 = "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58";
+const defaultCatalogSha256 = "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58";
 const markerName = "internal-native-candidate.json";
+const catalogName = "internal-native-candidate-catalog.json";
 const disclosure = "INTERNAL NATIVE CANDIDATE: artifact-authenticated catalog; installation evidence pending; runtime support unverified.\n";
 const repository = resolve(import.meta.dir, "..");
 const hash = (bytes: Uint8Array) => Bun.CryptoHasher.hash("sha256", bytes, "hex");
@@ -118,8 +119,9 @@ async function publish(scratch: string, output: Awaited<ReturnType<typeof output
     await output.verify();
   } finally { try { await sourceDirectory?.close(); } finally { library.close(); } }
 }
-async function build(output: string) {
-  const catalogBytes = await readFile(new URL("./native-candidate-ubuntu24-amd64.json", import.meta.url));
+async function build(output: string, fixture: "ubuntu24-amd64" | "ubuntu26-amd64" = "ubuntu24-amd64") {
+  const catalogSha256 = fixture === "ubuntu24-amd64" ? defaultCatalogSha256 : "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a";
+  const catalogBytes = await readFile(new URL(fixture === "ubuntu24-amd64" ? "./native-candidate-ubuntu24-amd64.json" : "./native-candidate-ubuntu26-amd64.json", import.meta.url));
   if (hash(catalogBytes) !== catalogSha256) throw new Error("The source-owned candidate catalog changed; review and pin it explicitly.");
   const catalog = JSON.parse(catalogBytes.toString("utf8")) as typeof catalogShape;
   output = join(await realpath(dirname(output)), basename(output));
@@ -139,7 +141,7 @@ async function build(output: string) {
     await run(["/usr/bin/tar", "-xf", ordinaryTar, "-C", scratch], repository);
     const staged = join(scratch, "package");
     const sourceFiles = await files(staged);
-    if (sourceFiles.some(({ path }) => path.startsWith("scripts/") || path === markerName || path === "bin/native-candidate-catalog.ts")) throw new Error("Ordinary release unexpectedly contains internal candidate tooling.");
+    if (sourceFiles.some(({ path }) => path.startsWith("scripts/") || path === markerName || path === catalogName || path === "bin/native-candidate-catalog.ts")) throw new Error("Ordinary release unexpectedly contains internal candidate tooling.");
     const ordinarySha256 = hash(await readFile(ordinary));
     const provenance = { ordinaryArchiveSha256: ordinarySha256, sourceFilesSha256: hash(Buffer.from(JSON.stringify(sourceFiles))), sourceFiles };
     const metadata = {
@@ -162,9 +164,10 @@ async function build(output: string) {
     manifest.name = "fleur-internal-native-candidate";
     manifest.private = true;
     manifest.fleurInternalNativeCandidate = { catalogId: catalog.catalogId, catalogSha256, installationEvidence: "pending", runtimeSupport: "unverified" };
-    manifest.files = [...manifest.files, markerName];
+    manifest.files = [...manifest.files, markerName, catalogName];
     await writeFile(join(staged, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
     await writeFile(join(staged, markerName), JSON.stringify(metadata, null, 2) + "\n");
+    await writeFile(join(staged, catalogName), catalogBytes, { flag: "wx", mode: 0o644 });
     const candidate = join(scratch, "fleur-internal-native-candidate.tgz");
     await run([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", candidate], staged);
     const report = {
@@ -180,10 +183,10 @@ async function build(output: string) {
   } finally { try { await ownedOutput?.directory.close(); } finally { await rm(scratch, { recursive: true, force: true }); } }
 }
 const args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--out" || !args[1]) {
-  process.stderr.write("Use --out <new-owned-directory>; candidate profiles are source-owned.\n");
+if ((args.length !== 2 && args.length !== 4) || args[0] !== "--out" || !args[1] || (args.length === 4 && (args[2] !== "--fixture" || !["ubuntu24-amd64", "ubuntu26-amd64"].includes(args[3]!)))) {
+  process.stderr.write("Use --out <new-owned-directory> [--fixture <ubuntu24-amd64|ubuntu26-amd64>]; candidate profiles are source-owned.\n");
   process.exitCode = 2;
 } else {
-  try { await build(resolve(args[1])); }
+  try { await build(resolve(args[1]), args[3] === "ubuntu26-amd64" ? "ubuntu26-amd64" : "ubuntu24-amd64"); }
   catch (error) { process.stderr.write((error instanceof Error ? error.message : "Internal candidate build failed") + "\n"); process.exitCode = 1; }
 }

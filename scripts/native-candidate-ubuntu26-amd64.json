@@ -1,0 +1,118 @@
+{
+  "formatVersion": 1,
+  "catalogId": "ubuntu-26.04-amd64-docker-2026-10-19",
+  "artifactAuthentication": "authenticated",
+  "installationEvidence": "pending",
+  "runtimeSupport": "unverified",
+  "authentication": {
+    "observedDate": "2026-10-19",
+    "method": "official Docker signed InRelease, authenticated Packages index and actual payload SHA256; cached signatures and controls reverified offline",
+    "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "signingSubkey": "D3306A018370199E527AE7997EA0A9C3F273FCD8",
+    "keyUrl": "https://download.docker.com/linux/ubuntu/gpg",
+    "keySha256": "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570",
+    "inReleaseSha256": "c403a95a7c7d9aa80d505b8981d251a8d0cefb1d5137be9534907655ab11b321",
+    "packagesIndexSha256": "60c0230e076751e0da1040a7f854a7b4a3099edafeefe9f807496a3032926da5",
+    "maintainerScriptsSha256": "64a17191916b0570d482fd7c479a64528cd57f7162d360679bd6e07fff123451",
+    "maintainerScriptsScope": "resolute-amd64 five packages",
+    "maintainerScriptsDigestEncoding": "UTF-8 json.dumps(resolute-amd64 package->exact tar member->text, sort_keys=True, separators=(comma,colon)); no trailing newline",
+    "historicalSixProfileMaintainerScriptsSha256": "57a1b1785a8df71ff784b89a7afc0b86e24e4005eb7ca06b84fac73bef7d465b",
+    "cachedVerificationEvidenceSha256": "c20f016687358ba28f746b9955d8709645144b5aed5d3f55d5b179f7b3394865",
+    "nativeExecutionVerified": false
+  },
+  "profile": {
+    "method": "docker-official-apt",
+    "verified": true,
+    "distribution": "ubuntu",
+    "release": "26.04",
+    "architecture": "x64",
+    "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "packages": {
+      "docker-ce": "5:29.9.1-1~ubuntu.26.04~resolute",
+      "docker-ce-cli": "5:29.9.1-1~ubuntu.26.04~resolute",
+      "containerd.io": "2.4.2-2~ubuntu.26.04~resolute",
+      "docker-buildx-plugin": "0.38.0-1~ubuntu.26.04~resolute",
+      "docker-compose-plugin": "5.6.0-1~ubuntu.26.04~resolute"
+    }
+  },
+  "artifacts": [
+    {
+      "name": "docker-ce",
+      "version": "5:29.9.1-1~ubuntu.26.04~resolute",
+      "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-ce_29.9.1-1~ubuntu.26.04~resolute_amd64.deb",
+      "sha256": "cb283f77ac1a9e010d1dbe656be58063617e1360ca9f48e5ebe61cf72d2ac96b",
+      "size": 24584460,
+      "depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0",
+      "preDepends": "init-system-helpers (>= 1.54~)"
+    },
+    {
+      "name": "docker-ce-cli",
+      "version": "5:29.9.1-1~ubuntu.26.04~resolute",
+      "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-ce-cli_29.9.1-1~ubuntu.26.04~resolute_amd64.deb",
+      "sha256": "3a72d12eccd38f5e0e7b4752ea1912ff36de7238acf7344badebe1c58ae36c82",
+      "size": 17593804,
+      "depends": "libc6 (>= 2.34)",
+      "preDepends": null
+    },
+    {
+      "name": "containerd.io",
+      "version": "2.4.2-2~ubuntu.26.04~resolute",
+      "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/containerd.io_2.4.2-2~ubuntu.26.04~resolute_amd64.deb",
+      "sha256": "6bb52a00ac068d78f0fc090b69bb8e5efe355d2069b9f90d2ebbae23b9d5b36b",
+      "size": 23265404,
+      "depends": "libc6 (>= 2.38), libseccomp2 (>= 2.6.0)",
+      "preDepends": null
+    },
+    {
+      "name": "docker-buildx-plugin",
+      "version": "0.38.0-1~ubuntu.26.04~resolute",
+      "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~ubuntu.26.04~resolute_amd64.deb",
+      "sha256": "c1c3fe824d9425d247e99a61b0bb52e1d591fb4d95c5607563a857e7dd49b6be",
+      "size": 17784024,
+      "depends": null,
+      "preDepends": null
+    },
+    {
+      "name": "docker-compose-plugin",
+      "version": "5.6.0-1~ubuntu.26.04~resolute",
+      "url": "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/docker-compose-plugin_5.6.0-1~ubuntu.26.04~resolute_amd64.deb",
+      "sha256": "a0b9c82230ed64bed886f7ac569641fd6aa4e30598c72318ce3bf94cfbe884e6",
+      "size": 8081212,
+      "depends": null,
+      "preDepends": null
+    }
+  ],
+  "controls": {
+    "docker-ce": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "7f70e67276a0d3c59a0827b05a549297f5f6a2eff2cd70284901e881d1f48e82",
+      "controlTarSha256": "1c2a43e57673b289fa5ffe32f3ed370a59ceafc5fb0ff6bfa66a3cc3879a1a04"
+    },
+    "docker-ce-cli": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "83907d3f8dc2b27756979f6af96f61d9d309d2e723bb3c1a4f0b8bb3fb7320ce",
+      "controlTarSha256": "d7070b627972c0e13eeff6848f1efdd2d78386c3bef39aa255a5ad94fe525268"
+    },
+    "containerd.io": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "7e9b0fb5f036af6d60e80ec116eb83c3eda358d3f6b431a9fa2ba4192e424e66",
+      "controlTarSha256": "d3d2bab4f5f438677c57f187a3845bee38d84916d070e859f027ec8b51788035"
+    },
+    "docker-buildx-plugin": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "d6d972d7d2506c41b31275ac3bbcb5c31500c11bee8e12e8a9ff0798fcceb80f",
+      "controlTarSha256": "5081c942fcf884ebbdcd858c1fd5e63cb01894654945abda2295cf897e9d959a"
+    },
+    "docker-compose-plugin": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "c5f4e705b9d43330ae371bd0a6476a7764fdbaa9091b179b9b2d7635ea5c7501",
+      "controlTarSha256": "0eace41e717e9dec26935a9621b690cb379f25b64180535d74070f12d64b5d75"
+    }
+  },
+  "limits": [
+    "Legacy verified:true means source-owned internal catalog admission only; it is not ordinary release qualification.",
+    "All five payloads, control fields and scoped maintainer scripts are authenticated; no package or maintainer script was executed by the cached artifact audit.",
+    "Fresh guest dependency closure, native package-manager behavior and complete runtime evidence remain pending.",
+    "The ordinary production Ubuntu24 installation/readiness records are unchanged; no Ubuntu26 row is admitted."
+  ]
+}

@@ -223,17 +223,41 @@ and successful native installation still require the guest verification gate.
 
 Passive activation observation recognizes loaded sockets in stable listening or
 running states. A matching socket still blocks Docker RPC unless every reported
-activation target is already an active, running service. Filesystem listeners
-must match their declared kind: Stream, Datagram and SequentialPacket endpoints
-must be sockets; FIFO endpoints must be FIFOs with a distinct device/inode from
-the selected Docker socket. Unknown kinds, unavailable identity evidence, conflicting types
-and inconsistent identities remain activation-unknown. Finding an unrelated FIFO
-does not stop inspection of the remaining socket owners. These passive checks do
-not grant service startup authority or contact the daemon.
+activation target is already an active, running service. Filesystem Stream,
+Datagram and SequentialPacket listeners must be sockets. An accessible FIFO must
+be a FIFO with a distinct device/inode from the selected Docker socket; a
+contradictory observed type or identity is never ignored.
+
+A protected FIFO has one narrowly scoped alternative when direct stat completes
+with exit1, empty stdout, an exact C-locale path-specific permission-denied error
+and confirmed command termination. The trusted system manager must report the
+unit as loaded and active in a stable listening or running state, with an
+absolute FIFO Listen path. That retained FIFO transport cannot receive AF_UNIX
+socket RPC; this is transport exclusion, not proof of its inaccessible pathname
+identity. Before contacting the selected Docker socket, Fleur must observe the
+same complete socket inventory, selected socket identity and every observed
+unit's full metadata again, including initially inactive units. Any change
+remains activation-unknown. The two default Docker socket paths cannot use this
+FIFO alternative.
+
+This alternative trusts the system manager and kernel to preserve the declared
+FIFO transport type. Repeated observations detect changes but are not atomic;
+contradictory manager or filesystem evidence must remain activation-unknown.
+
+Unknown kinds, malformed or nonexact errors, timeouts, uncertain termination,
+conflicting types and inconsistent identities remain activation-unknown. Special
+listeners retain their direct type/identity requirement. Finding an unrelated
+FIFO never stops inspection of later units or other Listen entries; unknown
+UNIX-socket owners and stopped activation targets still block RPC. These passive
+checks neither grant service startup authority nor contact the daemon.
 
 
-On Linux, an exact permission-denied response for a protected filesystem socket
-listener may use a private, unprivileged Unix SOCK_DIAG capability. The selected
+On Linux, a protected filesystem socket listener may use a private, unprivileged
+Unix SOCK_DIAG capability only on the same exact completed permission-denied
+response. Both `stat: cannot statx` and `/usr/bin/stat: cannot statx` program-name
+spellings are recognized, with the exact requested path and C-locale error; a
+generic permission-denied message is insufficient. This spelling recognition
+also applies to the protected FIFO alternative above. The selected
 Docker endpoint still requires direct socket stat. The fallback requires positive
 NAME/VFS evidence for a unique binding, two complete kernel dumps with stable
 relevant identities and cookies, and fresh inventory, selected-socket, every observed socket unit and matching

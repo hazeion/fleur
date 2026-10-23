@@ -523,6 +523,7 @@ def resume_guest(nonce, expected_digest, owned_binding=None):
         GUEST_DEADLINE = deadline
         budget_seconds(900)
         verify_owned_binding(owned_binding)
+        verify_guest_candidate_target(owned_binding)
         if handoff_artifacts() != payload.get("artifacts"):
             raise RuntimeError("Resume artifact identities changed")
         REPORT.clear()
@@ -704,9 +705,173 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
             or type(observed.get('uid')) is not int
             or tuple(observed.get(key) for key in binding._fields) != tuple(binding)):
         raise RuntimeError("Original owned guest fixture binding changed")
+    os_release = observed.get('osRelease')
+    if (type(os_release) is not dict or set(os_release) != {'id', 'versionId', 'sha256'}
+            or os_release['id'] != 'ubuntu' or os_release['versionId'] not in ('24.04', '26.04')
+            or type(os_release['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', os_release['sha256']) is None):
+        raise RuntimeError('Original owned guest OS binding is incomplete')
     REPORT['ownedGuestCustody'] = {key: observed[key] for key in ('formatVersion', 'scope', 'ok', *binding._fields,
-        'fixtureCustodyValidated', 'runtimeSupport', 'runtimeAdmission', 'humanConsentProof', 'nativeCpuPerformanceProof')}
+        'fixtureCustodyValidated', 'runtimeSupport', 'runtimeAdmission', 'humanConsentProof', 'nativeCpuPerformanceProof', 'osRelease')}
     return binding
+
+
+INTERNAL_CATALOGS = {
+    'ubuntu-24.04-amd64-docker-2026-10-19': ('540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58', '24.04'),
+    'ubuntu-26.04-amd64-docker-2026-10-19': ('e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a', '26.04'),
+}
+
+
+def checked_internal_candidate():
+    started = time.monotonic()
+    deadline = started + budget_seconds(10)
+    def check_budget():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Internal candidate catalog deadline expired')
+    check_budget()
+    directory = os.open(ROOT/'package', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    records = []
+    try:
+        check_budget()
+        parent = os.fstat(directory)
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+            raise RuntimeError('Internal candidate catalog custody differs')
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise RuntimeError('Internal candidate catalog has duplicate fields')
+                value[key] = item
+            return value
+        def read(name):
+            check_budget()
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                check_budget()
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or before.st_mode & 0o022 or not 0 < before.st_size <= 65536:
+                    raise RuntimeError('Internal candidate catalog custody differs')
+                body = bytearray()
+                while len(body) <= before.st_size:
+                    check_budget()
+                    chunk = os.read(fd, min(65536, before.st_size+1-len(body)))
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+                check_budget()
+                after = os.fstat(fd)
+                check_budget()
+                named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                check_budget()
+                if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(before) != file_identity(named):
+                    raise RuntimeError('Internal candidate catalog changed')
+                records.append((name, file_identity(before)))
+                return bytes(body)
+            finally:
+                os.close(fd)
+        metadata = json.loads(read('internal-native-candidate.json'), object_pairs_hook=unique)
+        catalog_id = metadata.get('catalogId') if type(metadata) is dict else None
+        if type(catalog_id) is not str or catalog_id not in INTERNAL_CATALOGS:
+            raise RuntimeError('Internal candidate target is not source-owned')
+        expected_sha, release = INTERNAL_CATALOGS[catalog_id]
+        raw = read('internal-native-candidate-catalog.json')
+        if hashlib.sha256(raw).hexdigest() != expected_sha:
+            raise RuntimeError('Internal candidate catalog bytes differ')
+        catalog = json.loads(raw, object_pairs_hook=unique)
+        fields = ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')
+        if (metadata.get('internalArtifact') is not True or metadata.get('catalogSha256') != expected_sha
+                or json.dumps(metadata.get('legacyProfileAdmission'), sort_keys=True, allow_nan=False) != json.dumps({'verified':True, 'meaning':'internal-catalog-admission-only'}, sort_keys=True)
+                or json.dumps({key:metadata.get(key) for key in fields}, sort_keys=True, allow_nan=False) != json.dumps({key:catalog[key] for key in fields}, sort_keys=True, allow_nan=False)
+                or catalog['profile']['distribution'] != 'ubuntu' or catalog['profile']['release'] != release or catalog['profile']['architecture'] != 'x64'):
+            raise RuntimeError('Internal candidate catalog metadata differs')
+        for name, expected in records:
+            check_budget()
+            if file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) != expected:
+                raise RuntimeError('Internal candidate catalog changed')
+        check_budget()
+        named = (ROOT/'package').lstat()
+        check_budget()
+        if (named.st_dev, named.st_ino, named.st_mode, named.st_uid) != (parent.st_dev, parent.st_ino, parent.st_mode, parent.st_uid) or time.monotonic() >= deadline:
+            raise RuntimeError('Internal candidate catalog custody changed')
+        REPORT['executionArtifact'] = {'kind':'internal-candidate', 'catalogId':catalog_id, 'catalogSha256':expected_sha}
+        return catalog
+    finally:
+        os.close(directory)
+
+
+def legacy_os_release_snapshot():
+    started = time.monotonic()
+    deadline = started + budget_seconds(10)
+    def check_budget():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Legacy OS release snapshot deadline expired')
+    check_budget()
+    # /etc/os-release normally aliases /usr/lib/os-release. Retain the opened
+    # regular target and compare its published identity; never block on a FIFO.
+    fd = os.open('/etc/os-release', os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        check_budget()
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_mode & 0o022 or not 0 < before.st_size <= 16384:
+            raise RuntimeError('Legacy OS release type or size is unsafe')
+        body = bytearray()
+        while len(body) <= before.st_size:
+            check_budget()
+            block = os.read(fd, min(4096, before.st_size+1-len(body)))
+            check_budget()
+            if not block:
+                break
+            body.extend(block)
+        check_budget()
+        after = os.fstat(fd)
+        check_budget()
+        named = os.stat('/etc/os-release')
+        check_budget()
+        if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(after) != file_identity(named):
+            raise RuntimeError('Legacy OS release snapshot changed')
+        return bytes(body).decode()
+    finally:
+        os.close(fd)
+
+
+def verify_guest_candidate_target(owned_binding):
+    if owned_binding is not None:
+        # The original manifest and same protected read already authenticate
+        # these bytes. Do not replace that proof with another /etc pathname read.
+        observed = REPORT.get('ownedGuestCustody', {}).get('osRelease')
+        if (type(observed) is not dict or set(observed) != {'id', 'versionId', 'sha256'}
+                or observed['id'] != 'ubuntu' or observed['versionId'] not in ('24.04', '26.04')
+                or type(observed['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', observed['sha256']) is None):
+            raise RuntimeError('Original owned guest candidate target OS binding changed')
+        fields = {'ID':observed['id'], 'VERSION_ID':observed['versionId']}
+        release = observed['versionId']
+        os_release = None  # No redundant raw-file observation is claimed.
+        os_evidence = {'source':'validated-owned-manifest', **observed}
+    else:
+        os_release = legacy_os_release_snapshot()
+        fields = {}
+        for line in os_release.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                if key in fields:
+                    raise RuntimeError('Guest candidate target OS record is ambiguous')
+                fields[key] = value.strip('"')
+        release = '24.04'
+        if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') != release:
+            raise RuntimeError('Legacy guest candidate target requires the original Ubuntu24 fixture')
+        os_evidence = {'source':'legacy-nonce-only-observation', 'fixtureCustodyValidated':False,
+                       'id':fields['ID'], 'versionId':release, 'sha256':hashlib.sha256(os_release.encode()).hexdigest()}
+    if fields.get('ID') != 'ubuntu' or release not in ('24.04', '26.04') or run(['uname', '-m'])[1].strip() != 'x86_64':
+        raise RuntimeError('Guest candidate target differs from the closed native tuple')
+    try:
+        (ROOT/'package/internal-native-candidate.json').lstat()
+    except FileNotFoundError:
+        if release != '24.04':
+            raise RuntimeError('Ordinary guest candidate target is not admitted')
+    else:
+        catalog = checked_internal_candidate()
+        if catalog['profile']['release'] != release:
+            raise RuntimeError('Internal candidate target differs from the original guest OS')
+    return os_release, os_evidence
 
 
 def installation_packages():
@@ -717,9 +882,8 @@ def installation_packages():
         pass
     else:
         # Preserve the existing internal-candidate artifact contract.
-        metadata = json.loads(marker.read_text())
-        REPORT['executionArtifact'] = {'kind': 'internal-candidate'}
-        return [item['name'] + '=' + item['version'] for item in metadata['artifacts']]
+        catalog = checked_internal_candidate()
+        return [item['name'] + '=' + item['version'] for item in catalog['artifacts']]
     package = json.loads((ROOT / 'package/package.json').read_text())
     if type(package) is not dict or package.get('name') != 'fleur' or 'fleurInternalNativeCandidate' in package:
         raise RuntimeError('Ordinary verification requires the real Fleur package without an internal marker')
@@ -797,10 +961,8 @@ def main():
         (ROOT / "package/internal-native-candidate.json").lstat()
     except FileNotFoundError:
         ordinary_packages = installation_packages()
-    os_release = Path("/etc/os-release").read_text()
-    if 'ID=ubuntu\n' not in os_release or 'VERSION_ID="24.04"' not in os_release or run(["uname", "-m"])[1].strip() != "x86_64":
-        raise RuntimeError("Guest differs from frozen Ubuntu24 amd64 tuple")
-    REPORT["guest"] = {"osRelease": os_release, "kernel": run(["uname", "-srmo"])[1],
+    os_release, os_evidence = verify_guest_candidate_target(owned_binding)
+    REPORT["guest"] = {"osRelease": os_release, "osReleaseEvidence": os_evidence, "kernel": run(["uname", "-srmo"])[1],
                        "virtualization": run(["systemd-detect-virt"])[1].strip(), "bun": run([BUN, "--version"])[1].strip()}
     if REPORT["guest"]["virtualization"] not in ("qemu", "kvm") or REPORT["guest"]["bun"] != "1.4.3":
         raise RuntimeError("Guest virtualization/runtime identity differs")

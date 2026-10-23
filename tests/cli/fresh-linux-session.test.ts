@@ -140,9 +140,31 @@ test("the second connection receives only the remainder of the original aggregat
     // Declared external runtime-clock boundary: unchanged production code and limits.
     await writeFile(join(root, "clock.ts"), `import {readFileSync} from 'node:fs';Object.defineProperty(performance,'now',{value:()=>Number(readFileSync(process.env.FIXTURE_ROOT+'/clock','utf8'))});\n`);
     const pending = { formatVersion: 1, ok: false, phase: "new-login-required", runtimeSupport: "unverified", installationEvidence: "pending", humanConsentProof: false, baseline: { packages: "original" }, checkpoint: { sha256: "b".repeat(64), bytes: 800 }, accessHandoff: { after: { user: { name: "fleur", uid: 1000 }, group: { gid: 997 }, accountGroups: [997, 1000], sessionGroups: [1000] } } };
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify("FLEUR_SESSION_READY=" + nonce + "\n")});const root=process.env.FIXTURE_ROOT;const f=root+'/calls';const n=await Bun.file(f).exists()?Number(await Bun.file(f).text())+1:1;await Bun.write(f,String(n));await Bun.write(root+'/last-pid',String(process.pid));if(n===1){await Bun.write(root+'/clock','899900');process.stdout.write(${JSON.stringify(JSON.stringify(pending))});process.exit(3);}await Bun.write(root+'/clock','900001');setInterval(()=>{},1000);\n`, { mode: 0o700 });
-    const started = performance.now();
+    // Keep process-startup overhead out of the modeled 900-second clock jump.
+    // Both real SSH relay lifetimes and the final two-second assertion remain.
+    await writeFile(join(tools, "ssh"), `#!/bin/sh
+printf '%s\\n' ${JSON.stringify("FLEUR_SESSION_READY=" + nonce)}
+root="$FIXTURE_ROOT"
+n=0
+if [ -f "$root/calls" ]; then IFS= read -r n < "$root/calls" || :; fi
+n=$((n+1))
+printf '%s' "$n" > "$root/calls"
+printf '%s' "$$" > "$root/last-pid"
+if [ "$n" -eq 1 ]; then
+  printf '%s' 899500 > "$root/clock"
+  printf '%s' '${JSON.stringify(pending)}'
+  exit 3
+fi
+printf '%s' 900001 > "$root/clock"
+exec /bin/sleep 10
+`, { mode: 0o700 });
     const child = Bun.spawn([process.execPath, "--preload", join(root, "clock.ts"), script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+    // Witness the first workflow's clock jump before measuring retirement.
+    // Cold interpreter/relay setup cannot consume this assertion's allowance.
+    const setupDeadline = performance.now() + 3000;
+    while (await Bun.file(join(root, "clock")).text() === "0" && performance.now() < setupDeadline) await Bun.sleep(10);
+    expect(await Bun.file(join(root, "clock")).text()).not.toBe("0");
+    const started = performance.now();
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     lastPid = Number(await readFile(join(root, "last-pid"), "utf8"));
     expect(await readFile(join(root, "calls"), "utf8")).toBe("2");

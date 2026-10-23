@@ -33,7 +33,12 @@ else:os.write(1,b'{}\\n')
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(stderr).toBe("");
     const result = JSON.parse(stdout);
-    const command = await readFile(join(root, "arguments"), "utf8");
+    const command = await readFile(join(root, "arguments"), "utf8").catch((error: NodeJS.ErrnoException) => {
+      // The work deadline may retire the reserved SSH leader before its
+      // interpreter writes arguments. Other modes still require that witness.
+      if (mode === "stall" && error.code === "ENOENT") return undefined;
+      throw error;
+    });
     const holder = mode === "holder" ? await readFile(join(root, "holder-result"), "utf8") : undefined;
     return { exit, result, command, holder };
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -52,6 +57,8 @@ test("owned custody transport refuses deadline completion and retires the actual
   const proof = await observed("stall", 400);
   expect(proof.exit).toBe(4);
   expect(proof.result).toMatchObject({ ok: false, error: { code: "HOST_DEADLINE" }, transport: { deadlineFired: true, terminationRequested: true }, localCleanup: { retired: true } });
+  expect(["SIGTERM", "SIGKILL"]).toContain(proof.result.transport.signal);
+  expect(proof.result.transport.exitCode).toBeGreaterThan(128);
 }, 10000);
 
 test("owned custody transport rejects a completed leader with an actual pipeholding descendant", async () => {

@@ -15,15 +15,18 @@ export function copyOwnedGuestBinding(value: unknown, expectedNonce: string): Re
   return Object.freeze({ nonce, bootId, uid, manifestSha256 });
 }
 
+export type OwnedGuestFixture = "ubuntu24-amd64" | "ubuntu26-amd64";
+
 /** Source-owned NoCloud fragment. Its boot manifest grants no runtime admission. */
-export async function ownedGuestSeed(nonce: string): Promise<{ write_files: { path: string; owner: string; permissions: string; content: string }[]; runcmd: string[][] }> {
+export async function ownedGuestSeed(nonce: string, fixture: OwnedGuestFixture = "ubuntu24-amd64"): Promise<{ write_files: { path: string; owner: string; permissions: string; content: string }[]; runcmd: string[][] }> {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(nonce)) throw new Error("An explicit canonical guest nonce is required");
+  if (fixture !== "ubuntu24-amd64" && fixture !== "ubuntu26-amd64") throw new Error("An exact source-owned guest fixture is required");
   const producer = await readFile(resolve(import.meta.dir, "../experiments/compatibility/runtime-probe/owned_guest.py"), "utf8");
   if (Buffer.byteLength(producer) > 32768) throw new Error("Source-owned guest producer exceeds its seed bound");
   return { write_files: [
     { path: "/etc/fleur-owned-guest", owner: "root:root", permissions: "0444", content: nonce },
     { path: "/usr/local/lib/fleur-owned-guest.py", owner: "root:root", permissions: "0444", content: producer },
-  ], runcmd: [["/usr/bin/python3", "-I", "/usr/local/lib/fleur-owned-guest.py", "--create", nonce]] };
+  ], runcmd: [["/usr/bin/python3", "-I", "/usr/local/lib/fleur-owned-guest.py", fixture === "ubuntu24-amd64" ? "--create" : "--create-ubuntu26", nonce]] };
 }
 
 export interface CustodyTransportReply { ok: boolean; stdout: string; transport: { exitCode: number | null; signal: string | null; deadlineFired: boolean; outputLimitExceeded: boolean }; localCleanup: { retired: boolean; error?: string }; error?: unknown }

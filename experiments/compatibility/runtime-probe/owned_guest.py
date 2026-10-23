@@ -99,7 +99,8 @@ def environment(deadline=None):
     deadline = operation_deadline(deadline)
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         raise ValueError('guest platform')
-    release = protected_read('/usr/lib/os-release', 16384, deadline=deadline)[0].decode()
+    release_bytes, release_identity = protected_read('/usr/lib/os-release', 16384, deadline=deadline)
+    release = release_bytes.decode()
     fields = {}
     for line in release.splitlines():
         if '=' in line:
@@ -107,7 +108,7 @@ def environment(deadline=None):
             if key in fields:
                 raise ValueError('duplicate release field')
             fields[key] = value.strip('"')
-    if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') != '24.04':
+    if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') not in ('24.04', '26.04'):
         raise ValueError('guest distribution')
     if protected_read('/proc/1/comm', 64, deadline=deadline)[0] != b'systemd\n':
         raise ValueError('guest init')
@@ -121,7 +122,8 @@ def environment(deadline=None):
     boot_id = protected_read('/proc/sys/kernel/random/boot_id', 64, deadline=deadline)[0].decode().rstrip('\n')
     if re.fullmatch(BOOT, boot_id) is None:
         raise ValueError('guest boot identity')
-    return boot_id
+    release_digest = hashlib.sha256(release_bytes).hexdigest()
+    return boot_id, (release_identity, release_digest), {'id': fields['ID'], 'versionId': fields['VERSION_ID'], 'sha256': release_digest}
 
 
 def object_pairs(pairs):
@@ -140,6 +142,7 @@ class OwnedGuestContext:
     uid: int
     manifest_sha256: str
     files: tuple
+    os_release: tuple = ()
 
     def verify(self, remaining=None, *, absolute_deadline=None):
         if remaining is not None and (type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0):
@@ -176,7 +179,7 @@ def validate(nonce, *, deadline=None, ordinary_uid=None):
         if os.getuid() != 0 or os.geteuid() != 0 or type(ordinary_uid) is not int or not 0 < ordinary_uid < 2**31:
             raise ValueError('root validator and original ordinary UID required')
         uid = ordinary_uid
-    boot_id = environment(deadline)
+    boot_id, release_custody, os_release = environment(deadline)
     marker, marker_identity = protected_read(MARKER, 36, 0o444, deadline=deadline)
     manifest, manifest_identity = protected_read(MANIFEST, 2048, 0o444, deadline=deadline)
     producer, producer_identity = protected_read(ROOT_VALIDATOR, 32768, 0o444, deadline=deadline)
@@ -187,28 +190,35 @@ def validate(nonce, *, deadline=None, ordinary_uid=None):
     budget_remaining(deadline)
     parsed = json.loads(manifest, object_pairs_hook=object_pairs)
     if (marker != nonce.encode() or type(parsed) is not dict
-            or set(parsed) != {'formatVersion', 'nonce', 'bootId', 'uid'}
+            or set(parsed) != {'formatVersion', 'nonce', 'bootId', 'uid', 'osRelease'}
             or type(parsed['formatVersion']) is not int or parsed['formatVersion'] != 1
             or parsed['nonce'] != nonce or parsed['bootId'] != boot_id
+            or parsed['osRelease'] != os_release
             or type(parsed['uid']) is not int or parsed['uid'] != uid):
         raise ValueError('owned manifest binding')
     context = OwnedGuestContext(nonce, boot_id, uid, hashlib.sha256(manifest).hexdigest(),
-                                (marker_identity, manifest_identity, producer_identity))
+                                (marker_identity, manifest_identity, producer_identity, release_custody),
+                                tuple(os_release[key] for key in ('id', 'versionId', 'sha256')))
     budget_remaining(deadline)
     return context
 
 
-def create(nonce, *, deadline=None):
+def create(nonce, *, deadline=None, fixture='ubuntu24-amd64'):
     deadline = operation_deadline(deadline)
     if os.getuid() != 0 or os.geteuid() != 0 or type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('root boot producer and canonical nonce required')
-    boot_id = environment(deadline)
+    if type(fixture) is not str or fixture not in ('ubuntu24-amd64', 'ubuntu26-amd64'):
+        raise ValueError('source-owned guest fixture required')
+    boot_id, _release_custody, os_release = environment(deadline)
+    expected_release = '24.04' if fixture == 'ubuntu24-amd64' else '26.04'
+    if os_release['id'] != 'ubuntu' or os_release['versionId'] != expected_release:
+        raise ValueError('guest differs from source-owned seed target')
     if protected_read(MARKER, 36, 0o444, deadline=deadline)[0] != nonce.encode():
         raise ValueError('seed nonce differs')
     uid = pwd.getpwnam('fleur').pw_uid
     if type(uid) is not int or uid <= 0:
         raise ValueError('guest account absent')
-    body = json.dumps({'formatVersion': 1, 'nonce': nonce, 'bootId': boot_id, 'uid': uid},
+    body = json.dumps({'formatVersion': 1, 'nonce': nonce, 'bootId': boot_id, 'uid': uid, 'osRelease': os_release},
                       sort_keys=True, separators=(',', ':')).encode()
     directory = os.open('/etc', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -282,19 +292,21 @@ def main(arguments):
             deadline = started + seconds
             arguments = arguments[:2]
         budget_remaining(deadline)
-        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--verify-control'):
+        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--create-ubuntu26', '--verify-control'):
             raise ValueError('explicit invocation required')
         if arguments[0] == '--verify-control':
             result['scope'] = 'owned-guest-root-control-validation'
             result.update(verify_root_control(arguments[1], deadline=deadline))
             deadline = min(deadline, result['deadlineMonotonic'])
-        elif arguments[0] == '--create':
+        elif arguments[0] in ('--create', '--create-ubuntu26'):
             result['scope'] = 'owned-guest-boot-manifest'
-            result.update(create(arguments[1], deadline=deadline))
+            result.update(create(arguments[1], deadline=deadline, fixture='ubuntu26-amd64' if arguments[0] == '--create-ubuntu26' else 'ubuntu24-amd64'))
         else:
             context = validate(arguments[1], deadline=deadline)
             context.verify(budget_remaining(deadline), absolute_deadline=deadline)
             result.update(context.report())
+            # Ordinary observation only; the strict root-control reply is unchanged.
+            result['osRelease'] = dict(zip(('id', 'versionId', 'sha256'), context.os_release))
         budget_remaining(deadline)
         result['ok'] = True
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired):

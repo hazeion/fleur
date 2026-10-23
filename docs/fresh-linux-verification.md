@@ -1,6 +1,6 @@
 # Fresh Ubuntu guest verification
 
-`scripts/verify-fresh-linux.ts` verifies an owned full-system Ubuntu 24.04 amd64 guest using the fixed internal candidate or the source-owned ordinary installation profile. The ordinary catalog contains the exact reviewed Ubuntu 24.04 prerequisite tuple. Internal candidate verification does not add release admission. Local tests cover refusal, transport and artifact boundaries; actual guest execution and its evidence are recorded separately below.
+`scripts/verify-fresh-linux.ts` verifies an owned full-system Ubuntu 24.04 or 26.04 amd64 guest using its fixed internal candidate or source-owned ordinary installation profile. The default fixture remains Ubuntu 24.04. The ordinary catalog contains the two exact reviewed prerequisite tuples. Internal candidate verification does not add release admission. Local tests cover refusal, transport and artifact boundaries; actual guest execution and its evidence are recorded separately below.
 
 The command has two modes:
 
@@ -73,7 +73,7 @@ A valid new login alone does not establish readiness. For example, an unavailabl
 }
 ```
 
-If ordinary-user readiness becomes available through supported setup, the verifier inspects the separate digest-image acquisition plan and answers exactly one matching image/endpoint/checksum prompt. Package installation or account-access prompts at that boundary are rejected without a reply. It then runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready, smoke cleanup to succeed, and the exact pending-release doctor envelope with exit 4. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
+If ordinary-user readiness becomes available through supported setup, the verifier inspects the separate digest-image acquisition plan and answers exactly one matching image/endpoint/checksum prompt. Package installation or account-access prompts at that boundary are rejected without a reply. It then runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready and smoke cleanup to succeed. Internal candidates retain the exact release-unverified Doctor envelope with exit 4. Ordinary packages require the admitted profile with Doctor exit 0, plus successful setup reprobes that preserve snapshots and grants. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
 
 The host requests QMP powerdown, then terminates and reaps only its owned QEMU child if needed. Owned temporary disks, seed and keys are removed after termination. The JSON report carries guest diagnostics and bounded serial output. There is no CI job or automatic infrastructure provisioning in this change.
 
@@ -204,8 +204,9 @@ this input path.
 selects one fixed, authenticated Resolute catalog. The default remains
 `ubuntu24-amd64`; arbitrary catalog paths, hashes and profiles are refused. The
 internal archive carries the exact source catalog bytes under a fixed filename.
-The ordinary packed package and its Ubuntu 24 qualification records remain
-unchanged. Ubuntu 26 has no ordinary admission or Doctor 0 shortcut.
+Selecting this internal catalog does not change ordinary qualification records
+or create a Doctor 0 shortcut. The separately reviewed ordinary Ubuntu 26 row
+and its completed verification are recorded below.
 
 The root NoCloud producer accepts only the source-owned Ubuntu 24 or 26 amd64
 target. Its default target is Ubuntu 24. Before creating the manifest, it checks
@@ -234,9 +235,11 @@ runtime labels separately from artifact authentication. Its scoped five-package
 maintainer-script digest differs from the historical six-profile digest, and
 both scopes are explicit. Portable artifact and command-protocol tests do not
 prove native installation or runtime behavior. Two full native Ubuntu 26 runs
-and their independent evidence reviews are complete; the proposed source entries
-record their exact installation and runtime tuple. Ordinary packed verification
-of those entries remains pending.
+and their independent evidence reviews are complete; source entries record their
+exact installation and runtime tuple. Ordinary packed verification passed twice
+at source `bb4f145a89b9c09b0e139cf19a215c8579006367`; the
+[artifact evidence](setup-artifact-evidence.md#ordinary-ubuntu-2604-packed-verification)
+records both reports and their scope.
 All existing setup grants, GC/idle, resource, isolation, physical deadline and
 owned disposal assertions remain required.
 

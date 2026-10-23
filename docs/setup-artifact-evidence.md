@@ -362,7 +362,7 @@ than an atomic guarantee against concurrent root administration.
 The internal Doctor results correctly retained exit 4 and release-unverified
 status; fixture PTY replies remain `humanConsentProof:false`. Source catalog
 entries now reference the second report for exact installer/readiness evidence.
-Ordinary packed verification of those entries remains pending. No other kernel,
+Ordinary packed verification of those entries is recorded below. No other kernel,
 architecture, Debian/Arch/Desktop target, real human consent, global performance
 gate or complete issue #24 acceptance is inferred.
 
@@ -383,6 +383,52 @@ stopped on an unrecognized SSH boot connection close before setup. Report
 reached host terminal validation, which still required Ubuntu 24's ordinary
 profile. The rejected final guest report was not retained; no completed ordinary
 proof can be reconstructed from that attempt. Both disposed of their owned VM
-and artifacts, with independent cleanup review. Correcting the host profile check
-requires a new source-pinned native execution; cleanup and later code changes do
-not promote either failed report.
+and artifacts, with independent cleanup review. The corrected host profile check
+was verified through the separate executions below; cleanup and later code
+changes do not promote either failed report.
+
+
+### Ordinary Ubuntu 26.04 packed verification
+
+Source `bb4f145a89b9c09b0e139cf19a215c8579006367` completed two fresh owned
+Ubuntu 26.04 x64 VM attempts with the source-built ordinary `fleur` package,
+Bun 1.4.3, the same frozen Resolute package set and authenticated recorded
+helpers. Native Intel HVF execution used CPU-host mode without fallback. The
+attempts took 287.47 and 256.17 seconds. Report SHA256 values:
+
+- `540482926dd0a1e5c32a9a78f4d44c97da289f77f380597f3e6d1d6e3271977a`
+- `37721c49c7658bd6ce427b1e5cf04ba78e7048727147f6baf440a0d891a2170d`
+
+Each independently installed all five exact packages, exercised the separate
+installation-side-effect, enrollment and image authority boundaries, refused two
+stale-login probes and resumed through a genuine fresh login. Both Doctor rounds
+and both ready setup reprobes returned exit 0 with the exact Ubuntu 26 profile
+and its existing reviewed evidence references. Smoke cleanup succeeded; package,
+service, repository, unrelated-container, context and grant preservation checks
+passed. Original root-attested OS and custody remained anchored across both
+connections and the runtime control proof.
+
+Each full restriction probe passed without changing its GC, idle, syscall,
+thread, CPU, memory, PID or lifecycle assertions. All eight physical exits met
+the original 250 ms bound: 31, 32, 30 and 81 ms in the first attempt; 59, 74, 68
+and 46 ms in the repeat. The four lifecycles per run retained 30-second deadlines
+and their original 10-second retirement bounds. Ordinary-user daemon metadata
+matched the exact kernel, component builds, cgroup mode and security options
+recorded above. All six probe resources were removed, the unrelated sentinel
+was cleaned up, and each owned VM, credentials, scratch and overlay were disposed
+of. Independent review confirmed exact scratch absence and outer process reaping.
+
+Separate source/origin/custody/authority/disposal and runtime/control reviews
+accepted both reports. All 23 verification-source hashes, 57 candidate provenance
+entries and 83 restriction Git blob identities matched the frozen source. Pure
+final-source restriction, thread and resource oracles passed; six altered runtime
+records and five altered ordinary-readiness records were rejected for each run.
+The private host wrapper returned diagnostic exit 4 only after these gates; the
+actual ordinary Doctor/setup calls returned 0. Global/performance qualification
+and real-human-consent flags remain false.
+
+The final source passed 974 CLI/CI tests with zero failures, types, both linters
+and the CLI build before native execution. These observations qualify only the
+recorded Ubuntu 26.04 x64 tuple. Fresh-login handoff is not proof of interrupted
+privileged-transaction recovery. Other platform installation/runtime paths and
+interrupted-setup recovery remain open under issue #24.

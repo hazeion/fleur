@@ -48,10 +48,12 @@ async function identity(): Promise<HostIdentity> {
   const native = machine();
   const translated = process.arch === "x64" ? native !== "x86_64" : process.arch === "arm64" ? !["arm64", "aarch64"].includes(native) : true;
   let machineId: string | undefined;
+  let bootId: string | undefined;
   if (process.platform === "linux") {
     try { const value = (await readFile("/etc/machine-id", "utf8")).trim(); if (/^[a-f0-9]{32}$/i.test(value)) machineId = Bun.CryptoHasher.hash("sha256", `linux:${value.toLowerCase()}`, "hex"); } catch { /* No remembered authority without stable machine identity. */ }
+    try { const value = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(); if (/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value)) bootId = value; } catch { /* No resumable privileged APT without original kernel boot identity. */ }
   }
-  return { system: process.platform, architecture: process.arch, translated, release: version, ...(distribution ? { distribution } : {}), ...(machineId ? { machineId } : {}) };
+  return { system: process.platform, architecture: process.arch, translated, release: version, ...(distribution ? { distribution } : {}), ...(machineId ? { machineId } : {}), ...(bootId ? { bootId } : {}) };
 }
 
 async function run(args: readonly string[], timeoutMs: number, context?: HostCommandContext): Promise<HostCommandResult> {

@@ -223,7 +223,7 @@ function ubuntuFixture(release: "24.04" | "26.04" = "24.04") {
   fixture.server.Components[0]!.Details.GitCommit = "b26fb77";
   const host: SetupHost = {
     ...fixture.host,
-    host: async () => ({ system: "linux", distribution: "ubuntu", architecture: "x64", translated: false, release, machineId: "c".repeat(64) }),
+    host: async () => ({ system: "linux", distribution: "ubuntu", architecture: "x64", translated: false, release, bootId: "11111111-1111-4111-8111-111111111111", machineId: "c".repeat(64) }),
     run: async (args, timeout, context) => args.join(" ") === "docker --version"
       ? { status: "completed", exitCode: 0, stdout: "Docker version 29.9.1, build dfc520d", stderr: "" }
       : fixture.host.run(args, timeout, context),
@@ -247,7 +247,7 @@ test("ordinary setup exposes the source-mapped Ubuntu plan but never installs wi
   try {
     const host: SetupHost = {
       stateDirectory: directory,
-      host: async () => ({ system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64", translated: false, machineId: "c".repeat(64) }),
+      host: async () => ({ system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64", translated: false, bootId: "11111111-1111-4111-8111-111111111111", machineId: "c".repeat(64) }),
       run: async (args) => {
         commands.push([...args]);
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
@@ -321,7 +321,7 @@ test.each(["x64", "arm64"])("ordinary Ubuntu 26 %s setup retains exact installer
   try {
     const host: SetupHost = {
       stateDirectory: directory,
-      host: async () => ({ system: "linux", distribution: "ubuntu", release: "26.04", architecture, translated: false, machineId: "c".repeat(64) }),
+      host: async () => ({ system: "linux", distribution: "ubuntu", release: "26.04", architecture, translated: false, bootId: "11111111-1111-4111-8111-111111111111", machineId: "c".repeat(64) }),
       run: async (args) => { commands.push([...args]); return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 1, stdout: "", stderr: "" }; },
     };
     const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
@@ -404,6 +404,59 @@ for (const distribution of ["ubuntu", "debian", "arch"] as const) {
         else expect(await readlink(path)).toBe("absent-record");
         expect(await readdir(directory)).toEqual([path.split("/").at(-1)!]);
       } finally { await rm(directory, { recursive: true, force: true }); }
+    });
+  }
+}
+
+function azureRunnerFixture(architecture: "x64" | "arm64") {
+  const fixture = desktopFixture();
+  const armImage = "oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023";
+  Object.assign(fixture.info, { ServerVersion: "28.0.4", KernelVersion: "6.17.0-1022-azure", Architecture: architecture === "x64" ? "x86_64" : "aarch64", CgroupDriver: "systemd", SecurityOptions: ["name=apparmor", "name=cgroupns", "name=seccomp,profile=builtin"] });
+  Object.assign(fixture.server, { Version: "28.0.4", GitCommit: "6430e49", KernelVersion: "6.17.0-1022-azure", Os: "linux", Arch: architecture === "x64" ? "amd64" : "arm64", Platform: { Name: "Docker Engine - Community" } });
+  Object.assign(fixture.server.Components[0]!, { Version: "28.0.4", Details: { GitCommit: "6430e49" } });
+  Object.assign(fixture.server.Components[1]!, { Version: "v2.4.1", Details: { GitCommit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" } });
+  const done = (stdout: string): HostCommandResult => ({ status: "completed", exitCode: 0, stdout, stderr: "" });
+  const host: SetupHost = {
+    ...fixture.host,
+    stateDirectory: `/tmp/fleur-absent-runner-state-${crypto.randomUUID()}`,
+    host: async () => ({ system: "linux", distribution: "ubuntu", architecture, translated: false, release: "24.04" }),
+    run: async (args, timeout, context) => {
+      if (args.join(" ") === "docker --version") return done("Docker version 28.0.4, build b8034c0");
+      if (args[3] === "compose") return done("2.38.2");
+      if (args[3] === "image" && architecture === "arm64") return done(JSON.stringify({ Id: "sha256:" + "b".repeat(64), RepoDigests: [armImage], Os: "linux", Architecture: "arm64" }));
+      return fixture.host.run(args, timeout, context);
+    },
+  };
+  return { ...fixture, host };
+}
+
+for (const architecture of ["x64", "arm64"] as const) {
+  for (const command of ["doctor", "setup"] as const) {
+    test(`ordinary ${command} recognizes the measured Ubuntu Azure ${architecture} readiness tuple without installing`, async () => {
+      const fixture = azureRunnerFixture(architecture);
+      const outcome = await runCli([command, "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+      expect(outcome.exitCode).toBe(0);
+      expect(outcome.result).toMatchObject({ command, ok: true, data: { components: { release: { state: "verified", profile: `ubuntu-24.04-${architecture}-docker-28.0.4-azure`, evidence: architecture === "arm64" ? { readinessSha256: "15db2e603e2cdfccd8549aa78bcc7a1bf53a22f962012449297460608d0332e9", isolationSha256: "17e7c7a80b9bff706368f2d19ac52538a20bee6725abaf902ab97220d33c7c48" } : { readinessSha256: "2c29e92c1eba819c44f33361b8ac5ba319ae9343dc9cba4e64973b304774c7fd", isolationSha256: "a3f687541d7438b370b8c2dcbf74d2cf8c2b7a248f385257b68d31c72eba9402" } }, smoke: { state: "ready", cleanup: true } } } });
+      expect(fixture.containers.size).toBe(0);
+      expect(fixture.commands.some((args) => ["apt-get", "sudo"].includes(args[0]!))).toBe(false);
+    });
+  }
+}
+
+for (const architecture of ["x64", "arm64"] as const) {
+  for (const change of ["kernel", "containerd", "rootless", "client"] as const) {
+    test(`the ${architecture} runner admission refuses neighboring ${change} metadata`, async () => {
+      const fixture = azureRunnerFixture(architecture);
+      const baseline = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+      expect(baseline.exitCode).toBe(0);
+      if (change === "kernel") { fixture.info.KernelVersion = "6.17.0-1023-azure"; fixture.server.KernelVersion = "6.17.0-1023-azure"; }
+      if (change === "containerd") fixture.server.Components[1]!.Details.GitCommit = "unmeasured-containerd-build";
+      if (change === "rootless") fixture.info.SecurityOptions.push("name=rootless");
+      const host: SetupHost = change === "client" ? { ...fixture.host, run: async (args, timeout, context) => args.join(" ") === "docker --version" ? { status: "completed", exitCode: 0, stdout: "Docker version 28.0.4, build b8034c1", stderr: "" } : fixture.host.run(args, timeout, context) } : fixture.host;
+      const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+      expect(outcome.exitCode).toBe(4);
+      expect(outcome.result).toMatchObject({ ok: false, data: { components: { release: { state: "unverified" }, smoke: { cleanup: true } } } });
+      expect(fixture.containers.size).toBe(0);
     });
   }
 }

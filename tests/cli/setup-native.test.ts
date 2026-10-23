@@ -7,7 +7,7 @@ import { setupCommands } from "../../src/setup/commands.ts";
 test("missing Docker exposes repository configuration separately from package installation", async () => {
   const calls: string[][] = [];
   const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands({
-    host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     run: async (args) => { calls.push([...args]); return { status: "missing", stdout: "", stderr: "" }; },
   }, []) });
   expect(outcome.exitCode).toBe(3);
@@ -27,7 +27,7 @@ test("verified apt installation requires separate service side-effect authority 
   try {
     const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands({
       stateDirectory: join(directory, "state"),
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args) => { calls.push([...args]); return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 1, stdout: "", stderr: "" }; },
     }, [{ method: "docker-official-apt", verified: true, distribution: "ubuntu", release: "24.04", architecture: "x64", repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages: { "docker-ce": "5:29.9.1-1~ubuntu.24.04~noble", "docker-ce-cli": "5:29.9.1-1~ubuntu.24.04~noble", "containerd.io": "2.4.2-2~ubuntu.24.04~noble", "docker-buildx-plugin": "0.33.0-1~ubuntu.24.04~noble", "docker-compose-plugin": "5.6.0-1~ubuntu.24.04~noble" }, artifacts: aptFixtureArtifacts({ "docker-ce": "5:29.9.1-1~ubuntu.24.04~noble", "docker-ce-cli": "5:29.9.1-1~ubuntu.24.04~noble", "containerd.io": "2.4.2-2~ubuntu.24.04~noble", "docker-buildx-plugin": "0.33.0-1~ubuntu.24.04~noble", "docker-compose-plugin": "5.6.0-1~ubuntu.24.04~noble" }) }]) });
     expect(outcome.exitCode).toBe(3);
@@ -50,7 +50,7 @@ test("authorized apt setup installs exact missing packages only after repository
     const outcome = await runCli(["setup"], { cwd: "/tmp", handlers: setupCommands({
       stateDirectory: join(directory, "state"), interactive: true,
       confirmHuman: async ({ action }) => { authorized.push(action); return "once"; },
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context) => {
         calls.push([...args]);
         const health = aptHealthProtocol(args, installed ? Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`) : []);
@@ -90,7 +90,7 @@ test("native setup preserves an existing conflicting package without requesting 
     const outcome = await runCli(["setup"], { cwd: "/tmp", handlers: setupCommands({
       stateDirectory: join(directory, "state"), interactive: true,
       confirmHuman: async () => { throw new Error("Conflicts cannot be authorized away"); },
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args) => {
         calls.push([...args]);
         return args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 0, stdout: "containerd.io\t1.0.0\tinstalled\tok\n", stderr: "" };
@@ -111,7 +111,7 @@ test("an explicit unknown native grant never opens a new human permission prompt
     const outcome = await runCli(["setup", "--grant", "00000000-0000-0000-0000-000000000000"], { cwd: "/tmp", handlers: setupCommands({
       stateDirectory: join(directory, "state"), interactive: true,
       confirmHuman: async () => { prompts++; return "once"; },
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args) => args[0] === "docker" ? { status: "missing", stdout: "", stderr: "" } : { status: "completed", exitCode: 1, stdout: "", stderr: "" },
     }, [{ method: "docker-official-apt", verified: true, distribution: "ubuntu", release: "24.04", architecture: "x64", repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages: { "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" }, artifacts: aptFixtureArtifacts({ "docker-ce": "1", "docker-ce-cli": "1", "containerd.io": "2", "docker-buildx-plugin": "1", "docker-compose-plugin": "1" }) }]) });
     expect(outcome.exitCode).toBe(3);
@@ -142,7 +142,7 @@ async function nativeReviewScenario(mode: "extra-key" | "extra-configuration" | 
       stateDirectory: directory,
       interactive: ["repo-create", "repo-race", "repo-update-failure"].includes(mode),
       confirmHuman: async ({ action }) => { expect(action).toBe("repository-configuration"); return "once"; },
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
         const health = aptHealthProtocol(args, installed ? Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`) : []);

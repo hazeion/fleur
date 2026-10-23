@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -127,7 +127,7 @@ esac
   });
 }
 
-async function completeNativeVerification(change: "none" | "daemon" | "server" | "capability") {
+async function completeNativeVerification(change: "none" | "daemon" | "server" | "capability", qualified = false) {
   const scratch = await mkdtemp(join(tmpdir(), "fleur-native-rounds-"));
   try {
     const report = join(scratch, "report.json");
@@ -153,7 +153,8 @@ else if (command === "info") {
   output = JSON.stringify({ ID: ${JSON.stringify(change)} === "daemon" && state.infoReads >= 3 ? "replacement-engine" : "original-engine", ServerVersion: "28.0.4", KernelVersion: "fixture-kernel", OSType: "linux", Architecture: process.arch === "arm64" ? "aarch64" : "x86_64", CgroupDriver: ${JSON.stringify(change)} === "capability" && state.infoReads >= 3 ? "cgroupfs" : "systemd", CgroupVersion: "2", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] });
 } else if (command === "version") {
   state.versionReads++;
-  output = JSON.stringify({ Server: { Version: "28.0.4", KernelVersion: "fixture-kernel", Os: "linux", Arch: process.arch === "arm64" ? "arm64" : "amd64", GitCommit: ${JSON.stringify(change)} === "server" && state.versionReads >= 2 ? "changed-build" : "6430e49" } });
+  const server = { Version: "28.0.4", KernelVersion: "fixture-kernel", Os: "linux", Arch: process.arch === "arm64" ? "arm64" : "amd64", GitCommit: ${JSON.stringify(change)} === "server" && state.versionReads >= 2 ? "changed-build" : "6430e49", Platform: { Name: "Docker Engine - Community" }, Components: [{ Name: "Engine", Version: "28.0.4", Details: { GitCommit: "6430e49" } }, { Name: "containerd", Version: "v2.4.1", Details: { GitCommit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" } }, { Name: "runc", Version: "1.5.2", Details: { GitCommit: "v1.5.2-0-g29dd3dc2" } }] };
+  output = JSON.stringify(args.at(-1) === "{{json .Server}}" ? server : { Server: server });
 } else if (command === "image") output = JSON.stringify(args.includes("--format") ? { Id: imageId, RepoDigests: [image], Os: "linux", Architecture: process.arch === "arm64" ? "arm64" : "amd64" } : [{ Id: imageId }]);
 else if (command === "ps") output = Object.keys(state.containers).join("\\n");
 else if (command === "create") {
@@ -170,7 +171,22 @@ writeFileSync(path, JSON.stringify(state));
 if (output === undefined) process.exit(97);
 process.stdout.write(output + (command === "start" ? "" : "\\n"));
 `, { mode: 0o700 });
-    const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/verify-native-setup.ts")], {
+    let verifier = resolve(import.meta.dir, "../../scripts/verify-native-setup.ts");
+    if (qualified) {
+      const repository = resolve(import.meta.dir, "../..");
+      const source = join(scratch, "trusted-fixture-build");
+      await mkdir(source);
+      for (const name of ["src", "bin", "docs"]) await cp(join(repository, name), join(source, name), { recursive: true });
+      await copyFile(join(repository, "package.json"), join(source, "package.json"));
+      await mkdir(join(source, "scripts"));
+      verifier = join(source, "scripts/verify-native-setup.ts");
+      await copyFile(join(repository, "scripts/verify-native-setup.ts"), verifier);
+      const native = await (await import("../../src/setup/host.ts")).productionHost().host();
+      // A trusted test-build catalog, never a public profile override or native evidence.
+      const profile = { id: "fixture-native-verified", host: { system: native.system, distribution: native.distribution ?? null, release: native.release, architecture: native.architecture }, bun: "1.4.3", cli: { version: "28.0.4", commit: "b8034c0" }, engine: { version: "28.0.4", commit: "6430e49", kernel: "fixture-kernel", platform: "Docker Engine - Community", cgroupDriver: "systemd", cgroupVersion: "2", operatingMode: "rootful", securityOptions: ["name=cgroupns", "name=seccomp,profile=builtin"] }, containerd: { version: "v2.4.1", commit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" }, runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" }, compose: "2.38.2", image: process.arch === "arm64" ? "oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023" : "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e", evidence: { readinessSha256: "1".repeat(64), isolationSha256: "2".repeat(64) } };
+      await writeFile(join(source, "src/setup/verified-readiness-profiles.ts"), `export const verifiedReadinessProfiles = ${JSON.stringify([profile])} as const;\n`);
+    }
+    const child = Bun.spawn([process.execPath, verifier], {
       env: { ...process.env, HOME: scratch, PATH: `${scratch}:/usr/bin:/bin:/usr/sbin:/sbin`, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined, FLEUR_EXISTING_DOCKER_ONLY: "yes", FLEUR_NATIVE_REPORT: report, FLEUR_TEST_STATE: state },
       stdin: "ignore", stdout: "ignore", stderr: "ignore", timeout: 25000,
     });
@@ -178,6 +194,15 @@ process.stdout.write(output + (command === "start" ? "" : "\\n"));
     return { exit, report: JSON.parse(await readFile(report, "utf8")), state: JSON.parse(await readFile(state, "utf8")) };
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
+
+test("native verifier accepts two ready rounds only when its trusted build already admits the exact tuple", async () => {
+  const result = await completeNativeVerification("none", true);
+  expect(result.exit, result.report.error).toBe(0);
+  expect(result.report).toMatchObject({ ok: true, verifiedReleaseProfile: true, installationVerified: false, sentinelCleanup: true });
+  expect(result.report.runs).toHaveLength(2);
+  for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", profile: "fixture-native-verified" }, smoke: { state: "ready", cleanup: true } } } });
+  expect(result.state.containers).toEqual({});
+}, 30000);
 
 test("native verification correlates both packed smoke rounds with an unchanged daemon and server build", async () => {
   const result = await completeNativeVerification("none");

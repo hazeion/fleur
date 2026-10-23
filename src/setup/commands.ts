@@ -14,6 +14,8 @@ export interface HostIdentity {
   readonly release: string;
   readonly distribution?: string;
   readonly machineId?: string;
+  /** Kernel boot UUID observed by the trusted host; unavailable identity cannot authorize APT. */
+  readonly bootId?: string;
 }
 export interface HostCommandResult {
   readonly status: "completed" | "missing" | "timeout";

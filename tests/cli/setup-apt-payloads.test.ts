@@ -11,6 +11,9 @@ const profile = { method: "docker-official-apt" as const, verified: true as cons
 
 type CacheFault = "bytes" | "symlink" | "hardlink" | "inode" | "root" | "extra" | "lock-inode" | "lock-bytes" | "partial-inode" | "partial-extra" | "auxfiles-inode" | "auxfiles-extra" | "mode" | "source-bytes";
 interface PayloadOptions {
+  readonly bootId?: string | null;
+  readonly inspectRecovery?: boolean;
+  readonly changeIdentityDuringConsent?: boolean;
   readonly cacheFault?: CacheFault;
   readonly cacheFaultAt?: "after-plan" | "hook" | "after-install";
   readonly cacheCollision?: boolean;
@@ -34,7 +37,7 @@ interface PayloadOptions {
   readonly inventoryTruncated?: boolean;
   readonly latePending?: boolean;
   readonly uncertain?: "timeout" | "truncated";
-  readonly durability?: "create" | "remove";
+  readonly durability?: "create" | "remove" | "stage";
 }
 async function payloadScenario(tamper: boolean, substituteAtHook = false, options: PayloadOptions = {}) {
   const selectedPackages = options.apt283Wire ? { ...packages, "docker-ce": "5:1~fixture+1" } : packages;
@@ -99,6 +102,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   let prompts = 0;
   let markerSeen = false;
   const calls: string[][] = [];
+  const hostIdentity = { system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64), bootId: options.bootId === null ? undefined : options.bootId ?? "11111111-1111-4111-8111-111111111111" };
   const simulation = (args: readonly string[]) => {
     const operations = Object.entries(selectedPackages).flatMap(([name, version]) => [`Inst ${name} (${version} Docker CE:noble [amd64])`, `Conf ${name} (${version} Docker CE:noble [amd64])`]).join("\n");
     if (!options.producerPolicy) return Object.entries(selectedPackages).map(([name, version]) => `Inst ${name} (${version} Docker:stable [amd64])`).join("\n");
@@ -120,8 +124,9 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
   const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, exitCode, stdout, stderr: "" });
   try {
     const handlers = setupCommands({
-      stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => { prompts++; return "once"; },
+      stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => { prompts++; if (options.changeIdentityDuringConsent) hostIdentity.bootId = "22222222-2222-4222-8222-222222222222"; return "once"; },
       ...(options.durability || (options.cacheFault && !options.cacheFaultAt) || (options.sourceTamper && !options.afterPlan) ? { syncDirectory: async (path: string) => {
+        if (options.durability === "stage" && path.startsWith(join(directory, "state", "apt-payloads-"))) throw Object.assign(new Error("Injected retained artifact directory fsync failure"), { code: "EIO" });
         let marker = false;
         try { await lstat(join(path, "apt-transaction-pending.json")); marker = true; } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
         if (marker && options.cacheFault && !options.cacheFaultAt) await mutateCache();
@@ -129,7 +134,7 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
         if (options.durability === "create" && marker) throw Object.assign(new Error("Injected pending fence fsync failure"), { code: "EIO" });
         if (options.durability === "remove") { if (marker) markerSeen = true; else if (markerSeen) throw Object.assign(new Error("Injected fence removal fsync failure"), { code: "EIO" }); }
       } } : {}),
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => hostIdentity,
       run: async (args, _timeout, context?: { readonly cwd?: string; readonly outputLimitBytes?: number }) => {
         calls.push([...args]);
         if (options.isolatedLocalSources && args[0] === "apt-get") {
@@ -233,9 +238,49 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
     const outcome = await runCli(["setup"], { cwd: directory, handlers });
     const retry = options.uncertain ? await runCli(["setup"], { cwd: directory, handlers }) : undefined;
     const authorityAfterResolution = options.uncertainResolution ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
-    return { outcome, guardResults, cacheMutated, cacheForeignBytes: cacheForeign ? await readFile(cacheForeign, "utf8") : undefined, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")) };
+    const pending = options.inspectRecovery ? JSON.parse(await readFile(join(directory, "state", "apt-transaction-pending.json"), "utf8")) : undefined;
+    const recoveryGrants = options.inspectRecovery ? await runCli(["setup", "grants", "list", "--json"], { cwd: directory, handlers }) : undefined;
+    return { outcome, pending, recoveryGrants, guardResults, cacheMutated, cacheForeignBytes: cacheForeign ? await readFile(cacheForeign, "utf8") : undefined, retry, authorityAfterResolution, sourceMutated, actualForeignBytes: actualForeignPath ? await readFile(actualForeignPath, "utf8") : undefined, controlReads, collisionBytes: collisionPath ? await readFile(collisionPath, "utf8") : undefined, sentinel: sourceMutated ? await readFile(sentinel, "utf8") : undefined, privilegedInstalls, calls, prompts, entries: await readdir(join(directory, "state")).catch((error: { code?: string }) => { if (error.code === "ENOENT") return []; throw error; }) };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
+test("interrupted APT setup retains original boot, scoped authority and owned artifact identities", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", inspectRecovery: true });
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.pending).toMatchObject({ formatVersion: 2, action: "install", method: "docker-official-apt", bootId: "11111111-1111-4111-8111-111111111111", machine: "a".repeat(64), user: process.getuid!(), checksum: Bun.CryptoHasher.hash("sha256", JSON.stringify(profile), "hex") });
+  expect(result.pending.operationId).toMatch(/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/);
+  expect(result.pending.artifacts.root).toMatch(/^apt-payloads-[A-Za-z0-9]+$/);
+  expect(result.pending.artifacts.entries.length).toBeGreaterThan(15);
+  expect(result.pending.artifacts.entries.find((entry: { path: string }) => entry.path === "apt-plan.json")).toMatchObject({ directory: false, mode: 0o600, size: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/), dev: expect.stringMatching(/^[0-9]+$/), ino: expect.stringMatching(/^[0-9]+$/) });
+  const grants = (result.recoveryGrants!.result.data as { grants: { id: string; revoked: boolean }[] }).grants;
+  expect(grants).toHaveLength(5);
+  expect(grants.every((grant) => grant.revoked)).toBe(true);
+  expect(result.pending.authority.map((grant: { id: string }) => grant.id).sort()).toEqual(grants.map((grant) => grant.id).sort());
+});
+
+test.each([null, "not-a-kernel-boot-id"])("APT setup without a verified original boot refuses before authority or package work: %s", async (bootId) => {
+  const result = await payloadScenario(false, false, { bootId });
+  expect(result.outcome.exitCode).toBe(3);
+  expect(result.outcome.result.error?.code).toBe("HUMAN_ACTION_REQUIRED");
+  expect(result.prompts).toBe(0);
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => ["apt-get", "sudo"].includes(args[0]!))).toBe(false);
+  expect(result.entries).toEqual([]);
+});
+
+test("retained artifact durability failure prevents every privileged APT command", async () => {
+  const result = await payloadScenario(false, false, { durability: "stage" });
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.outcome.result.error?.code).toBe("RECOVERY_REQUIRED");
+  expect(result.privilegedInstalls).toBe(0);
+  expect(result.calls.some((args) => args[0] === "sudo")).toBe(false);
+  expect(result.entries.some((name) => name.startsWith("apt-payloads-"))).toBe(true);
+});
+
+test("APT recovery custody keeps the original host observation across asynchronous consent", async () => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", inspectRecovery: true, changeIdentityDuringConsent: true });
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.pending.bootId).toBe("11111111-1111-4111-8111-111111111111");
+});
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
   const result = await payloadScenario(true);
   expect(result.privilegedInstalls).toBe(0);

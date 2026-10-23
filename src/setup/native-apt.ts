@@ -38,13 +38,15 @@ function exactSimulation(stdout: string, packages: Readonly<Record<string, strin
   return installed.size === Object.keys(packages).length;
 }
 
-export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
+export async function setupNativeApt(input: CommandInput, host: SetupHost, observedIdentity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
+  const identity = Object.freeze({ ...observedIdentity });
   if (!validAptProfile(profile)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
   if (!identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 3, {
     code: "HUMAN_ACTION_REQUIRED",
     message: "Setup cannot bind human grants to a stable machine identity. No installation plan was authorized.",
     actions: [{ command: "fleur doctor", description: "Inspect host identity and complete the documented official setup manually if identity cannot be verified." }],
   }, { plan: { method: profile.method, verified: false, reason: "Stable machine identity is unavailable." }, grantsCreated: false, resumable: true });
+  if (!identity.bootId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(identity.bootId)) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "Setup cannot verify the original kernel boot identity. No native package action was authorized.", actions: [{ command: "fleur doctor", description: "Inspect native prerequisites; restore kernel boot identity access before assisted installation." }] }, { grantsCreated: false, resumable: true });
   const requiredAuthorities = ["install", "configuration", "docker-access", "service-start", "service-enable"] as const;
   const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify(profile), "hex");
   const target = `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`;
@@ -135,9 +137,10 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         const once = new Set(covered.filter((grant) => grant?.mode === "once").map((grant) => grant!.id));
         const privilegedLeases = covered.map((grant) => once.has(grant!.id) ? { ...grant!, revoked: true } : grant!);
         await writeGrants(host, grants.map((grant) => once.has(grant.id) ? { ...grant, revoked: true } : grant));
+        const recovery = { formatVersion: 2, operationId: crypto.randomUUID(), action: "install", method: profile.method, machine: identity.machineId, user: process.getuid!(), bootId: identity.bootId, checksum, target, authority: [acquisitionLease!, ...privilegedLeases], artifacts: await stage.recoveryManifest(remaining, host.syncDirectory) };
         const fence = await open(pendingPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
         retain = true;
-        try { await fence.writeFile(JSON.stringify({ formatVersion: 1, checksum })); await fence.sync(); } finally { await fence.close(); }
+        try { await fence.writeFile(JSON.stringify(recovery)); await fence.sync(); } finally { await fence.close(); }
         await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
         const clearFence = async (terminalInstall = false) => { await stage.finishArchiveCache(remaining, terminalInstall); await unlink(pendingPath); await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host)); retain = false; };
         await stage.verifyLocalSources(remaining);

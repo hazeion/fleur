@@ -12,7 +12,7 @@ async function fixture26(release: "24.04" | "26.04" = "26.04") {
   const activeProfile = release === "26.04" ? profile : { ...catalog24.profile, artifacts: Object.fromEntries(catalog24.artifacts.map(({ name, version, url, sha256, size }) => [name, { name, version, url, sha256, size, architecture: "amd64" }])) } as unknown as AptInstallProfile;
   const fixture = await aptAccessFixture();
   const original = fixture.host.run;
-  fixture.host.host = async () => ({ system: "linux", architecture: "x64", translated: false, distribution: "ubuntu", release, machineId: "a".repeat(64) });
+  fixture.host.host = async () => ({ system: "linux", architecture: "x64", translated: false, distribution: "ubuntu", release, bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) });
   fixture.host.run = async (args): Promise<HostCommandResult> => {
     if (args[0] === "docker" && args.includes("info") && !fixture.state.active) { fixture.calls.push([...args]); return { status: "completed", exitCode: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" }; }
     const done = (stdout = ""): HostCommandResult => ({ status: "completed", exitCode: 0, stdout, stderr: "" });

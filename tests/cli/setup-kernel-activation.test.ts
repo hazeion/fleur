@@ -15,7 +15,7 @@ async function kernelScenario(options: KernelScenarioOptions = {}) {
   const tape = options.tape ?? await diagnosticTape(); const calls: string[][] = []; const channels: ReturnType<typeof kernelTape>[] = []; const timeouts: number[] = [];
   const done = (stdout: string, exitCode = 0, stderr = ""): HostCommandResult => ({ status: "completed", exitCode, stdout, stderr });
   const host = {
-    host: async () => ({ system: "linux", architecture: "x64", translated: false, distribution: "ubuntu", release: "24.04", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false, distribution: "ubuntu", release: "24.04", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     unixSocketSnapshot: async (timeout: number) => {
       const { collectUnixSocketSnapshot } = await import("../../src/setup/unix-diag.ts");
       const channel = kernelTape(channels.length && options.second ? options.second : tape.datagrams); channels.push(channel);

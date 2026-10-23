@@ -120,6 +120,16 @@ remain blocking evidence. This check preserves pending state, grants and private
 artifacts; it does not reconcile an interrupted transaction. Legacy records lack
 the boot and artifact identity needed for safe automatic recovery.
 
+New APT package actions require an observed kernel boot UUID before requesting
+authority. Their format-2 pending record preserves the original host observation,
+operation and profile identity, historical grant records, and an inventory of the
+owned installer files and directories. Device/inode values retain their full
+precision; files include their verified digest and size. Stage files and
+directories are synced before the pending record and its parent directory, and
+all of that precedes privileged APT. A durability failure prevents launch and
+retains the private evidence. This supplies recovery custody, not a completed
+reconciliation path; both legacy and unresolved format-2 records still block.
+
 ### Frozen APT payload gate
 
 A source-owned APT profile now requires exact artifact URL, package/version,

@@ -221,6 +221,45 @@ metadata cannot fill fields missing from an older report.
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.
 
+## Ubuntu 24.04 Azure runner readiness, 2026-10-23
+
+The existing GitHub ARM64 and x64 runners completed native readiness observations
+and the full bounded runtime probe at source `31e5680304dec5af6963232a665caa606f8f9c58`.
+GitHub tested merge `a85405dc483607ffa36b66d89f21dcd96592516c`; its tree equals that
+source tree. The [native workflow](https://github.com/hazeion/fleur/actions/runs/40026921944)
+passed both platforms. The [compatibility run](https://github.com/hazeion/fleur/actions/runs/40026921954)
+completed both runtime jobs successfully before a later test-fixture fix
+superseded the aggregate run. A cancelled aggregate is not a passing workflow.
+
+Both tuples use Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bun 1.4.3,
+CLI `28.0.4/b8034c0`, Engine `28.0.4/6430e49`, containerd
+`v2.4.1/f2551031d7276a770f65f98c9b52e57e7dad07e8`, runc
+`1.5.2/v1.5.2-0-g29dd3dc2`, and Compose 2.38.2. Native reports record systemd
+cgroup v2, rootful operation, `name=apparmor`, `name=cgroupns`, builtin seccomp,
+and all required resource capability flags. Each preserved its context and
+inventory across two packed smoke rounds and retired its unchanged sentinel.
+Those historical Doctor rounds returned exit 4 with unverified release state.
+
+| Architecture | Native readiness report SHA256 | Runtime report SHA256 |
+|---|---|---|
+| ARM64 | `15db2e603e2cdfccd8549aa78bcc7a1bf53a22f962012449297460608d0332e9` | `17e7c7a80b9bff706368f2d19ac52538a20bee6725abaf902ab97220d33c7c48` |
+| x64 | `2c29e92c1eba819c44f33361b8ac5ba319ae9343dc9cba4e64973b304774c7fd` | `a3f687541d7438b370b8c2dcbf74d2cf8c2b7a248f385257b68d31c72eba9402` |
+
+Independent review accepted both source-bound runtime reports using the strict
+restriction, thread and resource oracles, measured GC, idle and worker lifecycle
+evidence, host control, retirement and cleanup. Physical exit lateness was
+71/61/29/37 ms on ARM64 and 43/15/32/32 ms on x64, below the original 250 ms limit.
+Four negative report mutations per architecture were rejected. The metadata and
+runtime jobs establish matching tuples across separate hosts, not one shared
+daemon instance.
+
+The compiled readiness catalog maps these exact observations to separate ARM64
+and x64 entries. Ordinary Doctor/setup fixture tests require their own evidence
+references and reject neighboring kernel, client, containerd and rootless values.
+Fresh native verification of the admitted Doctor responses remains pending.
+No Docker installation, package upgrade, interrupted-setup recovery, human
+consent or broader platform qualification follows from these runner reports.
+
 
 ## Owned guest boot custody stage
 

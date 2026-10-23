@@ -35,7 +35,7 @@ async function realCollectorInventory(rows: number) {
     await writeFile(driver, `import { productionHost } from ${JSON.stringify(resolve(import.meta.dir, "../../src/setup/host.ts"))};
 import { setupCommands } from ${JSON.stringify(resolve(import.meta.dir, "../../src/setup/commands.ts"))};
 import { runCli } from ${JSON.stringify(resolve(import.meta.dir, "../../src/cli/main.ts"))};
-const host={...productionHost(),stateDirectory:${JSON.stringify(join(directory, "state"))},interactive:true,confirmHuman:async()=>"once" as const,host:async()=>({system:"linux",architecture:"x64",translated:false,release:"24.04",distribution:"ubuntu",machineId:"a".repeat(64)})};
+const host={...productionHost(),stateDirectory:${JSON.stringify(join(directory, "state"))},interactive:true,confirmHuman:async()=>"once" as const,host:async()=>({system:"linux",architecture:"x64",translated:false,release:"24.04",distribution:"ubuntu",bootId: "11111111-1111-4111-8111-111111111111", machineId:"a".repeat(64)})};
 const outcome=await runCli(["setup"],{cwd:${JSON.stringify(directory)},handlers:setupCommands(host,[${JSON.stringify(profile)} as const])});
 process.stdout.write(JSON.stringify({outcome,uriReached:await Bun.file(${JSON.stringify(marker)}).exists()}));\n`);
     // The CLI retains its default60s operation deadline. The owner outlives it,

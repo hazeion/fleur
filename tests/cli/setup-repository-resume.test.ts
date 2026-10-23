@@ -21,7 +21,7 @@ test("setup resumes a failed repository refresh with fresh authority without cop
     const handlers = setupCommands({
       stateDirectory: directory, interactive: true,
       confirmHuman: async ({ action }) => { if (action === "repository-configuration") repositoryPrompts++; return "once"; },
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context) => {
         const path = args.at(-1)!;
         const health = aptHealthProtocol(args, installed ? Object.entries(packages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`) : []);

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { smokeImages } from "../src/setup/profiles.ts";
 import { productionHost } from "../src/setup/host.ts";
-import { sameReadinessDaemon } from "../src/setup/readiness.ts";
+import { matchReadinessServer, nativeReadinessProfiles, readinessCandidates, sameReadinessDaemon } from "../src/setup/readiness.ts";
 
 // Legacy disposable Linux verification may acquire the exact smoke image.
 // Explicit existing-only mode also supports native macOS and never pulls images.
@@ -28,11 +28,9 @@ async function run(args: string[], expected = 0): Promise<string> {
 try {
   if (!existingOnly && process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") throw new Error("Explicit FLEUR_OWNED_DISPOSABLE_HOST=yes opt-in required before Docker access.");
   if ((!existingOnly && process.platform !== "linux") || !["linux", "darwin"].includes(process.platform) || !["x64", "arm64"].includes(process.arch)) throw new Error(existingOnly ? "Native macOS or Linux amd64/arm64 host required." : "Native Linux amd64/arm64 runner required.");
-  if (existingOnly) {
-    const native = await productionHost().host();
-    if (native.translated !== false) throw new Error("Existing Docker verification requires verified native execution.");
-    observations.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
-  }
+  const native = await productionHost().host();
+  if (native.translated !== false) throw new Error("Native verification requires verified native execution.");
+  observations.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
   process.chdir(repository);
   const beforeContext = await run(["docker", "context", "show"]);
   const ambientHost = process.env.DOCKER_HOST;
@@ -91,6 +89,9 @@ try {
   observations.image = imageMetadata;
   const imageId = imageMetadata[0]?.Id;
   if (typeof imageId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new Error("Pinned image inspection did not supply a full image identity.");
+  const cli = await run(["docker", "--version"]);
+  observations.cli = cli.trim();
+  const admitted = matchReadinessServer(readinessCandidates(nativeReadinessProfiles, native, Bun.version, cli, String(observations.compose), image, originalDaemon), native, originalServer);
   const inventory = async () => (await docker("ps", "--all", "--quiet", "--no-trunc")).trim().split("\n").sort().join("\n");
   const originalInventory = await inventory();
   const nonce = crypto.randomUUID();
@@ -121,12 +122,16 @@ try {
   await run(["tar", "-xzf", archive, "-C", scratch]);
   const runs: unknown[] = [];
   for (let pass = 0; pass < 2; pass++) {
-    // A successful disposable smoke is evidence, not permission to silently
-    // promote this unknown runner's tool versions to a supported release profile.
-    const result = JSON.parse(await run([process.execPath, join(scratch, "package", "bin", "fleur.ts"), "doctor", "--json", "--timeout", "60"], 4));
+    // Only the reviewed build catalog can require verified readiness. Unknown
+    // observations remain unverified even after a successful disposable smoke.
+    const result = JSON.parse(await run([process.execPath, join(scratch, "package", "bin", "fleur.ts"), "doctor", "--json", "--timeout", "60"], admitted ? 0 : 4));
     runs.push(result);
     observations.runs = runs;
-    if (result.formatVersion !== 1 || result.command !== "doctor" || result.ok !== false || result.truncated !== false || result.error?.code !== "PREREQUISITE_UNAVAILABLE" || result.data?.components?.release?.state !== "unverified" || result.data?.components?.smoke?.state !== "ready" || result.data?.components?.smoke?.cleanup !== true || result.data?.components?.daemon?.state !== "ready" || result.data?.components?.compose?.state !== "ready") throw new Error("Packed doctor did not prove native smoke readiness with honest unverified profile status.");
+    const release = result.data?.components?.release;
+    const releaseMatches = admitted
+      ? result.ok === true && result.error === null && release?.state === "verified" && release.profile === admitted.id && release.evidence?.readinessSha256 === admitted.evidence.readinessSha256 && release.evidence?.isolationSha256 === admitted.evidence.isolationSha256
+      : result.ok === false && result.error?.code === "PREREQUISITE_UNAVAILABLE" && release?.state === "unverified";
+    if (result.formatVersion !== 1 || result.command !== "doctor" || !releaseMatches || result.truncated !== false || result.data?.components?.smoke?.state !== "ready" || result.data?.components?.smoke?.cleanup !== true || result.data?.components?.daemon?.state !== "ready" || result.data?.components?.compose?.state !== "ready") throw new Error("Packed doctor did not prove native smoke readiness with the expected source-owned release status.");
     const after = (await docker("ps", "--all", "--quiet", "--no-trunc")).trim().split("\n").sort().join("\n");
     if (before !== after || beforeContext !== await originalContext()) throw new Error("Doctor changed global context or altered container inventory.");
     if (await sentinelSnapshot() !== sentinelBefore) throw new Error("Doctor altered the unrelated stopped container state or configuration.");
@@ -135,6 +140,7 @@ try {
     if (!sameReadinessDaemon(originalDaemon, currentDaemon) || JSON.stringify(currentVersion.Server) !== JSON.stringify((observations.docker as { Server?: unknown }).Server)) throw new Error("Native daemon identity or server build changed during verification.");
     observations.sentinel = { id: sentinelId, image: imageId, state: "created", unchangedRounds: pass + 1 };
   }
+  if (admitted) observations.releaseProfile = { id: admitted.id, evidence: { ...admitted.evidence } };
   observations.ok = true;
 } catch (error) {
   observations.ok = false;
@@ -145,6 +151,7 @@ try {
     try { await cleanupSentinel(); }
     catch (error) { observations.ok = false; observations.sentinelCleanup = false; observations.cleanupError = error instanceof Error ? error.message : "Owned sentinel cleanup failed"; process.exitCode = 1; }
   }
+  observations.verifiedReleaseProfile = observations.ok === true && observations.releaseProfile !== undefined;
   await writeFile(output, `${JSON.stringify(observations, null, 2)}\n`);
   await rm(scratch, { recursive: true, force: true });
 }

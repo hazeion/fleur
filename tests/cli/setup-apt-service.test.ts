@@ -6,7 +6,7 @@ for (const distribution of ["ubuntu", "debian"] as const) test(`${distribution} 
   const calls: string[][] = [];
   const done = (stdout = "", exitCode = 0): HostCommandResult => ({ status: "completed", exitCode, stdout, stderr: "" });
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({
-    host: async () => ({ system: "linux", architecture: "x64", translated: false, distribution, release: distribution === "ubuntu" ? "24.04" : "13", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false, distribution, release: distribution === "ubuntu" ? "24.04" : "13", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     run: async (args) => {
       calls.push([...args]);
       if (args[0] === "docker") {
@@ -89,7 +89,7 @@ async function aptServiceFixture() {
   const host = {
     stateDirectory: join(root, "state"), interactive: true,
     confirmHuman: async ({ action }: { action: string }) => { prompts.push(action); return "once" as const; },
-    host: async () => ({ system: "linux", architecture: "x64", translated: false as const, distribution: "ubuntu", release: "24.04", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false as const, distribution: "ubuntu", release: "24.04", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     run: async (args: readonly string[]): Promise<HostCommandResult> => {
       calls.push([...args]);
       if (args[0] === "docker") {

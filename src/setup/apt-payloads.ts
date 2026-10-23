@@ -1,12 +1,25 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, opendir, readdir, rmdir, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import type { AptInstallProfile, AptPackageName } from "./native.ts";
 import type { HostCommandContext, HostCommandResult, SetupHost } from "./commands.ts";
+import { syncStateDirectory } from "./lock.ts";
 
 export class AptPayloadUnavailable extends Error {}
 export class AptPayloadRecovery extends Error {}
 interface Identity { readonly dev: bigint; readonly ino: bigint; readonly directory: boolean; readonly sha256?: string; readonly size?: number }
+export interface AptRetainedEntry {
+  readonly path: string;
+  readonly dev: string;
+  readonly ino: string;
+  readonly directory: boolean;
+  readonly uid: number;
+  readonly mode: number;
+  readonly auxiliary: boolean;
+  readonly size?: number;
+  readonly sha256?: string;
+}
+export interface AptRetainedArtifacts { readonly root: string; readonly entries: readonly AptRetainedEntry[] }
 /** Exact owned temporary entries; unknown or replaced content is retained, never recursively deleted. */
 export class AptPayloadStage {
   readonly paths: string[] = [];
@@ -192,6 +205,25 @@ export class AptPayloadStage {
     await this.unchanged(this.root);
     if (((await lstat(this.root, { bigint: true })).mode & 0o7777n) !== 0o700n) throw new AptPayloadRecovery("Private archive stage mode changed");
     await this.verifyEntries(remaining);
+  }
+  /** Persist exact identities before privileged execution; names alone never grant later ownership. */
+  async recoveryManifest(remaining: () => number, syncDirectory: (directory: string) => Promise<void> = syncStateDirectory): Promise<AptRetainedArtifacts> {
+    await this.verifyArchiveCache(remaining);
+    const entries: AptRetainedEntry[] = [];
+    for (const [path, identity] of [...this.entries].reverse()) {
+      if (remaining() <= 0) throw new AptPayloadRecovery("The artifact durability deadline expired");
+      await this.unchanged(path);
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (identity.directory ? constants.O_DIRECTORY : 0));
+      try {
+        const info = await file.stat({ bigint: true });
+        if (info.dev !== identity.dev || info.ino !== identity.ino || info.uid !== BigInt(process.getuid!()) || (identity.directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1n)) throw new AptPayloadRecovery("Artifact identity changed before recovery publication");
+        try { if (identity.directory) await syncDirectory(path); else await file.sync(); }
+        catch { throw new AptPayloadRecovery("Private artifact durability could not be confirmed"); }
+        entries.push({ path: relative(this.root, path) || ".", dev: String(info.dev), ino: String(info.ino), directory: identity.directory, uid: Number(info.uid), mode: Number(info.mode & 0o7777n), auxiliary: this.cacheNodes.get(path)?.auxiliary === true, ...(!identity.directory ? { size: identity.size!, sha256: identity.sha256! } : {}) });
+      } finally { await file.close(); }
+    }
+    await this.verifyArchiveCache(remaining);
+    return { root: basename(this.root), entries: entries.sort((left, right) => left.path.localeCompare(right.path)) };
   }
   async finishArchiveCache(remaining: () => number, terminalInstall: boolean): Promise<void> {
     await this.unchanged(this.root);

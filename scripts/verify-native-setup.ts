@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { smokeImages } from "../src/setup/profiles.ts";
 import { productionHost } from "../src/setup/host.ts";
+import { sameReadinessDaemon } from "../src/setup/readiness.ts";
 
 // Legacy disposable Linux verification may acquire the exact smoke image.
 // Explicit existing-only mode also supports native macOS and never pulls images.
@@ -42,7 +43,18 @@ try {
   if (typeof endpoint !== "string" || !endpoint.startsWith("unix:///") || endpoint.length <= 8 || /[?#]/.test(endpoint) || [...endpoint].some((character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) || endpoint.length > 4096 || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(endpoint)) throw new Error("Only an existing local Unix Docker endpoint is allowed; no image acquired.");
   delete process.env.DOCKER_CONTEXT;
   process.env.DOCKER_HOST = endpoint;
-  const docker = (...args: string[]) => run(["docker", "--host", endpoint, ...args]);
+  const localEndpoint = endpoint;
+  const docker = (...args: string[]) => run(["docker", "--host", localEndpoint, ...args]);
+  async function daemonSnapshot(): Promise<Record<string, unknown>> {
+    const result = await productionHost().run(["docker", "--host", localEndpoint, "info", "--format", "{{json .}}"], 120000);
+    if (result.status !== "completed" || result.exitCode !== 0 || result.terminationUnconfirmed) throw new Error("Native daemon capability metadata is unavailable or unsupported.");
+    let value: unknown;
+    try { value = JSON.parse(result.stdout); } catch { throw new Error("Native daemon capability metadata is unavailable or unsupported."); }
+    if (!sameReadinessDaemon(value, value)) throw new Error("Native daemon capability metadata is unavailable or unsupported.");
+    const info = value as Record<string, unknown>;
+    const keys = ["ID", "ServerVersion", "KernelVersion", "OSType", "Architecture", "CgroupDriver", "CgroupVersion", "MemoryLimit", "PidsLimit", "CpuCfsPeriod", "CpuCfsQuota"];
+    return { ...Object.fromEntries(keys.map((key) => [key, info[key]])), SecurityOptions: [...info.SecurityOptions as string[]].sort() };
+  }
   async function originalContext(): Promise<string> {
     if (ambientHost === undefined) delete process.env.DOCKER_HOST; else process.env.DOCKER_HOST = ambientHost;
     if (ambientContext === undefined) delete process.env.DOCKER_CONTEXT; else process.env.DOCKER_CONTEXT = ambientContext;
@@ -54,6 +66,12 @@ try {
   observations.kernel = (await run(["uname", process.platform === "darwin" ? "-srm" : "-srmo"])).trim();
   observations.docker = JSON.parse(await docker("version", "--format", "{{json .}}"));
   observations.compose = (await docker("compose", "version", "--short")).trim();
+  const originalDaemon = await daemonSnapshot();
+  observations.daemon = originalDaemon;
+  const originalServer = (observations.docker as { Server?: Record<string, unknown> } | null)?.Server;
+  const serverArchitecture = ["amd64", "x86_64"].includes(String(originalDaemon.Architecture)) ? "amd64"
+    : ["arm64", "aarch64"].includes(String(originalDaemon.Architecture)) ? "arm64" : undefined;
+  if (!originalServer || originalServer.Version !== originalDaemon.ServerVersion || originalServer.KernelVersion !== originalDaemon.KernelVersion || originalServer.Os !== "linux" || !serverArchitecture || originalServer.Arch !== serverArchitecture) throw new Error("Native daemon metadata and server build identity disagree.");
   const image = smokeImages[process.arch];
   if (!image) throw new Error("No exact smoke image for architecture.");
   let imageBody: string;
@@ -112,6 +130,9 @@ try {
     const after = (await docker("ps", "--all", "--quiet", "--no-trunc")).trim().split("\n").sort().join("\n");
     if (before !== after || beforeContext !== await originalContext()) throw new Error("Doctor changed global context or altered container inventory.");
     if (await sentinelSnapshot() !== sentinelBefore) throw new Error("Doctor altered the unrelated stopped container state or configuration.");
+    const currentDaemon = await daemonSnapshot();
+    const currentVersion = JSON.parse(await docker("version", "--format", "{{json .}}"));
+    if (!sameReadinessDaemon(originalDaemon, currentDaemon) || JSON.stringify(currentVersion.Server) !== JSON.stringify((observations.docker as { Server?: unknown }).Server)) throw new Error("Native daemon identity or server build changed during verification.");
     observations.sentinel = { id: sentinelId, image: imageId, state: "created", unchangedRounds: pass + 1 };
   }
   observations.ok = true;

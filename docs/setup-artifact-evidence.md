@@ -204,6 +204,19 @@ Both doctor results honestly retained exit 4 and release state unverified. This 
 
 Repeating the existing-only verifier against ordinary-catalog candidate `37513637b2c6b7e264edfcc36cd02181fc859c1d` produced report `1b5e9ee287d063a0e4d5f48fa325d87280755f0a90ac863eb4b49ad66586d21e`. Both packed rounds again completed smoke cleanup and retained unverified release state. The verifier acquired no image, preserved the stopped sentinel and restored the original container inventory and context. Its wrapper completed in 13.78 seconds without timeout. This confirms that the Ubuntu candidate does not qualify the observed Desktop tuple.
 
+## Existing-runner daemon observations
+
+The native setup verifier records an allowlist of daemon identity, kernel,
+architecture, cgroup driver/version, security options and resource capabilities
+from its own run. It checks version, kernel and architecture against that run's
+server build response and rechecks daemon identity and server builds after each
+packed smoke round. Info command and parse failures use fixed diagnostics rather
+than copying raw daemon output. Proxy settings and labels are excluded.
+
+These observations support reviewing exact runner tuples. They do not qualify
+installation, interrupt recovery or a release profile by themselves, and new
+metadata cannot fill fields missing from an older report.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.

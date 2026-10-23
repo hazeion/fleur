@@ -41,6 +41,19 @@ async function protectedRecord(path: string, remaining: () => number) {
   } catch (error) { await file.close(); throw error; }
 }
 
+function historicalAuthority(value: unknown, profile: AptInstallProfile, identity: HostIdentity, checksum: string, target: string): readonly Grant[] {
+  const actions = ["install", "configuration", "docker-access", "service-start", "service-enable"];
+  requireState(Array.isArray(value) && value.length === actions.length);
+  const seen = new Set<string>(); const seenIds = new Set<string>();
+  return value.map((raw) => {
+    const lease = object(raw); keys(lease, "id,action,method,target,planChecksum,machine,user,mode,revoked");
+    requireState(typeof lease.id === "string" && uuid.test(lease.id) && typeof lease.action === "string" && actions.includes(lease.action) && !seen.has(lease.action) && !seenIds.has(lease.id));
+    requireState(lease.method === profile.method && lease.target === target && lease.planChecksum === checksum && lease.machine === identity.machineId && lease.user === process.getuid!() && (lease.mode === "once" || lease.mode === "remembered") && typeof lease.revoked === "boolean" && (lease.mode !== "once" || lease.revoked));
+    seen.add(lease.action); seenIds.add(lease.id);
+    return lease as unknown as Grant;
+  });
+}
+
 interface Entry { path: string; dev: string; ino: string; directory: boolean; uid: number; mode: number; auxiliary: boolean; size?: number; sha256?: string }
 function manifest(value: unknown, profile: AptInstallProfile): { root: string; entries: Entry[] } {
   const record = object(value); keys(record, "root,entries");
@@ -121,24 +134,31 @@ async function publishReceipt(directory: string, name: string, bytes: string, sy
 
 /** Caller receives permission only to reprobe current readiness, never to replay installation. */
 export async function reconcileApt(host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number): Promise<void> {
-  await withSetupLock(stateDirectory(host), async () => {
-    requireState(validAptProfile(profile) && identity.system === "linux" && identity.translated === false && identity.machineId && sha.test(identity.machineId) && identity.bootId && uuid.test(identity.bootId));
-    const directory = stateDirectory(host); const pendingPath = join(directory, "apt-transaction-pending.json");
-    const pending = await protectedRecord(pendingPath, remaining);
-    try {
+  requireState(validAptProfile(profile) && identity.system === "linux" && identity.translated === false && identity.machineId && sha.test(identity.machineId) && identity.bootId && uuid.test(identity.bootId));
+  const directory = stateDirectory(host); const pendingPath = join(directory, "apt-transaction-pending.json");
+  // Invalid and same-boot evidence remains a read-only refusal, even when no
+  // setup lock exists yet. Every eligible record is read and validated again
+  // under the normal lock; this preflight never authorizes a state transition.
+  const preflight = await protectedRecord(pendingPath, remaining);
+  try {
+    const record = preflight.value;
+    keys(record, "formatVersion,operationId,action,method,machine,user,bootId,checksum,target,authority,artifacts");
+    const checksum = hash(JSON.stringify(profile));
+    requireState(record.formatVersion === 2 && typeof record.operationId === "string" && uuid.test(record.operationId) && record.action === "install" && record.method === profile.method && record.machine === identity.machineId && record.user === process.getuid!() && typeof record.bootId === "string" && uuid.test(record.bootId) && record.bootId !== identity.bootId && record.checksum === checksum && record.target === `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`);
+    manifest(record.artifacts, profile);
+    historicalAuthority(record.authority, profile, identity, checksum, `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`);
+    await preflight.unchanged();
+    await withSetupLock(directory, async () => {
+      const pending = preflight;
+      await pending.unchanged();
       const record = pending.value; keys(record, "formatVersion,operationId,action,method,machine,user,bootId,checksum,target,authority,artifacts");
       const checksum = hash(JSON.stringify(profile)); const target = `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`;
       requireState(record.formatVersion === 2 && typeof record.operationId === "string" && uuid.test(record.operationId) && record.action === "install" && record.method === profile.method && record.machine === identity.machineId && record.user === process.getuid!() && typeof record.bootId === "string" && uuid.test(record.bootId) && record.bootId !== identity.bootId && record.checksum === checksum && record.target === target);
-      const actions = ["install", "configuration", "docker-access", "service-start", "service-enable"];
-      requireState(Array.isArray(record.authority) && record.authority.length === actions.length);
-      const grants = await readGrants(host); const seen = new Set<string>(); const seenIds = new Set<string>();
-      for (const raw of record.authority) {
-        const lease = object(raw); keys(lease, "id,action,method,target,planChecksum,machine,user,mode,revoked");
-        requireState(typeof lease.id === "string" && uuid.test(lease.id) && typeof lease.action === "string" && actions.includes(lease.action) && !seen.has(lease.action) && !seenIds.has(lease.id));
-        requireState(lease.method === profile.method && lease.target === target && lease.planChecksum === checksum && lease.machine === identity.machineId && lease.user === process.getuid!() && ["once", "remembered"].includes(String(lease.mode)) && typeof lease.revoked === "boolean" && (lease.mode !== "once" || lease.revoked));
+      const leases = historicalAuthority(record.authority, profile, identity, checksum, target);
+      const grants = await readGrants(host);
+      for (const lease of leases) {
         const grant = grants.find((candidate) => candidate.id === lease.id);
         requireState(grant && Object.entries(lease).every(([key, value]) => key === "revoked" ? !value || grant.revoked : grant[key as keyof Grant] === value));
-        seen.add(lease.action); seenIds.add(lease.id);
       }
       const artifacts = manifest(record.artifacts, profile);
       const currentHealth = async () => {
@@ -178,6 +198,6 @@ export async function reconcileApt(host: SetupHost, identity: HostIdentity, prof
       requireState(remaining() > 0);
       await unlink(pendingPath);
       await (host.syncDirectory ?? syncStateDirectory)(directory);
-    } finally { await pending.close(); }
-  }, host.syncDirectory);
+    }, host.syncDirectory);
+  } finally { await preflight.close(); }
 }

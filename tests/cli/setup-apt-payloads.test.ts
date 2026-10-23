@@ -1,6 +1,6 @@
 import { observeAptLocks } from "../../src/setup/apt-locks.ts";
 import { expect, test } from "bun:test";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/main.ts";
 import { setupCommands, type HostCommandResult } from "../../src/setup/commands.ts";
@@ -16,7 +16,7 @@ interface PayloadOptions {
   readonly inspectRecovery?: boolean;
   readonly changeIdentityDuringConsent?: boolean;
   readonly reboot?: boolean;
-  readonly recoveryFault?: "machine" | "user" | "checksum" | "legacy" | "unknown-field" | "missing-boot" | "partial" | "unrelated" | "busy" | "unknown-locks" | "uncertain-inventory" | "global-reference" | "config-unavailable" | "extra-artifact" | "changed-artifact" | "replaced-artifact" | "foreign-receipt";
+  readonly recoveryFault?: "machine" | "user" | "checksum" | "legacy" | "unknown-field" | "missing-boot" | "partial" | "unrelated" | "busy" | "unknown-locks" | "uncertain-inventory" | "global-reference" | "config-unavailable" | "extra-artifact" | "changed-artifact" | "replaced-artifact" | "foreign-receipt" | "authority-null" | "authority-malformed" | "authority-array" | "authority-duplicate";
   readonly recoveryCrash?: "receipt" | "retirement" | "receipt-retry";
   readonly recoveryRetry?: boolean;
   readonly recoveryDeadline?: boolean;
@@ -291,15 +291,20 @@ async function payloadScenario(tamper: boolean, substituteAtHook = false, option
       recovering = true;
       const fault = options.recoveryFault;
       if (fault === "missing-boot") hostIdentity.bootId = undefined;
-      if (["machine", "user", "checksum", "legacy", "unknown-field"].includes(fault ?? "")) {
+      if (["machine", "user", "checksum", "legacy", "unknown-field", "authority-null", "authority-malformed", "authority-array", "authority-duplicate"].includes(fault ?? "")) {
         const changed = { ...pending };
         if (fault === "machine") changed.machine = "b".repeat(64);
         if (fault === "user") changed.user = process.getuid!() + 1;
         if (fault === "checksum") changed.checksum = "b".repeat(64);
         if (fault === "legacy") changed.formatVersion = 1;
         if (fault === "unknown-field") changed.unreviewed = true;
+        if (fault === "authority-null") changed.authority = null;
+        if (fault === "authority-array") changed.authority = [{ ...changed.authority[0], mode: ["once"] }, ...changed.authority.slice(1)];
+        if (fault === "authority-malformed") changed.authority = [{ ...changed.authority[0], mode: "automatic" }, ...changed.authority.slice(1)];
+        if (fault === "authority-duplicate") changed.authority = [changed.authority[0], changed.authority[0], ...changed.authority.slice(2)];
         await writeFile(join(directory, "state", "apt-transaction-pending.json"), JSON.stringify(changed));
       }
+      if (fault?.startsWith("authority-")) await unlink(join(directory, "state", "setup.lock"));
       const evidence = join(directory, "state", pending.artifacts.root);
       if (fault === "extra-artifact") await writeFile(join(evidence, "foreign-child"), "preserve foreign evidence");
       if (fault === "changed-artifact") await writeFile(join(evidence, "local-only.conf"), "preserve changed evidence");
@@ -423,6 +428,16 @@ test.each([
   expect(result.entries.some((entry) => entry === "apt-transaction-pending.json")).toBe(expected === 5);
   expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
   expect(result.preservation!.calls.some((args) => ["sudo", "apt-get", "dpkg-deb"].includes(args[0]!))).toBe(false);
+});
+test.each(["authority-null", "authority-malformed", "authority-array", "authority-duplicate"] as const)("malformed historical authority is a read-only refusal before setup lock creation: %s", async (recoveryFault) => {
+  const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, recoveryFault });
+  expect(result.resumed?.exitCode).toBe(5);
+  expect(result.entries).not.toContain("setup.lock");
+  expect(result.entries).toContain("apt-transaction-pending.json");
+  expect(result.preservation!.calls).toEqual([]);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
 });
 test("a same-version signed-repository package with different payload bytes is rejected before privileged installation", async () => {
   const result = await payloadScenario(true);

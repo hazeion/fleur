@@ -420,7 +420,7 @@ test.each([
 ] as const)("public reboot recovery interprets Linux kernel lock evidence: %s", async (_name, kernelLocks, expected) => {
   const result = await payloadScenario(false, false, { uncertain: "timeout", reboot: true, kernelLocks });
   expect(result.resumed?.exitCode).toBe(expected);
-  expect(result.entries.includes("apt-transaction-pending.json")).toBe(expected === 5);
+  expect(result.entries.some((entry) => entry === "apt-transaction-pending.json")).toBe(expected === 5);
   expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
   expect(result.preservation!.calls.some((args) => ["sudo", "apt-get", "dpkg-deb"].includes(args[0]!))).toBe(false);
 });

@@ -45,6 +45,14 @@ do not require only a conditionally skipped platform job. Existing platform job
 names remain unchanged. No assertion, deadline, architecture, repeat count,
 resource limit, isolation or cleanup check is removed.
 
+## Action runtimes
+
+GitHub JavaScript actions use Node 24 internally, with immutable commit pins.
+The current checkout and artifact-upload pins declare `runs.using: node24`;
+GitHub-hosted runners supply that action runtime. Fleur and its verification
+commands continue to use the pinned Bun runtime. Keep checkout credentials
+unpersisted and routine artifact retention at seven days when updating actions.
+
 ## Cost controls and rollout
 
 Superseded PR runs are cancelled only within the same workflow and PR. Every main

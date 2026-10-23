@@ -112,6 +112,14 @@ recovery. Further setup cannot create new grants while that transaction remains
 indeterminate. Native verification must still establish privileged child cleanup
 before this adapter can be admitted as supported.
 
+Doctor and setup check retained APT transaction records on Ubuntu and Debian,
+and Arch transaction records on Arch, before running host commands. An existing
+or unreadable record returns `RECOVERY_REQUIRED` with exit 5 even if Docker
+would otherwise be ready. Malformed records, directories and dangling symlinks
+remain blocking evidence. This check preserves pending state, grants and private
+artifacts; it does not reconcile an interrupted transaction. Legacy records lack
+the boot and artifact identity needed for safe automatic recovery.
+
 ### Frozen APT payload gate
 
 A source-owned APT profile now requires exact artifact URL, package/version,

@@ -337,3 +337,73 @@ test.each(["x64", "arm64"])("ordinary Ubuntu 26 %s setup retains exact installer
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+for (const command of ["doctor", "setup"] as const) {
+  test(`an unresolved package transaction blocks otherwise-ready ${command} without RPC or new authority`, async () => {
+    const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const directory = await mkdtemp("/tmp/fleur-pending-ready-");
+    const fixture = ubuntuFixture();
+    const calls: string[][] = [];
+    let confirmations = 0;
+    const host: SetupHost = {
+      ...fixture.host, stateDirectory: directory, interactive: true,
+      confirmHuman: async () => { confirmations++; return "once"; },
+      run: async (args, timeout, context) => { calls.push([...args]); return fixture.host.run(args, timeout, context); },
+    };
+    try {
+      const grants = '{"formatVersion":1,"grants":[]}\n';
+      await writeFile(join(directory, "grants.json"), grants, { mode: 0o600 });
+      await writeFile(join(directory, "retained-artifact"), "preserve this evidence", { mode: 0o600 });
+      const baseline = await runCli(["doctor", "--json"], { cwd: directory, handlers: setupCommands(host) });
+      expect(baseline.exitCode).toBe(0);
+      calls.length = 0;
+      const marker = JSON.stringify({ formatVersion: 1, checksum: "d".repeat(64) }) + "\n";
+      await writeFile(join(directory, "apt-transaction-pending.json"), marker, { mode: 0o600 });
+      const outcome = await runCli([command, "--json"], { cwd: directory, handlers: setupCommands(host) });
+      expect(outcome.exitCode).toBe(5);
+      expect(outcome.result).toMatchObject({ command, ok: false, error: { code: "RECOVERY_REQUIRED" } });
+      expect(calls).toEqual([]);
+      expect(confirmations).toBe(0);
+      expect(fixture.containers.size).toBe(0);
+      expect(await readFile(join(directory, "apt-transaction-pending.json"), "utf8")).toBe(marker);
+      expect(await readFile(join(directory, "grants.json"), "utf8")).toBe(grants);
+      expect(await readFile(join(directory, "retained-artifact"), "utf8")).toBe("preserve this evidence");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
+for (const distribution of ["ubuntu", "debian", "arch"] as const) {
+  for (const shape of ["malformed", "directory", "dangling-symlink"] as const) {
+    test(`${distribution} preserves ${shape} package-pending state before any host command`, async () => {
+      const { mkdtemp, mkdir, lstat, readFile, readlink, readdir, rm, symlink, writeFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const directory = await mkdtemp("/tmp/fleur-unsafe-package-pending-");
+      const path = join(directory, distribution === "arch" ? "arch-transaction-pending.json" : "apt-transaction-pending.json");
+      let calls = 0;
+      const host: SetupHost = {
+        stateDirectory: directory,
+        host: async () => ({ system: "linux", distribution, release: distribution === "ubuntu" ? "24.04" : distribution === "debian" ? "13" : "rolling", architecture: "x64", translated: false }),
+        run: async () => { calls++; throw new Error("Pending state must prevent host commands"); },
+      };
+      try {
+        if (shape === "malformed") await writeFile(path, "incomplete record", { mode: 0o600 });
+        else if (shape === "directory") await mkdir(path);
+        else await symlink("absent-record", path);
+        const original = await lstat(path);
+        for (const command of ["doctor", "setup"]) {
+          const outcome = await runCli([command, "--json"], { cwd: directory, handlers: setupCommands(host) });
+          expect(outcome.exitCode).toBe(5);
+          expect(outcome.result).toMatchObject({ command, error: { code: "RECOVERY_REQUIRED" } });
+        }
+        expect(calls).toBe(0);
+        const retained = await lstat(path);
+        expect([retained.dev, retained.ino, retained.mode]).toEqual([original.dev, original.ino, original.mode]);
+        if (shape === "malformed") expect(await readFile(path, "utf8")).toBe("incomplete record");
+        else if (shape === "directory") expect(await readdir(path)).toEqual([]);
+        else expect(await readlink(path)).toBe("absent-record");
+        expect(await readdir(directory)).toEqual([path.split("/").at(-1)!]);
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    });
+  }
+}

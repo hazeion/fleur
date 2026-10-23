@@ -17,6 +17,11 @@ import uuid
 import weakref
 import owned_mounts
 
+CLEANUP_FAILURE_STAGES = (
+    'stop-request', 'supervisor-wait', 'natural-drain', 'forced-retirement',
+    'forced-reap', 'normal-proof', 'default-daemon', 'root-removal', 'deadline',
+)
+
 def owned_mount_count(contents, root):
     """Count kernel mount points only in the exact fresh data/exec trees."""
     if type(contents) is not str or len(contents.encode('utf-8'))>1048576:
@@ -535,6 +540,7 @@ def isolated_vfs_daemon(lifetime=540):
         output = b''
         observations=endpoint.cleanup_observations
         observations['empty_inspection']='unavailable'
+        retirement_stage='stop-request'
         try:
             if endpoint.facts:
                 try:
@@ -553,15 +559,38 @@ def isolated_vfs_daemon(lifetime=540):
                         process.stdin.write(b'stop\n'); process.stdin.flush(); process.stdin.close(); process.stdin = None
                     except (BrokenPipeError, OSError):
                         pass
+                retirement_stage='supervisor-wait'
                 try:
                     output, _ = process.communicate(timeout=max(.1, cleanup_deadline-time.monotonic()-5))
                 except subprocess.TimeoutExpired:
-                    independently_retired=_retire_supervisor(endpoint, cleanup_deadline-time.monotonic())
-                    process.wait(timeout=max(.1,min(2,cleanup_deadline-time.monotonic()-2)))
-                    # Group death alone is insufficient: the helper independently
-                    # proves owned task/shim absence and exact mount/root removal.
-                    if not independently_retired:raise IsolatedDaemonError('owned daemon forced retirement')
-                    endpoint.forced_probe_verified=True
+                    def collect_natural_completion():
+                        nonlocal retirement_stage
+                        retirement_stage='natural-drain'
+                        remaining=cleanup_deadline-time.monotonic()
+                        if remaining<=0:raise IsolatedDaemonError('owned retirement budget expired')
+                        observations['natural_completion_after_timeout']=True
+                        # Reap and drain the original Popen, not a numeric PID.
+                        # Exit alone cannot establish the exact normal receipt.
+                        return process.communicate(timeout=min(2,remaining))[0]
+                    if process.poll() is not None:
+                        output=collect_natural_completion()
+                    else:
+                        try:
+                            retirement_stage='forced-retirement'
+                            independently_retired=_retire_supervisor(endpoint, cleanup_deadline-time.monotonic())
+                        except (OSError, subprocess.SubprocessError, ValueError, IsolatedDaemonError):
+                            # The original supervisor can finish between poll and
+                            # the helper's identity check. Never signal a retired PID.
+                            if process.poll() is None:raise
+                            output=collect_natural_completion()
+                        else:
+                            retirement_stage='forced-reap'
+                            process.wait(timeout=max(.1,min(2,cleanup_deadline-time.monotonic()-2)))
+                            # Group death alone is insufficient: forced retirement
+                            # still requires independent task/shim/mount/root proof.
+                            if not independently_retired:raise IsolatedDaemonError('owned daemon forced retirement')
+                            endpoint.forced_probe_verified=True
+                retirement_stage='normal-proof'
                 observations.update(daemon_returncode=process.returncode,daemon_stdout_bytes=len(output),
                     owned_process_reaped=process.poll() is not None)
                 if not endpoint.forced_probe_verified:
@@ -570,7 +599,10 @@ def isolated_vfs_daemon(lifetime=540):
                 endpoint.cleanup_verified = (retired and process.poll() is not None
                                               and not (root/'data').exists() and not (root/'exec').exists()
                                               and not (root/'docker.pid').exists() and not (root/'docker.sock').exists())
+                if not endpoint.cleanup_verified:
+                    observations['cleanup_failure_stage']=retirement_stage
         except (OSError, subprocess.SubprocessError, ValueError, IsolatedDaemonError) as retirement_error:
+            observations['cleanup_failure_stage']=retirement_stage
             observations['cleanup_exception']='timeout' if isinstance(retirement_error,subprocess.TimeoutExpired) else 'unverified'
             endpoint.cleanup_verified = False
         finally:
@@ -582,6 +614,8 @@ def isolated_vfs_daemon(lifetime=540):
             observations.update(data_root_removed=not (root/'data').exists(),exec_root_removed=not (root/'exec').exists(),
                 daemon_pidfile_removed=not (root/'docker.pid').exists(),daemon_socket_removed=not (root/'docker.sock').exists(),
                 cleanup_deadline_exceeded=time.monotonic()>=cleanup_deadline)
+            if not unchanged:observations.setdefault('cleanup_failure_stage','default-daemon')
+            if observations['cleanup_deadline_exceeded']:observations.setdefault('cleanup_failure_stage','deadline')
             endpoint.facts['default_daemon_unchanged'] = unchanged
             endpoint.cleanup_verified = endpoint.cleanup_verified and unchanged and time.monotonic() < cleanup_deadline
             if process is not None:
@@ -591,6 +625,7 @@ def isolated_vfs_daemon(lifetime=540):
             if endpoint.cleanup_verified:
                 try:endpoint.remove_root()
                 except (OSError,ValueError,IsolatedDaemonError):
+                    observations['cleanup_failure_stage']='root-removal'
                     endpoint.cleanup_verified=False
             if not endpoint.cleanup_verified:
                 cleanup_error = IsolatedDaemonError('owned daemon cleanup unverified')

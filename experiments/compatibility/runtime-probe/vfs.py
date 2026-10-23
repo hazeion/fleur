@@ -76,6 +76,7 @@ def execute_probe(architecture, environment, timeout):
 def cleanup_diagnostics(endpoint):
     """Project only fixed typed host-manager facts, never arbitrary exception text."""
     import owned_mounts
+    from isolated_daemon import CLEANUP_FAILURE_STAGES
     result={}
     cleanup=getattr(endpoint,'cleanup_observations',{})
     if type(cleanup) is dict:
@@ -86,10 +87,11 @@ def cleanup_diagnostics(endpoint):
         for key in ('empty_inspection_returncode','daemon_returncode'):
             value=cleanup.get(key)
             if type(value) is int and -255<=value<=255:safe[key]=value
-        for key in ('owned_process_reaped','data_root_removed','exec_root_removed','daemon_pidfile_removed','daemon_socket_removed','cleanup_deadline_exceeded'):
+        for key in ('owned_process_reaped','data_root_removed','exec_root_removed','daemon_pidfile_removed','daemon_socket_removed','cleanup_deadline_exceeded','natural_completion_after_timeout'):
             if type(cleanup.get(key)) is bool:safe[key]=cleanup[key]
         if cleanup.get('empty_inspection') in ('unavailable','empty','nonempty','failed','timeout'):safe['empty_inspection']=cleanup['empty_inspection']
         if cleanup.get('cleanup_exception') in ('timeout','unverified'):safe['cleanup_exception']=cleanup['cleanup_exception']
+        if cleanup.get('cleanup_failure_stage') in CLEANUP_FAILURE_STAGES:safe['cleanup_failure_stage']=cleanup['cleanup_failure_stage']
         result['daemon_cleanup_observations']=safe
     for attribute,label in [('retirement_facts','daemon_retirement_observations'),('capture_facts','daemon_capture_observations')]:
         facts=getattr(endpoint,attribute,None)

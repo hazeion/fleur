@@ -302,3 +302,16 @@ startup observations require it to be active when declared, using an explicit
 `--` before its name. Startup includes the declared prerequisite in its plan and
 checksum and rejects declaration changes after authorization. No mount operation
 is authorized; arbitrary mount dependencies remain refused.
+
+For the internal Ubuntu 26.04 APT candidate, service/access provenance also accepts
+Ubuntu's default sudo-rs alternatives layout. It requires the exact root-owned
+`/usr/bin/sudo` → `/etc/alternatives/sudo` → `/usr/lib/cargo/bin/sudo` chain,
+protected canonical provider directories, a root-owned single-link setuid target,
+installed `sudo-rs` package ownership and clean package verification. The same
+checks cover all path ancestors and run again after human confirmation. They do
+not provide an atomic guarantee against concurrent changes by another root
+administrator. Unknown aliases and altered providers
+require manual action; Fleur never changes the selected provider. Existing
+regular-file sudo checks remain in place for other reviewed layouts. This is
+command-fixture coverage, not Ubuntu 26.04 native admission. Ubuntu documents the
+provider choice in its [user-management guide](https://ubuntu.com/server/docs/how-to/security/user-management/).

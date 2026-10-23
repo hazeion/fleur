@@ -6,6 +6,8 @@ This developer-only builder prepares one separately identified installation cand
 bun scripts/build-native-candidate.ts --out "$FLEUR_INTERNAL_ARTIFACTS"
 ```
 
+The builder uses the selected Bun runtime to decode its owned gzip archive before invoking absolute `/usr/bin/tar` on uncompressed bytes. It does not resolve a gzip executable through the caller PATH or require Node.
+
 The output directory must be new and outside the source repository; its existing parent is resolved before this check. The builder refuses existing paths and accepts no profile or catalog argument. It opens the approved parent without following a final symlink, validates its descriptor identity against the ancestor inventory, then creates and opens the fixed output basename relative to that descriptor. Replacing an ancestor with a symlink does not redirect initial creation through that symlink. Existing unknown nodes are never overwritten or removed. It retains the newly created output directory descriptor and checks directory/ancestor identities before and after publication. Publication uses exclusive descriptor-relative hard links and no-follow descriptor readback; staging and output must share a filesystem. If needed, choose an owned `TMPDIR` on the output filesystem. Cross-filesystem publication fails instead of falling back to path-based writes. Changed output paths are left untouched; failed builds may retain files in their original owned directory for inspection and never report success for a replacement. It performs no download, package installation, grant creation, key import, service action or VM launch. Packing ignores package lifecycle scripts. The caller gets:
 
 - `fleur-ordinary.tgz`: the actual ordinary packed source, unchanged.

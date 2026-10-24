@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      desktop_runtime_images:
+        description: Prepare source-bound Intel Desktop qualification images on disposable native Linux; no runtime admission
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
 # Retire superseded PR work; retain every main-branch verification run.
@@ -62,7 +67,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             architecture: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation) && matrix.architecture == 'x86_64' && 40 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images) && matrix.architecture == 'x86_64' && 40 || 10 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
         with:
@@ -106,6 +111,10 @@ jobs:
           FLEUR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
           FLEUR_PINNED_BUN: ${{ runner.temp }}/fleur-native-bun/bun
         run: python3 -I scripts/qualify-debian-kvm.py --run > "$RUNNER_TEMP/fleur-arch-kvm-boot.json"
+      - name: Prepare native Desktop runtime image inputs
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runtime_images && matrix.architecture == 'x86_64' }}
+        timeout-minutes: 20
+        run: python3 experiments/compatibility/desktop-runtime/export_images.py --output "$RUNNER_TEMP/fleur-desktop-images"
       - name: Preserve native observations
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; Node 24
@@ -117,6 +126,7 @@ jobs:
             ${{ runner.temp }}/fleur-debian13-kvm.json
             ${{ runner.temp }}/fleur-arch-kvm-boot.json
             ${{ runner.temp }}/fleur-native-setup.json
+            ${{ runner.temp }}/fleur-desktop-images/
             ${{ runner.temp }}/fleur-virtualization-user.json
             ${{ runner.temp }}/fleur-virtualization-root.json
           if-no-files-found: error

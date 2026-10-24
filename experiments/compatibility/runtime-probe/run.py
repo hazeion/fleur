@@ -2,6 +2,7 @@
 """Disposable native amd64/arm64 Linux experiment. Exit 0 accepts only bounded evidence."""
 import argparse
 from contextlib import contextmanager
+from dataclasses import dataclass
 import math
 import os
 import stat
@@ -31,6 +32,29 @@ from daemon_trace import capture_daemon_trace
 HERE = Path(__file__).resolve().parent
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
           'expected_bun': '1.4.3', 'expected_gcc': '13.3.0'}
+
+@dataclass(frozen=True)
+class PreparedRuntimeImage:
+    """Internal immutable preparation evidence, never a runtime admission flag."""
+    image_id: str
+    architecture: str
+    base_image: str
+    helper_sha256: str
+    abuse_sha256: str
+    sources: tuple
+
+    def verify(self, report):
+        import re
+        def digest(value):return type(value) is str and re.fullmatch('[a-f0-9]{64}',value) is not None
+        if (type(self) is not PreparedRuntimeImage or type(self.image_id) is not str
+                or not re.fullmatch('sha256:[a-f0-9]{64}',self.image_id)
+                or self.architecture!=report.get('architecture') or self.base_image!=report.get('base_image')
+                or not digest(self.helper_sha256) or not digest(self.abuse_sha256)
+                or self.helper_sha256!=report.get('helper_sha256') or self.abuse_sha256!=report.get('abuse_sha256')
+                or type(self.sources) is not tuple or not self.sources
+                or self.sources!=tuple(sorted(report.get('source_sha256',{}).items()))):
+            raise RuntimeError('prepared image differs from native compiler/helper/source evidence')
+        return {'image_id':self.image_id,'source_verified':True,'native_helpers_recompiled':True}
 
 
 def command(args, timeout=30, cwd=None):
@@ -204,11 +228,12 @@ def recorded_probe_context(report, absolute_deadline):
 
 
 
-def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False, *, owned_guest_nonce=None, owned_guest_boot_id=None, owned_guest_uid=None, owned_guest_manifest_sha256=None, owned_guest_deadline=None, recorded_helper_artifacts=None):
+def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=False, kernel_private_network=False, idle_runtime_stress=False, *, owned_guest_nonce=None, owned_guest_boot_id=None, owned_guest_uid=None, owned_guest_manifest_sha256=None, owned_guest_deadline=None, recorded_helper_artifacts=None, owner_registration=None, prepared_image_export=None, deadline_factory=None, prepared_image=None, owned_cleanup=None):
     recorded = recorded_helper_artifacts is not None
     REPORT.pop('helper_origin', None)
     REPORT.pop('helper_artifact_context', None)
     REPORT.pop('helper_origin_verified', None)
+    REPORT.pop('prepared_runtime_image', None)
     tag = 'fleur-runtime-probe-' + str(time.time_ns())
     container = tag + '-run'
     result_code = 1
@@ -234,6 +259,10 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
         if recorded_helper_artifacts is not None and (type(recorded_helper_artifacts) is not str or not recorded_helper_artifacts or '\x00' in recorded_helper_artifacts or host_context is None or kernel_private_network):
             raise ValueError('recorded helpers require original owned guest context')
         if type(idle_runtime_stress) is not bool:raise ValueError('idle runtime stress flag invalid')
+        if prepared_image is not None and (type(prepared_image) is not PreparedRuntimeImage or recorded or kernel_private_network or prepared_image_export is not None):
+            raise ValueError('explicit typed prepared native image without mixed preparation required')
+        if prepared_image is not None and not all(callable(value) for value in (owner_registration,deadline_factory,owned_cleanup)):
+            raise ValueError('prepared image requires external ownership, independent deadline and owned cleanup adapters')
         REPORT['idle_runtime_stress']=idle_runtime_stress
         if trusted_build_network not in (None,'host'): raise ValueError('trusted build network invalid')
         if kernel_private_network:
@@ -334,13 +363,25 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 revalidate_recorded_helpers(context, staged_helpers, host_context.deadline)
                 directory.seal(staged_helpers)
                 directory.revalidate()
-            build_started = True
-            command(['docker', 'build', *(['--network=host'] if trusted_build_network == 'host' else []), '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
-            build_finished = True
-            REPORT['image_architecture'] = command(['docker','image','inspect',tag,'--format','{{.Architecture}}'])
+            if prepared_image is None:
+                build_started = True
+                command(['docker', 'build', *(['--network=host'] if trusted_build_network == 'host' else []), '--platform', 'linux/' + architecture, '-t', tag, str(context)], timeout=240)
+                build_finished = True
+                image_reference=tag
+            else:
+                REPORT['prepared_runtime_image']=prepared_image.verify(REPORT)
+                image_reference=prepared_image.image_id
+            REPORT['image_architecture'] = command(['docker','image','inspect',image_reference,'--format','{{.Architecture}}'])
             if REPORT['image_architecture'] != architecture:
                 raise RuntimeError('built Docker image architecture differs from native runner')
-            REPORT['image_id'] = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'])
+            REPORT['image_id'] = command(['docker', 'image', 'inspect', image_reference, '--format', '{{.Id}}'])
+            if prepared_image is not None and REPORT['image_id']!=prepared_image.image_id:
+                raise RuntimeError('prepared immutable image changed')
+            if prepared_image_export is not None:
+                prepared_image_export(REPORT['image_id'], REPORT)
+                raise RuntimeError('preparation export must stop before runtime execution')
+            if owner_registration is not None:
+                owner_registration(tag, REPORT['image_id'])
             run_started = True
             def audited_worker(name,owner,inventory):
                 configuration = inspect_worker_configuration(name,owner,REPORT['image_id'],kernel_private=kernel_private_network)
@@ -396,7 +437,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     from kernel_docker import run_resource
                     abuse=run_resource(creator,resource_name,tag,REPORT['image_id'],mode,worker_environment)
                 else:
-                    abuse = subprocess.run(['docker', 'run', '--name', resource_name,
+                    abuse = subprocess.run(['docker', 'run', '--name', resource_name, '--label', OWNER_LABEL+'='+tag,
                         '--network=none', '--read-only', '--cap-drop=ALL',
                         '--security-opt=no-new-privileges', '--security-opt=seccomp=unconfined',
                         '--cpus=1', '--memory=512m', '--memory-swap=512m', '--pids-limit=64',
@@ -435,7 +476,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
             REPORT['restricted_worker_lifecycle'] = run_lifecycle(
                 REPORT['image_id'],tag,architecture,worker_environment,audited_worker,timeout=30,containerd_control=control,host_binding=host_binding,
                 create_worker=(lambda name,busy,remaining:creator.create_worker(name,tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
-                aggregate_preparation_budget=creator is not None,
+                aggregate_preparation_budget=creator is not None, deadline_factory=deadline_factory,
                 inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
             if idle_runtime_stress:
                 idle_tag=tag+'-idle'
@@ -443,7 +484,7 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                     REPORT['image_id'],idle_tag,architecture,worker_environment,audited_worker,timeout=30,
                     containerd_control=control,host_binding=host_binding,broker_ack_delay=11,
                     create_worker=(lambda name,busy,remaining:creator.create_worker(name,idle_tag,REPORT['image_id'],'busy' if busy else 'render',remaining)) if creator is not None else None,
-                    aggregate_preparation_budget=creator is not None,
+                    aggregate_preparation_budget=creator is not None, deadline_factory=deadline_factory,
                     inspect_worker_state=(lambda cid,remaining:read_owned_container_state(state_endpoint,cid,timeout=remaining)) if state_endpoint is not None and creator is None else None)
             negative_name = tag+'-event-replacement'
             resource_containers.append(negative_name)
@@ -530,6 +571,14 @@ ENTRYPOINT ["bun", "/probe/bootstrap.js"]
                 cleanup.append({'resource': resource, 'outcome': 'never-created'})
                 continue
             try:
+                if prepared_image is not None and resource in ('container','resource-container'):
+                    if owned_cleanup is None:
+                        raise RuntimeError('prepared worker cleanup authority missing')
+                    outcome=owned_cleanup(args[-1],REPORT.get('image_id'),tag)
+                    if outcome not in ('removed','absent'):
+                        raise RuntimeError('prepared worker cleanup unconfirmed')
+                    cleanup.append({'resource':resource,'outcome':outcome})
+                    continue
                 removed = subprocess.run(args, capture_output=True, text=True,
                                          timeout=15, check=False)
                 absent = (('No such container:' if resource in ('container', 'resource-container') else

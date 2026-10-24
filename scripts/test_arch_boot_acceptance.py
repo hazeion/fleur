@@ -90,3 +90,17 @@ class ArchBootAcceptanceRequirements(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class DesktopInputSeparation(unittest.TestCase):
+    def test_actual_defaulted_manual_event_preserves_existing_cases(self):
+        for value in (False,'false'):
+            event={'debian_helpers':'','debian_recovery':False,'arch_boot_observation':True,'desktop_runtime_images':value}
+            self.assertEqual(qualification.qualification_case(event),'arch-boot-observation')
+            event.update(debian_helpers='exact-helper-pair',debian_recovery=True,arch_boot_observation=False)
+            self.assertEqual(qualification.qualification_case(event),'interrupted-recovery')
+            event.update(debian_recovery=False)
+            self.assertEqual(qualification.qualification_case(event),'fresh-installation')
+    def test_producer_cannot_mix_with_or_select_native_qualification(self):
+        for value in (True,'true',None,1,'TRUE','0',{},[]):
+            for other in ({},{'arch_boot_observation':True},{'debian_helpers':'pair'},{'debian_helpers':'pair','debian_recovery':True}):
+                with self.subTest(value=value,other=other),self.assertRaises(ValueError):qualification.qualification_case(dict(other,desktop_runtime_images=value))

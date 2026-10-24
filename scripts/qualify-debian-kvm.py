@@ -332,10 +332,10 @@ def accepted_arch_observation(report, source):
 
 
 def qualification_case(inputs):
-    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation'}:
+    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation','desktop_runtime_images'}:
         raise ValueError('Unexpected manual inputs')
     selectors = {}
-    for name in ('debian_recovery','arch_boot_observation'):
+    for name in ('debian_recovery','arch_boot_observation','desktop_runtime_images'):
         value = inputs.get(name,False)
         if type(value) is bool:
             selectors[name] = value
@@ -343,6 +343,8 @@ def qualification_case(inputs):
             selectors[name] = value == 'true'
         else:
             raise ValueError('Canonical case selector required')
+    if selectors['desktop_runtime_images']:
+        raise ValueError('Image preparation cannot select a native qualification case')
     if selectors['arch_boot_observation']:
         if selectors['debian_recovery'] or inputs.get('debian_helpers','') != '':
             raise ValueError('Arch read-only observation cannot select a Debian transaction')

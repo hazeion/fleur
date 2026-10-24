@@ -11,7 +11,7 @@ from report import CONTROLS
 from runtime_profile import PROFILES
 
 class DriverEvidence(unittest.TestCase):
-    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False, control_error=None, idle_runtime_stress=False, idle_mode='valid'):
+    def execute(self, memory_output, container_exit=137, docker_oom_killed=False, host_machine="x86_64", compiled_machine=None, compiler_target=None, compiler_sha=None, unsafe_environment=False, lifecycle_error=None, primary_error=None, trusted_build_network=None, healthy_containerd_exit=False, control_error=None, idle_runtime_stress=False, idle_mode='valid', **desktop_seams):
         architecture = "arm64" if host_machine == "aarch64" else "amd64"
         cpu = {"throttled_periods":20,"throttled_usec":1987459}
         pids = {"errno":11,"current":64,"max":64,"limit_events":1}
@@ -109,7 +109,7 @@ class DriverEvidence(unittest.TestCase):
                  {'passed':True,'category':'verified','descriptor_count':len(inventory)}), \
              patch.object(run.subprocess,'run',side_effect=subprocess_run), \
              contextlib.redirect_stdout(captured):
-            code = run.main(trusted_build_network=trusted_build_network,healthy_containerd_exit=healthy_containerd_exit,idle_runtime_stress=idle_runtime_stress)
+            code = run.main(trusted_build_network=trusted_build_network,healthy_containerd_exit=healthy_containerd_exit,idle_runtime_stress=idle_runtime_stress,**desktop_seams)
         self.last_lifecycle_calls=lifecycle_call.call_args_list
         self.last_lifecycle_call=lifecycle_call.call_args
         return code, json.loads(captured.getvalue())

@@ -1228,3 +1228,17 @@ including an actual reconciler regression demonstrated red against the original
 observer. An additional focused APT payload/recovery run passed 191 tests with
 5,744 assertions. These local results do not establish later native recovery
 predicates or replace the required fresh repeat.
+
+All three applicable workflows passed at correction
+`7347cad25565f493cc12541c247a0c8b204534bf`, including 1,288 CLI tests and
+12,341 assertions. Independent review accepted both prerequisite and all four
+runtime reports. The [fresh recovery attempt](https://github.com/hazeion/fleur/actions/runs/40092857273)
+still refused after interruption/reboot, with the lock verdict remaining
+`unknown`. Report SHA256 is
+`3a7c2dfe563a225b6691bb7ec70966165fcb1e49560c29a04ac03268914fb7d0`.
+The three existing locks are root-owned mode `0640`, healthy package state and
+service provenance pass, and complete disposal passed. The report did not
+include ancestor metadata needed to identify which new custody condition
+refused. Read-only observations now include all five fixed ancestors and actual
+directory type. No further product policy is changed before those facts are
+measured. Recovery remains unqualified.

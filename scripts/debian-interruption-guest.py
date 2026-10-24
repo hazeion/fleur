@@ -793,9 +793,9 @@ const host=productionHost(),identity=await host.host();
 const profile=selectNativeProfile(identity,nativeInstallProfiles);
 if (identity.system!=='linux' || identity.distribution!=='debian' || identity.release!=='13' || identity.architecture!=='x64' || identity.translated!==false || identity.bootId!==binding.bootId || process.getuid()!==binding.uid || profile?.method!=='docker-official-apt') throw Error('Current compiled Debian profile required');
 const result={formatVersion:1,scope:'debian-recovery-readonly-host-observation',readOnly:true,binding,packageLockObservation:await host.aptPackageLocks(remaining()),lockFiles:{},kernelLocks:null,health:null,serviceProvenance:null};
-for (const path of ['/var/lib/dpkg/lock','/var/lib/dpkg/lock-frontend','/var/lib/apt/lists/lock','/var/cache/apt/archives/lock']) {
+for (const path of ['/var/lib/dpkg/lock','/var/lib/dpkg/lock-frontend','/var/lib/apt/lists/lock','/var/cache/apt/archives/lock','/','/var','/var/cache','/var/cache/apt','/var/cache/apt/archives']) {
  if (!remaining()) throw Error('Read-only observation deadline expired');
- try { const info=await lstat(path,{bigint:true});result.lockFiles[path]={regular:info.isFile()&&!info.isSymbolicLink(),dev:String(info.dev),ino:String(info.ino),uid:String(info.uid),gid:String(info.gid),mode:String(info.mode),nlink:String(info.nlink)}; }
+ try { const info=await lstat(path,{bigint:true});result.lockFiles[path]={regular:info.isFile()&&!info.isSymbolicLink(),directory:info.isDirectory()&&!info.isSymbolicLink(),dev:String(info.dev),ino:String(info.ino),uid:String(info.uid),gid:String(info.gid),mode:String(info.mode),nlink:String(info.nlink)}; }
  catch(error) { result.lockFiles[path]={errorCode:typeof error?.code==='string'?error.code.slice(0,32):'UNKNOWN'}; }
 }
 const kernel=await open('/proc/locks',constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);

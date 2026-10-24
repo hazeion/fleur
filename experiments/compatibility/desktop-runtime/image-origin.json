@@ -1,0 +1,60 @@
+{
+  "formatVersion": 1,
+  "origin": {
+    "artifacts": {
+      "controller-image.tar": {
+        "bytes": 594260992,
+        "sha256": "a37d98c2b0a6769b274ce4b7dd49d4600dbdbcfce68729975e30d4c06dcf77cf"
+      },
+      "controller-packages.tsv": {
+        "bytes": 5969,
+        "sha256": "cd3bff277d7c444f4466db5e78ff52eb5e6f00b321b0e4a9b2472b611dfa86c7"
+      },
+      "controller-tools.json": {
+        "bytes": 5934,
+        "sha256": "fa878c4525611b094afd3a93ed8e8652b648274547fc079932dc21feb26d35de"
+      },
+      "preparation-cleanup.json": {
+        "bytes": 299,
+        "sha256": "de4b5f358133f60f02303da611c61b7501f92c316e68a68c714a26bf021e1d2d"
+      },
+      "runtime-image.tar": {
+        "bytes": 218508288,
+        "sha256": "acaa0e3fb704510f45ab59428c837f5b0a0578b0a24792640e293cf0e86d5a29"
+      },
+      "runtime-preparation.json": {
+        "bytes": 10316,
+        "sha256": "549d5041ac1e3625c0ce59a70152d17d72f92cda929978d84f335444bba4bf51"
+      },
+      "source-manifest.json": {
+        "bytes": 9941,
+        "sha256": "5dcf1544a8e70bf26e8f35199c7cc7abe25143a807f2de3017436233986fbf21"
+      }
+    },
+    "cleanup": [
+      {
+        "absent": true,
+        "resource": "container"
+      },
+      {
+        "absent": true,
+        "resource": "image"
+      }
+    ],
+    "controllerImageId": "sha256:7f2de577feb746dbf47a9f03d1328773b20e7266d4a1e4853cab6fb2efe29bcb",
+    "formatVersion": 1,
+    "nativeQualification": false,
+    "ok": true,
+    "runtimeAdmission": false,
+    "scope": "desktop-qualification-image-preparation",
+    "sourceCommit": "87b327fc446fc71f44de19b6cc5cb668d820fba9"
+  },
+  "producer": {
+    "artifactId": 12566488635,
+    "imageOriginSha256": "49523f4ad29b216a96a0c2fa5ccb674a194040d4eb96019f119bb9869d37dbc2",
+    "workflowRunId": 40112384632,
+    "zipSha256": "9acdd6e12b4af3318bde8da79a70e9af08ac7c3086b12b698fefb296588f7339"
+  },
+  "runtimeAdmission": false,
+  "scope": "source-owned-desktop-preparation-inputs"
+}

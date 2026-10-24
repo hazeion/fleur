@@ -53,6 +53,23 @@ prove this behavior natively. Lost records remain failures. The outer observer
 must verify worker absence before retiring the guardian, then confirm all owned
 images/controllers are absent and original inventories preserved.
 
-The outer native driver and artifact loader remain under implementation/review.
-Do not treat preparation, unit fixtures or the earlier capability preflight as
-full Desktop runtime qualification or readiness admission.
+The source-owned `image-origin.json` catalog authenticates the producer run, ZIP,
+origin and every artifact. The native observer retains private descriptors,
+validates one untagged amd64 OCI image per archive, loads through those same
+descriptors, and rechecks the bytes after the load clients retire. Operator source
+is bound separately from the producer payload commit.
+
+Native execution proceeds through capabilities, a manager-loss control and full
+qualification. Full qualification automatically requires a fresh successful loss
+control. The manager hands off each already-armed guard identity, PID and original
+VM deadline; the observer verifies the live worker and durably acknowledges that
+binding before execution proceeds. Cleanup stops the creation authority before
+sweeping all worker names and retains the guardian on uncertain worker retirement.
+Original resource snapshots include stable container state/configuration and image
+reference mappings. Every partial result keeps runtime admission false.
+
+Run the internal observer with `--mode=--capabilities`,
+`--mode=--guardian-loss` or `--mode=--qualify`, `--images-directory` pointing to the
+private authenticated inputs, and `FLEUR_DESKTOP_RUNTIME_QUALIFICATION=yes`.
+Preparation, unit fixtures and capability results never establish full runtime
+qualification or readiness admission.

@@ -28,7 +28,7 @@ def valid_binding(value):
     prepared=value['preparedImage']
     if prepared is not None and (type(prepared) is not dict or set(prepared)!={'imageId','architecture','baseImage','helperSha256','abuseSha256','runtimeSources'}):return False
     sources=value['sources']
-    return type(sources) is dict and bool(sources) and all(type(key) is str and (key=='Dockerfile' or re.fullmatch(r'(?:runtime-probe/|rendering/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[A-Za-z0-9]+',key)) and '..' not in key and type(digest) is str and re.fullmatch(r'[a-f0-9]{64}',digest) for key,digest in sources.items())
+    return type(sources) is dict and bool(sources) and all(type(key) is str and (key in ('Dockerfile','runtime-probe/.gitignore') or re.fullmatch(r'(?:runtime-probe/|rendering/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[A-Za-z0-9]+',key)) and '..' not in key and type(digest) is str and re.fullmatch(r'[a-f0-9]{64}',digest) for key,digest in sources.items())
 
 def complete_result(code, report):
     if type(code) is not int or code!=0 or type(report) is not dict:return False

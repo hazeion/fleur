@@ -31,6 +31,18 @@ def preparation_names(nonce):
     return base,base+':latest'
 
 
+def source_name(relative):
+    prefix='experiments/compatibility/'
+    if type(relative) is not str or not relative.startswith(prefix):return None
+    suffix=relative[len(prefix):]
+    if suffix.startswith('desktop-runtime/'):
+        name=suffix.split('/',1)[1]
+        return name if name in ('entry.py','Dockerfile','export_worker.py','processes.py','guardian_guard.py') else None
+    if suffix.startswith('runtime-probe/'):
+        return suffix if suffix[len('runtime-probe/'):] and '/' not in suffix[len('runtime-probe/'):] else None
+    return suffix if suffix in ('rendering/package.json','rendering/bun.lock') else None
+
+
 def main(output):
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted' or platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('disposable native GitHub amd64 preparation only')
     commit=command(['git','rev-parse','HEAD']).decode().strip()
@@ -42,14 +54,8 @@ def main(output):
             context=Path(directory);sources={}
             paths=command(['git','ls-tree','-r','--name-only',commit,'experiments/compatibility/runtime-probe','experiments/compatibility/rendering/package.json','experiments/compatibility/rendering/bun.lock','experiments/compatibility/desktop-runtime']).decode().splitlines()
             for relative in paths:
-                suffix=relative.split('experiments/compatibility/')[1]
-                if suffix.startswith('desktop-runtime/'):
-                    name=suffix.split('/',1)[1]
-                    if name not in ('entry.py','Dockerfile','export_worker.py','processes.py','guardian_guard.py'):continue
-                elif suffix.startswith('runtime-probe/'):
-                    if '/' in suffix.split('/',1)[1]:continue
-                    name=suffix
-                else:name=suffix
+                name=source_name(relative)
+                if name is None:continue
                 body=command(['git','show',commit+':'+relative])
                 if (ROOT/relative).read_bytes()!=body:raise RuntimeError('source changed')
                 target=context/'controller'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(body)

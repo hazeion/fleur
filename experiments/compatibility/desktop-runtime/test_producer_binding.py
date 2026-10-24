@@ -27,6 +27,13 @@ class ProducerBindingFormat(unittest.TestCase):
         self.assertIn('Dockerfile', binding['sources'])
         self.assertTrue(entry.valid_binding(binding))
 
+    def test_exact_tracked_runtime_ignore_file_is_part_of_the_source_binding(self):
+        binding=self.binding();binding['sources']['runtime-probe/.gitignore']=hashlib.sha256((HERE.parent/'runtime-probe/.gitignore').read_bytes()).hexdigest()
+        self.assertTrue(entry.valid_binding(binding))
+        for name in ('.gitignore','rendering/.gitignore','runtime-probe/.env','runtime-probe/../.gitignore'):
+            altered=self.binding();altered['sources'][name]='f'*64
+            self.assertFalse(entry.valid_binding(altered),name)
+
     def test_only_the_exact_root_dockerfile_is_an_extensionless_source_exception(self):
         for name in ('Makefile', '__init__', 'dockerfile', '../Dockerfile',
                 'runtime-probe/Dockerfile', 'rendering/Dockerfile', '/Dockerfile'):
@@ -36,6 +43,26 @@ class ProducerBindingFormat(unittest.TestCase):
         binding = self.binding()
         binding['sources']['Dockerfile'] = True
         self.assertFalse(entry.valid_binding(binding))
+
+class CompleteProducerSourceContract(unittest.TestCase):
+    def test_every_selected_tracked_source_is_accepted_by_the_real_consumer(self):
+        import subprocess
+        producer_spec=importlib.util.spec_from_file_location('binding_source_producer',HERE/'export_images.py')
+        producer=importlib.util.module_from_spec(producer_spec);producer_spec.loader.exec_module(producer)
+        root=HERE.parents[2]
+        paths=subprocess.check_output(['git','ls-files','--','experiments/compatibility/runtime-probe','experiments/compatibility/rendering/package.json','experiments/compatibility/rendering/bun.lock','experiments/compatibility/desktop-runtime'],cwd=root,text=True).splitlines()
+        sources={}
+        for relative in paths:
+            name=producer.source_name(relative)
+            if name is not None:
+                self.assertNotIn(name,sources)
+                sources[name]=hashlib.sha256((root/relative).read_bytes()).hexdigest()
+        self.assertIn('runtime-probe/.gitignore',sources)
+        runtime={str(Path(relative).relative_to('experiments/compatibility')) for relative in paths if Path(relative).parent==Path('experiments/compatibility/runtime-probe')}
+        self.assertEqual({name for name in sources if name.startswith('runtime-probe/')},runtime)
+        self.assertEqual({name for name in sources if not name.startswith('runtime-probe/')},{'Dockerfile','entry.py','export_worker.py','processes.py','guardian_guard.py','rendering/package.json','rendering/bun.lock'})
+        binding=ProducerBindingFormat().binding();binding['sources']=sources
+        self.assertTrue(entry.valid_binding(binding))
 
 
 if __name__ == '__main__':

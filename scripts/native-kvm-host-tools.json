@@ -1,0 +1,118 @@
+{
+  "formatVersion": 1,
+  "scope": "github-hosted-ubuntu24-x64-kvm-test-tools",
+  "runnerImage": "20261012.334.1",
+  "inventorySourceCommit": "dc1b0a3ce76a195e70f9982dcf79ac549d6b7823",
+  "inventoryRunId": "40076815792",
+  "nativeQualification": false,
+  "packages": [
+    {
+      "name": "genisoimage",
+      "version": "9:1.1.11-3.5",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "ipxe-qemu",
+      "version": "1.21.1+git-20220113.fbbdc3926-0ubuntu2",
+      "suite": "noble",
+      "architecture": "all"
+    },
+    {
+      "name": "libbrlapi0.8",
+      "version": "6.6-4ubuntu5",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "libpcsclite1",
+      "version": "2.0.3-1build1",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "libcacard0",
+      "version": "1:2.8.0-3build4",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "libdaxctl1",
+      "version": "77-2ubuntu2",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "libndctl6",
+      "version": "77-2ubuntu2",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "libpmem1",
+      "version": "1.13.1-1.1ubuntu2",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "librdmacm1t64",
+      "version": "50.0-2ubuntu0.2",
+      "suite": "noble-updates",
+      "architecture": "amd64"
+    },
+    {
+      "name": "liburing2",
+      "version": "2.5-1build1",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "libusbredirparser1t64",
+      "version": "0.13.0-2.1build1",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "qemu-system-common",
+      "version": "1:8.2.2+ds-0ubuntu1.18",
+      "suite": "noble-updates",
+      "architecture": "amd64"
+    },
+    {
+      "name": "qemu-system-data",
+      "version": "1:8.2.2+ds-0ubuntu1.18",
+      "suite": "noble-updates",
+      "architecture": "all"
+    },
+    {
+      "name": "libfdt1",
+      "version": "1.7.0-2build1",
+      "suite": "noble",
+      "architecture": "amd64"
+    },
+    {
+      "name": "seabios",
+      "version": "1.16.3-2",
+      "suite": "noble",
+      "architecture": "all"
+    },
+    {
+      "name": "qemu-system-x86",
+      "version": "1:8.2.2+ds-0ubuntu1.18",
+      "suite": "noble-updates",
+      "architecture": "amd64"
+    },
+    {
+      "name": "qemu-utils",
+      "version": "1:8.2.2+ds-0ubuntu1.18",
+      "suite": "noble-updates",
+      "architecture": "amd64"
+    },
+    {
+      "name": "cloud-image-utils",
+      "version": "0.33-1",
+      "suite": "noble",
+      "architecture": "all"
+    }
+  ]
+}

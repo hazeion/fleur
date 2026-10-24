@@ -68,3 +68,32 @@ assertions. Keep unrelated runtime repairs separately reviewable.
 Run `bun test tests/ci`, `bun run types` and `bun run lint` before publishing policy
 changes. The policy tests also run as part of `bun run test`. Manual dispatch offers
 a full verification run even for documentation-only changes.
+
+## Explicit fresh Debian qualification
+
+The native workflow accepts an optional `debian_helpers` manual input containing
+only the recorded amd64 helper pair as compact base64 JSON. Empty input preserves
+the ordinary x64/ARM readiness run. Nonempty input additionally runs the fixed
+Debian 13 x64 KVM verifier inside the existing x64 job; invalid input fails that
+job and its required summary. The payload is read as data from the event file,
+never interpolated into a shell. Exact source-owned helper sizes and SHA256 pins
+are checked before provisioning. No caller URL, package, profile or command is
+accepted.
+
+This explicit case has a 40-minute outer job budget; ordinary jobs retain ten
+minutes. Guest boot, session, runtime, repeat and cleanup limits remain unchanged.
+The hosted-only harness first proves systemd cgroup containment using harmless
+detached children, including stop, timeout and cancellation before execution.
+Only then may it install the frozen 18-package QEMU test-tool closure observed on
+the pinned runner image. It refuses prior tool-package state, upgrades, removals,
+changed package plans and unexpected actual package deltas. It checks that the
+host Docker daemon identity, service invocation/PID and resource inventories stay
+unchanged. This preparation applies to the disposable runner's verification tools,
+not Fleur's product setup policy.
+
+Root-managed service cgroups contain both the privileged test-tool transaction
+and the unprivileged KVM verifier. Invocation-bound terminal receipts and cgroup
+retirement are required. Cancellation, timeout, uncertain cleanup or incomplete
+native proof fails qualification, including when the outer harness later removes
+its scratch. An uploaded report alone is not passing evidence. This manual lane
+adds no ordinary release profile and establishes no human-consent proof.

@@ -6,7 +6,7 @@ Fleur is in early implementation. The unpublished Bun package currently provides
 
 The entry point is `bunx fleur`, with Bun installed beforehand. Until a release is published, run `bun bin/fleur.ts --help` from this checkout. Project creation uses exact release pins. An older project pin requires its matching project-local Fleur installation; the launcher never fetches a replacement automatically.
 
-See [CLI usage](docs/cli.md), [project creation](docs/project-creation.md) and [prerequisite setup](docs/setup.md). Setup admits exact reviewed Ubuntu/Debian x64 package profiles and Intel Docker Desktop application placement, with separate human authority for each effect. Desktop runtime admission remains incomplete; placement alone does not establish readiness.
+See [CLI usage](docs/cli.md), [project creation](docs/project-creation.md) and [prerequisite setup](docs/setup.md). Setup admits exact reviewed Ubuntu/Debian x64 package profiles and Intel Docker Desktop application placement, with separate human authority for each effect. The exact Intel macOS 15.7.7/Desktop 4.96.1 runtime tuple has passed native qualification and packed Doctor/setup verification. Other runtime tuples remain unverified; placement alone does not establish readiness.
 
 Required v1 targets are Intel macOS, Ubuntu 24.04/26.04 x64 and Debian 13 x64. Apple Silicon, other ARM64 targets and Arch are deferred. Existing CI coverage and measured component evidence remain, but full support is claimed only for published qualified tuples. See the [approved platform amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944).
 

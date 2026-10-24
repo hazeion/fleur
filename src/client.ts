@@ -15,3 +15,31 @@ export function defineIsland<P extends object>(options: { props: Schema<P>; comp
   }));
   return Object.freeze(component);
 }
+
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import type { Mutation } from "./schema";
+import { runMutation, type MutationOutcome, type MutationError } from "./runtime/mutation-client";
+export type { MutationOutcome, MutationError };
+export interface MutationState<I, O> {
+  readonly status: "idle" | "pending" | "success" | "failure" | "outcome-unknown";
+  readonly pending: boolean;
+  readonly data?: O;
+  readonly error?: MutationError;
+  run(input: I): Promise<MutationOutcome<O>>;
+}
+export function useMutation<I, O>(contract: Mutation<I, O>): MutationState<I, O> {
+  const [state, setState] = useState<Omit<MutationState<I, O>, "run">>({ status: "idle", pending: false });
+  const pending = useRef(false), mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const run = useCallback(async (input: I): Promise<MutationOutcome<O>> => {
+    if (pending.current) return { status: "failure", delivery: "not-sent", error: { code: "ALREADY_PENDING" } };
+    pending.current = true;
+    if (mounted.current) setState({ status: "pending", pending: true });
+    try {
+      const outcome = await runMutation(contract, input);
+      if (mounted.current) setState({ status: outcome.status, pending: false, ...(outcome.status === "success" ? { data: outcome.data } : outcome.status === "failure" ? { error: outcome.error } : {}) });
+      return outcome;
+    } finally { pending.current = false; }
+  }, [contract]);
+  return { ...state, run };
+}

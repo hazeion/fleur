@@ -13,17 +13,17 @@ interface Selection {
   readonly cursor?: string;
 }
 function deny(): never { throw new Error("REQUEST_DENIED"); }
-function identifier(name: string): string {
+export function identifier(name: string): string {
   if (!/^[a-zA-Z][a-zA-Z0-9_]{0,62}$/.test(name)) deny();
   return `"${name}"`;
 }
-function projection(name: string, column: ColumnReference): string {
+export function projection(name: string, column: ColumnReference): string {
   const kind = definition(column).kind;
   if (kind === "timestamp") return `to_char(${name} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
   if (kind === "localDate" || kind === "decimal" || kind === "safeInteger") return `${name}::text`;
   return name;
 }
-function readValue(column: ColumnReference, value: unknown, nullable: boolean): unknown {
+export function readValue(column: ColumnReference, value: unknown, nullable: boolean): unknown {
   const spec = definition(column);
   if (nullable && value === null) return null;
   if (spec.kind === "safeInteger" && typeof value === "string" && /^-?[0-9]+$/.test(value)) value = Number(value);

@@ -107,8 +107,10 @@ export interface Query<I = unknown, O = unknown> {
   readonly input: Schema<I>;
   readonly output: Schema<O>;
 }
-export type Input<Q extends Query> = Q extends Query<infer I, unknown> ? I : never;
-export type Output<Q extends Query> = Q extends Query<unknown, infer O> ? O : never;
+export interface Mutation<I = unknown, O = unknown> { readonly kind: "mutation"; readonly name?: string; readonly input: Schema<I>; readonly output: Schema<O>; }
+export type Operation<I = unknown, O = unknown> = Query<I, O> | Mutation<I, O>;
+export type Input<Q extends Operation> = Q extends Operation<infer I, unknown> ? I : never;
+export type Output<Q extends Operation> = Q extends Operation<unknown, infer O> ? O : never;
 export function defineQuery<I, O>(options: { name?: string; input: Schema<I>; output: Schema<O> }): Query<I, O> {
   if (options.name !== undefined && !/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/.test(options.name)) throw new Error("Invalid query name");
   validator(options.input);
@@ -121,3 +123,12 @@ export function defineQuery<I, O>(options: { name?: string; input: Schema<I>; ou
 export type { Schema, StringSchema, NumberSchema, ArraySchema };
 for (const constructor of [Schema, StringSchema, NumberSchema, ArraySchema]) { Object.freeze(constructor.prototype); Object.freeze(constructor); }
 Object.freeze(schema);
+
+export function defineMutation<I, O>(options: { name?: string; input: Schema<I>; output: Schema<O> }): Mutation<I, O> {
+  if (options.name !== undefined && !/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/.test(options.name)) throw new Error("Invalid mutation name");
+  validator(options.input); validator(options.output);
+  if (Object.keys(options).some(key => !["name", "input", "output"].includes(key))) throw new Error("Invalid mutation fields");
+  return Object.freeze({ kind: "mutation", input: options.input, output: options.output, ...(options.name === undefined ? {} : { name: options.name }) });
+}
+
+export { caseFold } from "./runtime/unicode/case-fold";

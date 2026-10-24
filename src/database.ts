@@ -7,28 +7,35 @@ type KindFor<T> = unknown extends T ? ColumnKind : NonNullable<T> extends UUID ?
 export type DeleteAction = "restrict" | "cascade" | "set null";
 import { definitions, tableDefinitions, references, definition, type ColumnDefinition } from "./runtime/declarations";
 
-class Column<T = unknown, Generated extends boolean = boolean, Primary extends boolean = boolean> {
+class Column<T = unknown, Generated extends boolean = boolean, Primary extends boolean = boolean, Managed extends boolean = false> {
+  declare readonly managedValue: Managed;
   declare readonly valueType: T;
   declare readonly kindType: KindFor<T>;
   declare readonly generatedValue: Generated;
   declare readonly primaryValue: Primary;
   constructor(value: ColumnDefinition, authority: symbol) { if (authority !== columnAuthority) throw new Error("Invalid column construction"); definitions.set(this, Object.freeze(value)); Object.freeze(this); }
-  nullable(): Column<T | null, Generated, Primary> {
+  unique(options: { caseFold?: boolean } = {}): Column<T, Generated, Primary, Managed> {
+    const current = definition(this);
+    if (Object.keys(options).some(key => key !== "caseFold") || (options.caseFold !== undefined && typeof options.caseFold !== "boolean") || (options.caseFold && current.kind !== "string")) throw new Error("Invalid uniqueness declaration");
+    return new Column({ ...current, unique: true, ...(options.caseFold ? { caseFold: true } : {}) }, columnAuthority);
+  }
+  nullable(): Column<T | null, Generated, Primary, Managed> {
     const value = definition(this);
     if (value.primary) throw new Error("Primary keys cannot be nullable");
     return new Column({ ...value, nullable: true, check: value.check.nullable() }, columnAuthority);
   }
-  primaryKey(): Column<T, Generated, true> {
+  primaryKey(): Column<T, Generated, true, Managed> {
     const value = definition(this);
     if (value.nullable) throw new Error("Primary keys cannot be nullable");
     return new Column({ ...value, primary: true }, columnAuthority);
   }
-  generated(): Column<T, true, Primary> { return new Column({ ...definition(this), generated: true }, columnAuthority); }
+  generated(): Column<T, true, Primary, true> { return new Column({ ...definition(this), generated: true, managed: true }, columnAuthority); }
   default(value: T): Column<T, true, Primary> {
-    const current = definition(this);
+    const { managed, ...current } = definition(this);
+    void managed;
     return new Column({ ...current, generated: true, defaultValue: current.check.parse(value) }, columnAuthority);
   }
-  references(target: ColumnReference<NonNullable<T>, boolean, boolean, KindFor<T>>, options: { onDelete: null extends T ? DeleteAction : Exclude<DeleteAction, "set null"> }): Column<T, Generated, Primary> {
+  references(target: ColumnReference<NonNullable<T>, boolean, boolean, KindFor<T>>, options: { onDelete: null extends T ? DeleteAction : Exclude<DeleteAction, "set null"> }): Column<T, Generated, Primary, Managed> {
     const current = definition(this), foreign = definition(target);
     if (!["restrict", "cascade", "set null"].includes(options.onDelete) || !references.has(target) || current.kind !== foreign.kind || !foreign.primary || (options.onDelete === "set null" && !current.nullable)) throw new Error("Invalid foreign key");
     return new Column({ ...current, reference: Object.freeze({ target, onDelete: options.onDelete }) }, columnAuthority);
@@ -60,7 +67,8 @@ declare const tableType: unique symbol;
 export type Table<C extends ColumnShape = ColumnShape, V extends boolean = boolean, Name extends string = string> = { readonly [K in keyof C]: C[K] & { readonly relationName: Name; readonly fieldName: K } } & (V extends true ? { readonly version: Column<number, true, false> & { readonly relationName: Name; readonly fieldName: "version" } } : object) & { readonly [tableType]: { columns: C; versioned: V; name: Name } };
 export type Row<T extends Table> = { [K in keyof T[typeof tableType]["columns"]]: T[typeof tableType]["columns"][K] extends ColumnReference<infer Value> ? Value : never } & (T[typeof tableType]["versioned"] extends true ? { version: number } : object);
 type DefaultKeys<C extends ColumnShape> = { [K in keyof C]: C[K] extends ColumnReference<unknown, true> ? K : never }[keyof C];
-export type Insert<T extends Table, C extends ColumnShape = T[typeof tableType]["columns"]> = { [K in Exclude<keyof C, DefaultKeys<C>>]: C[K] extends ColumnReference<infer Value> ? Value : never } & { [K in DefaultKeys<C>]?: C[K] extends ColumnReference<infer Value> ? Value : never };
+type ManagedKeys<C extends ColumnShape> = { [K in keyof C]: C[K] extends { readonly managedValue: true } ? K : never }[keyof C];
+export type Insert<T extends Table, C extends ColumnShape = T[typeof tableType]["columns"]> = { [K in Exclude<keyof C, DefaultKeys<C>>]: C[K] extends ColumnReference<infer Value> ? Value : never } & { [K in DefaultKeys<C>]?: K extends ManagedKeys<C> ? never : C[K] extends ColumnReference<infer Value> ? Value : never };
 export type Selected<R, F extends readonly (keyof R)[]> = Pick<R, F[number]>;
 export function defineTable<const C extends ColumnShape, V extends boolean = true, const Name extends string = string>(name: Name, options: { columns: C; versioned?: V }): Table<C, V, Name> {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(name) || Object.hasOwn(options.columns, "version")) throw new Error("Invalid table declaration");
@@ -74,6 +82,7 @@ export function defineTable<const C extends ColumnShape, V extends boolean = tru
   }
   if (primaryKeys !== 1) throw new Error("Exactly one primary key is required");
   const versioned = options.versioned !== false;
+  if (!versioned) console.warn(`Table "${name}" is unversioned. Updates and deletes have no lost-update guarantee.`);
   if (versioned) columns.version = value("safeInteger", schema.safeInteger()).generated();
   const table = Object.freeze(columns) as Table<C, V, Name>;
   tableDefinitions.set(table, Object.freeze({ name, columns: table, versioned }));
@@ -184,4 +193,17 @@ export interface ReadDb {
   cursorJoined<const P extends Readonly<Record<string, ColumnReference>>, const J extends readonly Join[]>(options: Omit<JoinedOptions<P, J>, "cursor" | "limit"> & { readonly after: JoinedProjection<P, J> }): string;
   cursor<T extends Table>(table: T, options: { readonly where?: Filter; readonly orderBy?: readonly Order<Row<T>>[]; readonly after: Partial<Row<T>> }): Cursor<T>;
   select<T extends Table, const F extends readonly (keyof Row<T>)[]>(table: T, options: SelectOptions<Row<T>, F, NoInfer<T>>): Promise<Selected<Row<T>, F>[]>;
+}
+
+export type PrimaryKey<T extends Table> = { [K in keyof T[typeof tableType]["columns"]]: T[typeof tableType]["columns"][K] extends ColumnReference<infer Value, boolean, true> ? Value : never }[keyof T[typeof tableType]["columns"]];
+type PrimaryKeys<C extends ColumnShape> = { [K in keyof C]: C[K] extends ColumnReference<unknown, boolean, true> ? K : never }[keyof C];
+export type WriteValues<T extends Table> = Partial<Omit<Row<T>, DefaultKeys<T[typeof tableType]["columns"]> | PrimaryKeys<T[typeof tableType]["columns"]> | "version">>;
+export interface WriteDb extends ReadDb {
+  insert<T extends Table, const F extends readonly (keyof Row<T>)[]>(table: T, options: { values: Insert<NoInfer<T>>; returning: F }): Promise<Selected<Row<T>, F>>;
+  updateVersioned<T extends Table<ColumnShape, true>, const F extends readonly (keyof Row<T>)[]>(table: T, options: { id: PrimaryKey<NoInfer<T>>; expectedVersion: number; set: WriteValues<NoInfer<T>>; returning: F }): Promise<Selected<Row<T>, F>>;
+  deleteVersioned<T extends Table<ColumnShape, true>>(table: T, options: { id: PrimaryKey<NoInfer<T>>; expectedVersion: number }): Promise<{ deleted: true }>;
+  /** Unversioned writes have no lost-update guarantee. */
+  update<T extends Table<ColumnShape, false>, const F extends readonly (keyof Row<T>)[]>(table: T, options: { id: PrimaryKey<NoInfer<T>>; set: WriteValues<NoInfer<T>>; returning: F }): Promise<Selected<Row<T>, F>>;
+  /** Unversioned writes have no lost-update guarantee. */
+  delete<T extends Table<ColumnShape, false>>(table: T, options: { id: PrimaryKey<NoInfer<T>> }): Promise<{ deleted: true }>;
 }

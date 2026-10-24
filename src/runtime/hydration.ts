@@ -1,8 +1,10 @@
+import { nameMutationExports } from "./mutation-client";
 import { h, hydrate, type ComponentType } from "preact";
 import { islands } from "./islands";
 import { validatePublicValue } from "../schema";
 
 export function hydrateAdmitted(exports: Readonly<Record<string, unknown>>): void {
+  nameMutationExports(exports);
   const payload = document.getElementById("fleur-islands");
   if (!payload || payload.tagName !== "SCRIPT" || payload.getAttribute("type") !== "application/json") throw new Error("Invalid hydration data");
   const text = payload.textContent ?? "";

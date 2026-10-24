@@ -15,7 +15,8 @@
     "docs/setup-desktop.md",
     "docs/setup-artifact-evidence.md",
     "dist/reference",
-    "docs/read-pages.md"
+    "docs/read-pages.md",
+    "docs/mutations.md"
   ],
   "engines": {
     "bun": "1.4.3"

@@ -2,7 +2,7 @@ import type { Table } from "../database";
 import { tableDefinitions } from "./declarations";
 import { describeTables } from "./table-wire";
 import { describeSchema } from "./schema-wire";
-import { queries, pages, queryNames, pageNames } from "./registrations";
+import { queries, mutations, mutationNames, pages, queryNames, pageNames } from "./registrations";
 import { islands, islandNames } from "./islands";
 import { nameExports } from "./worker-execution";
 
@@ -14,6 +14,7 @@ export function workerManifest(exports: Readonly<Record<string, unknown>>) {
     version: 1,
     tables: describeTables(tables),
     queries: [...queries.keys()].map(query => ({ id: queryNames.get(query)!, input: describeSchema(query.input), output: describeSchema(query.output) })),
+    mutations: [...mutations.keys()].map(mutation => ({ id: mutationNames.get(mutation)!, input: describeSchema(mutation.input), output: describeSchema(mutation.output) })),
     pages: [...pages.keys()].map(page => ({ id: pageNames.get(page)!, path: page.path, params: describeSchema(page.params) })),
     islands: [...islandNames].map(([island, id]) => ({ id, props: describeSchema(islands.get(island)!.schema) })),
   };

@@ -23,10 +23,12 @@ export function restoreManifest(input: unknown) {
   validatePublicValue(input);
   const encoded = JSON.stringify(input);
   if (new TextEncoder().encode(encoded).byteLength > 1048576) throw new Error("SOURCE_REJECTED");
-  const spec = record(input, ["version", "tables", "queries", "pages", "islands"]);
+  const spec = record(input, ["version", "tables", "queries", "mutations", "pages", "islands"]);
   if (spec.version !== 1) throw new Error("SOURCE_REJECTED");
   const tables = restoreTables(spec.tables);
   const queries = entries<OperationDefinition>(spec.queries, ["id", "input", "output"], query => { const input = restoreSchema(query.input); validateContinuation(input); return Object.freeze({ input, output: restoreSchema(query.output) }); });
+  const mutations = entries<OperationDefinition>(spec.mutations, ["id", "input", "output"], mutation => Object.freeze({ input: restoreSchema(mutation.input), output: restoreSchema(mutation.output) }));
+  if ([...mutations.keys()].some(name => queries.has(name))) throw new Error("SOURCE_REJECTED");
   const paths = new Set<string>();
   const pages = entries<Page>(spec.pages, ["id", "path", "params"], page => {
     if (typeof page.path !== "string") throw new Error("SOURCE_REJECTED");
@@ -36,6 +38,6 @@ export function restoreManifest(input: unknown) {
     return definePage({ path: page.path, params: restoreSchema(page.params) } as never);
   });
   const islands = entries<Schema>(spec.islands, ["id", "props"], island => restoreSchema(island.props));
-  return Object.freeze({ encoded, tables, queries, pages, islands });
+  return Object.freeze({ encoded, tables, queries, mutations, pages, islands });
 }
 export type Registry = ReturnType<typeof restoreManifest>;

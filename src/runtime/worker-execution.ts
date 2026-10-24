@@ -1,9 +1,9 @@
 import { h } from "preact";
 import { renderToStringAsync } from "preact-render-to-string";
 import { selectPage } from "./routes";
-import type { ReadDb } from "../database";
+import type { ReadDb, WriteDb } from "../database";
 import { validatePublicValue } from "../schema";
-import { pages, queries, queryNames, pageNames, withExecution, type SafeLog } from "./registrations";
+import { pages, queries, queryNames, mutations, mutationNames, pageNames, withExecution, type SafeLog } from "./registrations";
 import { islandNames, islands, withIslandRenderer } from "./islands";
 
 export interface IslandDescriptor { readonly key: string; readonly id: string; readonly props: unknown; }
@@ -47,6 +47,7 @@ export function nameExports(exports: Readonly<Record<string, unknown>>): void {
     const object = value as object;
     if (islands.has(object)) { if (!islandNames.has(object)) islandNames.set(object, name); }
     for (const contract of queries.keys()) if (contract === value && !queryNames.has(contract)) queryNames.set(contract, name);
+    for (const contract of mutations.keys()) if (contract === value && !mutationNames.has(contract)) mutationNames.set(contract, name);
     for (const contract of pages.keys()) if (contract === value && !pageNames.has(contract)) pageNames.set(contract, name);
   }
   for (const contract of queries.keys()) {
@@ -54,5 +55,17 @@ export function nameExports(exports: Readonly<Record<string, unknown>>): void {
     if (!name || used.has(name)) throw new Error("Duplicate or unexported query");
     used.add(name);
   }
+  for (const contract of mutations.keys()) {
+    const name = mutationNames.get(contract);
+    if (!name || used.has(name)) throw new Error("Duplicate or unexported mutation");
+    used.add(name);
+  }
   for (const contract of pages.keys()) if (!pageNames.has(contract)) throw new Error("Unexported page");
+}
+
+export async function executeMutation(name: string, input: unknown, db: WriteDb, log: SafeLog): Promise<unknown> {
+  const contract = [...mutationNames].find(([, registered]) => name === registered)?.[0];
+  const registration = contract && mutations.get(contract);
+  if (!registration) throw new Error("REQUEST_DENIED");
+  return withExecution({ kind: "mutation", db, log }, async () => registration.handler({ input, db, log }));
 }

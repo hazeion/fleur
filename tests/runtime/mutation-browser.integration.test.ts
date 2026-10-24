@@ -1,0 +1,72 @@
+import { expect, test } from "bun:test";
+import { chromium, expect as browserExpect } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+import { admitProject } from "../../src/runtime/build/admission";
+import { compileWorker } from "../../src/runtime/build/worker";
+import { compileClient } from "../../src/runtime/build/client";
+import { prepareNativeImages } from "../../src/runtime/native/build";
+import { ReadApplication } from "../../src/runtime/application";
+import { serveReadApplication } from "../../src/runtime/http";
+import { tableDDL } from "../../src/runtime/database/table-ddl";
+import { ownedPostgres } from "./owned-postgres";
+
+test("browser saves, reports concurrent edits, and reconciles response loss without replay", async () => {
+  const project = await admitProject(fileURLToPath(new URL("fixtures/saves", import.meta.url)));
+  const bundle = await compileClient(project);
+  const source = [...bundle.files.values()].map(file => typeof file.body === "string" ? file.body : new TextDecoder().decode(file.body)).join("\n");
+  expect(source).not.toContain("server-private-canary");
+  expect(source).not.toContain("database/broker");
+  const images = await prepareNativeImages(await compileWorker(project));
+  const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
+  let app: ReadApplication | undefined, server: ReturnType<typeof serveReadApplication> | undefined;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    app = await ReadApplication.open(images, fixture.url);
+    for (const statement of tableDDL(app.registry.tables)) await fixture.sql.unsafe(statement);
+    server = serveReadApplication(app, bundle);
+    browser = await chromium.launch({ headless: true });
+    const address = server.url.origin;
+    for (let repeat = 1; repeat <= 2; repeat++) {
+      const first = await browser.newPage(), second = await browser.newPage();
+      const errors: string[] = [];
+      first.on("pageerror", error => errors.push(error.message));
+      await first.goto(address+"/exercises");
+      await first.waitForFunction(() => document.documentElement.dataset.fleurHydrated === "true");
+      await first.getByLabel("New exercise name").fill("   ");
+      await first.getByRole("button", { name: "Create exercise", exact: true }).click();
+      await browserExpect(first.getByRole("status")).toContainText("INPUT_INVALID");
+      await first.getByLabel("New exercise name").fill(`  Straße ${repeat}  `);
+      await first.getByRole("button", { name: "Create exercise", exact: true }).click();
+      await browserExpect(first.getByRole("status")).toContainText("Saved");
+      await first.getByLabel("New exercise name").fill(`STRASSE ${repeat}`);
+      await first.getByRole("button", { name: "Create exercise", exact: true }).click();
+      await browserExpect(first.getByRole("status")).toContainText("CONSTRAINT_CONFLICT");
+      await second.goto(address+"/exercises");
+      await second.waitForFunction(() => document.documentElement.dataset.fleurHydrated === "true");
+      const firstRow = first.getByRole("listitem").filter({ hasText: `Straße ${repeat}` });
+      const secondRow = second.getByRole("listitem").filter({ hasText: `Straße ${repeat}` });
+      await firstRow.getByRole("textbox").fill(`Row ${repeat}`);
+      await firstRow.getByRole("button", { name: "Rename", exact: true }).click();
+      await browserExpect(first.getByRole("status")).toContainText("Saved");
+      await secondRow.getByRole("button", { name: "Delete", exact: true }).click();
+      await browserExpect(second.getByRole("status")).toContainText("VERSION_CONFLICT");
+      let submitted = 0;
+      await first.route("**/__fleur/mutation", async route => { submitted++; await route.fetch(); await route.abort("connectionreset"); });
+      await first.getByLabel("New exercise name").fill(`Unknown ${repeat}`);
+      await first.getByRole("button", { name: "Create exercise", exact: true }).click();
+      await browserExpect(first.getByRole("status")).toContainText("Outcome unknown");
+      expect(submitted).toBe(1);
+      await first.getByRole("link", { name: "Refresh stored exercises" }).click();
+      await browserExpect(first.getByText(`Unknown ${repeat}`, { exact: true })).toBeVisible();
+      expect(submitted).toBe(1);
+      const renamed = first.getByRole("listitem").filter({ hasText: `Row ${repeat}` });
+      await first.unroute("**/__fleur/mutation");
+      await renamed.getByRole("button", { name: "Delete", exact: true }).click();
+      await browserExpect(first.getByText(`Row ${repeat}`, { exact: true })).toHaveCount(0);
+      expect(errors).toEqual([]);
+      await first.close(); await second.close();
+    }
+    const denied = await fetch(address+"/__fleur/mutation", { method: "POST", headers: { "Content-Type": "application/json", "Origin": "https://untrusted.invalid", "X-Fleur-Request": "mutation" }, body: JSON.stringify({ name: "exercise.create", input: { name: "Cross origin" } }) });
+    expect(denied.status).toBe(403);
+  } finally { await browser?.close(); await server?.stop(true); await app?.close(); await fixture.cleanup(); await images.dispose(); }
+}, 300_000);

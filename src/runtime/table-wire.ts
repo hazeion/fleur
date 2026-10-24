@@ -4,6 +4,7 @@ import { definition, definitions, references, tableDefinitions } from "./declara
 
 interface ColumnBuilder extends ColumnReference {
   nullable(): ColumnBuilder;
+  unique(options?: { caseFold?: boolean }): ColumnBuilder;
   primaryKey(): ColumnBuilder;
   generated(): ColumnBuilder;
   default(value: never): ColumnBuilder;
@@ -13,6 +14,9 @@ interface WireColumn {
   readonly primary: boolean;
   readonly nullable: boolean;
   readonly generated: boolean;
+  readonly managed?: true;
+  readonly unique?: true;
+  readonly caseFold?: true;
   readonly max?: number;
   readonly precision?: number;
   readonly scale?: number;
@@ -62,7 +66,7 @@ export function restoreTables(input: unknown): readonly Table[] {
     const links: [string, Record<string, unknown>][] = [];
     for (const [name, rawColumn] of Object.entries(fields)) {
       const field = record(rawColumn);
-      keys(field, ["kind", "nullable", "primary", "generated", "max", "precision", "scale", "defaultValue", "defaultNow", "reference"]);
+      keys(field, ["kind", "nullable", "primary", "generated", "max", "precision", "scale", "defaultValue", "defaultNow", "reference", "unique", "caseFold", "managed"]);
       if ([field.nullable, field.primary, field.generated].some(flag => typeof flag !== "boolean")) return fail();
       let value: ColumnBuilder;
       switch (field.kind) {
@@ -76,9 +80,13 @@ export function restoreTables(input: unknown): readonly Table[] {
         default: return fail();
       }
       if ((field.max !== undefined && field.kind !== "string") || ((field.precision !== undefined || field.scale !== undefined) && field.kind !== "decimal") || (field.defaultNow !== undefined && (field.defaultNow !== true || field.kind !== "timestamp" || !field.generated))) return fail();
+      if ((field.unique !== undefined && field.unique !== true) || (field.caseFold !== undefined && (field.caseFold !== true || !field.unique || field.kind !== "string"))) return fail();
+      if (field.unique) value = value.unique(field.caseFold ? { caseFold: true } : {});
       if (field.nullable) value = value.nullable();
       if (field.primary) value = value.primaryKey();
-      if (field.generated) value = value.generated();
+      if (field.managed !== undefined && (field.managed !== true || !field.generated || Object.hasOwn(field, "defaultValue") || field.defaultNow)) return fail();
+      if (field.managed) value = value.generated();
+      else if (field.generated && !Object.hasOwn(field, "defaultValue") && !field.defaultNow) return fail();
       if (Object.hasOwn(field, "defaultValue")) {
         if (!field.generated || field.defaultNow) return fail();
         value = value.default(field.defaultValue as never);

@@ -93,4 +93,22 @@ export const verifiedReadinessProfiles = [{
     readinessSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e",
     isolationSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e",
   },
+}, {
+  id: "darwin-15.7.7-x64-desktop-4.96.1",
+  host: { system: "darwin", distribution: null, release: "15.7.7", architecture: "x64" },
+  bun: "1.4.3",
+  cli: { version: "29.9.2", commit: "a82e528" },
+  engine: {
+    version: "29.9.2", commit: "0367cbe", kernel: "7.0.14-linuxkit",
+    platform: "Docker Desktop 4.96.1 (244132)", cgroupDriver: "cgroupfs", cgroupVersion: "2",
+    operatingMode: "rootful", securityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"],
+  },
+  containerd: { version: "v2.4.2", commit: "b7a25261e029d68978bbf290df0a62fc819b3c51" },
+  runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" },
+  compose: "5.6.0",
+  image: "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e",
+  evidence: {
+    readinessSha256: "b2b1565746e8a1a56785db75594f38dc1f942dc28609a1e151a1c8bb10c63571",
+    isolationSha256: "17b2fe0503493c0273806e482ed7c008c595861c646850b458880344e49b2787",
+  },
 }] as const satisfies readonly VerifiedReadinessProfile[];

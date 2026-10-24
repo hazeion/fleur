@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { smokeImages } from "../src/setup/profiles.ts";
 import { productionHost } from "../src/setup/host.ts";
+import { readGrants } from "../src/setup/grants.ts";
 import { matchReadinessServer, nativeReadinessProfiles, readinessCandidates, sameReadinessDaemon } from "../src/setup/readiness.ts";
 
 // Legacy disposable Linux verification may acquire the exact smoke image.
@@ -22,6 +23,7 @@ observations.verifierSha256 = Bun.CryptoHasher.hash("sha256", await readFile(imp
 let cleanupSentinel: (() => Promise<void>) | undefined;
 async function run(args: string[], expected = 0): Promise<string> {
   const result = await productionHost().run(args, 120000);
+  if (result.terminationUnconfirmed) throw new Error("Native verification command retirement is unconfirmed.");
   if (result.status !== "completed" || result.exitCode !== expected) throw new Error(`${args[0]} ${args[1] ?? ""}: expected ${expected}, received ${result.status}/${result.exitCode}: ${result.stderr.slice(-4096)} ${result.stdout.slice(-4096)}`);
   return result.stdout;
 }
@@ -121,23 +123,38 @@ try {
   await run([process.execPath, "pm", "pack", "--filename", archive]);
   await run(["tar", "-xzf", archive, "-C", scratch]);
   const runs: unknown[] = [];
+  const checkReadySetup = existingOnly && admitted !== undefined;
+  const commands = checkReadySetup ? ["doctor", "setup"] : ["doctor"];
+  const grantsSnapshot = async () => JSON.stringify((await readGrants(productionHost())).map((grant) => [grant.id, grant.action, grant.method, grant.target, grant.planChecksum, grant.machine, grant.user, grant.mode, grant.revoked]));
+  const originalGrants = checkReadySetup ? await grantsSnapshot() : undefined;
+  observations.completedRounds = 0;
+  observations.preservationChecks = 0;
   for (let pass = 0; pass < 2; pass++) {
-    // Only the reviewed build catalog can require verified readiness. Unknown
-    // observations remain unverified even after a successful disposable smoke.
-    const result = JSON.parse(await run([process.execPath, join(scratch, "package", "bin", "fleur.ts"), "doctor", "--json", "--timeout", "60"], admitted ? 0 : 4));
-    runs.push(result);
-    observations.runs = runs;
-    const release = result.data?.components?.release;
-    const releaseMatches = admitted
-      ? result.ok === true && result.error === null && release?.state === "verified" && release.profile === admitted.id && release.evidence?.readinessSha256 === admitted.evidence.readinessSha256 && release.evidence?.isolationSha256 === admitted.evidence.isolationSha256
-      : result.ok === false && result.error?.code === "PREREQUISITE_UNAVAILABLE" && release?.state === "unverified";
-    if (result.formatVersion !== 1 || result.command !== "doctor" || !releaseMatches || result.truncated !== false || result.data?.components?.smoke?.state !== "ready" || result.data?.components?.smoke?.cleanup !== true || result.data?.components?.daemon?.state !== "ready" || result.data?.components?.compose?.state !== "ready") throw new Error("Packed doctor did not prove native smoke readiness with the expected source-owned release status.");
-    const after = (await docker("ps", "--all", "--quiet", "--no-trunc")).trim().split("\n").sort().join("\n");
-    if (before !== after || beforeContext !== await originalContext()) throw new Error("Doctor changed global context or altered container inventory.");
-    if (await sentinelSnapshot() !== sentinelBefore) throw new Error("Doctor altered the unrelated stopped container state or configuration.");
-    const currentDaemon = await daemonSnapshot();
-    const currentVersion = JSON.parse(await docker("version", "--format", "{{json .}}"));
-    if (!sameReadinessDaemon(originalDaemon, currentDaemon) || JSON.stringify(currentVersion.Server) !== JSON.stringify((observations.docker as { Server?: unknown }).Server)) throw new Error("Native daemon identity or server build changed during verification.");
+    for (const command of commands) {
+      // Select commands from independent source-owned admission, never CLI output.
+      // Unknown tuples retain two expected-failure Doctor observations.
+      const result = JSON.parse(await run([process.execPath, join(scratch, "package", "bin", "fleur.ts"), command, "--json", "--timeout", "60"], admitted ? 0 : 4));
+      runs.push(result);
+      observations.runs = runs;
+      const release = result.data?.components?.release;
+      const releaseMatches = admitted
+        ? result.ok === true && result.error === null && release?.state === "verified" && release.profile === admitted.id && release.evidence?.readinessSha256 === admitted.evidence.readinessSha256 && release.evidence?.isolationSha256 === admitted.evidence.isolationSha256
+        : result.ok === false && result.error?.code === "PREREQUISITE_UNAVAILABLE" && release?.state === "unverified";
+      if (result.formatVersion !== 1 || result.command !== command || !releaseMatches || result.truncated !== false || result.data?.components?.smoke?.state !== "ready" || result.data?.components?.smoke?.cleanup !== true || result.data?.components?.daemon?.state !== "ready" || result.data?.components?.compose?.state !== "ready") throw new Error("Packed readiness did not prove native smoke cleanup with the expected source-owned release status.");
+      if (command === "setup" && (result.data === null || typeof result.data !== "object" || Array.isArray(result.data) || JSON.stringify(Object.keys(result.data)) !== '["components"]')) throw new Error("Ready setup returned an unexpected action or recovery result.");
+      const after = (await docker("ps", "--all", "--quiet", "--no-trunc")).trim().split("\n").sort().join("\n");
+      if (before !== after || beforeContext !== await originalContext()) throw new Error("Readiness changed global context or altered container inventory.");
+      if (await sentinelSnapshot() !== sentinelBefore) throw new Error("Readiness altered the unrelated stopped container state or configuration.");
+      const currentDaemon = await daemonSnapshot();
+      const currentVersion = JSON.parse(await docker("version", "--format", "{{json .}}"));
+      if (!sameReadinessDaemon(originalDaemon, currentDaemon) || JSON.stringify(currentVersion.Server) !== JSON.stringify((observations.docker as { Server?: unknown }).Server)) throw new Error("Native daemon identity or server build changed during verification.");
+      if (checkReadySetup) {
+        observations.grantsPreserved = await grantsSnapshot() === originalGrants;
+        if (observations.grantsPreserved !== true) throw new Error("Readiness changed setup authority.");
+      }
+      observations.preservationChecks = runs.length;
+    }
+    observations.completedRounds = pass + 1;
     observations.sentinel = { id: sentinelId, image: imageId, state: "created", unchangedRounds: pass + 1 };
   }
   if (admitted) observations.releaseProfile = { id: admitted.id, evidence: { ...admitted.evidence } };

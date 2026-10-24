@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -127,14 +127,14 @@ esac
   });
 }
 
-async function completeNativeVerification(change: "none" | "daemon" | "server" | "capability", qualified = false) {
+async function completeNativeVerification(change: "none" | "daemon" | "server" | "capability" | "final-setup" | "grant" | "transport" | "action" | "unsafe-grant", qualified = false) {
   const scratch = await mkdtemp(join(tmpdir(), "fleur-native-rounds-"));
   try {
     const report = join(scratch, "report.json");
     const state = join(scratch, "docker-state.json");
-    await writeFile(state, JSON.stringify({ containers: {}, infoReads: 0, versionReads: 0, operations: [] }));
+    await writeFile(state, JSON.stringify({ containers: {}, infoReads: 0, versionReads: 0, smokeStarts: 0, operations: [] }));
     await writeFile(join(scratch, "docker"), `#!${process.execPath}
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 const path = process.env.FLEUR_TEST_STATE;
 const state = JSON.parse(readFileSync(path, "utf8"));
 let args = process.argv.slice(2);
@@ -150,7 +150,7 @@ else if (command === "context") output = args[1] === "show" ? "local" : JSON.str
 else if (command === "compose") output = "2.38.2";
 else if (command === "info") {
   state.infoReads++;
-  output = JSON.stringify({ ID: ${JSON.stringify(change)} === "daemon" && state.infoReads >= 3 ? "replacement-engine" : "original-engine", ServerVersion: "28.0.4", KernelVersion: "fixture-kernel", OSType: "linux", Architecture: process.arch === "arm64" ? "aarch64" : "x86_64", CgroupDriver: ${JSON.stringify(change)} === "capability" && state.infoReads >= 3 ? "cgroupfs" : "systemd", CgroupVersion: "2", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] });
+  output = JSON.stringify({ ID: (${JSON.stringify(change)} === "daemon" || (${JSON.stringify(change)} === "final-setup" && state.smokeStarts === 4)) && state.infoReads >= 3 ? "replacement-engine" : "original-engine", ServerVersion: "28.0.4", KernelVersion: "fixture-kernel", OSType: "linux", Architecture: process.arch === "arm64" ? "aarch64" : "x86_64", CgroupDriver: ${JSON.stringify(change)} === "capability" && state.infoReads >= 3 ? "cgroupfs" : "systemd", CgroupVersion: "2", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] });
 } else if (command === "version") {
   state.versionReads++;
   const server = { Version: "28.0.4", KernelVersion: "fixture-kernel", Os: "linux", Arch: process.arch === "arm64" ? "arm64" : "amd64", GitCommit: ${JSON.stringify(change)} === "server" && state.versionReads >= 2 ? "changed-build" : "6430e49", Platform: { Name: "Docker Engine - Community" }, Components: [{ Name: "Engine", Version: "28.0.4", Details: { GitCommit: "6430e49" } }, { Name: "containerd", Version: "v2.4.1", Details: { GitCommit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" } }, { Name: "runc", Version: "1.5.2", Details: { GitCommit: "v1.5.2-0-g29dd3dc2" } }] };
@@ -164,7 +164,16 @@ else if (command === "create") {
   state.containers[containerId] = { Id: containerId, Name: "/" + name, Image: imageId, Config: { Labels: { [label[0]]: label[1] } }, HostConfig: {}, State: { Running: false, ExitCode: 0, Status: "created", FinishedAt: "0001-01-01T00:00:00Z" } };
   output = containerId;
 } else if (command === "inspect") output = JSON.stringify(state.containers[args[1]]);
-else if (command === "start") { state.containers[args.at(-1)].State.FinishedAt = "2026-10-23T00:00:00Z"; output = "fleur-doctor-smoke"; }
+else if (command === "start") {
+  state.smokeStarts++;
+  state.containers[args.at(-1)].State.FinishedAt = "2026-10-23T00:00:00Z";
+  if (${JSON.stringify(change)} === "grant" && state.smokeStarts === 4) {
+    const directory = process.env.HOME + "/.local/state/fleur/setup";
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(directory + "/grants.json", JSON.stringify({ formatVersion: 1, grants: [{ id: "11111111-1111-4111-8111-111111111111", action: "install", method: "docker-official-apt", target: "fixture", planChecksum: "a".repeat(64), machine: "b".repeat(64), user: process.getuid(), mode: "remembered", revoked: false }] }), { mode: 0o600 });
+  }
+  output = "fleur-doctor-smoke";
+}
 else if (command === "rm") { delete state.containers[args.at(-1)]; output = args.at(-1); }
 else throw new Error("Unexpected fixture operation " + JSON.stringify(args));
 writeFileSync(path, JSON.stringify(state));
@@ -185,13 +194,36 @@ process.stdout.write(output + (command === "start" ? "" : "\\n"));
       // A trusted test-build catalog, never a public profile override or native evidence.
       const profile = { id: "fixture-native-verified", host: { system: native.system, distribution: native.distribution ?? null, release: native.release, architecture: native.architecture }, bun: "1.4.3", cli: { version: "28.0.4", commit: "b8034c0" }, engine: { version: "28.0.4", commit: "6430e49", kernel: "fixture-kernel", platform: "Docker Engine - Community", cgroupDriver: "systemd", cgroupVersion: "2", operatingMode: "rootful", securityOptions: ["name=cgroupns", "name=seccomp,profile=builtin"] }, containerd: { version: "v2.4.1", commit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" }, runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" }, compose: "2.38.2", image: process.arch === "arm64" ? "oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023" : "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e", evidence: { readinessSha256: "1".repeat(64), isolationSha256: "2".repeat(64) } };
       await writeFile(join(source, "src/setup/verified-readiness-profiles.ts"), `export const verifiedReadinessProfiles = ${JSON.stringify([profile])} as const;\n`);
+      if (change === "action") {
+        const setupPath = join(source, "src/setup/setup.ts");
+        const body = await readFile(setupPath, "utf8");
+        const target = "if (observed.result.ok) return reframe(observed);";
+        expect(body).toContain(target);
+        await writeFile(setupPath, body.replace(target, 'if (observed.result.ok) return reframe(observed, { setupAction: { state: "completed" } });'));
+      }
+      if (change === "unsafe-grant") {
+        const directory = join(scratch, ".local/state/fleur/setup");
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        const target = join(scratch, "private-grant-target.json");
+        await writeFile(target, JSON.stringify({ formatVersion: 1, grants: [] }), { mode: 0o600 });
+        await symlink(target, join(directory, "grants.json"));
+      }
+      if (change === "transport") {
+        const hostPath = join(source, "src/setup/host.ts");
+        const body = await readFile(hostPath, "utf8");
+        const target = "host: identity, run, aptPackageLocks";
+        expect(body).toContain(target);
+        await writeFile(hostPath, body.replace(target, "host: identity, run: async (args, timeout, context) => { const result = await run(args, timeout, context); return process.argv[1]?.endsWith('/scripts/verify-native-setup.ts') && args.join(' ') === 'docker context show' ? { ...result, terminationUnconfirmed: true } : result; }, aptPackageLocks"));
+      }
     }
     const child = Bun.spawn([process.execPath, verifier], {
       env: { ...process.env, HOME: scratch, PATH: `${scratch}:/usr/bin:/bin:/usr/sbin:/sbin`, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined, FLEUR_EXISTING_DOCKER_ONLY: "yes", FLEUR_NATIVE_REPORT: report, FLEUR_TEST_STATE: state },
       stdin: "ignore", stdout: "ignore", stderr: "ignore", timeout: 25000,
     });
     const exit = await child.exited;
-    return { exit, report: JSON.parse(await readFile(report, "utf8")), state: JSON.parse(await readFile(state, "utf8")) };
+    const grantStore = await readFile(join(scratch, ".local/state/fleur/setup/grants.json"), "utf8").catch((error: unknown) => { if ((error as { code?: string }).code === "ENOENT") return null; throw error; });
+    const grantStoreSymlink = await lstat(join(scratch, ".local/state/fleur/setup/grants.json")).then((info) => info.isSymbolicLink()).catch((error: unknown) => { if ((error as { code?: string }).code === "ENOENT") return false; throw error; });
+    return { exit, report: JSON.parse(await readFile(report, "utf8")), state: JSON.parse(await readFile(state, "utf8")), grantStore, grantStoreSymlink };
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
@@ -199,8 +231,55 @@ test("native verifier accepts two ready rounds only when its trusted build alrea
   const result = await completeNativeVerification("none", true);
   expect(result.exit, result.report.error).toBe(0);
   expect(result.report).toMatchObject({ ok: true, verifiedReleaseProfile: true, installationVerified: false, sentinelCleanup: true });
-  expect(result.report.runs).toHaveLength(2);
+  expect(result.report).toMatchObject({ completedRounds: 2, preservationChecks: 4, grantsPreserved: true });
+  expect(result.report.runs.map((round: { command: string }) => round.command)).toEqual(["doctor", "setup", "doctor", "setup"]);
+  expect(result.grantStore).toBeNull();
+  expect(result.state.smokeStarts).toBe(4);
+  expect(result.state.operations.some((args: string[]) => args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
   for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", profile: "fixture-native-verified" }, smoke: { state: "ready", cleanup: true } } } });
+  expect(result.state.containers).toEqual({});
+}, 30000);
+
+test("native verifier checks the final ready setup command rather than stopping after Doctor", async () => {
+  const result = await completeNativeVerification("final-setup", true);
+  expect(result.exit).toBe(1);
+  expect(result.report).toMatchObject({ ok: false, verifiedReleaseProfile: false, completedRounds: 1, sentinelCleanup: true });
+  expect(result.state.smokeStarts).toBe(4);
+  expect(result.state.containers).toEqual({});
+}, 30000);
+
+test("native verifier rejects grant changes even when all four readiness commands succeed", async () => {
+  const result = await completeNativeVerification("grant", true);
+  expect(result.exit).toBe(1);
+  expect(result.report).toMatchObject({ ok: false, verifiedReleaseProfile: false, completedRounds: 1, grantsPreserved: false, sentinelCleanup: true });
+  expect(result.report.runs.map((round: { command: string }) => round.command)).toEqual(["doctor", "setup", "doctor", "setup"]);
+  expect(result.grantStore).not.toBeNull();
+  expect(result.state.containers).toEqual({});
+}, 30000);
+
+test("native verifier rejects successful setup with an unexpected action result", async () => {
+  const result = await completeNativeVerification("action", true);
+  expect(result.exit).toBe(1);
+  expect(result.report).toMatchObject({ ok: false, verifiedReleaseProfile: false, completedRounds: 0, sentinelCleanup: true, error: "Ready setup returned an unexpected action or recovery result." });
+  expect(result.report.runs.map((round: { command: string }) => round.command)).toEqual(["doctor", "setup"]);
+  expect(result.state.containers).toEqual({});
+}, 30000);
+
+test("native verifier refuses an unsafe grant-store read instead of treating it as empty", async () => {
+  const result = await completeNativeVerification("unsafe-grant", true);
+  expect(result.exit).toBe(1);
+  expect(result.report).toMatchObject({ ok: false, verifiedReleaseProfile: false, sentinelCleanup: true });
+  expect(result.report.error).toMatch(/ELOOP|symbolic link/i);
+  expect(result.report.runs).toEqual([]);
+  expect(result.grantStoreSymlink).toBe(true);
+  expect(result.state.containers).toEqual({});
+}, 30000);
+
+test("native verifier refuses an expected exit zero with unconfirmed command retirement", async () => {
+  const result = await completeNativeVerification("transport", true);
+  expect(result.exit).toBe(1);
+  expect(result.report).toMatchObject({ ok: false, verifiedReleaseProfile: false, error: "Native verification command retirement is unconfirmed." });
+  expect(result.report.runs).toEqual([]);
   expect(result.state.containers).toEqual({});
 }, 30000);
 

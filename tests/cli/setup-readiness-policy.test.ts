@@ -545,3 +545,52 @@ for (const architecture of ["x64", "arm64"] as const) {
     });
   }
 }
+
+for (const command of ["doctor", "setup"] as const) test(`ordinary ${command} admits only the independently qualified Intel Desktop tuple`, async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { readGrants } = await import("../../src/setup/grants.ts");
+  const directory = await mkdtemp("/tmp/fleur-intel-ready-");
+  try {
+    const fixture = desktopFixture();
+    const host: SetupHost = { ...fixture.host, stateDirectory: directory, interactive: true, confirmHuman: async () => { throw new Error("Ready Desktop requires no new authority"); } };
+    const outcome = await runCli([command, "--json"], { cwd: directory, handlers: setupCommands(host) });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.result).toMatchObject({ command, ok: true, error: null, data: { components: { release: { state: "verified", profile: "darwin-15.7.7-x64-desktop-4.96.1", evidence: { readinessSha256: "b2b1565746e8a1a56785db75594f38dc1f942dc28609a1e151a1c8bb10c63571", isolationSha256: "17b2fe0503493c0273806e482ed7c008c595861c646850b458880344e49b2787" } }, smoke: { state: "ready", cleanup: true } } } });
+    expect(fixture.containers.size).toBe(0);
+    expect(await readGrants(host)).toEqual([]);
+    expect(fixture.commands.some((args) => ["sudo", "installer", "hdiutil", "codesign", "spctl", "launchctl"].includes(args[0]!) || args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+for (const field of ["release", "translation", "architecture", "cli", "compose", "engine", "kernel", "containerd", "runc", "security", "cgroup"] as const) test(`compiled Intel Desktop admission refuses ${field} drift without acquisition`, async () => {
+  const fixture = desktopFixture();
+  let host: SetupHost = fixture.host;
+  if (field === "release") host = { ...host, host: async () => ({ ...await fixture.host.host(), release: "15.7.8" }) };
+  if (field === "translation") host = { ...host, host: async () => ({ ...await fixture.host.host(), translated: true }) };
+  if (field === "architecture") host = { ...host, host: async () => ({ ...await fixture.host.host(), architecture: "arm64" }) };
+  if (field === "kernel") fixture.info.KernelVersion = fixture.server.KernelVersion = "7.0.15-linuxkit";
+  if (field === "engine") { fixture.info.ServerVersion = fixture.server.Version = "29.9.3"; fixture.server.Components[0]!.Version = "29.9.3"; }
+  if (field === "containerd") fixture.server.Components[1]!.Version = "v2.4.3";
+  if (field === "runc") fixture.server.Components[2]!.Version = "1.5.3";
+  if (field === "security") fixture.info.SecurityOptions.push("name=userns");
+  if (field === "cgroup") fixture.info.CgroupDriver = "systemd";
+  if (field === "cli" || field === "compose") host = { ...host, run: async (args, timeout, context) => {
+    if (field === "cli" && args.join(" ") === "docker --version") return { status: "completed", exitCode: 0, stdout: "Docker version 29.9.3, build a82e528", stderr: "" };
+    if (field === "compose" && args[3] === "compose") return { status: "completed", exitCode: 0, stdout: "5.6.1", stderr: "" };
+    return fixture.host.run(args, timeout, context);
+  } };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result.ok).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+  expect(fixture.commands.some((args) => args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
+});
+
+test("compiled Intel Desktop policy retains exact Bun version admission", async () => {
+  const { nativeReadinessProfiles, readinessCandidates } = await import("../../src/setup/readiness.ts");
+  const fixture = desktopFixture();
+  const identity = await fixture.host.host();
+  const candidates = (bun: string) => readinessCandidates(nativeReadinessProfiles, identity, bun, "Docker version 29.9.2, build a82e528", "5.6.0", image, fixture.info);
+  expect(candidates("1.4.3").map((candidate) => candidate.id)).toEqual(["darwin-15.7.7-x64-desktop-4.96.1"]);
+  expect(candidates("1.4.4")).toEqual([]);
+});

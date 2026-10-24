@@ -38,8 +38,7 @@ changes. An existing usable CLI that is not accounted for by the exact configure
 `docker-ce-cli` package is preserved rather than replaced. A rejected remote or
 malformed Docker endpoint does not enter native package planning. Inventory queries explicitly target `/` and `/var/lib/dpkg`, so
 `DPKG_ROOT` and `DPKG_ADMINDIR` cannot redirect the inventory away from the host
-that the installation targets. Repository creation has a separate scoped adapter. Desktop and Arch installation
-remain unfinished.
+that the installation targets. Repository creation has a separate scoped adapter. The exact Intel Desktop placement row is described in the separate Desktop document; Arch installation remains unqualified.
 
 A verified apt plan requires separate installation, configuration, Docker access,
 service start and service enable grants because authenticated maintainer scripts
@@ -77,9 +76,7 @@ removes successful shared system configuration automatically.
 
 Official apt signatures and package payloads, Arch package signatures and Docker
 Desktop disk image identities have been authenticated during development. This
-artifact evidence does not establish native installation or runtime support. The
-compiled native profile catalog is still disabled; disposable command fixtures
-exercise the adapters without changing host software.
+artifact evidence does not establish native installation or runtime support. The compiled catalog admits only the exact reviewed Ubuntu APT and Intel Desktop placement rows described above. Other adapter rows remain disabled; disposable command fixtures exercise those adapters without admitting them.
 
 ### Arch adapter checkpoint
 

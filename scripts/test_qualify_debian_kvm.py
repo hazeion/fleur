@@ -104,6 +104,23 @@ class InputContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate_package_delta(after, after, manifest)
 
+    def test_host_query_failure_retains_bounded_diagnostic_without_payload_arguments(self):
+        import sys
+        with self.assertRaises(RuntimeError) as caught:
+            module.run([sys.executable, '-I', '-c', "import sys; sys.stderr.write('fixed permission refusal'); sys.exit(7)"])
+        diagnostic = caught.exception.diagnostic
+        self.assertEqual(diagnostic['exitCode'], 7)
+        self.assertEqual(diagnostic['stderr'], 'fixed permission refusal')
+        self.assertNotIn('arguments', diagnostic)
+
+    def test_kvm_probe_requires_actual_ordinary_native_access(self):
+        proof = {'system': 'Linux', 'architecture': 'x86_64', 'effectiveRoot': False,
+                 'kvm': {'apiVersion': 12, 'device': 'observed', 'characterDevice': True}}
+        self.assertTrue(module.accepted_kvm_probe(proof))
+        for changed in ({**proof, 'effectiveRoot': True}, {**proof, 'architecture': 'aarch64'},
+                        {**proof, 'kvm': {'device': 'permission-denied'}}, {**proof, 'kvm': {'apiVersion': 12}}):
+            self.assertFalse(module.accepted_kvm_probe(changed))
+
     def test_not_found_is_the_only_nonzero_service_observation(self):
         from unittest.mock import patch
         class Result:

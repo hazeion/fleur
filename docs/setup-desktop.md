@@ -1,6 +1,6 @@
 # Docker Desktop application placement
 
-Desktop setup is under development. The ordinary release has no admitted Desktop installation profile yet. Authenticated downloads are evidence of artifact integrity; they do not establish native installation or Fleur runtime support. See [artifact evidence](setup-artifact-evidence.md).
+The ordinary source catalog admits Docker Desktop 4.96.1 build 244132 placement on native Intel macOS 15.7.7. This exact installation-method record binds the authenticated official image and two independently reviewed native private-placement receipts. Other macOS/architecture rows remain unverified. Placement evidence does not admit runtime readiness. See [artifact evidence](setup-artifact-evidence.md).
 
 The adapter accepts only an immutable, source-owned official DMG profile for the exact native architecture and macOS release. The internal test seam can supply host fixtures; no CLI option, project file or environment variable can select a profile or mark it supported.
 
@@ -10,7 +10,7 @@ Application placement does not start Docker Desktop, run its installer, accept i
 
 Every external operation and image-hash loop shares the command deadline, reserving time for owned image cleanup. Cleanup checks the recorded image path, mountpoint and device identity before normal detachment. Unknown ownership or a busy image produces recovery-required status; setup never forces unmounts or removes unrelated resources. Once grants are consumed durably before acquisition and cannot replay after a failed attempt.
 
-The Desktop fixture tests execute real temporary filesystem placement: Darwin uses `renameatx_np(RENAME_EXCL)` and Linux uses `renameat2(RENAME_NOREPLACE)`. Download, signing tools, mounts and copying are simulated at the approved host boundary. These tests do not install Docker, launch its app or prove native Desktop readiness. Native macOS Intel and Apple Silicon installation, agreement and daemon/runtime verification remain open requirements.
+The Desktop fixture tests execute real temporary filesystem placement: Darwin uses `renameatx_np(RENAME_EXCL)` and Linux uses `renameat2(RENAME_NOREPLACE)`. Download, signing tools, mounts and copying are simulated at the approved host boundary. These tests do not install Docker, launch its app or prove native Desktop readiness. Separate native Intel observations executed real official-image acquisition, signatures, copying, publication and normal detach in fresh private Applications destinations, preserving the existing app. Ordinary packed native placement repeats remain pending. Apple Silicon method qualification and Desktop runtime policy admission remain open. Agreement and startup remain human actions.
 
 
 ## Verify an existing Desktop installation

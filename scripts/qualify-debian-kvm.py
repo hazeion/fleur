@@ -53,6 +53,12 @@ def decode_helpers(raw, pins):
     return result
 
 
+def accepted_kvm_probe(value):
+    return (value.get('system') == 'Linux' and value.get('architecture') == 'x86_64'
+            and value.get('effectiveRoot') is False
+            and value.get('kvm') == {'apiVersion': 12, 'device': 'observed', 'characterDevice': True})
+
+
 def accepted_guest(report, source):
     if not isinstance(report, dict):
         return False
@@ -217,7 +223,9 @@ def run(args, timeout=30, allowed=(0,)):
             child.kill()
     code, out, error, cancelled, limited = bounded_capture(child, timeout, retire)
     if cancelled or limited or code not in allowed:
-        raise RuntimeError('Fixed host command failed: ' + Path(args[0]).name)
+        failure = RuntimeError('Fixed host command failed: ' + Path(args[0]).name)
+        failure.diagnostic = {'executable': Path(args[0]).name, 'exitCode': code, 'cancelled': cancelled, 'outputLimited': limited, 'stderr': error.decode(errors='replace')[-2048:]}
+        raise failure
     return subprocess.CompletedProcess(args, code, out, error)
 
 
@@ -394,7 +402,7 @@ def main():
         gid = grp.getgrnam('kvm').gr_gid
         if not stat.S_ISCHR(device.st_mode) or device.st_uid != 0 or device.st_gid != gid:
             raise ValueError('Existing KVM device custody unavailable')
-        observed = run(['sudo', '-n', '-u', '#' + str(os.getuid()), '-g', '#' + str(gid), '--', '/usr/bin/python3', '-I', str(REPO / 'scripts/observe-native-virtualization.py')])
+        observed = run(['sudo', '-n', '/usr/bin/python3', '-I', str(REPO / 'scripts/observe-native-virtualization.py')])
         if json.loads(observed.stdout).get('kvm', {}).get('apiVersion') != 12:
             raise ValueError('Existing KVM access unavailable')
         report['context'] = {key: os.environ[key] for key in ('GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT')}
@@ -446,6 +454,17 @@ def main():
             if kind == 'normal' and (result['exitCode'] != 0 or result['terminal'].get('result') != 'success') or kind == 'stop' and (result['stopCommands'] < 1 or not result['cancelled']) or kind == 'timeout' and result['terminal'].get('result') != 'timeout':
                 raise RuntimeError('Containment termination classification differs')
             report['containment'].append({'case': kind, **result})
+        # Hosted sudo policy may allow root while denying a direct run-as-group.
+        # The root-managed service establishes the existing KVM group for the
+        # ordinary runner, and must prove that exact identity's device access.
+        probe = Service(root, os.getuid(), gid, ['/usr/bin/python3', '-I', str(REPO / 'scripts/observe-native-virtualization.py')], env, 60)
+        services.append(probe)
+        probe.launch()
+        probe_result = probe.wait()
+        report['ordinaryKvmService'] = probe_result
+        report['ordinaryKvmObservation'] = json.loads(probe.output.read_text())
+        if probe_result['exitCode'] != 0 or probe_result['cancelled'] or probe_result['terminal'].get('result') != 'success' or not accepted_kvm_probe(report['ordinaryKvmObservation']):
+            raise RuntimeError('Ordinary bound-service KVM access unavailable')
         before = docker_snapshot()
         manifest = json.loads((REPO / 'scripts/native-kvm-host-tools.json').read_text())
         if manifest['runnerImage'] != os.environ.get('ImageVersion'):
@@ -489,7 +508,7 @@ def main():
             raise RuntimeError('Native guest qualification failed')
         report['ok'] = True
     except BaseException as error:
-        report['error'] = {'type': type(error).__name__, 'message': str(error)}
+        report['error'] = {'type': type(error).__name__, 'message': str(error), **({'diagnostic': error.diagnostic} if hasattr(error, 'diagnostic') else {})}
     finally:
         complete = True
         for service in services:

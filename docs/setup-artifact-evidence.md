@@ -1,6 +1,6 @@
 # Prerequisite installer artifact evidence
 
-Evidence date: 2026-10-19. This records read-only authentication of upstream installer artifacts for issue [#24](https://github.com/hazeion/fleur/issues/24). It does **not** establish fresh installation, ordinary-user daemon readiness or Fleur runtime support for these versions. No installer, package payload or application was executed in this verification.
+Initial artifact audit: 2026-10-19, for issue [#24](https://github.com/hazeion/fleur/issues/24). That read-only audit executed no installer, package payload or application and established no native readiness. Later sections record separate native execution at exact source revisions; their scope and release admission remain explicit.
 
 ## Evidence scope
 
@@ -10,7 +10,7 @@ Evidence date: 2026-10-19. This records read-only authentication of upstream ins
 | Arch packages | Four payload hashes/signatures and 5/5 master certifications per signer verified | Native pacman trust enforcement, complete consistent distro snapshot and fresh setup |
 | Desktop disk images | Both exact hashes, strict image signatures and Gatekeeper notarization passed | Full application signature assessment, fresh installation, real agreement action and native daemon/runtime readiness |
 
-The [native prerequisite workflow](../.github/workflows/native-setup.yml) currently checks existing Docker on native Ubuntu 24.04 amd64/arm64. It must not be described as fresh installation proof. A separate owned fresh-VM lane and native Desktop hosts are still required.
+The ordinary [native prerequisite workflow](../.github/workflows/native-setup.yml) jobs check existing Docker on native Ubuntu 24.04 amd64/arm64. Its explicit manual x64 KVM lane separately attempts fresh Debian qualification; an existing-runner pass does not establish fresh installation. The sections below retain actual guest and private Intel Desktop results. Other promised native targets remain open.
 
 ## Docker official apt provenance
 
@@ -832,3 +832,23 @@ existing-installation verification at the same source passed two Doctor/runtime
 smoke rounds and preserved and removed its owned sentinel. That readiness proof
 used the already running Docker Desktop installation, without acquisition or
 installation, and remains separate from the placement receipts.
+
+
+## Exact Intel Desktop installation-method admission
+
+The fixed packaged `verified-desktop-profiles.json` record binds native Intel
+macOS 15.7.7 to the official Docker Desktop 4.96.1 build 244132 artifact, the
+successful authentication report and the two reviewed placement receipts at
+source `86849ab70392b3c2585e987ab54ea058005754b0` above. The loader validates exact
+schemas, artifact/host consistency and distinct repeat hashes, then freezes the
+records. This source-owned installation authority is separate from the existing
+APT catalog; no CLI, project or environment profile override is introduced.
+
+Here `nativeEvidence: verified` means the placement method was observed natively.
+The record explicitly sets `runtimeReadinessAdmission: false`. Agreement, startup,
+helpers and configuration remain separate human actions; successful placement
+still returns resumable `HUMAN_ACTION_REQUIRED`. Other macOS and architecture rows
+remain unverified. Requirements-based red/green tests show the ordinary default
+catalog now exposes separate acquisition/placement authority for this exact tuple,
+with no grant creation or OS mutation on JSON invocation. Malformed or inconsistent
+catalogs fail closed. Ordinary packed native placement repeats remain pending.

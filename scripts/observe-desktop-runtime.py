@@ -328,6 +328,7 @@ def observe(mode,images_directory):
                 load=Channel(['docker','--host',endpoint,'image','load'],environment=environment,input_fd=fd);channels.append(load)
                 stdout,stderr=load.drain(min(work_end,time.monotonic()+120));load.close(work_end);channels.remove(load)
                 held.verify(name)
+                report.setdefault('imageLoadReceipts',[]).append({'imageId':image,'exitCode':load.child.returncode,'stdout':stdout.decode('utf-8',errors='replace'),'stderr':stderr.decode('utf-8',errors='replace')})
                 if load.child.returncode or stderr or stdout.decode()!='Loaded image ID: '+image+'\n':raise RuntimeError('IMAGE_LOAD_UNCONFIRMED')
             actual=inspect(image,'image')
             if actual is None or actual['Id']!=image or actual.get('Architecture')!='amd64' or actual.get('Os')!='linux' or actual.get('Config')!=configs[name]['config']:raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')

@@ -86,6 +86,16 @@ def emit(value):
     data=(json.dumps(value,separators=(',',':'))+'\n').encode()
     if len(data)>1048576 or os.write(1,data)!=len(data):raise RuntimeError('FRAME_OUTPUT_FAILED')
 
+def root_launch(manager_id,bounded):
+    """Prove root execution; retain only the two measured isolation warnings."""
+    if type(manager_id) is not str or not re.fullmatch('[a-f0-9]{64}',manager_id):raise RuntimeError('ROOT_LAUNCH_IDENTITY_REQUIRED')
+    result=bounded(['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c','import os;assert os.geteuid()==0;print("root-launch-confirmed")'],timeout=5)
+    warnings=('sudo: unable to resolve host '+manager_id[:12]+': Temporary failure in name resolution\n'
+              'sudo: unable to send audit message: Operation not permitted\n').encode()
+    if (type(result.returncode) is not int or result.returncode!=0 or result.stdout!=b'root-launch-confirmed\n'
+            or result.stderr not in (b'',warnings)):raise RuntimeError('ROOT_LAUNCH_UNCONFIRMED')
+    return {'verified':True,'stderr':result.stderr.decode()}
+
 def acknowledge(binding,phase,absolute_deadline=None):
     end=min(time.monotonic()+20,absolute_deadline) if absolute_deadline is not None else time.monotonic()+20;data=bytearray()
     while b'\n' not in data:
@@ -136,12 +146,11 @@ def main():
         guard=json.loads(command(['docker','inspect',binding['guardianId'],'--format','{{json .}}']))
         own=json.loads(command(['docker','inspect',manager_id,'--format','{{json .}}']))
         if (guard.get('Id')!=binding['guardianId'] or guard.get('Image')!=own.get('Image') or guard.get('Mounts')!=[] or guard.get('Config',{}).get('Labels',{}).get(OWNER)!=binding['nonce'] or guard.get('Config',{}).get('Labels',{}).get(ROLE)!='guardian' or guard.get('State',{}).get('Running') is not True):raise RuntimeError('GUARDIAN_BINDING_CHANGED')
-        sudo=command(['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c','import os;assert os.geteuid()==0;print("root-launch-confirmed")'])
-        if sudo!='root-launch-confirmed\n':raise RuntimeError('ROOT_LAUNCH_UNCONFIRMED')
+        root_proof=root_launch(manager_id,processes.bounded)
         compiler=Path('/usr/local/bin/gcc')
         if hashlib.sha256(compiler.read_bytes()).hexdigest()!='1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26':raise RuntimeError('COMPILER_PIN_CHANGED')
         outcome.update({key:ready[key] for key in ('nonce','bootId','managerId','managerPid','vmMonotonicNs','sourceCommit','sources')})
-        outcome.update(controllerUserspace=Path('/etc/os-release').read_text(),packages=Path('/controller-packages.tsv').read_text(),rootLaunchVerified=True)
+        outcome.update(controllerUserspace=Path('/etc/os-release').read_text(),packages=Path('/controller-packages.tsv').read_text(),rootLaunchVerified=True,rootLaunch=root_proof)
         if mode=='--capabilities':outcome['ok']=True
         else:
             sys.path.insert(0,str(ROOT/'runtime-probe'))

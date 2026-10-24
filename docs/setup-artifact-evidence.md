@@ -1461,3 +1461,23 @@ aggregate limit reserves 20 seconds for owned-container removal and preservation
 checks. This preflight cannot admit a runtime profile or replace any original
 restriction, resource, physical-deadline, lifecycle or disposal check. Native
 execution and complete Desktop runtime qualification remain pending.
+
+
+The first clean-source Intel control preflight at
+`b26904cb4b97db7eca83bfcce1780c9c37aecbba` refused a missing-name inspect response
+before creating containers. Report SHA256
+`342b14403a012fa8cf8aea9ec945022f3d4c0707ca17f4fe2f38bb4516286a5c`
+retains this failed attempt, confirmed transport, no image acquisition and
+unchanged context/daemon/container/image inventories. It establishes no Linux-VM
+control capability. A separate read-only query observed the exact native
+Desktop 29.9.2 absence protocol: exit 1, one LF on stdout, and lowercase
+`error: no such object: <exact target>` followed by LF on stderr. The previous
+parser required empty stdout and different diagnostic capitalization.
+
+Intended-red tests and an independent actual-controller replay preceded the
+correction. The parser adds only that exact observed tuple for a validated owned
+name or full container ID, retaining confirmed completion, exact exit and target,
+legacy forms and rejection of extra output/errors, unknown outcomes and uncertain
+transport. All eleven Desktop preflight tests passed with 132 assertions. A new
+clean-source native attempt remains required; no native result was fabricated
+from fixture success.

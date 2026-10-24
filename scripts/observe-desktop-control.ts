@@ -1,7 +1,7 @@
 /** Conservative Desktop control preflight. Never release or runtime admission. */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { SetupHost } from "../src/setup/commands.ts";
+import type { HostCommandResult, SetupHost } from "../src/setup/commands.ts";
 import { productionHost } from "../src/setup/host.ts";
 import { smokeImages } from "../src/setup/profiles.ts";
 export interface DesktopControlBinding {
@@ -19,6 +19,12 @@ export interface DesktopControlContainer {
   readonly kind: "worker" | "manager";
   readonly command: readonly string[];
   readonly environment: readonly string[];
+}
+export function desktopControlInspectAbsent(result: HostCommandResult, target: string): boolean {
+  if (!/^(?:[a-f0-9]{64}|fleur-desktop-(?:worker|manager)-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/.test(target)
+      || result.status !== "completed" || result.terminationUnconfirmed === true || result.exitCode !== 1) return false;
+  return (result.stdout === "" && [`Error: No such object: ${target}\n`, `Error response from daemon: No such container: ${target}\n`].includes(result.stderr))
+    || (result.stdout === "\n" && result.stderr === `error: no such object: ${target}\n`);
 }
 export function acceptDesktopControlContainer(value: unknown, expected: DesktopControlContainer): boolean {
   if (!/^[a-f0-9]{64}$/.test(expected.id ?? "") || !/^sha256:[a-f0-9]{64}$/.test(expected.image)
@@ -100,7 +106,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
     if (result.exitCode === 0 && !result.stderr) {
       const value: unknown = JSON.parse(result.stdout); if (!object(value)) throw new Error("INSPECTION_SHAPE_UNKNOWN"); return value;
     }
-    if (result.exitCode === 1 && !result.stdout && [`Error: No such object: ${target}\n`, `Error response from daemon: No such container: ${target}\n`].includes(result.stderr)) return null;
+    if (desktopControlInspectAbsent(result, target)) return null;
     throw new Error("INSPECTION_OUTCOME_UNKNOWN");
   };
   const inventory = async (cleanup = false) => ({

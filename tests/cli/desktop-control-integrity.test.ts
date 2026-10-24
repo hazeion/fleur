@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import type { SetupHost } from "../../src/setup/commands.ts";
 
 type FixtureContainer = { Id: string; Name: string; Image: string; Mounts: unknown[]; Config: Record<string, unknown>; HostConfig: Record<string, unknown>; State: { Running: boolean; Pid: number } };
-async function scenario(mode: "source-race" | "uncertain-start" | "ownership-drift") {
+async function scenario(mode: "source-race" | "uncertain-start" | "ownership-drift" | "native-absence") {
   const directory = await mkdtemp(join(tmpdir(), "fleur-desktop-control-review-"));
   const repository = resolve(import.meta.dir, "../..");
   try {
@@ -38,7 +38,7 @@ async function scenario(mode: "source-race" | "uncertain-start" | "ownership-dri
         if (command === "image") return args[4] === "inspect" ? done(JSON.stringify([{ Id: image, Architecture: "amd64", Os: "linux", Config: { Volumes: null } }])) : done(`${image}\n`);
         if (command === "inspect") {
           const target = args[4]!; const value = states.get(target) ?? states.get(names.get(target) ?? "");
-          if (!value) return done("", 1, `Error: No such object: ${target}\n`);
+          if (!value) return mode === "native-absence" ? done("\n", 1, `error: no such object: ${target}\n`) : done("", 1, `Error: No such object: ${target}\n`);
           if (mode === "ownership-drift" && managerLogged && value.Config.User === "65534:65534") return done(JSON.stringify({ ...value, Config: { ...value.Config, Labels: {} } }));
           return done(JSON.stringify(value));
         }
@@ -93,4 +93,17 @@ test("Desktop cleanup preserves a container whose ownership evidence changed", a
   expect(result.remaining).toEqual(["1".repeat(64)]);
   expect(result.report.originalPreserved).toBe(false);
   expect(result.report.cleanup).toContainEqual({ kind: "worker", absent: false, error: "OWNED_CLEANUP_UNCONFIRMED" });
+});
+
+
+test("actual Desktop lowercase absence protocol permits fresh creation and confirms owned cleanup", async () => {
+  const result = await scenario("native-absence");
+  expect(result.managerPrograms).toEqual([result.originalProgram]);
+  expect(result.report.error).toBe("CONTROL_CAPABILITY_UNPROVEN");
+  expect(result.report.ok).toBe(false); // Absence is not capability proof.
+  expect(result.removed).toEqual(["1".repeat(64), "2".repeat(64)]);
+  expect(result.remaining).toEqual([]);
+  expect(result.report.originalPreserved).toBe(true);
+  expect(result.report.transportUncertain).toBe(false);
+  expect(result.report.cleanup).toEqual([{ kind: "worker", absent: true }, { kind: "manager", absent: true }]);
 });

@@ -37,6 +37,9 @@ artifacts=module('desktop_outer_artifacts',DIRECTORY/'artifact_inputs.py')
 sys.path.insert(0,str(ROOT/'experiments/compatibility/runtime-probe'))
 
 
+def native_intel_identity(system,machine,cpu):return system=='Darwin' and machine=='x86_64' and cpu=='7\n'
+
+
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
 
 
@@ -282,7 +285,7 @@ def observe(mode,images_directory):
             docker(['rm','--force',adopted['cid']],True)
             if inspect(adopted['cid'],cleanup=True) is not None:raise RuntimeError('ROLE_REMOVAL_UNCONFIRMED')
     try:
-        if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or platform.system()!='Darwin' or platform.machine()!='x86_64' or command(['/usr/sbin/sysctl','-n','hw.optional.arm64']).strip()!='0':raise RuntimeError('EXPLICIT_NATIVE_INTEL_MAC_REQUIRED')
+        if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or not native_intel_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype'])):raise RuntimeError('EXPLICIT_NATIVE_INTEL_MAC_REQUIRED')
         commit=command(['git','rev-parse','HEAD']).strip()
         if not re.fullmatch('[a-f0-9]{40}',commit) or command(['git','diff','--exit-code','HEAD']):raise RuntimeError('CLEAN_COMMITTED_SOURCE_REQUIRED')
         operator_files=['scripts/observe-desktop-runtime.py',*['experiments/compatibility/desktop-runtime/'+name for name in ('artifact_inputs.py','oci_inputs.py','entry.py','processes.py','image-origin.json')]]

@@ -102,14 +102,24 @@ def environment(deadline=None):
     release_bytes, release_identity = protected_read('/usr/lib/os-release', 16384, deadline=deadline)
     release = release_bytes.decode()
     fields = {}
+    raw_fields = {}
     for line in release.splitlines():
         if '=' in line:
             key, value = line.split('=', 1)
             if key in fields:
                 raise ValueError('duplicate release field')
+            raw_fields[key] = value
             fields[key] = value.strip('"')
-    if (fields.get('ID'), fields.get('VERSION_ID')) not in (('ubuntu', '24.04'), ('ubuntu', '26.04'), ('debian', '13')):
-        raise ValueError('guest distribution')
+    release_digest = hashlib.sha256(release_bytes).hexdigest()
+    if fields.get('ID') == 'arch':
+        if (raw_fields.get('ID') not in ('arch', '"arch"') or 'VERSION_ID' in fields
+                or raw_fields.get('BUILD_ID') not in ('rolling', '"rolling"')):
+            raise ValueError('guest distribution')
+        os_release = {'id': 'arch', 'versionId': None, 'sha256': release_digest, 'buildId': 'rolling'}
+    else:
+        if (fields.get('ID'), fields.get('VERSION_ID')) not in (('ubuntu', '24.04'), ('ubuntu', '26.04'), ('debian', '13')):
+            raise ValueError('guest distribution')
+        os_release = {'id': fields['ID'], 'versionId': fields['VERSION_ID'], 'sha256': release_digest}
     if protected_read('/proc/1/comm', 64, deadline=deadline)[0] != b'systemd\n':
         raise ValueError('guest init')
     protected_read('/usr/bin/systemd-detect-virt', 8 * 1024 * 1024, deadline=deadline)
@@ -122,8 +132,7 @@ def environment(deadline=None):
     boot_id = protected_read('/proc/sys/kernel/random/boot_id', 64, deadline=deadline)[0].decode().rstrip('\n')
     if re.fullmatch(BOOT, boot_id) is None:
         raise ValueError('guest boot identity')
-    release_digest = hashlib.sha256(release_bytes).hexdigest()
-    return boot_id, (release_identity, release_digest), {'id': fields['ID'], 'versionId': fields['VERSION_ID'], 'sha256': release_digest}
+    return boot_id, (release_identity, release_digest), os_release
 
 
 def object_pairs(pairs):
@@ -198,7 +207,7 @@ def validate(nonce, *, deadline=None, ordinary_uid=None):
         raise ValueError('owned manifest binding')
     context = OwnedGuestContext(nonce, boot_id, uid, hashlib.sha256(manifest).hexdigest(),
                                 (marker_identity, manifest_identity, producer_identity, release_custody),
-                                tuple(os_release[key] for key in ('id', 'versionId', 'sha256')))
+                                tuple(os_release[key] for key in (('id', 'versionId', 'sha256', 'buildId') if os_release['id'] == 'arch' else ('id', 'versionId', 'sha256'))))
     budget_remaining(deadline)
     return context
 
@@ -207,10 +216,10 @@ def create(nonce, *, deadline=None, fixture='ubuntu24-amd64'):
     deadline = operation_deadline(deadline)
     if os.getuid() != 0 or os.geteuid() != 0 or type(nonce) is not str or re.fullmatch(NONCE, nonce) is None:
         raise ValueError('root boot producer and canonical nonce required')
-    if type(fixture) is not str or fixture not in ('ubuntu24-amd64', 'ubuntu26-amd64', 'debian13-amd64'):
+    if type(fixture) is not str or fixture not in ('ubuntu24-amd64', 'ubuntu26-amd64', 'debian13-amd64', 'arch-amd64'):
         raise ValueError('source-owned guest fixture required')
     boot_id, _release_custody, os_release = environment(deadline)
-    target = {'ubuntu24-amd64': ('ubuntu', '24.04'), 'ubuntu26-amd64': ('ubuntu', '26.04'), 'debian13-amd64': ('debian', '13')}[fixture]
+    target = {'ubuntu24-amd64': ('ubuntu', '24.04'), 'ubuntu26-amd64': ('ubuntu', '26.04'), 'debian13-amd64': ('debian', '13'), 'arch-amd64': ('arch', None)}[fixture]
     if (os_release['id'], os_release['versionId']) != target:
         raise ValueError('guest differs from source-owned seed target')
     if protected_read(MARKER, 36, 0o444, deadline=deadline)[0] != nonce.encode():
@@ -292,21 +301,23 @@ def main(arguments):
             deadline = started + seconds
             arguments = arguments[:2]
         budget_remaining(deadline)
-        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--create-ubuntu26', '--create-debian13', '--verify-control'):
+        if len(arguments) != 2 or arguments[0] not in ('--owned-guest-nonce', '--create', '--create-ubuntu26', '--create-debian13', '--create-arch', '--verify-control'):
             raise ValueError('explicit invocation required')
         if arguments[0] == '--verify-control':
             result['scope'] = 'owned-guest-root-control-validation'
             result.update(verify_root_control(arguments[1], deadline=deadline))
             deadline = min(deadline, result['deadlineMonotonic'])
-        elif arguments[0] in ('--create', '--create-ubuntu26', '--create-debian13'):
+        elif arguments[0] in ('--create', '--create-ubuntu26', '--create-debian13', '--create-arch'):
             result['scope'] = 'owned-guest-boot-manifest'
-            result.update(create(arguments[1], deadline=deadline, fixture={'--create':'ubuntu24-amd64', '--create-ubuntu26':'ubuntu26-amd64', '--create-debian13':'debian13-amd64'}[arguments[0]]))
+            result.update(create(arguments[1], deadline=deadline, fixture={'--create':'ubuntu24-amd64', '--create-ubuntu26':'ubuntu26-amd64', '--create-debian13':'debian13-amd64', '--create-arch':'arch-amd64'}[arguments[0]]))
         else:
             context = validate(arguments[1], deadline=deadline)
             context.verify(budget_remaining(deadline), absolute_deadline=deadline)
             result.update(context.report())
             # Ordinary observation only; the strict root-control reply is unchanged.
             result['osRelease'] = dict(zip(('id', 'versionId', 'sha256'), context.os_release))
+            if context.os_release[0] == 'arch':
+                result['osRelease']['buildId'] = context.os_release[3]
         budget_remaining(deadline)
         result['ok'] = True
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired):

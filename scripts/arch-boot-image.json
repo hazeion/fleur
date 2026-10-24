@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "scope": "fixed-read-only-arch-boot-image",
+  "url": "https://geo.mirror.pkgbuild.com/images/v20261001.604814/Arch-Linux-x86_64-cloudimg-20261001.604814.qcow2",
+  "bytes": 578080256,
+  "sha256": "360f0fa49db6813bdc8e35bed230a2dc2ae3567b7b5ab74719c0a706e4e34e87",
+  "virtualBytes": 2147483648,
+  "signatureEvidence": {
+    "reviewReportSha256": "26e1dd7c99d320c53881580bbdf6e52ab92d26a0524316754df6efa7ed97d8f3",
+    "reviewHelperSha256": "982feabfd40ce012c76acccbcb1961d3aef917763663714270c00102e9560f85",
+    "signingFingerprint": "656E4C5AC1CC3B86E539D97E343635A6859A9174",
+    "currentGlobalRevocationAbsence": false
+  },
+  "headerPrefixSha256": "832e89fe53a4bf672fd28546ef170ecf874244b8314d1b3df3611a49ffa84a8d",
+  "featureNameTable": {
+    "kind": 1745090647,
+    "bytes": 384,
+    "sha256": "c48c50722126cae8a87bd804a27fa48655be3ea3c4dc2a3d92971c25c381a1b3"
+  },
+  "installationVerified": false,
+  "nativeQualification": false,
+  "runtimeAdmission": false
+}

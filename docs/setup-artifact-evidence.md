@@ -1264,3 +1264,78 @@ reproduced this second condition before the correction; the actual reconciler
 tests retain separate inspection authority and refusal before health checks for
 busy locks with both native-shaped absent layouts. Fresh native execution and
 all applicable final-candidate checks remain required.
+
+## Debian 13 x64 ordinary assisted-recovery qualification
+
+At `7b5be60c1132ea9e758a64cd88c470798adc90b6`, all applicable
+[CLI](https://github.com/hazeion/fleur/actions/runs/40093562546),
+[native prerequisite](https://github.com/hazeion/fleur/actions/runs/40093562540)
+and [compatibility](https://github.com/hazeion/fleur/actions/runs/40093562522)
+workflows passed. CLI recorded 1,293 tests and 12,401 assertions, plus types,
+full lint and two isolated generated-project checks. Independent review accepted
+both prerequisite and all four runtime reports with the original enforcement,
+repeats, deadlines and disposal requirements intact.
+
+The [first fresh recovery run](https://github.com/hazeion/fleur/actions/runs/40093570538/attempts/1)
+and [targeted fresh x64 repeat](https://github.com/hazeion/fleur/actions/runs/40093570538/attempts/2)
+both passed full independent review. They executed the same ordinary archive
+SHA256 `23530dce2b1678cb8864fbccfaa4bbbca357b36c221b117b5ae12db12504dfe0`.
+Report SHA256 values are:
+
+- First: `708068b560e3a4c5584f61f19a15e8ebcd36993be05fcb43af3d1789dd5b9fdd`.
+- Repeat: `0dcdb3ead5c0327d874a92380266d9b2ff9d2cc9fbd4840bfa3987e0099bfad8`.
+
+Each preserved all original packages and sources, installed exactly eight
+declared effects, retained the same-boot fence, and completed a real reboot under
+continuous VM/QMP/overlay/SSH custody. Both boot-bound firewall/configuration
+ledgers passed. Historical grants and retained artifacts stayed unchanged;
+separate once read-only inspection authority was consumed and revoked. Genuine
+fresh login, separate smoke-image acquisition, two Doctor rounds and two ready
+setup reprobes passed with state/grants preserved. Full original runtime and
+VM/overlay/credential/scratch/service/cgroup disposal checks passed. Physical
+pause observations were 42/27/34/29 ms and 28/78/35/45 ms, below 250 ms.
+
+The repeat used distinct VM nonces, all boot/manifest identities, service
+invocations, operations and inspection grants. Artifact 12559983657 was bound by
+its published ZIP digest and creation time to the actual repeated x64 job. A
+name-based download returned the first report and was explicitly excluded.
+Carried-forward ARM/scope jobs were not counted as new executions.
+
+This qualifies separately scoped read-only assisted recovery for the measured
+Debian x64 ordinary package. The historical interrupted transaction outcome
+remains unknown; automatic recovery and human consent are not claimed. It does
+not complete ARM fresh installation, Apple Silicon or Arch qualification.
+
+## Fixed Arch boot observation contract
+
+The manual native workflow has a false-default read-only Arch x64 KVM selector.
+It uses the fixed official cloud image `v20261001.604814`, 578,080,256 bytes,
+SHA256 `360f0fa49db6813bdc8e35bed230a2dc2ae3567b7b5ab74719c0a706e4e34e87`.
+The retained independent image-origin review is bound by report SHA256
+`26e1dd7c99d320c53881580bbdf6e52ab92d26a0524316754df6efa7ed97d8f3`
+and review-helper SHA256
+`982feabfd40ce012c76acccbcb1961d3aef917763663714270c00102e9560f85`.
+This does not recreate the missing historical parser attestation or establish
+current global revocation absence. A fresh full-byte authentication and exact
+header precheck precede QEMU interpretation; protected hosted tools then perform
+read-only image information and structure checks.
+
+The observation preserves the image's original 2 GiB virtual disk, disables
+cloud-init partition/filesystem growth, and performs no package installation,
+service execution or firewall mutation in the guest. The raw root OS record
+retains literal `VERSION_ID` absence as `versionId: null`, with
+`buildId: rolling`. Existing Ubuntu and Debian manifest records remain unchanged.
+
+Nineteen fixed queries collect package, backend, configuration-policy, storage,
+service and ownership facts. Configuration contents, mirrors, environment and
+keys are not published. Failed package queries are retained as failed facts;
+only complete exact C-locale not-found rows establish package absence. Each
+query retains its actual outcome and process retirement under custody checks.
+The original 180-second initial boot and 900-second aggregate limits remain.
+Live KVM, continuously held VM/QMP/overlay/SSH identities, tracked source hashes,
+all observations and complete guest/host disposal remain acceptance gates.
+
+This lane always declares installation, native qualification, runtime admission,
+human consent and native CPU-performance proof false. A successful observation
+would supply measured preparation inputs. It cannot admit an Arch installer
+profile or replace fresh-installation and runtime qualification repeats.

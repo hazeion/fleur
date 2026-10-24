@@ -33,7 +33,24 @@ test("fresh Debian qualification is explicit manual x64 work and cannot bypass t
   expect(qualification.run).toBe('python3 -I scripts/qualify-debian-kvm.py --run > "$RUNNER_TEMP/fleur-debian13-kvm.json"');
   expect(qualification.run).not.toContain("${{");
   expect(qualification.env).toEqual({ FLEUR_RUNNER_ENVIRONMENT: "${{ runner.environment }}", FLEUR_PINNED_BUN: "${{ runner.temp }}/fleur-native-bun/bun" });
-  expect(native["timeout-minutes"]).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery) && matrix.architecture == 'x86_64' && 40 || 10 }}");
+  expect(native["timeout-minutes"]).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation) && matrix.architecture == 'x86_64' && 40 || 10 }}");
   expect(native.steps!.some((step) => step.run === "bun scripts/verify-native-setup.ts")).toBe(true);
   expect(workflow.jobs.verification).toBeDefined();
+});
+
+
+test("Arch boot observation is a closed manual x64 diagnostic and retains ordinary ARM and summary checks", () => {
+  const workflow = Bun.YAML.parse(readFileSync(new URL("../../.github/workflows/native-setup.yml", import.meta.url), "utf8")) as {
+    on: { workflow_dispatch: { inputs: Record<string, { type: string; default: boolean; required: boolean }> } };
+    jobs: Record<string, { needs?: unknown; strategy?: { matrix: { include: { runner: string; architecture: string }[] } }; steps?: { name?: string; if?: string; run?: string; with?: { path?: string } }[] }>;
+  };
+  expect(workflow.on.workflow_dispatch.inputs.arch_boot_observation).toMatchObject({ type: "boolean", default: false, required: false });
+  const native = workflow.jobs["existing-docker"]!;
+  const step = native.steps!.find((item) => item.name === "Read-only Arch native KVM boot observation")!;
+  expect(step.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.arch_boot_observation && matrix.architecture == 'x86_64' }}");
+  expect(step.run).toBe('python3 -I scripts/qualify-debian-kvm.py --run > "$RUNNER_TEMP/fleur-arch-kvm-boot.json"');
+  expect(step.run).not.toContain("${{");
+  expect(native.strategy?.matrix.include).toContainEqual({ runner: "ubuntu-24.04-arm", architecture: "arm64" });
+  expect(native.steps!.find((item) => item.name === "Preserve native observations")?.with?.path).toContain("fleur-arch-kvm-boot.json");
+  expect(workflow.jobs.verification?.needs).toEqual(["scope", "existing-docker"]);
 });

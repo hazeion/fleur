@@ -30,7 +30,7 @@ class OwnedGuestCustody(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04', ordinary_uid=1000, distribution='ubuntu', architecture='x86_64'):
+    def observe(self, scenario='valid', arguments=None, control_binding=None, revalidate=None, action=None, context_deadline=101.0, release='24.04', ordinary_uid=1000, distribution='ubuntu', architecture='x86_64', raw_release=None, expected_os=None):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             bodies = {'etc/fleur-owned-guest': NONCE,
@@ -40,6 +40,9 @@ class OwnedGuestCustody(unittest.TestCase):
                       'usr/lib/os-release': f'ID={distribution}\nVERSION_ID="{release}"\n',
                       'usr/bin/systemd-detect-virt': 'owned root tool protocol fixture',
                       'usr/local/lib/fleur-owned-guest.py': Path(owned_guest.__file__).read_text()}
+            if raw_release is not None:
+                bodies['usr/lib/os-release'] = raw_release
+                bodies['etc/fleur-owned-guest.json'] = json.dumps({'formatVersion': 1, 'nonce': NONCE, 'bootId': BOOT, 'uid': ordinary_uid, 'osRelease': expected_os})
             if scenario=='wrong-boot': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace(BOOT,'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee')
             if scenario=='wrong-uid': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace('1000','1001')
             if scenario=='duplicate-key': bodies['etc/fleur-owned-guest.json']=bodies['etc/fleur-owned-guest.json'].replace('{','{"nonce":"wrong",',1)

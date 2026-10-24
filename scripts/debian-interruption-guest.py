@@ -751,7 +751,7 @@ def validate_transition_receipt(receipt, original, binding, machine_sha, archive
                 'currentBootId': binding.bootId, 'originalManifestSha256': original['manifestSha256'],
                 'currentManifestSha256': binding.manifestSha256, 'originalManifestIdentity': archived_identity,
                 'machineSha256': machine_sha,
-                'producerSha256': 'aeab923bf41a4c830ed4752e3501b36262896c25eb4cff118fff9709f81bafc3',
+                'producerSha256': '8ccc6ff968f9b7b87a3197bb65bbddf6fbe49ca0f9b3cacd797d73c7a584e42f',
                 'helperSha256': SOURCE['files']['fleur-transition-owned-reboot.py'],
                 'runtimeAdmission': False, 'humanConsentProof': False, 'historicalTransactionOutcome': 'unknown'}
     exact_record(receipt, expected)

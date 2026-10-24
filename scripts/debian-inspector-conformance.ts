@@ -29,7 +29,7 @@ async function checkOwnedBinding() {
     const info = await file.stat({ bigint: true }); assert(info.isFile() && info.uid === 0n && info.nlink === 1n && (info.mode & 0o7777n) === 0o444n && info.size > 0n && info.size <= 32768n);
     const bytes = Buffer.alloc(Number(info.size) + 1); let used = 0;
     while (used < bytes.length) { assert(remaining() > 0); const read = await file.read(bytes, used, bytes.length - used, used); if (!read.bytesRead) break; used += read.bytesRead; }
-    body = bytes.subarray(0, used); assert(BigInt(used) === info.size && Bun.CryptoHasher.hash('sha256', body, 'hex') === 'aeab923bf41a4c830ed4752e3501b36262896c25eb4cff118fff9709f81bafc3');
+    body = bytes.subarray(0, used); assert(BigInt(used) === info.size && Bun.CryptoHasher.hash('sha256', body, 'hex') === '8ccc6ff968f9b7b87a3197bb65bbddf6fbe49ca0f9b3cacd797d73c7a584e42f');
     const after = await file.stat({ bigint: true }); const named = await lstat(path, { bigint: true });
     const fields = (value: typeof info) => [value.dev,value.ino,value.uid,value.mode,value.nlink,value.size,value.mtimeNs,value.ctimeNs].map(String).join(':');
     assert(fields(info) === fields(after) && fields(info) === fields(named));

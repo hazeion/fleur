@@ -199,16 +199,16 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   return address.port;
 }
-async function interruptionTransport(sshOptions: string[], port: number, remote: string, deadline: number, allowed: readonly number[] = [0]) {
+export async function interruptionTransport(sshOptions: string[], port: number, remote: string, deadline: number, allowed: readonly number[] = [0], signal: AbortSignal = sessionAbort.signal) {
   const budget = Math.floor(deadline - performance.now());
-  if (budget <= 0 || sessionAbort.signal.aborted) throw new Error("Original interruption transport deadline expired or was cancelled");
+  if (budget <= 0 || signal.aborted) throw new Error("Original interruption transport deadline expired or was cancelled");
   const child = startRetainedSsh([...sshOptions, "-o", "ControlMaster=no", "-o", "ControlPath=none", "-p", String(port), "fleur@127.0.0.1", remote]);
   let expired = false;
   const remaining = Math.floor(deadline - performance.now());
   const cancel = () => child.requestTermination();
-  sessionAbort.signal.addEventListener("abort", cancel, { once: true });
+  signal.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => { expired = true; cancel(); }, Math.max(0, remaining));
-  if (remaining <= 0 || sessionAbort.signal.aborted) { expired = true; cancel(); }
+  if (remaining <= 0 || signal.aborted) { expired = true; cancel(); }
   const collect = async (stream: AsyncIterable<Uint8Array>) => {
     let count = 0; const chunks: Buffer[] = [];
     for await (const chunk of stream) {
@@ -220,16 +220,16 @@ async function interruptionTransport(sshOptions: string[], port: number, remote:
   };
   try {
     const [stdout, stderr, exitCode] = await Promise.race([Promise.all([collect(child.stdout), collect(child.stderr), child.finished]), child.signalFailed]);
-    if (expired || performance.now() >= deadline || sessionAbort.signal.aborted) throw new Error("Original interruption transport deadline expired or was cancelled");
+    if (expired || performance.now() >= deadline || signal.aborted) throw new Error("Original interruption transport deadline expired or was cancelled");
     if (!allowed.includes(exitCode)) throw new Error(`Owned interruption transport failed with ${exitCode}: ${stderr.slice(-2048)}`);
     return { stdout, stderr, exitCode };
-  } finally { clearTimeout(timer); sessionAbort.signal.removeEventListener("abort", cancel); await child.cleanup(); }
+  } finally { clearTimeout(timer); signal.removeEventListener("abort", cancel); await child.cleanup(); }
 }
 
 /** One continuously open QMP connection witnesses the same owned VM across reboot. */
-async function retainInterruptionQmp(path: string, expectedName: string, deadline: number) {
+export async function retainInterruptionQmp(path: string, expectedName: string, deadline: number, signal: AbortSignal = sessionAbort.signal, requireKvm = false) {
   const remaining = () => Math.max(0, Math.min(3000, Math.floor(deadline - performance.now())));
-  if (!remaining() || sessionAbort.signal.aborted) throw new Error("Owned QMP deadline expired or was cancelled");
+  if (!remaining() || signal.aborted) throw new Error("Owned QMP deadline expired or was cancelled");
   const socket = createConnection(path);
   let buffer = ""; let total = 0; let broken = false; let closing = false; let serial = 0;
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -241,7 +241,7 @@ async function retainInterruptionQmp(path: string, expectedName: string, deadlin
     pending.clear(); socket.destroy();
   };
   const cancel = () => abort(new Error("Owned QMP observation cancelled"));
-  sessionAbort.signal.addEventListener("abort", cancel, { once: true });
+  signal.addEventListener("abort", cancel, { once: true });
   socket.on("error", abort);
   socket.on("close", () => { if (!closing) abort(new Error("Owned QMP continuity connection closed")); });
   socket.on("data", (chunk) => {
@@ -261,9 +261,9 @@ async function retainInterruptionQmp(path: string, expectedName: string, deadlin
     }
   });
   const greetingTimer = setTimeout(() => abort(new Error("Owned QMP greeting timed out")), remaining());
-  if (!remaining() || sessionAbort.signal.aborted) cancel();
+  if (!remaining() || signal.aborted) cancel();
   const request = async (execute: string) => {
-    if (broken || closing || !remaining() || sessionAbort.signal.aborted) throw new Error("Owned QMP continuity is unavailable or expired");
+    if (broken || closing || !remaining() || signal.aborted) throw new Error("Owned QMP continuity is unavailable or expired");
     const id = `interruption-${++serial}`;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => abort(new Error("Owned QMP request timed out")), remaining());
@@ -276,18 +276,22 @@ async function retainInterruptionQmp(path: string, expectedName: string, deadlin
     await request("qmp_capabilities");
     const name = await request("query-name") as { name?: unknown };
     if (name?.name !== expectedName) throw new Error("QMP belongs to a different owned VM");
-  } catch (error) { clearTimeout(greetingTimer); sessionAbort.signal.removeEventListener("abort", cancel); closing = true; socket.destroy(); throw error; }
+  } catch (error) { clearTimeout(greetingTimer); signal.removeEventListener("abort", cancel); closing = true; socket.destroy(); throw error; }
   return {
     alive: () => !broken && !closing,
     inspect: async (overlay: string) => {
       const name = await request("query-name") as { name?: unknown };
       const state = await request("query-status") as { running?: unknown; status?: unknown };
       const blocks = await request("query-block");
+      if (requireKvm) {
+        const kvm = await request("query-kvm") as { enabled?: unknown; present?: unknown };
+        if (kvm?.enabled !== true || kvm.present !== true) throw new Error("Owned VM KVM execution is unconfirmed");
+      }
       if (name?.name !== expectedName || state?.running !== true || state.status !== "running" || !Array.isArray(blocks)
           || !blocks.some((item: { inserted?: { file?: unknown; drv?: unknown; ro?: unknown } }) => item.inserted?.file === overlay && item.inserted.drv === "qcow2" && item.inserted.ro === false)) throw new Error("Owned VM name, execution or overlay continuity differs");
-      return { sameName: true, running: true, sameOverlay: true };
+      return { sameName: true, running: true, sameOverlay: true, ...(requireKvm ? { kvmEnabled: true } : {}) };
     },
-    close: () => { sessionAbort.signal.removeEventListener("abort", cancel); closing = true; socket.destroy(); },
+    close: () => { signal.removeEventListener("abort", cancel); closing = true; socket.destroy(); },
   };
 }
 
@@ -550,10 +554,10 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
     }
     if (!currentBoot) throw Object.assign(new Error("No different kernel boot was established through the original pinned SSH host"), { code: "REBOOT_UNCONFIRMED" });
     await sameOverlay();
-    const transitioned = await interruptionTransport(sshOptions, port, `sudo -n /usr/bin/python3 -I lab/fleur-transition-owned-reboot.py ${nonce} ${ownedGuestBinding.bootId} ${ownedGuestBinding.manifestSha256} ${plan.machineSha256} aeab923bf41a4c830ed4752e3501b36262896c25eb4cff118fff9709f81bafc3 ${ownedGuestBinding.uid}`, Math.min(phaseDeadline, performance.now() + 15000));
+    const transitioned = await interruptionTransport(sshOptions, port, `sudo -n /usr/bin/python3 -I lab/fleur-transition-owned-reboot.py ${nonce} ${ownedGuestBinding.bootId} ${ownedGuestBinding.manifestSha256} ${plan.machineSha256} 8ccc6ff968f9b7b87a3197bb65bbddf6fbe49ca0f9b3cacd797d73c7a584e42f ${ownedGuestBinding.uid}`, Math.min(phaseDeadline, performance.now() + 15000));
     const transition = JSON.parse(transitioned.stdout) as Record<string, unknown>;
     const expectedTransitionKeys = ["formatVersion", "scope", "ok", "nonce", "uid", "originalBootId", "currentBootId", "originalManifestSha256", "currentManifestSha256", "originalManifestIdentity", "machineSha256", "producerSha256", "helperSha256", "runtimeAdmission", "humanConsentProof", "historicalTransactionOutcome", "receiptSha256"];
-    if (!transition || typeof transition !== "object" || Array.isArray(transition) || JSON.stringify(Object.keys(transition).sort()) !== JSON.stringify(expectedTransitionKeys.sort()) || transition.formatVersion !== 1 || transition.scope !== "owned-guest-explicit-reboot-transition" || transition.ok !== true || transition.nonce !== nonce || transition.uid !== ownedGuestBinding.uid || transition.originalBootId !== ownedGuestBinding.bootId || transition.currentBootId !== currentBoot || transition.originalManifestSha256 !== ownedGuestBinding.manifestSha256 || typeof transition.currentManifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(transition.currentManifestSha256) || transition.machineSha256 !== plan.machineSha256 || transition.producerSha256 !== "aeab923bf41a4c830ed4752e3501b36262896c25eb4cff118fff9709f81bafc3" || transition.helperSha256 !== sourceFiles['fleur-transition-owned-reboot.py'] || transition.runtimeAdmission !== false || transition.humanConsentProof !== false || transition.historicalTransactionOutcome !== "unknown" || typeof transition.receiptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(transition.receiptSha256)) throw Object.assign(new Error("Root transition failed its source, host or original-boot binding"), { code: "REBOOT_CUSTODY_UNCONFIRMED" });
+    if (!transition || typeof transition !== "object" || Array.isArray(transition) || JSON.stringify(Object.keys(transition).sort()) !== JSON.stringify(expectedTransitionKeys.sort()) || transition.formatVersion !== 1 || transition.scope !== "owned-guest-explicit-reboot-transition" || transition.ok !== true || transition.nonce !== nonce || transition.uid !== ownedGuestBinding.uid || transition.originalBootId !== ownedGuestBinding.bootId || transition.currentBootId !== currentBoot || transition.originalManifestSha256 !== ownedGuestBinding.manifestSha256 || typeof transition.currentManifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(transition.currentManifestSha256) || transition.machineSha256 !== plan.machineSha256 || transition.producerSha256 !== "8ccc6ff968f9b7b87a3197bb65bbddf6fbe49ca0f9b3cacd797d73c7a584e42f" || transition.helperSha256 !== sourceFiles['fleur-transition-owned-reboot.py'] || transition.runtimeAdmission !== false || transition.humanConsentProof !== false || transition.historicalTransactionOutcome !== "unknown" || typeof transition.receiptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(transition.receiptSha256)) throw Object.assign(new Error("Root transition failed its source, host or original-boot binding"), { code: "REBOOT_CUSTODY_UNCONFIRMED" });
     const renewed = await attestOwnedGuestBoot({ nonce, deadline: phaseDeadline, query: async (_remote, budgetMs) => {
       const observed = await observeOwnedGuestCustody({ port, identity: clientKey, knownHosts, nonce }, Math.min(budgetMs, phaseRemaining()), sessionAbort.signal);
       if (!observed.ok) throw new Error(observed.error?.message ?? "Renewed root custody transport failed");

@@ -4,14 +4,16 @@ import { resolve } from "node:path";
 export interface OwnedGuestBinding { nonce: string; bootId: string; uid: number; manifestSha256: string }
 
 export type OwnedGuestOsRelease = { readonly id: "ubuntu"; readonly versionId: "24.04" | "26.04"; readonly sha256: string }
-  | { readonly id: "debian"; readonly versionId: "13"; readonly sha256: string };
+  | { readonly id: "debian"; readonly versionId: "13"; readonly sha256: string }
+  | { readonly id: "arch"; readonly versionId: null; readonly buildId: "rolling"; readonly sha256: string };
 
 /** Original root-attested OS data stays separate from the four-field binding. */
 export function copyOwnedGuestOsRelease(value: unknown): Readonly<OwnedGuestOsRelease> {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-      || Object.keys(value).sort().join(",") !== "id,sha256,versionId") throw new Error("Complete canonical original owned guest OS record required.");
-  const { id, versionId, sha256 } = value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Complete canonical original owned guest OS record required.");
+  const { id, versionId, sha256, buildId } = value as Record<string, unknown>;
   if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Complete canonical original owned guest OS record required.");
+  if (id === "arch" && versionId === null && buildId === "rolling" && Object.keys(value).sort().join(",") === "buildId,id,sha256,versionId") return Object.freeze({ id, versionId, sha256, buildId });
+  if (Object.keys(value).sort().join(",") !== "id,sha256,versionId") throw new Error("Complete canonical original owned guest OS record required.");
   if (id === "ubuntu" && (versionId === "24.04" || versionId === "26.04")) return Object.freeze({ id, versionId, sha256 });
   if (id === "debian" && versionId === "13") return Object.freeze({ id, versionId, sha256 });
   throw new Error("Complete canonical original owned guest OS record required.");
@@ -29,18 +31,18 @@ export function copyOwnedGuestBinding(value: unknown, expectedNonce: string): Re
   return Object.freeze({ nonce, bootId, uid, manifestSha256 });
 }
 
-export type OwnedGuestFixture = "ubuntu24-amd64" | "ubuntu26-amd64" | "debian13-amd64";
+export type OwnedGuestFixture = "ubuntu24-amd64" | "ubuntu26-amd64" | "debian13-amd64" | "arch-amd64";
 
 /** Source-owned NoCloud fragment. Its boot manifest grants no runtime admission. */
 export async function ownedGuestSeed(nonce: string, fixture: OwnedGuestFixture = "ubuntu24-amd64"): Promise<{ write_files: { path: string; owner: string; permissions: string; content: string }[]; runcmd: string[][] }> {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(nonce)) throw new Error("An explicit canonical guest nonce is required");
-  if (fixture !== "ubuntu24-amd64" && fixture !== "ubuntu26-amd64" && fixture !== "debian13-amd64") throw new Error("An exact source-owned guest fixture is required");
+  if (fixture !== "ubuntu24-amd64" && fixture !== "ubuntu26-amd64" && fixture !== "debian13-amd64" && fixture !== "arch-amd64") throw new Error("An exact source-owned guest fixture is required");
   const producer = await readFile(resolve(import.meta.dir, "../experiments/compatibility/runtime-probe/owned_guest.py"), "utf8");
   if (Buffer.byteLength(producer) > 32768) throw new Error("Source-owned guest producer exceeds its seed bound");
   return { write_files: [
     { path: "/etc/fleur-owned-guest", owner: "root:root", permissions: "0444", content: nonce },
     { path: "/usr/local/lib/fleur-owned-guest.py", owner: "root:root", permissions: "0444", content: producer },
-  ], runcmd: [["/usr/bin/python3", "-I", "/usr/local/lib/fleur-owned-guest.py", fixture === "ubuntu24-amd64" ? "--create" : fixture === "ubuntu26-amd64" ? "--create-ubuntu26" : "--create-debian13", nonce]] };
+  ], runcmd: [["/usr/bin/python3", "-I", "/usr/local/lib/fleur-owned-guest.py", fixture === "ubuntu24-amd64" ? "--create" : fixture === "ubuntu26-amd64" ? "--create-ubuntu26" : fixture === "debian13-amd64" ? "--create-debian13" : "--create-arch", nonce]] };
 }
 
 export interface CustodyTransportReply { ok: boolean; stdout: string; transport: { exitCode: number | null; signal: string | null; deadlineFired: boolean; outputLimitExceeded: boolean }; localCleanup: { retired: boolean; error?: string }; error?: unknown }

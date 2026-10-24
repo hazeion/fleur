@@ -57,7 +57,7 @@ async function command(args: string[], timeout = 30000, allowed: number[] = [0])
     return { stdout, stderr, exitCode };
   } finally { if (child.exitCode === null) { child.kill("SIGKILL"); await child.exited; } }
 }
-async function authenticate(path: string, pin: { sha256: string; size?: number; maxBytes?: number }, destination?: string): Promise<string> {
+export async function authenticate(path: string, pin: { sha256: string; size?: number; maxBytes?: number }, destination?: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = await file.stat();
@@ -190,7 +190,7 @@ export async function selectVerificationArtifact(directory: string, built: { can
   }
 }
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") return fail("TRANSPORT_FAILED", "Loopback port allocation failed.");

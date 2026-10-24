@@ -1,4 +1,4 @@
-"""Fixed manual GitHub-hosted Debian 13 qualification. No release admission."""
+"""Fixed manual GitHub-hosted KVM cases. No release admission."""
 import base64
 import hashlib
 import importlib.util
@@ -187,19 +187,173 @@ def accepted_recovery_guest(report, source):
         return False
 
 
-def qualification_mode(inputs):
-    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery'}:
+ARCH_SOURCES = ('scripts/observe-arch-boot.ts','scripts/arch-boot-observation.py','scripts/inspect-arch-image.py',
+    'scripts/arch-boot-image.json','scripts/qualify-debian-kvm.py','scripts/native-kvm-host-tools.json',
+    'scripts/verify-fresh-linux.ts','scripts/verify-debian-recovery.ts','scripts/owned-guest-seed.ts',
+    'scripts/observe-owned-guest-custody.ts','scripts/observe-fresh-linux-boot.ts','scripts/retained-ssh.ts',
+    'scripts/retained-ssh.py','experiments/compatibility/runtime-probe/owned_guest.py')
+
+
+def arch_commands():
+    commands = {'package-inventory':['/usr/bin/pacman','--query'],
+        'pacman-version':['/usr/bin/pacman','--version'],
+        'runtime-packages':['/usr/bin/pacman','--query','--','docker','docker-compose','containerd','runc'],
+        'database-check':['/usr/bin/pacman','--database','--check','--quiet'],
+        'mounts':['/usr/bin/findmnt','--json','--bytes','--output','TARGET,SOURCE,FSTYPE,SIZE,AVAIL'],
+        'disks':['/usr/bin/lsblk','--json','--bytes','--output','NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS']}
+    for key in ('RootDir','DBPath','GPGDir','HookDir','LocalFileSigLevel'):
+        commands['pacman-conf-'+key]=['/usr/bin/pacman-conf',key]
+    for unit in ('docker.service','docker.socket','containerd.service','nftables.service'):
+        commands['unit-'+unit]=['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,DropInPaths,Transient,MainPID']
+    for path in ('/etc/pacman.conf','/etc/nftables.conf','/usr/lib/systemd/system/nftables.service','/usr/bin/nft'):
+        commands['owner-'+path]=['/usr/bin/pacman','--query','--owns','--',path]
+    return commands
+
+
+def accepted_arch_observation(report, source):
+    try:
+        digest = lambda value: type(value) is str and re.fullmatch('[a-f0-9]{64}',value) is not None
+        if type(report) is not dict or not re.fullmatch('[a-f0-9]{40}',source):
+            return False
+        flags = ('installationVerified','nativeQualification','runtimeAdmission','humanConsentProof','nativeCpuPerformanceProof')
+        observed = report['observation']
+        expected_commands = arch_commands()
+        commands = observed['commands']
+        if (type(commands) is not list or len(commands) != len(expected_commands)
+                or {entry['name'] for entry in commands} != set(expected_commands)
+                or any(entry.get('completed') is not True or entry.get('processGroupRetired') is not True
+                    or entry['command'] != expected_commands[entry['name']] or type(entry['exitCode']) is not int
+                    or not digest(entry['stdoutSha256']) or not digest(entry['stderrSha256'])
+                    or entry['stdoutBytes'] + entry['stderrBytes'] > 2*1024*1024
+                    or any(type(entry[name]) is not int or not 0 <= entry[name] <= 2*1024*1024 for name in ('stdoutBytes','stderrBytes'))
+                    for entry in commands)):
+            return False
+        expected_files = {path:hashlib.sha256((REPO/path).read_bytes()).hexdigest() for path in ARCH_SOURCES}
+        if report['source'] != {'commit':source,'files':expected_files}:
+            return False
+        pin = json.loads((REPO/'scripts/arch-boot-image.json').read_text())
+        image, precheck = report['image'], report['image']['precheck']
+        info, check = image['info'],image['check']
+        if (json.dumps(image['pin'],sort_keys=True) != json.dumps(pin,sort_keys=True)
+                or precheck['ok'] is not True or precheck['imageAuthenticated'] is not True
+                or precheck['headerPrecheck'] is not True or precheck['fullStructureValidated'] is not False
+                or precheck['sha256'] != pin['sha256'] or type(precheck['bytes']) is not int or precheck['bytes'] != pin['bytes']
+                or precheck['headerPrefixSha256'] != pin['headerPrefixSha256']
+                or info['format'] != 'qcow2' or type(info['virtual-size']) is not int or info['virtual-size'] != pin['virtualBytes']
+                or any(info.get(name) for name in ('backing-filename','full-backing-filename','data-file','encrypted','snapshots'))
+                or type(check['check-errors']) is not int or check['check-errors'] != 0
+                or any(type(check.get(name,0)) is not int or check.get(name,0) != 0 for name in ('corruptions','leaks'))):
+            return False
+        custody = report['custody']
+        owner = custody['binding']
+        if (set(owner) != {'nonce','bootId','uid','manifestSha256'}
+                or re.fullmatch('[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}',owner['nonce']) is None
+                or re.fullmatch('[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',owner['bootId']) is None
+                or type(owner['uid']) is not int or not 0 < owner['uid'] < 2**31 or not digest(owner['manifestSha256'])
+                or custody['pinnedHostKey'] is not True):
+            return False
+        os_record = custody['osRelease']
+        if (set(os_record) != {'id','versionId','buildId','sha256'} or os_record['id'] != 'arch'
+                or os_record['versionId'] is not None or os_record['buildId'] != 'rolling' or not digest(os_record['sha256'])):
+            return False
+        for phase in ('before','after'):
+            value = custody[phase]
+            if (value['scope'] != 'owned-guest-custody-validation' or value['ok'] is not True
+                    or value['fixtureCustodyValidated'] is not True or value['osRelease'] != os_record
+                    or any(value[key] != field or type(value[key]) is not type(field) for key,field in owner.items())
+                    or any(value[key] is not False for key in ('runtimeAdmission','humanConsentProof','nativeCpuPerformanceProof'))):
+                return False
+        for phase in ('qmpBefore','qmpAfter'):
+            if set(custody[phase]) != {'sameName','running','sameOverlay','kvmEnabled'} or any(value is not True for value in custody[phase].values()):
+                return False
+        if (set(custody['overlay']) != {'dev','ino'} or any(type(value) is not str or re.fullmatch('[0-9]{1,24}',value) is None for value in custody['overlay'].values())
+                or int(custody['overlay']['ino']) <= 0):
+            return False
+        binding = observed['binding']
+        if (binding != {**owner,'fixtureCustodyValidated':True} or binding.get('fixtureCustodyValidated') is not True
+                or any(type(binding[key]) is not type(value) for key,value in owner.items())
+                or observed['sourceSha256'] != expected_files['scripts/arch-boot-observation.py']
+                or any(observed[key] is not False for key in flags)):
+            return False
+        tools = report['toolchain']
+        tool_names = {'/usr/bin/qemu-img','/usr/bin/qemu-system-x86_64','/usr/bin/cloud-localds','/usr/bin/ssh','/usr/bin/ssh-keygen','/usr/bin/python3'}
+        if type(tools) is not dict or set(tools) != tool_names:
+            return False
+        for tool in tools.values():
+            if (set(tool) != {'resolved','bytes','mode','uid','sha256'} or tool['uid'] != 0 or type(tool['uid']) is not int
+                    or type(tool['mode']) is not int or tool['mode'] & 0o022 or not 0 <= tool['mode'] <= 0o7777
+                    or type(tool['bytes']) is not int or not 0 < tool['bytes'] <= 256*1024*1024 or not digest(tool['sha256'])
+                    or type(tool['resolved']) is not str or re.fullmatch(r'/usr/bin/[a-zA-Z0-9_.+-]+',tool['resolved']) is None):
+                return False
+        file_names = {'/etc/pacman.conf','/etc/nftables.conf','/usr/lib/systemd/system/nftables.service','/usr/bin/nft'}
+        file_records = observed['files']
+        if type(file_records) is not list or len(file_records) != 4 or {entry['path'] for entry in file_records} != file_names:
+            return False
+        for entry in file_records:
+            if entry['state'] in ('unknown','not-found'):
+                if set(entry) != {'path','state'}:
+                    return False
+                continue
+            if (entry['state'] != 'protected-readable-file' or set(entry) != {'path','state','sha256','bytes','identities'}
+                    or not digest(entry['sha256']) or type(entry['bytes']) is not int or not 0 <= entry['bytes'] <= 8*1024*1024):
+                return False
+            components = entry['path'].strip('/').split('/')
+            paths = ['/'+'/'.join(components[:index]) for index in range(len(components)+1)]
+            identities = entry['identities']
+            if type(identities) is not list or len(identities) != len(paths):
+                return False
+            for index,(path,identity) in enumerate(identities):
+                last = index == len(paths)-1
+                if (path != paths[index] or type(identity) is not list or len(identity) != (9 if last else 5)
+                        or any(type(value) is not int for value in identity) or identity[3] != 0 or identity[2] & 0o022
+                        or not (stat.S_ISREG(identity[2]) if last else stat.S_ISDIR(identity[2]))
+                        or last and (identity[4] != 0 or identity[5] != 1 or identity[6] != entry['bytes'])):
+                    return False
+        cleanup = report['cleanup']
+        disposal = report['artifactDisposal']
+        boot = report['boot']['lastBootObservation']
+        transport = boot['transport']
+        return (type(report['formatVersion']) is int and report['formatVersion'] == 1 and report['ok'] is True
+                and report['executed'] is True and report['scope'] == 'source-owned-arch-kvm-boot-observation'
+                and all(report[name] is False for name in flags) and report['accelerator'] == 'kvm'
+                and report['boot']['ok'] is True and boot['ok'] is True and boot['state'] == 'ready'
+                and boot['cloudInitComplete'] is True and boot['nonceMatched'] is True
+                and type(transport['exitCode']) is int and transport['exitCode'] == 0 and transport['signal'] is None
+                and transport['deadlineFired'] is False and transport['cleanupConfirmed'] is True
+                and observed['ok'] is True and observed['custodyPreserved'] is True
+                and observed['scope'] == 'fixed-arch-read-only-boot-observation'
+                and report['observationTransport'] == {'exitCode':0,'stderrSha256':hashlib.sha256(b'').hexdigest(),'completed':True}
+                and type(report['observationTransport']['exitCode']) is int and report['observationTransport']['completed'] is True
+                and set(cleanup) == {'ownedVmReaped','credentialsRemoved'} and all(value is True for value in cleanup.values())
+                and disposal['scope'] == 'owned-full-system-guest-filesystem'
+                and all(disposal[name] is True for name in ('vmReaped','removalAttempted','scratchRemoved','overlayRemoved','complete')))
+    except (KeyError,TypeError,ValueError,AttributeError,OSError):
+        return False
+
+
+def qualification_case(inputs):
+    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation'}:
         raise ValueError('Unexpected manual inputs')
-    value = inputs.get('debian_recovery',False)
-    if type(value) is bool:
-        recovery = value
-    elif type(value) is str and value in ('true','false'):
-        recovery = value == 'true'
-    else:
-        raise ValueError('Canonical recovery selector required')
-    if recovery and (type(inputs.get('debian_helpers')) is not str or not inputs['debian_helpers']):
+    selectors = {}
+    for name in ('debian_recovery','arch_boot_observation'):
+        value = inputs.get(name,False)
+        if type(value) is bool:
+            selectors[name] = value
+        elif type(value) is str and value in ('true','false'):
+            selectors[name] = value == 'true'
+        else:
+            raise ValueError('Canonical case selector required')
+    if selectors['arch_boot_observation']:
+        if selectors['debian_recovery'] or inputs.get('debian_helpers','') != '':
+            raise ValueError('Arch read-only observation cannot select a Debian transaction')
+        return 'arch-boot-observation'
+    if selectors['debian_recovery'] and (type(inputs.get('debian_helpers')) is not str or not inputs['debian_helpers']):
         raise ValueError('Recovery requires the exact recorded helper pair')
-    return recovery
+    return 'interrupted-recovery' if selectors['debian_recovery'] else 'fresh-installation'
+
+
+def qualification_mode(inputs):
+    return qualification_case(inputs) == 'interrupted-recovery'
 
 
 def validate_tool_plan(text, manifest):
@@ -569,10 +723,14 @@ def main():
         if len(event_bytes) > 256 * 1024:
             raise ValueError('Event exceeds bounded input')
         event = json.loads(event_bytes, object_pairs_hook=unique_object)
-        recovery = qualification_mode(event.get('inputs', {}))
-        report['case'] = 'interrupted-recovery' if recovery else 'fresh-installation'
+        case = qualification_case(event.get('inputs', {}))
+        recovery = case == 'interrupted-recovery'
+        arch_observation = case == 'arch-boot-observation'
+        report['case'] = case
+        if arch_observation:
+            report['scope'] = 'manual-native-arch-kvm-boot-observation'
         origin = json.loads((REPO / 'experiments/compatibility/runtime-probe/recorded-helper-origin.json').read_text())
-        helpers = decode_helpers(event['inputs']['debian_helpers'], {entry['name']: entry for entry in origin['helpers']})
+        helpers = {} if arch_observation else decode_helpers(event['inputs']['debian_helpers'], {entry['name']: entry for entry in origin['helpers']})
         # Refuse unavailable device/group instead of changing permissions or falling back to emulation.
         device = os.lstat('/dev/kvm')
         gid = grp.getgrnam('kvm').gr_gid
@@ -667,20 +825,31 @@ def main():
         if before != after:
             raise RuntimeError('Host Docker state changed during host test-tool preparation')
         report['hostTools'] = run(['dpkg-query', '--show', '--showformat=${Package}\t${Version}\t${db:Status-Status}\n', 'qemu-system-x86', 'qemu-utils', 'cloud-image-utils']).stdout.decode()
-        for name, (url, limit, digest) in PINS.items():
+        download_pins = PINS
+        if arch_observation:
+            arch_pin = json.loads((REPO / 'scripts/arch-boot-image.json').read_text())
+            download_pins = {'arch.qcow2':(arch_pin['url'],arch_pin['bytes'],arch_pin['sha256'])}
+        for name, (url, limit, digest) in download_pins.items():
             path = root / name
             run(['/usr/bin/curl', '--fail', '--silent', '--show-error', '--location', '--proto', '=https', '--proto-redir', '=https', '--max-time', '180', '--max-filesize', str(limit), '--output', str(path), url], timeout=190)
             size = path.stat().st_size
-            if size <= 0 or size > limit or name == 'debian.qcow2' and size != limit or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            if size <= 0 or size > limit or name in ('debian.qcow2','arch.qcow2') and size != limit or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                 raise ValueError('Fixed verification download identity differs')
-        service = Service(root, os.getuid(), gid, [str(bun), str(REPO / ('scripts/verify-debian-recovery.ts' if recovery else 'scripts/verify-fresh-linux.ts')), '--run', '--image', str(root / 'debian.qcow2'), '--candidate', 'ordinary-source-owned', '--bun-archive', str(root / 'bun.zip'), '--recorded-helper-artifacts', str(helper_dir), '--fixture', 'debian13-amd64'], env)
+        guest_command = [str(bun),str(REPO / 'scripts/observe-arch-boot.ts'),'--run','--image',str(root / 'arch.qcow2')] if arch_observation else [str(bun), str(REPO / ('scripts/verify-debian-recovery.ts' if recovery else 'scripts/verify-fresh-linux.ts')), '--run', '--image', str(root / 'debian.qcow2'), '--candidate', 'ordinary-source-owned', '--bun-archive', str(root / 'bun.zip'), '--recorded-helper-artifacts', str(helper_dir), '--fixture', 'debian13-amd64']
+        service = Service(root, os.getuid(), gid, guest_command, env)
         services.append(service)
         service.launch()
         report['service'] = service.wait()
         report['guestVerifier'] = json.loads(service.output.read_text())
         report['serviceStderr'] = service.error.read_text()[-16384:]
-        if report['service']['exitCode'] != 0 or report['service']['cancelled'] or report['service']['terminal'].get('result') != 'success' or not (accepted_recovery_guest if recovery else accepted_guest)(report['guestVerifier'], os.environ['GITHUB_SHA']):
+        if report['service']['exitCode'] != 0 or report['service']['cancelled'] or report['service']['terminal'].get('result') != 'success' or not (accepted_arch_observation if arch_observation else accepted_recovery_guest if recovery else accepted_guest)(report['guestVerifier'], os.environ['GITHUB_SHA']):
             raise RuntimeError('Native guest qualification failed')
+        final_packages = package_snapshot()
+        final_docker = docker_snapshot()
+        report['hostFinalPreservation'] = {'packageSnapshot':final_packages,'dockerSnapshot':final_docker,
+            'packagesUnchanged':final_packages == package_after,'dockerUnchanged':final_docker == before}
+        if final_packages != package_after or final_docker != before:
+            raise RuntimeError('Host package or Docker state changed during guest execution')
         report['ok'] = True
     except BaseException as error:
         report['error'] = {'type': type(error).__name__, 'message': str(error), **({'diagnostic': error.diagnostic} if hasattr(error, 'diagnostic') else {})}

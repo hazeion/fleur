@@ -109,7 +109,9 @@ def accepted_guest(report, source):
             and candidate.get('catalogSha256') == catalog
             and candidate.get('internalArtifact') is True
             and report.get('executionArtifact', {}).get('kind') == 'ordinary'
-            and report.get('executionArtifact', {}).get('packageName') == 'fleur'
+            and guest.get('executionArtifact', {}).get('kind') == 'ordinary'
+            and guest.get('executionArtifact', {}).get('packageName') == 'fleur'
+            and guest.get('executionArtifact', {}).get('artifactCatalogSha256') == catalog
             and report.get('executionArtifact', {}).get('sha256') == candidate.get('ordinary', {}).get('sha256')
             and re.fullmatch('[a-f0-9]{64}', candidate.get('ordinary', {}).get('sha256', '')) is not None
             and report.get('restrictionSource', {}).get('commit') == source

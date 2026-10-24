@@ -1084,3 +1084,13 @@ chooses an expectation from setup's response or accepts multiple exit codes.
 Existing application entry identity/metadata and empty grants are checked.
 Independent verification passed all eight packed tests with 85 assertions. This
 corrects test logic; no product setup refusal changed.
+
+Before ordinary native dispatch, a final producer/consumer review caught a report
+nesting mismatch in the outer wrapper: archive kind/hash are top-level, while
+package name and compiled catalog evidence belong to the guest execution record.
+The original synthetic wrapper proof had invented a top-level package name.
+A test using the actual report shape failed before the fix. The wrapper now checks
+the guest kind, package and catalog alongside the independent outer archive hash;
+wrong guest kind/package/catalog still refuse. All 21 wrapper contracts passed.
+The waiting dispatch was stopped before VM creation, and superseded PR workflows
+were cancelled. Those cancelled workflows are not passing candidate evidence.

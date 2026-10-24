@@ -213,10 +213,10 @@ class InputContract(unittest.TestCase):
         proof = {'ok': True, 'executed': True, 'scope': 'fresh-full-system-guest', 'installationEvidence': 'verified-full-system-guest',
                  'fixture': {'id': 'debian13-amd64', 'catalogSha256': catalog}, 'capabilities': {'architecture': 'x64'},
                  'candidate': {'catalogSha256': catalog, 'internalArtifact': True, 'ordinary': {'sha256': 'b' * 64}},
-                 'executionArtifact': {'kind': 'ordinary', 'packageName': 'fleur', 'sha256': 'b' * 64},
+                 'executionArtifact': {'kind': 'ordinary', 'sha256': 'b' * 64},
                  'restrictionSource': {'commit': source}, 'accelerator': 'kvm', 'boot': {'accelerator': 'kvm'},
                  'ownedGuestCustody': {'fixtureCustodyValidated': True},
-                 'guest': {'ok': True, 'runs': [self.ready('doctor'), self.ready('doctor')], 'readySetupReprobes': [{**self.ready('setup'), 'snapshotPreserved': True, 'grantsPreserved': True} for _ in range(2)], 'debianDependencyPreservation': {'backend': 'nf_tables', 'cleanup': True, 'observations': {phase: {} for phase in ('before', 'afterInstall', 'freshLogin', 'afterRuntime')}}, 'installationEvidence': 'verified-full-system-guest', 'sentinelCleanup': True,
+                 'guest': {'ok': True, 'executionArtifact': {'kind': 'ordinary', 'packageName': 'fleur', 'artifactCatalogSha256': catalog}, 'runs': [self.ready('doctor'), self.ready('doctor')], 'readySetupReprobes': [{**self.ready('setup'), 'snapshotPreserved': True, 'grantsPreserved': True} for _ in range(2)], 'debianDependencyPreservation': {'backend': 'nf_tables', 'cleanup': True, 'observations': {phase: {} for phase in ('before', 'afterInstall', 'freshLogin', 'afterRuntime')}}, 'installationEvidence': 'verified-full-system-guest', 'sentinelCleanup': True,
                            'restrictionProbe': {'exitCode': 0, 'result': {'bounded_probe_passed': True, 'cleanup_complete': True}}},
                  'cleanup': {'ownedVmReaped': True, 'credentialsRemoved': True},
                  'artifactDisposal': {'complete': True}, 'humanConsentProof': False}
@@ -233,7 +233,9 @@ class InputContract(unittest.TestCase):
         import copy
         mutations = [
             lambda p: p['executionArtifact'].update(kind='internal-candidate'),
-            lambda p: p['executionArtifact'].update(packageName='fleur-internal-native-verification'),
+            lambda p: p['guest']['executionArtifact'].update(packageName='fleur-internal-native-verification'),
+            lambda p: p['guest']['executionArtifact'].update(kind='internal-candidate'),
+            lambda p: p['guest']['executionArtifact'].update(artifactCatalogSha256='c'*64),
             lambda p: p['candidate']['ordinary'].update(sha256='c'*64),
             lambda p: p['guest']['runs'][0].update(exitCode=4),
             lambda p: p['guest']['runs'][1]['result']['data']['components']['release'].update(profile='ubuntu-26.04-x64-docker-29.9.1'),

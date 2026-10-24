@@ -26,12 +26,17 @@ def inspect_preparation(kind,target,runner=subprocess.run):
     if found.returncode==1 and found.stdout in ('','\n') and found.stderr in ('Error: No such object: '+target+'\n','error: no such object: '+target+'\n','Error: No such '+kind+': '+target+'\n','error: no such '+kind+': '+target+'\n','Error response from daemon: No such '+kind+': '+target+'\n'):return None
     raise RuntimeError('preparation ownership inspection uncertain')
 
+def preparation_names(nonce):
+    base='fleur-desktop-preparation-'+nonce
+    return base,base+':latest'
+
+
 def main(output):
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted' or platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('disposable native GitHub amd64 preparation only')
     commit=command(['git','rev-parse','HEAD']).decode().strip()
     if command(['git','diff','--exit-code','HEAD']):raise RuntimeError('committed source required')
     output.mkdir(mode=0o700,parents=False,exist_ok=False)
-    nonce=str(uuid.uuid4());tag='fleur-desktop-preparation-'+nonce;container='fleur-desktop-preparation-'+nonce;image=None;pending=None
+    nonce=str(uuid.uuid4());container,tag=preparation_names(nonce);image=None;pending=None
     try:
         with tempfile.TemporaryDirectory(prefix='fleur-desktop-export-') as directory:
             context=Path(directory);sources={}
@@ -68,9 +73,11 @@ def main(output):
     finally:
         cleanup=[]
         for kind,target in (('container',container),('image',tag)):
+            stage='inspect-ownership'
             try:
                 value=inspect_preparation(kind,target)
                 if value is not None:
+                    stage='validate-ownership'
                     if value.get('Config',{}).get('Labels',{}).get('dev.fleur.desktop-preparation-owner')!=nonce:raise RuntimeError('preparation ownership changed')
                     if kind=='container':
                         if image is None or value.get('Image')!=image or value.get('Name')!='/'+container:raise RuntimeError('preparation container changed')
@@ -78,11 +85,14 @@ def main(output):
                     else:
                         if image is None or value.get('Id')!=image:raise RuntimeError('preparation image changed')
                         args=['docker','image','rm',tag]
+                    stage='remove'
                     retired=subprocess.run(args,capture_output=True,timeout=15)
-                    if retired.returncode or inspect_preparation(kind,target) is not None:raise RuntimeError('preparation removal uncertain')
+                    if retired.returncode:raise RuntimeError('preparation removal command failed')
+                    stage='confirm-absence'
+                    if inspect_preparation(kind,target) is not None:raise RuntimeError('preparation removal uncertain')
                 cleanup.append({'resource':kind,'absent':True})
             except Exception:
-                cleanup.append({'resource':kind,'absent':False})
+                cleanup.append({'resource':kind,'absent':False,'failureStage':stage})
         receipt={'formatVersion':1,'scope':'disposable-image-preparation-retirement','cleanup':cleanup,'ok':all(row['absent'] for row in cleanup),'runtimeAdmission':False,'nativeQualification':False}
         (output/'preparation-cleanup.json').write_text(json.dumps(receipt,sort_keys=True,indent=2)+'\n')
         if not receipt['ok']:raise RuntimeError('preparation cleanup unconfirmed')

@@ -55,7 +55,7 @@ class FinalizationIntegrity(unittest.TestCase):
             retire_role=lambda value:retired.append(value))
         self.assertEqual(retired,[])
         self.assertFalse(result['report']['ok'])
-        self.assertEqual(result['report']['cleanup'],[{'resource':'worker','name':'worker','absent':False},{'resource':'guardian','absent':False}])
+        self.assertEqual(result['report']['cleanup'],[{'resource':'worker','name':'worker','absent':False},{'resource':'guardian','containerId':'guardian','absent':False}])
 
     def test_unconfirmed_manager_client_retirement_preserves_guardian(self):
         guardian={'cid':'guardian','name':'guardian'};retired=[]

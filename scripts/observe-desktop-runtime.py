@@ -196,6 +196,53 @@ time.sleep(60)
 '''
 
 
+DIAGNOSTIC_PROGRAM=r'''import hashlib,json,os,stat,sys,types
+from pathlib import Path
+
+def failure_record(args,result,nonce,manager_id,socket_state):
+    if args==['docker','version','--format','{{json .Server}}']:label='docker-version'
+    elif args==['docker','info','--format','{{json .ID}}']:label='docker-info'
+    elif type(args) is list and len(args)==5 and args[:2]==['docker','inspect'] and args[3:]==['--format','{{json .}}'] and type(args[2]) is str and len(args[2])==64 and all(char in 'abcdef0123456789' for char in args[2]):label='owned-container-inspect'
+    elif args==['/usr/bin/sudo','-n','/usr/bin/python3','-I','-c','import os;assert os.geteuid()==0;print("root-launch-confirmed")']:label='root-launch'
+    else:raise ValueError('nonfixed diagnostic command')
+    if type(result.returncode) is not int or type(result.stdout) is not bytes or type(result.stderr) is not bytes or len(result.stdout)+len(result.stderr)>1048576:raise ValueError('unbounded diagnostic outcome')
+    return {'kind':'command-failure','nonce':nonce,'managerId':manager_id,'command':label,'exitCode':result.returncode,'stdoutBytes':len(result.stdout),'stdoutSha256':hashlib.sha256(result.stdout).hexdigest(),'stderrBytes':len(result.stderr),'stderrSha256':hashlib.sha256(result.stderr).hexdigest(),'stderr':result.stderr[:4096].decode('utf-8',errors='replace'),'stderrTruncated':len(result.stderr)>4096,'socket':socket_state}
+
+def socket_record():
+    value={'effectiveUid':os.geteuid(),'effectiveGid':os.getegid(),'groups':os.getgroups()}
+    try:
+        socket=os.lstat('/var/run/docker.sock')
+        value.update(isSocket=stat.S_ISSOCK(socket.st_mode),uid=socket.st_uid,gid=socket.st_gid,mode=stat.S_IMODE(socket.st_mode))
+    except OSError as error:value.update(isSocket=False,observationErrno=error.errno)
+    return value
+
+if __name__=='__main__':
+    sys.path.insert(0,'/controller')
+    import entry
+    binding=json.loads(os.environ['FLEUR_DESKTOP_BINDING'])
+    digest=hashlib.sha256(Path('/controller/entry.py').read_bytes()).hexdigest()
+    if digest!=binding['sources']['entry.py']:raise ValueError('entry source changed')
+    codes=[value for value in entry.main.__code__.co_consts if isinstance(value,types.CodeType) and value.co_name=='command' and value.co_filename=='/controller/entry.py']
+    if len(codes)!=1:raise ValueError('fixed command code not unique')
+    target=codes[0];original_emit=entry.emit;original_main=entry.main;ready={}
+    def emit(value):
+        if value.get('kind')=='ready':
+            if value.get('role')!='manager':raise ValueError('diagnostic role changed')
+            ready.update(value);original_emit({**value,'role':'loss-manager'})
+            original_emit({'kind':'trace-installed','nonce':binding['nonce'],'managerId':value['managerId'],'entrySourceSha256':digest,'traceApplied':sys.gettrace() is trace,'entryMainCodeUnmodified':entry.main is original_main,'readyRoleMetadataAdapted':True})
+        else:original_emit(value)
+    def trace(frame,event,exception):
+        if frame.f_code is target and event=='exception' and type(exception[1]) is RuntimeError and str(exception[1])=='FIXED_COMMAND_FAILED':
+            original_emit(failure_record(frame.f_locals['args'],frame.f_locals['result'],binding['nonce'],ready['managerId'],socket_record()))
+        return trace
+    entry.emit=emit
+    sys.argv=['/controller/entry.py','--capabilities'];sys.settrace(trace)
+    try:code=original_main()
+    finally:sys.settrace(None)
+    raise SystemExit(code)
+'''
+
+
 def valid_journals(journals,nonce,boot_id,expected_results=None,control_cid=None,expected_bindings=None):
     from worker_deadline import ROOT_GUARD
     try:
@@ -303,7 +350,7 @@ def observe(mode,images_directory):
         channel=Channel(['docker','--host',endpoint,'start','--attach','--interactive',cid],environment=environment);channels.append(channel)
         frame=channel.frame(min(work_end,time.monotonic()+15));value=inspect(cid)
         if not role_profile(value,**expected) or value['State']['Running'] is not True or not ready_frame(frame,binding,raw_binding,cid,value['State']['Pid'],role):raise RuntimeError('ROLE_READY_BINDING_UNPROVEN')
-        persist(role+'-ready.json',frame);channel.acknowledge(binding['nonce'],'ready')
+        persist(role+'-ready.json',frame);report.setdefault('roles',[]).append({'containerId':cid,'name':name,'imageId':image,'ready':frame});channel.acknowledge(binding['nonce'],'ready')
         return expected,channel,frame
     def retire_role(expected):
         value=inspect(expected['cid'] or expected['name'],cleanup=True)
@@ -379,6 +426,19 @@ def observe(mode,images_directory):
         guardian,guardian_channel,guardian_ready=start_role('guardian',binding,image,base_env)
         binding={**binding,'guardianId':guardian['cid'],'preparedImage':{'imageId':runtime_image,**{key:prep[key] for key in ('architecture','baseImage','helperSha256','abuseSha256','runtimeSources')}}}
         report['nonce']=nonce;report['bootId']=boot
+        if mode=='--controller-diagnostic':
+            phase='controller-fixed-command-diagnostic'
+            manager,manager_channel,manager_ready=start_role('loss-manager',binding,image,base_env,program=DIAGNOSTIC_PROGRAM)
+            report.update(diagnosticProgramSha256=sha(DIAGNOSTIC_PROGRAM),diagnosticOnly=True)
+            frames=[]
+            for _ in range(3):
+                frame=manager_channel.frame(work_end);frames.append(frame)
+                if frame.get('kind')=='result':break
+            report['controllerDiagnosticFrames']=frames
+            extra,errors=manager_channel.drain(work_end);manager_channel.close(work_end);channels.remove(manager_channel)
+            if extra or errors or len(frames)<2 or frames[0]!={'kind':'trace-installed','nonce':nonce,'managerId':manager['cid'],'entrySourceSha256':binding['sources']['entry.py'],'traceApplied':True,'entryMainCodeUnmodified':True,'readyRoleMetadataAdapted':True} or frames[-1].get('kind')!='result':raise RuntimeError('DIAGNOSTIC_RECEIPT_UNCONFIRMED')
+            report.update(ok=False,diagnosticComplete=True,error='DIAGNOSTIC_ONLY_NOT_QUALIFICATION')
+            return report
         if mode=='--guardian-loss':
             from configuration import SAFE_ENVIRONMENT
             tag='fleur-runtime-probe-'+str(time.time_ns());row={'name':tag+'-run','owner':tag,'control':True}
@@ -480,7 +540,7 @@ def observe(mode,images_directory):
                 receipt['absent']=True
             except Exception:workers_retired=False;report['ok']=False
         for expected in reversed(owned):
-            receipt={'resource':'guardian' if expected is guardian else 'manager','absent':False};report['cleanup'].append(receipt)
+            receipt={'resource':'guardian' if expected is guardian else 'manager','containerId':expected['cid'],'absent':False};report['cleanup'].append(receipt)
             try:
                 if expected is guardian and not workers_retired:raise RuntimeError('GUARDIAN_MUST_RETAIN_SUPERVISION')
                 retire_role(expected);receipt['absent']=True
@@ -514,7 +574,7 @@ def observe(mode,images_directory):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--mode',required=True,choices=['--capabilities','--guardian-loss','--qualify']);parser.add_argument('--images-directory',required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--mode',required=True,choices=['--capabilities','--guardian-loss','--qualify','--controller-diagnostic']);parser.add_argument('--images-directory',required=True)
     args=parser.parse_args()
     if args.mode=='--qualify':
         control=observe('--guardian-loss',args.images_directory)

@@ -77,3 +77,10 @@ Run the internal observer with `--mode=--capabilities`,
 private authenticated inputs, and `FLEUR_DESKTOP_RUNTIME_QUALIFICATION=yes`.
 Preparation, unit fixtures and capability results never establish full runtime
 qualification or readiness admission.
+
+The internal `--mode=--controller-diagnostic` lane traces only the unchanged
+controller's fixed-command refusal. It retains bounded command outcomes and
+socket ownership metadata while using the same manager authority. It declares
+its instrumentation and program hash and always refuses qualification, including
+when the underlying capability commands succeed. Diagnostic results cannot admit
+a readiness profile or replace any capability, manager-loss or runtime check.

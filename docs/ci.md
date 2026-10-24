@@ -85,7 +85,9 @@ minutes. Guest boot, session, runtime, repeat and cleanup limits remain unchange
 The hosted-only harness first proves systemd cgroup containment using harmless
 detached children, including stop, timeout and cancellation before execution.
 Only then may it install the frozen 18-package QEMU test-tool closure observed on
-the pinned runner image. It refuses prior tool-package state, upgrades, removals,
+the exact reviewed runner images. Each image record binds a read-only inventory
+report, source commit, run and attempt; unknown image versions remain refused.
+It refuses prior tool-package state, upgrades, removals,
 changed package plans and unexpected actual package deltas. It checks that the
 host Docker daemon identity, service invocation/PID and resource inventories stay
 unchanged. This preparation applies to the disposable runner's verification tools,

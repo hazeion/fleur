@@ -59,6 +59,25 @@ def accepted_kvm_probe(value):
             and value.get('kvm') == {'apiVersion': 12, 'device': 'observed', 'characterDevice': True})
 
 
+def admit_runner_image(manifest, actual):
+    records = manifest.get('runnerImages')
+    if not isinstance(records, list) or not 1 <= len(records) <= 8:
+        raise ValueError('Reviewed host image records unavailable')
+    versions = set()
+    for record in records:
+        if (not isinstance(record, dict) or set(record) != {'version', 'inventorySourceCommit', 'inventoryRunId', 'inventoryRunAttempt', 'inventoryReportSha256'}
+                or not isinstance(record['version'], str) or not re.fullmatch(r'[0-9]{8}\.[0-9]{1,6}\.[0-9]{1,3}', record['version'])
+                or record['version'] in versions or not isinstance(record['inventorySourceCommit'], str) or not re.fullmatch('[a-f0-9]{40}', record['inventorySourceCommit'])
+                or not isinstance(record['inventoryRunId'], str) or not re.fullmatch('[0-9]{1,20}', record['inventoryRunId'])
+                or type(record['inventoryRunAttempt']) is not int or not 1 <= record['inventoryRunAttempt'] <= 1000
+                or not isinstance(record['inventoryReportSha256'], str) or not re.fullmatch('[a-f0-9]{64}', record['inventoryReportSha256'])):
+            raise ValueError('Reviewed host image record differs')
+        versions.add(record['version'])
+    if not isinstance(actual, str) or actual not in versions:
+        raise ValueError('Hosted image changed; tool transaction requires review')
+    return dict(next(record for record in records if record['version'] == actual))
+
+
 def accepted_guest(report, source):
     if not isinstance(report, dict):
         return False
@@ -531,8 +550,7 @@ def main():
             raise RuntimeError('Ordinary bound-service KVM access unavailable')
         before = docker_snapshot()
         manifest = json.loads((REPO / 'scripts/native-kvm-host-tools.json').read_text())
-        if manifest['runnerImage'] != os.environ.get('ImageVersion'):
-            raise ValueError('Hosted image changed; tool transaction requires review')
+        report['hostImageAdmission'] = admit_runner_image(manifest, os.environ.get('ImageVersion'))
         packages = [entry['name'] + '=' + entry['version'] for entry in manifest['packages']]
         apt_options = ['--no-install-recommends', '--no-remove', '--no-upgrade', *packages]
         simulation = run(['/usr/bin/apt-get', '--simulate', 'install', *apt_options])

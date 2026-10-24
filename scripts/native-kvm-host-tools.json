@@ -1,9 +1,22 @@
 {
   "formatVersion": 1,
   "scope": "github-hosted-ubuntu24-x64-kvm-test-tools",
-  "runnerImage": "20261012.334.1",
-  "inventorySourceCommit": "dc1b0a3ce76a195e70f9982dcf79ac549d6b7823",
-  "inventoryRunId": "40076815792",
+  "runnerImages": [
+    {
+      "version": "20261012.334.1",
+      "inventorySourceCommit": "bc2a1668b7e60d5dd66b8f01065a436f3241876b",
+      "inventoryRunId": "40083092762",
+      "inventoryRunAttempt": 1,
+      "inventoryReportSha256": "6c8d4c41067035bc8fb8b3fb4d78d950866c8ccfc4394211292cb56aeb223c38"
+    },
+    {
+      "version": "20261023.334.3",
+      "inventorySourceCommit": "bc2a1668b7e60d5dd66b8f01065a436f3241876b",
+      "inventoryRunId": "40083092762",
+      "inventoryRunAttempt": 2,
+      "inventoryReportSha256": "59c91a9ef5576f8622a6e35294645dc9b9c5908cb8b7f188d1071dc468034f9c"
+    }
+  ],
   "nativeQualification": false,
   "packages": [
     {

@@ -169,6 +169,24 @@ class InputContract(unittest.TestCase):
     def test_exact_pair(self):
         self.assertEqual(module.decode_helpers(json.dumps(self.encoded), self.pins), self.data)
 
+    def test_only_independently_reviewed_runner_images_admit_tool_preparation(self):
+        manifest = json.loads(Path(__file__).with_name('native-kvm-host-tools.json').read_text())
+        for image in ('20261012.334.1', '20261023.334.3'):
+            with self.subTest(image=image):
+                self.assertEqual(module.admit_runner_image(manifest, image)['version'], image)
+        for image in (None, '', '20261023.334.4', '20261012.334', 'latest', '*', '20261023.334.3\n'):
+            with self.subTest(image=image), self.assertRaises(ValueError):
+                module.admit_runner_image(manifest, image)
+        for change in ('duplicate', 'wildcard', 'evidence', 'unknown-field', 'boolean-attempt'):
+            malformed = json.loads(json.dumps(manifest))
+            if change == 'duplicate': malformed['runnerImages'].append(malformed['runnerImages'][0])
+            if change == 'wildcard': malformed['runnerImages'][0]['version'] = '*'
+            if change == 'evidence': malformed['runnerImages'][0]['inventoryReportSha256'] = 'bad'
+            if change == 'unknown-field': malformed['runnerImages'][0]['extra'] = True
+            if change == 'boolean-attempt': malformed['runnerImages'][0]['inventoryRunAttempt'] = True
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                module.admit_runner_image(malformed, '20261012.334.1')
+
     def test_rejects_names_sizes_bytes_and_noncanonical_input(self):
         cases = [None, 'x' * 65536, '[]', '{}', '{"filter.so":"x","filter.so":"y","abuse":"z"}']
         for field, value in [('filter.so', 'not-base64'), ('filter.so', base64.b64encode(b'alter!').decode()), ('abuse', self.encoded['abuse'] + '\n')]:

@@ -954,6 +954,40 @@ contracts. The affected Bun wrapper and catalog tests passed six tests with
 49 assertions; strict types, both linters and the Bun production build passed.
 These local results do not replace a new native attempt.
 
+## Hosted Debian installation and image-bound repeat
+
+Source `bc2a1668b7e60d5dd66b8f01065a436f3241876b` passed all three full PR
+workflow summaries. CLI passed 1,241 tests with 12,051 assertions, types, lint and
+generated-project checks. Both native runtime probes and VFS physical-cleanup
+checks passed. Its [first hosted Debian KVM qualification](https://github.com/hazeion/fleur/actions/runs/40083092762/attempts/1)
+also passed independent review. Report SHA256:
+`828b1ab3680131cae853e2766188b17da6b87896de7f92f776caf6bce25a46b8`.
+The exact eight-package installation, fresh-login handoff, two Doctor smoke rounds,
+full runtime restrictions, owned firewall preservation and complete VM, overlay,
+credentials, scratch and service-cgroup disposal passed. Doctor still returned
+the expected release-unverified result for this internal candidate.
+
+The report now records the actual stable Debian 13 x64 daemon tuple: Docker
+29.9.1, kernel `6.12.113+deb13-cloud-amd64`, systemd cgroup driver/version 2,
+rootful operation and the default AppArmor, seccomp and cgroup namespace options.
+This supplies the fields missing from the earlier report, without admitting an
+ordinary profile or claiming daemon process continuity.
+
+The [x64-only fresh repeat](https://github.com/hazeion/fleur/actions/runs/40083092762/attempts/2)
+refused a changed runner image before package preparation or VM creation; owned
+services and scratch were disposed. Refusal report SHA256:
+`1494b6754972fcb8d9f1ae0bdf9967ad7be7a173086644d1991a121c17ac719a`.
+Its collector recorded image `20261023.334.3`. Independent review compared both
+read-only inventories: identical collector source, healthy 1,211-package state
+hash, kernel, Docker baseline and exact 18-package install/configure simulation.
+No upgrades or removals were proposed. Inventory SHA256 values are
+`6c8d4c41067035bc8fb8b3fb4d78d950866c8ccfc4394211292cb56aeb223c38`
+and `59c91a9ef5576f8622a6e35294645dc9b9c5908cb8b7f188d1071dc468034f9c`.
+The test-tool manifest now records those exact two reviewed images and their
+inventory bindings. Unknown images remain refused, and live package-plan,
+baseline, actual-delta, Docker-preservation and disposal checks remain required.
+The refused attempt is not a repeat qualification pass.
+
 ## Recurrent ARM cleanup diagnostic
 
 Source `9b3076554f13b8a608991a6e420d10e29c657c86` passed all 1,237 CLI tests

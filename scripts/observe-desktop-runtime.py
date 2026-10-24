@@ -50,12 +50,25 @@ def error_category(error):
     return message if type(error) is RuntimeError and re.fullmatch('[A-Z_]{1,80}',message) else 'DESKTOP_OBSERVATION_FAILED'
 
 
+def native_config_projection(source):
+    projected=dict(source)
+    defaults={'AttachStderr':False,'AttachStdin':False,'AttachStdout':False,'Cmd':None,'Domainname':'','Hostname':'','OnBuild':None,'OpenStdin':False,'StdinOnce':False,'Tty':False,'Volumes':None}
+    for key,default in defaults.items():
+        if key in projected:
+            if type(projected[key]) is not type(default) or projected[key]!=default:raise ValueError('nondefault legacy config metadata')
+            del projected[key]
+    if 'Image' in projected:
+        if type(projected['Image']) is not str or not re.fullmatch('sha256:'+SHA,projected['Image']):raise ValueError('legacy build parent not immutable')
+        del projected['Image']
+    return projected
+
+
 def matches_image(value,identity):
     try:
         return (value['Id']==identity.manifest_image_id and value['Architecture']=='amd64' and value['Os']=='linux'
-            and value['Config']==identity.configuration['config'] and value['RootFS']=={'Type':'layers','Layers':identity.configuration['rootfs']['diff_ids']}
+            and value['Config']==native_config_projection(identity.configuration['config']) and value['RootFS']=={'Type':'layers','Layers':identity.configuration['rootfs']['diff_ids']}
             and value['Descriptor']=={'digest':identity.manifest_image_id,'mediaType':'application/vnd.oci.image.manifest.v1+json','size':identity.manifest_bytes})
-    except (KeyError,TypeError,AttributeError):return False
+    except (KeyError,TypeError,AttributeError,ValueError):return False
 
 
 def role_profile(value, *, cid,name,image,nonce,binding,mode,program=None,control_environment=(),base_environment=()):
@@ -346,7 +359,7 @@ def observe(mode,images_directory):
             configs[name]=identity.configuration;image_identities[name]=identity
             image=identity.manifest_image_id
             held.verify(name)
-            report.setdefault('imageIdentityMappings',{})[name]={'producerConfigImageId':identity.config_image_id,'nativeManifestImageId':identity.manifest_image_id,'archiveSha256':held.pins[name]['sha256']}
+            report.setdefault('imageIdentityMappings',{})[name]={'producerConfigImageId':identity.config_image_id,'nativeManifestImageId':identity.manifest_image_id,'archiveSha256':held.pins[name]['sha256'],'legacyConfigOmissions':sorted(set(identity.configuration['config'])-set(native_config_projection(identity.configuration['config'])))}
             if inspect(config_image,'image') is not None:raise RuntimeError('UNEXPECTED_CONFIG_IMAGE_ALIAS')
             existing=inspect(image,'image')
             if existing is None:

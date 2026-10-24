@@ -135,6 +135,50 @@ class InputContract(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 module.service_state('fixed.service')
 
+    def test_stop_accepts_already_collected_service_only_after_independent_absence(self):
+        import tempfile
+        import subprocess
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            service = module.Service(Path(directory), 1001, 108, [], {})
+            service.bound = {'InvocationID': 'a' * 32}
+            absent = {'LoadState': 'not-found'}
+            stopped = subprocess.CompletedProcess([], 5, b'', b'Unit not loaded')
+            def stop_command(args, timeout=30, allowed=(0,)):
+                self.assertEqual(args, ['sudo', '-n', '/usr/bin/systemctl', 'stop', '--no-block', service.unit])
+                if stopped.returncode not in allowed:
+                    raise RuntimeError('Fixed host command failed: sudo')
+                return stopped
+            with patch.object(module, 'service_state', side_effect=[service.bound, absent]), patch.object(module, 'run', side_effect=stop_command):
+                service.stop()
+            self.assertTrue(service.cancelled)
+            self.assertEqual(service.stopCommands, 1)
+            with patch.object(module, 'service_state', return_value=absent), patch.object(module, 'run') as command:
+                service.stop()
+                command.assert_not_called()
+            self.assertEqual(service.stopCommands, 1)
+            for current in ({'LoadState': 'loaded', 'InvocationID': 'b' * 32}, service.bound):
+                with self.subTest(current=current), patch.object(module, 'service_state', side_effect=[service.bound, current]), patch.object(module, 'run', side_effect=stop_command):
+                    with self.assertRaises(RuntimeError):
+                        service.stop()
+            for code in (1, 4):
+                stopped.returncode = code
+                with self.subTest(code=code), patch.object(module, 'service_state', return_value=service.bound), patch.object(module, 'run', side_effect=stop_command):
+                    with self.assertRaises(RuntimeError):
+                        service.stop()
+            stopped.returncode = 5
+            with patch.object(module, 'service_state', side_effect=[service.bound, RuntimeError('Metadata unavailable')]), patch.object(module, 'run', side_effect=stop_command):
+                with self.assertRaises(RuntimeError):
+                    service.stop()
+            service.group = Path(directory)
+            with patch.object(module, 'service_state', side_effect=[service.bound, absent]), patch.object(module, 'run', side_effect=stop_command):
+                with self.assertRaises(RuntimeError):
+                    service.stop()
+            with patch.object(module, 'service_state', return_value=absent), patch.object(module, 'run') as command:
+                with self.assertRaises(RuntimeError):
+                    service.stop()
+                command.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

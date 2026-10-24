@@ -1348,6 +1348,28 @@ def observe_ordinary_daemon(docker):
             'source': 'ordinary-user-local-docker-cli', 'info': info, 'server': server, 'securityOptionsEvidence': security}
 
 
+def observe_debian_candidate_daemon(docker):
+    def identity():
+        value = run(docker + ['info', '--format', '{{.ID}}'], timeout=10)[1].strip()
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:._-]{0,255}', value) is None:
+            raise RuntimeError('Candidate daemon identity is unavailable')
+        return hashlib.sha256(value.encode()).hexdigest()
+    before = identity()
+    observed = observe_ordinary_daemon(docker)
+    after = identity()
+    info, server = observed['info'], observed['server']
+    engine = server['Components'][0]
+    if (before != after or observed['securityOptionsEvidence']['state'] != 'recorded'
+            or info['ServerVersion'] != server['Version'] or info['KernelVersion'] != server['KernelVersion']
+            or info['OSType'] != server['Os'] or server['Os'] != 'linux'
+            or info['Architecture'] not in ('x86_64', 'amd64') or server['Arch'] != 'amd64'
+            or engine['Version'] != server['Version'] or engine['Details']['GitCommit'] != server['GitCommit']):
+        raise RuntimeError('Candidate daemon tuple is incoherent or changed')
+    info['SecurityOptions'].sort()
+    return {**observed, 'scope': 'debian-candidate-daemon-readiness-observation',
+            'daemonIdSha256': before, 'restartContinuityProof': False}
+
+
 def verify_smoke_and_restrictions(state, owned_binding=None):
     context = run(["docker", "context", "show"])[1].strip()
     endpoint = json.loads(run(["docker", "context", "inspect", context, "--format", "{{json .Endpoints.docker}}"])[1])["Host"]
@@ -1358,6 +1380,10 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         REPORT['ordinaryDaemonObservation'] = observe_ordinary_daemon(docker)
         if REPORT['ordinaryDaemonObservation']['securityOptionsEvidence']['state'] != 'recorded':
             raise RuntimeError('Ordinary daemon security option observation is unavailable')
+    debian_candidate = REPORT.get('executionArtifact', {}).get('catalogId') == 'debian-13-amd64-docker-2026-10-19'
+    if debian_candidate:
+        verify_owned_binding(owned_binding)
+        REPORT['candidateDaemonObservation'] = {'before': observe_debian_candidate_daemon(docker), 'stable': False}
     image = run([BUN, "-e", "import {smokeImages} from " + json.dumps(str(ROOT / "package/src/setup/profiles.ts")) + ";process.stdout.write(smokeImages.x64)"])[1]
     if not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", image):
         raise RuntimeError("Smoke image is not digest-pinned")
@@ -1447,6 +1473,13 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         if code != 0 or REPORT["restrictionProbe"]["result"].get("cleanup_complete") is not True or REPORT["restrictionProbe"]["result"].get("bounded_probe_passed") is not True:
             REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Inspect restrictionProbe for the observed exit status and bounded result."}
             return
+        if debian_candidate:
+            verify_owned_binding(owned_binding)
+            observation = REPORT['candidateDaemonObservation']
+            observation['after'] = observe_debian_candidate_daemon(docker)
+            if observation['before'] != observation['after']:
+                raise RuntimeError('Candidate daemon identity or tuple changed during verification')
+            observation['stable'] = True
         debian_dependency_preservation("afterRuntime", owned_binding)
         debian_dependency_preservation("cleanup", owned_binding)
         REPORT["installationEvidence"] = "verified-full-system-guest"

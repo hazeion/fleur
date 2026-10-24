@@ -44,7 +44,7 @@ elif scenario == "wrong-ok":
     result["result"]["ok"] = True
 elif scenario == "wrong-release":
     components["release"]["state"] = "ready"
-elif scenario not in ("ready", "restriction-exit", "restriction-false", "restriction-missing", "restriction-malformed", "restriction-cleanup", "restriction-host-ineligible"):
+elif scenario not in ("ready", "restriction-exit", "restriction-false", "restriction-missing", "restriction-malformed", "restriction-cleanup", "restriction-host-ineligible", "debian-observation", "debian-observation-changed"):
     raise AssertionError("Unknown fixture scenario")
 # Fail the second repeat. The first successful result must not mask it.
 calls = 0
@@ -93,6 +93,16 @@ def run(args, **kwargs):
         return 0, "oven/bun@sha256:" + "c" * 64, ""
     raise AssertionError(args)
 namespace["run"] = run
+if scenario.startswith('debian-observation'):
+    namespace['REPORT']['executionArtifact'] = {'kind': 'internal-candidate', 'catalogId': 'debian-13-amd64-docker-2026-10-19'}
+    namespace['verify_owned_binding'] = lambda *_args, **_kwargs: None
+    namespace['debian_dependency_preservation'] = lambda *_args: None
+    candidate_observations = 0
+    def candidate_observation(_docker):
+        global candidate_observations
+        candidate_observations += 1
+        return {'runtimeAdmission': False, 'tuple': 'changed' if candidate_observations == 2 and scenario.endswith('-changed') else 'same'}
+    namespace['observe_debian_candidate_daemon'] = candidate_observation
 try:
     namespace["verify_smoke_and_restrictions"]({})
 except (RuntimeError, ValueError) as error:

@@ -313,9 +313,13 @@ class Service:
         self.cancelled = True
         current = service_state(self.unit)
         if self.bound and current.get('InvocationID') == self.bound['InvocationID']:
-            run(['sudo', '-n', '/usr/bin/systemctl', 'stop', '--no-block', self.unit])
+            result = run(['sudo', '-n', '/usr/bin/systemctl', 'stop', '--no-block', self.unit], allowed=(0, 5))
+            # --collect may retire this exact invocation between show and stop.
+            # The status alone never proves absence; retain both independent checks.
+            if result.returncode == 5 and (service_state(self.unit).get('LoadState') != 'not-found' or self.group.exists()):
+                raise RuntimeError('Collected service disposal unconfirmed')
             self.stopCommands += 1
-        elif current.get('LoadState') != 'not-found':
+        elif current.get('LoadState') != 'not-found' or self.group.exists():
             raise RuntimeError('Service invocation custody lost')
 
     def wait(self):

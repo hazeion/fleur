@@ -851,4 +851,79 @@ still returns resumable `HUMAN_ACTION_REQUIRED`. Other macOS and architecture ro
 remain unverified. Requirements-based red/green tests show the ordinary default
 catalog now exposes separate acquisition/placement authority for this exact tuple,
 with no grant creation or OS mutation on JSON invocation. Malformed or inconsistent
-catalogs fail closed. Ordinary packed native placement repeats remain pending.
+catalogs fail closed.
+
+## Ordinary packaged Intel Desktop placement repeats
+
+Source `9d74daa7bfbf0fdd863e68361628e2d3d3fde47e` completed two fresh native
+private placements through the ordinary `fleur` package and its default compiled
+catalog. The archive SHA256 was
+`4b9c43eca03839d1c1a178506d9cb25eb11a5770e4cf20a290ad1aa1a2c5ac9b`;
+all 66 packaged files matched their committed source bytes. No profile or
+readiness override was supplied. The fixed reviewed plan SHA256 was
+`e93163ff57b15ed0f9280b883be06810f7b8b24a4f588195603cada16675f049`.
+Receipt SHA256 values, in order, are:
+
+- `683a6188dc3894a95aa886a1c0d4c59d61d47433df1d89d7d8ac129f704ddd01`
+- `9303f682d4c26566ee613e5c3cd468b89431f37ff431a5895b892e91c3f407ba`
+
+Both runs passed independent review. They finished in 181.104 and 188.066 seconds
+within the original explicit 600-second budget. All 14 native commands completed,
+with verified process retirement, signed staged/published app identity, normal
+image detach and empty installer scratch. Separate once grants were consumed and
+revoked. Existing Docker.app metadata and recorded core-file identities and hashes
+were unchanged across both runs. Each private destination retained its installed
+app. Public setup returned the expected resumable `HUMAN_ACTION_REQUIRED` after
+completed installation and cleanup.
+
+This verifies ordinary-package routing for the exact Intel placement method.
+The fixture simulated missing CLI discovery and supplied scoped authority
+responses. It does not establish human consent, helper installation, legal
+acceptance, launch of the newly placed app or runtime-readiness admission.
+
+## ARM VFS cleanup failure and targeted retry
+
+At source `9d74daa7bfbf0fdd863e68361628e2d3d3fde47e`, the first
+[ARM VFS attempt](https://github.com/hazeion/fleur/actions/runs/40078009667/attempts/1)
+passed runtime controls but failed physical data-root removal within the existing
+cleanup budget. Its report SHA256 is
+`806d0eb8838543626de562f67179aa05d5af24fbbb990a1ca3d1170da58e5150`.
+Task, shim, daemon and owned-mount checks had completed; cleanup did not report
+completed root removal. Independent review found no faulty assertion or safely
+removable duplicate work. This attempt remains failed evidence.
+
+One unchanged-source, failed-job-only retry passed the original full probe and
+all cleanup checks. Its report SHA256 is
+`a1b5fd5baa672aa87b8c85f99d4edb12150abd8ed82151ed78c3a6f4316c6354`.
+The owned process was reaped, socket and pidfile removed, both roots removed and
+the default daemon unchanged. No deadline or assertion changed. The current
+candidate's CLI, native prerequisite and compatibility workflow summaries passed.
+
+## Hosted Debian containment collection race
+
+The first guarded hosted attempt at source `e7f1ad1` refused a direct run-as-group
+query before preparation or VM creation. Source `9d74daa` instead proved root KVM
+API access and passed its normal managed-service containment case, but then
+[refused during its stop self-test](https://github.com/hazeion/fleur/actions/runs/40079319762).
+The exact transient unit had been collected between its state query and the stop
+command. No package preparation or VM creation ran; all owned service cgroups
+were absent and scratch removal completed.
+The refusal report SHA256 is
+`e082eb2a086363e1688fd882e361bb49d9f1ff95ce43eb408af05e89784eb014`.
+
+A regression reproduces the state-query/stop race. A stop result indicating an
+unloaded unit is accepted only after a new valid not-found observation and absence
+of the retained exact cgroup. Other status codes, live groups, changed invocation
+and unavailable metadata still refuse. Cancellation remains latched, and terminal
+receipt binding and final disposal checks remain required. This is a verifier
+control fix, not Debian installation or release-admission evidence.
+
+The next exact Debian internal-candidate verifier also records sanitized daemon
+capabilities, security options and component builds before and after the unchanged
+repeat/runtime gate. Each capture validates and hashes the daemon identity around
+the bounded info/version queries; incoherent versions or architecture, unknown
+security options and changed observations refuse. Private daemon metadata and raw
+identity are not published. This records identity and tuple stability, not daemon
+process continuity across restarts. It does not admit a readiness profile. The
+first native Debian report omitted these fields, so they must be measured in a new
+native run before using them as release evidence.

@@ -1502,3 +1502,17 @@ verified the stopped manager's complete ownership/program/profile and never-
 started state, removed only its full ID without force, confirmed absence and
 restored all four original inventory identities. The original failed receipt is
 unchanged. Neither this correction nor cleanup is full runtime qualification.
+
+The clean-source control preflight at
+`97a4180b1214099769a6d8a4a78f46c2556b2d9f` passed independent review. Report
+SHA256 `83a155f488adfcb611f894ffffb54f22a6c5d8ab54bd1af05d096e62e0085ce0`
+binds all six committed source hashes, native Intel macOS 15.7.7, the exact
+Desktop 4.96.1/Engine 29.9.2/Linuxkit 7.0.14 tuple and preexisting pinned Bun image.
+It verified actual worker PID/start time/cgroup/nonce/private PID namespace,
+manager PID in the VM host PID namespace, VM boot identity and monotonic clock,
+and real pidfd open/fdinfo/signal-zero/quiet-poll/close. Both owned containers were
+removed with confirmed absence; original context, daemon, container and image
+inventories were preserved. Transport was confirmed, stderr empty, and elapsed
+6,372ms was within the fixed 90-second bound. All runtime/native/installation
+admission flags remain false. Signal-zero capability is not SIGKILL deadline,
+resource, isolation or full lifecycle evidence.

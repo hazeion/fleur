@@ -927,3 +927,44 @@ identity are not published. This records identity and tuple stability, not daemo
 process continuity across restarts. It does not admit a readiness profile. The
 first native Debian report omitted these fields, so they must be measured in a new
 native run before using them as release evidence.
+
+## Recurrent ARM cleanup diagnostic
+
+Source `9b3076554f13b8a608991a6e420d10e29c657c86` passed all 1,237 CLI tests
+with 11,999 assertions, types, lint, generated-project verification and native
+readiness. Its ARM VFS runtime probe exited successfully, but physical root
+removal again failed within the original cleanup budget. The failed report SHA256
+is `edf72ff1b40101edcee9592cb5b9f30f92f1f1b8032856db5f30145127ab1cbc`.
+No fresh Debian attempt ran after this required CI failure.
+
+The next diagnostic adds bounded numeric progress inside the existing
+descriptor-anchored removal. It records normal/fallback attempt, data/exec inode,
+phase, elapsed time, successful unlink/rmdir counts and syscall durations. It does
+not walk the tree before deletion, publish filenames or exception text, change the
+removal algorithm, raise the 15-second cap or alter cleanup acceptance. Journal
+failure does not interrupt physical deletion; malformed diagnostics are marked
+separately. Actual ARM measurements remain pending, and the recurrence is not
+treated as a passing result or explained by an unmeasured performance claim.
+
+## Retained Arch cloud-image authentication
+
+A fresh independent review authenticated the retained official
+[October 1 cloud image](https://geo.mirror.pkgbuild.com/images/v20261001.604814/)
+against the current [Arch image publisher key](https://github.com/archlinux/arch-boxes#releases).
+The 578,080,256-byte image SHA256 is
+`360f0fa49db6813bdc8e35bed230a2dc2ae3567b7b5ab74719c0a706e4e34e87`.
+The review verified the primary self-signature, signing-subkey binding and embedded
+cross-signature, key flags and validity dates, and both checksum/image detached
+signatures. The signing subkey expires May 28, 2027. Current publisher README bytes
+matched the retained key source. The held image identity, size, permissions and
+hash were stable during verification.
+
+Independent review helper SHA256:
+`982feabfd40ce012c76acccbcb1961d3aef917763663714270c00102e9560f85`.
+Report SHA256:
+`26e1dd7c99d320c53881580bbdf6e52ab92d26a0524316754df6efa7ed97d8f3`.
+The historical parser source is missing and its attestation was not recreated.
+This is fresh input-authentication evidence, without a claim of global revocation
+absence. No image structure check was rerun, no VM or installer executed, and no
+native Arch support was admitted. Launch still requires reviewed source-owned
+custody and structure checks under an available attested toolchain.

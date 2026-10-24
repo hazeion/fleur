@@ -43,10 +43,10 @@ def owned_mount_count(contents, root):
 MOUNT_COUNT_CODE = 'from pathlib import Path; import sys\n'+inspect.getsource(owned_mount_count)+"\nwith open('/proc/self/mountinfo','r') as stream: data=stream.read(1048577)\nprint(owned_mount_count(data,Path(sys.argv[1])))\n"
 
 
-MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': sys.exit(capture_cli(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]))\n"
+MOUNT_PROGRAM = inspect.getsource(owned_mounts) + "\nif sys.argv[1]=='capture': sys.exit(capture_cli(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='retire': print(retire(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4])))\nelif sys.argv[1]=='remove': remove_roots(Path(sys.argv[2]),sys.argv[3],json.loads(sys.argv[4]),attempt=int(sys.argv[5]))\n"
 ROOT_CAPTURE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' capture "$base" "$token" "$expected_root"'
 MOUNT_RETIRE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' retire "$base" "$token" "$mount_snapshot"'
-ROOT_REMOVE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' remove "$base" "$token" "$mount_snapshot"'
+ROOT_REMOVE_COMMAND = '/usr/bin/python3 -I -c '+shlex.quote(MOUNT_PROGRAM)+' remove "$base" "$token" "$mount_snapshot" "${removal_attempt:-1}"'
 
 
 ROOT_BODY = r'''set -eu
@@ -189,6 +189,7 @@ ROOT_BODY = ROOT_BODY.replace('ROOT_CAPTURE_COMMAND_PLACEHOLDER',ROOT_CAPTURE_CO
 RETIRE_BODY = r'''set -eu
 LC_ALL=C; export LC_ALL
 base=$1; token=$2; retirement_window_ms=${3:-10000}; mount_snapshot=${4:-}
+removal_attempt=2
 daemon=${5:-}; daemon_started=${6:-}
 case "$daemon:$daemon_started" in *[!0-9:]*|:*|*:) exit 2 ;; esac
 [ "$daemon" -gt 1 ] && [ "$daemon_started" -gt 0 ] || exit 2
@@ -342,6 +343,32 @@ class Endpoint:
 
 def retirement_observations(root, returncode, stdout):
     facts = {'cli_returncode':returncode, 'stdout_bytes':len(stdout), 'journal_invalid':False}
+    facts['removal_progress'] = []
+    facts['removal_progress_invalid'] = False
+    found_progress = False
+    for attempt in (1, 2):
+        descriptor = None
+        try:
+            descriptor = os.open(root/f'removal-progress-{attempt}.facts', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            found_progress = True
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_nlink != 1
+                    or before.st_mode & 0o0777 != 0o644 or before.st_size > 16384):
+                raise ValueError('removal progress custody')
+            raw = os.read(descriptor, 16385)
+            after = os.fstat(descriptor)
+            identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+                                      value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+            if identity(before) != identity(after) or len(raw) != before.st_size:
+                raise ValueError('removal progress changed')
+            facts['removal_progress'].extend(owned_mounts.parse_removal_progress(raw, attempt))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, UnicodeError):
+            facts['removal_progress_invalid'] = True
+        finally:
+            if descriptor is not None: os.close(descriptor)
+    facts['removal_progress_missing'] = not found_progress
     try:
         with (root/'retirement.facts').open('rb') as stream:
             raw=stream.read(8193)

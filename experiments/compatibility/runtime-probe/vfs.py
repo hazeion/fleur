@@ -101,8 +101,10 @@ def cleanup_diagnostics(endpoint):
             if type(facts.get(key)) is int and -255<=facts[key]<=255:safe[key]=facts[key]
         for key in ('stdout_bytes','stderr_bytes','elapsed_ms','journal_bytes','journal_rows','last_stage','last_namespace','last_count'):
             if type(facts.get(key)) is int and 0<=facts[key]<=1048576:safe[key]=facts[key]
-        for key in ('journal_invalid','journal_missing','timings_missing','timings_invalid','diagnostic_invalid','parent_timeout'):
+        for key in ('journal_invalid','journal_missing','timings_missing','timings_invalid','diagnostic_invalid','parent_timeout','removal_progress_invalid','removal_progress_missing'):
             if type(facts.get(key)) is bool:safe[key]=facts[key]
+        progress = facts.get('removal_progress')
+        if owned_mounts.valid_removal_progress(progress): safe['removal_progress'] = progress
         for key,width in [('stages',4),('command_elapsed_ms',3)]:
             rows=facts.get(key)
             if type(rows) is list and len(rows)<=192 and all(type(row) is list and len(row)==width and all(type(v) is int and -255<=v<=10000 for v in row) for row in rows):safe[key]=rows

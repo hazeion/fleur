@@ -8,6 +8,8 @@ import { aptArtifactProtocol, aptFixtureBytes, aptGuardProtocol, aptHealthProtoc
 import { debianDependencyProfile, debianDependencyPackages, debianDockerPackages } from "./apt-debian-dependencies.ts";
 
 export interface DebianScenarioOptions {
+  readonly absentNftablesRecord?: boolean;
+  readonly guardInventory?: readonly string[];
   readonly dependencyNames?: "native" | "foreign" | "duplicate";
   readonly simulationNames?: "native" | "foreign" | "duplicate";
   readonly recoveryHealthNames?: "foreign" | "duplicate";
@@ -39,11 +41,11 @@ export async function debianScenario(options: DebianScenarioOptions = {}) {
   let downloads = 0; let installs = 0; let privilegedPlans = 0; let initialPlans = 0;
   const identity = { system: "linux", architecture: "x64", translated: false, release: "13", distribution: "debian", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) };
   const done = (stdout = "", exitCode = 0): HostCommandResult => ({ status: "completed", exitCode, stdout, stderr: "" });
-  const inventory = (names = options.dependencyNames) => [...configured].flatMap(([name, version]) => {
+  const inventory = (names = options.dependencyNames) => [...(options.absentNftablesRecord && !configured.has("nftables") ? ["nftables\t\tnot-installed\tok"] : []), ...[...configured].flatMap(([name, version]) => {
     const row = (binary: string) => `${binary}\t${version}\t${options.configuredStatus ?? "installed"}\tok`;
     if (!names || !["libjansson4", "libnftables1"].includes(name)) return [row(name)];
     return names === "duplicate" ? [row(name), row(`${name}:amd64`)] : [row(`${name}:${names === "native" ? "amd64" : "arm64"}`)];
-  });
+  })];
   const simulate = (args: readonly string[], phase: "initial" | "privileged") => {
     if (options.rejectedObservation === "initial-simulation" && phase === "initial") throw new Error("External invocation started; completion observation rejected");
     if (options.uncertainSimulation === phase) return { status: "timeout" as const, stdout: "", stderr: "" };
@@ -136,7 +138,7 @@ export async function debianScenario(options: DebianScenarioOptions = {}) {
             await writeFile(planPath, changed);
             try { result = await aptGuardProtocol(args.map((arg) => arg.replace(originalHash, changedHash)), versions, inventory()); }
             finally { await writeFile(planPath, original); }
-          } else result = await aptGuardProtocol(args, versions, inventory(), options.guardFault);
+          } else result = await aptGuardProtocol(args, versions, options.guardInventory ?? inventory(), options.guardFault);
           if (result.exitCode !== 0) return result;
           installs++; for (const path of args.slice(args.indexOf("install") + 1)) { const name = basename(path).split("_")[0]!; configured.set(name, versions[name]!); }
           return options.interrupted ? { status: "timeout", stdout: "", stderr: "" } : result;

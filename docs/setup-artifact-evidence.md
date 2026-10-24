@@ -747,3 +747,32 @@ and PID. Cleanup removes only the exact owned rule and chain; uncertain failures
 retain them for full owned VM disposal. These checks cannot establish universal
 firewall preservation. Their actual repeated native execution remains pending,
 as do installation, runtime, recovery and ordinary Debian admission.
+
+## Debian 13 absent-package state diagnosis
+
+A fresh disposable boot at source `77b0e1a4a8111dd966ea9e435c8fb47e88362cd1`
+reproduced the package-state input behind the expanded candidate's early refusal.
+The exact eight-name `dpkg-query` returned exit 1, seven unknown-name diagnostics,
+and this row for the referenced but absent nftables package:
+
+```text
+nftables<TAB><TAB>not-installed<TAB>ok
+```
+
+Raw observation report SHA256:
+`10cd0103dc71f908994bc0f319b6777edf8b02fbf0540a95c9ccf33f2e75f87b`.
+
+The baseline contained no installed nftables package. This empty-version record
+is distinct from retained configuration or a partial installation. The named
+inventory parser and privileged archive guard had both rejected it. Setup now
+classifies only an empty-version, error-free `not-installed` record as missing.
+Canonical duplicate identities, foreign architecture qualifiers, retained versions,
+configuration, incomplete states and uncertain query completion remain refused.
+The existing nftables configuration, service and helper-state checks still apply.
+
+This observation ran only the read-only inventory query. It requested no setup
+authority and installed no packages. Protected guest custody and bounded execution
+were retained, and VM, scratch and credential disposal completed. It establishes
+the diagnosis only; repeated actual installation, runtime and recovery qualification
+remain separate requirements. Requirements-based regressions first reproduced the
+planning refusal, then the archive-hook refusal, before their respective fixes.

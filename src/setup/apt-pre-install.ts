@@ -111,7 +111,7 @@ async function guard(): Promise<boolean> {
   const retained = new Set<string>();
   for (const [name, state] of snapshot) {
     const base = name.split(":")[0]!;
-    if (packages.has(base)) return false;
+    if (packages.has(base) && (name !== base || state.status !== "not-installed" || state.version !== "")) return false;
     if (Object.hasOwn(present, base)) { if (name !== base || state.status !== "installed" || present[base] !== state.version) return false; retained.add(base); }
   }
   if (retained.size !== Object.keys(present).length) return false;

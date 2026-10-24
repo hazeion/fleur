@@ -6,7 +6,7 @@ import { runCli } from "../../src/cli/main.ts";
 import { setupCommands } from "../../src/setup/commands.ts";
 import { debianDependencyProfile } from "./fixtures/apt-debian-dependencies.ts";
 
-async function plan(options: { conflictingPath?: string; service?: string; unitLinks?: string; profile?: typeof debianDependencyProfile } = {}) {
+async function plan(options: { conflictingPath?: string; service?: string; unitLinks?: string; profile?: typeof debianDependencyProfile; packageQuery?: { stdout: string; exitCode: number; terminationUnconfirmed?: boolean } } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "fleur-debian-dependency-plan-"));
   const calls: string[][] = [];
   try {
@@ -16,7 +16,7 @@ async function plan(options: { conflictingPath?: string; service?: string; unitL
       run: async (args) => {
         calls.push([...args]);
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
-        if (args[0] === "dpkg-query") return { status: "completed", exitCode: 1, stdout: "", stderr: "" };
+        if (args[0] === "dpkg-query") return { status: "completed", exitCode: 1, stdout: "", stderr: "", ...options.packageQuery };
         if (args[0] === "stat") return args.at(-1) === options.conflictingPath
           ? { status: "completed", exitCode: 0, stdout: "regular file|0|644|1\n", stderr: "" }
           : { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
@@ -329,3 +329,82 @@ test("dependency output is exclusively claimed and passed as an inherited descri
   }
   expect(result.installs).toBe(1);
 });
+
+// Observed on the pinned fresh Debian 13 image: referenced but absent nftables
+// has an explicit row, while the seven unknown package names are omitted.
+test("Debian setup treats the real empty-version not-installed record as missing before authority", async () => {
+  const { outcome, calls, grantsCreated } = await plan({ packageQuery: { stdout: "nftables\t\tnot-installed\tok\n", exitCode: 1 } });
+  expect(outcome.exitCode).toBe(3);
+  expect(outcome.result.error?.code).toBe("AUTHORITY_REQUIRED");
+  expect(outcome.result.data).toMatchObject({ packageState: { state: "compatible", present: [], missing: ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin", "libjansson4", "libnftables1", "nftables"] } });
+  expect(grantsCreated).toBe(false);
+  expect(calls.some((args) => ["curl", "apt-get", "sudo"].includes(args[0]!))).toBe(false);
+});
+
+test("the real Debian installation guard accepts genuine absent nftables state without relaxing its closure", async () => {
+  const { debianScenario } = await import("./fixtures/apt-debian-scenario.ts");
+  const result = await debianScenario({ absentNftablesRecord: true });
+  expect(result.outcome.result.data).toMatchObject({ setupAction: { action: "install", state: "completed" }, packageState: { state: "compatible", missing: [] } });
+  expect(result.downloads).toBe(3);
+  expect(result.initialPlans).toBe(1);
+  expect(result.privilegedPlans).toBe(1);
+  expect(result.installs).toBe(1);
+  expect(result.configured).toHaveLength(8);
+  expect(result.entries.some((name) => name.startsWith("apt-payloads-") || name === "apt-transaction-pending.json")).toBe(false);
+});
+
+for (const exitCode of [0, 1]) {
+  test(`an unconfirmed package query with exit ${exitCode} cannot establish missing packages or request authority`, async () => {
+    const names = ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin", "libjansson4", "libnftables1", "nftables"];
+    const { outcome, calls, grantsCreated } = await plan({ packageQuery: { stdout: names.map((name) => `${name}\t\tnot-installed\tok\n`).join(""), exitCode, terminationUnconfirmed: true } });
+    expect(outcome.exitCode).toBe(4);
+    expect(outcome.result.data).toMatchObject({ packageState: { state: "unavailable", present: [], missing: [] } });
+    expect(grantsCreated).toBe(false);
+    expect(calls.map((args) => args[0])).toEqual(["docker", "dpkg-query"]);
+  });
+}
+
+test("a complete successful query counts explicit absent rows separately from installed packages", async () => {
+  const stdout = "containerd.io\t2.4.2-2~debian.13~trixie\tinstalled\tok\n" + ["docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin", "libjansson4:amd64", "libnftables1:amd64", "nftables"].map((name) => `${name}\t\tnot-installed\tok\n`).join("");
+  const { outcome, grantsCreated } = await plan({ packageQuery: { stdout, exitCode: 0 } });
+  expect(outcome.exitCode).toBe(3);
+  expect(outcome.result.data).toMatchObject({ packageState: { state: "compatible", present: ["containerd.io"], missing: ["docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin", "libjansson4", "libnftables1", "nftables"] } });
+  expect(grantsCreated).toBe(false);
+});
+
+for (const [label, stdout] of [
+  ["retained version", "nftables\t1.1.3-1\tnot-installed\tok\n"],
+  ["retained configuration", "nftables\t\tconfig-files\tok\n"],
+  ["error flag", "nftables\t\tnot-installed\treinstreq\n"],
+  ["duplicate absent", "nftables\t\tnot-installed\tok\nnftables\t\tnot-installed\tok\n"],
+  ["absent then installed", "nftables\t\tnot-installed\tok\nnftables\t1.1.3-1\tinstalled\tok\n"],
+  ["duplicate dependency alias", "libnftables1\t\tnot-installed\tok\nlibnftables1:amd64\t\tnot-installed\tok\n"],
+  ["foreign dependency", "libnftables1:arm64\t\tnot-installed\tok\n"],
+  ["unknown package", "foreign-package\t\tnot-installed\tok\n"],
+] as const) {
+  test(`absent records do not bypass package planning refusal: ${label}`, async () => {
+    const { outcome, calls, grantsCreated } = await plan({ packageQuery: { stdout, exitCode: 1 } });
+    expect(outcome.exitCode).toBe(4);
+    expect(outcome.result.data).toMatchObject({ packageState: { state: "conflict", present: [], missing: [] } });
+    expect(grantsCreated).toBe(false);
+    expect(calls.map((args) => args[0])).toEqual(["docker", "dpkg-query"]);
+  });
+}
+for (const [label, row] of [
+  ["retained version", "nftables\t1.1.3-1\tnot-installed\tok"],
+  ["retained configuration", "nftables\t1.1.3-1\tconfig-files\tok"],
+  ["partial installation", "nftables\t1.1.3-1\tunpacked\tok"],
+  ["error flag", "nftables\t\tnot-installed\treinstreq"],
+  ["foreign Docker architecture", "docker-ce:arm64\t\tnot-installed\tok"],
+  ["foreign dependency architecture", "libnftables1:arm64\t\tnot-installed\tok"],
+  ["duplicate absence", "nftables\t\tnot-installed\tok\nnftables\t\tnot-installed\tok"],
+] as const) {
+  test(`the privileged hook refuses changed or ambiguous absent state: ${label}`, async () => {
+    const { debianScenario } = await import("./fixtures/apt-debian-scenario.ts");
+    const result = await debianScenario({ absentNftablesRecord: true, guardInventory: [row] });
+    expect(result.privilegedPlans).toBe(1);
+    expect(result.installs).toBe(0);
+    expect(result.configured).toEqual(result.baseline);
+    expect(result.outcome.exitCode).toBe(3);
+  });
+}

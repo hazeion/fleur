@@ -37,17 +37,22 @@ export async function inspectAptPackageState(profile: AptInstallProfile, host: S
   const packages = aptPackageVersions(profile);
   const names = Object.keys(packages).sort();
   const result = await host.run(["dpkg-query", "--root=/", "--admindir=/var/lib/dpkg", "--show", "--showformat=${binary:Package}\t${Version}\t${db:Status-Status}\t${db:Status-Eflag}\\n", ...names], timeout);
-  if (result.status !== "completed" || (result.exitCode !== 0 && result.exitCode !== 1)) return refused("unavailable");
+  if (result.status !== "completed" || result.terminationUnconfirmed || (result.exitCode !== 0 && result.exitCode !== 1)) return refused("unavailable");
   const present = new Set<string>();
+  const seen = new Set<string>();
   const lines = result.stdout === "" ? [] : result.stdout.replace(/\n$/, "").split("\n");
   for (const line of lines) {
     const fields = line.split("\t");
     const [binary, version, status, errorFlag] = fields;
     const name = binary ? canonicalAptPackageName(profile.distroDependencies, binary) : null;
-    if (fields.length !== 4 || !name || !Object.hasOwn(packages, name) || present.has(name)
-      || packages[name] !== version || status !== "installed" || errorFlag !== "ok") return refused("conflict");
+    if (fields.length !== 4 || !name || !Object.hasOwn(packages, name) || seen.has(name) || errorFlag !== "ok") return refused("conflict");
+    seen.add(name);
+    // dpkg can retain an empty absent record for a referenced package name.
+    // It carries no installed version or residual configuration to preserve.
+    if (version === "" && status === "not-installed") continue;
+    if (packages[name] !== version || status !== "installed") return refused("conflict");
     present.add(name);
   }
-  if (result.exitCode === 0 && present.size !== names.length) return refused("conflict");
+  if (result.exitCode === 0 && seen.size !== names.length) return refused("conflict");
   return { state: "compatible", present: names.filter((name) => present.has(name)), missing: names.filter((name) => !present.has(name)) };
 }

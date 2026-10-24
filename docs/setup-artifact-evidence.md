@@ -776,3 +776,28 @@ were retained, and VM, scratch and credential disposal completed. It establishes
 the diagnosis only; repeated actual installation, runtime and recovery qualification
 remain separate requirements. Requirements-based regressions first reproduced the
 planning refusal, then the archive-hook refusal, before their respective fixes.
+
+## Debian 13 x64 package-state fix and first installation proof
+
+Source `5ebce058035cb8d2793dea50ce248c5579d2f56b` passed one fresh native HVF
+internal-candidate run after the absent-package fix. The raw report SHA256 is
+`9e98f7235725d66533bb77576ca01c6d100ea0e3ff862986c1063eeb6556983d`.
+The pinned Debian image booted kernel `6.12.113+deb13-cloud-amd64` with Bun 1.4.3.
+Actual installation added exactly the five Docker packages and three declared
+Debian dependencies. Noninteractive and denied authority preserved the baseline;
+installation, repository, service and access actions retained separate scope.
+Authority responses came from the owned fixture; no human-consent proof is claimed.
+Fresh-login handoff, two Doctor/setup observation rounds and the full bounded
+runtime probe passed. The internal candidate continues to report release support
+unverified; this is not ordinary Debian catalog admission.
+
+The owned nf_tables canary matched before installation, after installation, after
+fresh login and after runtime verification. After installation, nftables.service
+stayed inactive, dead and disabled with zero execution timestamps. Canary cleanup and VM, overlay,
+scratch and credential disposal completed. Independent review verified the exact
+source/catalog pairing, eight-package delta, runtime controls and disposal.
+
+A second attempt refused before VM creation because required historical host-tool
+attestation files were unavailable. It did not repeat installation or establish a
+second native pass. Repeated installation and interrupted recovery remain open;
+no missing attestation check was removed, and no release profile was promoted.

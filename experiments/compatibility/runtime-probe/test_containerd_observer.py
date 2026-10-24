@@ -285,11 +285,23 @@ os.killpg=transient_cleanup_observation
         directory=tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         state=pathlib.Path(directory.name)
+        (state/'namespaces.json').write_text('{}')
         source=r"""import json,os,pathlib,subprocess,sys,time
 root=pathlib.Path(STATE)
 rows_path=root/'namespaces.json'
 queue=root/'events'
 args=sys.argv[5:]
+if MODE=='interrupted-label-store':
+    native_write_text=pathlib.Path.write_text
+    def interrupted_state_write(path, body, *args_, **kwargs):
+        if path.name.startswith('namespaces.') and len(args)>1 and args[0]=='namespaces' and args[1]=='label' and not (root/'write-interrupted').exists():
+            native_write_text(root/'write-interrupted','yes')
+            # Model a client stopped after opening its state output, before it
+            # can publish any bytes. The real supervisor must retire this child.
+            with path.open('w'):
+                while True:time.sleep(.005)
+        return native_write_text(path,body,*args_,**kwargs)
+    pathlib.Path.write_text=interrupted_state_write
 if args[0]=='events':
     time.sleep(.2)
     (root/'subscribed').touch()
@@ -331,7 +343,12 @@ elif verb=='remove':
     if MODE=='failed-delete': sys.exit(19)
     del rows[args[2]]
 else: sys.exit(18)
-rows_path.write_text(json.dumps(rows))
+# Listing is read-only. A killed fixture client must not corrupt the
+# daemon model while the real supervisor observes uncertain completion.
+if verb!='list':
+    pending=rows_path.with_suffix('.pending')
+    pending.write_text(json.dumps(rows))
+    pending.replace(rows_path)
 """.replace('STATE',repr(str(state))).replace('MODE',repr(mode))
         return self.supervised_observer(source,timeout=timeout,adapter_extra=adapter_extra.replace('CANARY_STATE',repr(str(state)))),state
 
@@ -360,6 +377,18 @@ rows_path.write_text(json.dumps(rows))
                 self.assertTrue(observer.snapshot()['registration']['cleanup_verified'])
                 self.assertFalse(observer.snapshot()['registration']['ready'])
                 observer.close(1)
+
+    def test_interrupted_fake_client_write_preserves_daemon_state_and_owned_cleanup(self):
+        observer,state=self.canary_observer('interrupted-label-store',timeout=5)
+        with self.assertRaisesRegex(ObserverUnverified,'readiness-unverified'):
+            observer.ready(5)
+        self.assertEqual((state/'write-interrupted').read_text(),'yes')
+        self.assertEqual(json.loads((state/'namespaces.json').read_text()),{})
+        self.assertTrue(observer.snapshot()['registration']['cleanup_verified'])
+        self.assertFalse(observer.snapshot()['registration']['ready'])
+        self.assertTrue(observer.close(1))
+        self.assertTrue(observer.snapshot()['reaped'])
+        self.assertIsNotNone(observer.process.poll())
 
     def test_echo_without_verified_namespace_removal_never_grants_readiness(self):
         observer,state=self.canary_observer('failed-delete')

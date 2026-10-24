@@ -274,7 +274,7 @@ if name=='uname' and s['scenario'] in ('command-orphan','command-orphan-timeout'
  if s['scenario']=='command-orphan':os.write(1,b'x'*(2*1024*1024+1))
  while True:
   (root/'orphan-heartbeat').write_text(str(time.monotonic()));time.sleep(0.02)
-if name=='uname':print('x86_64' if args==['-m'] else 'Linux 6.8.0-fixture x86_64 GNU/Linux');sys.exit(0)
+if name=='uname':print('x86_64' if args==['-m'] else 'Linux '+('6.12.113+deb13-cloud-amd64' if s['scenario'].startswith('owned13-') else '6.8.0-fixture')+' x86_64 GNU/Linux');sys.exit(0)
 if name=='systemd-detect-virt':print('qemu');sys.exit(0)
 if name=='dpkg-query' and s['scenario'] in ('owned26-target-valid', 'owned13-target-valid'):
  s['targetBoundaryObserved']=True;save();print('TARGET_BOUNDARY_OBSERVED',file=sys.stderr);sys.exit(42)
@@ -308,10 +308,13 @@ if name=='python3' and ready_protocol() and args[0].endswith('/runtime-probe/run
 if name=='docker':
  if ready_protocol() and args[:2]==['--host','unix:///var/run/docker.sock']:
   query=args[2:]
+  if query==['info','--format','{{.ID}}']:
+   s.setdefault('ordinaryDaemonQueries',[]).append(query);save();print('fixture-daemon-id');sys.exit(0)
   if query in (['info','--format','{{json .}}'],['version','--format','{{json .Server}}']):
    s.setdefault('ordinaryDaemonQueries',[]).append(query);save()
+   kernel='6.12.113+deb13-cloud-amd64' if s['scenario'].startswith('owned13-') else '7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic'
    if query[0]=='info':
-    info={'ServerVersion':'29.9.1','KernelVersion':'7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic','OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor,profile=default','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
+    info={'ServerVersion':'29.9.1','KernelVersion':kernel,'OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor,profile=default','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
     if s['scenario']=='ordinary-admitted-security-duplicate':info['SecurityOptions']=['name=apparmor','name=apparmor']
     if s['scenario']=='ordinary-admitted-security-mixed':info['SecurityOptions']=['name=apparmor','name=apparmor,profile=default']
     if s['scenario']=='ordinary-admitted-security-malformed':info['SecurityOptions']=[True]
@@ -320,7 +323,7 @@ if name=='docker':
     if s['scenario']=='ordinary-admitted-security-apparmor-unconfined':info['SecurityOptions']=['name=apparmor,profile=unconfined']
     if s['scenario']=='ordinary-admitted-security-apparmor-docker-default':info['SecurityOptions']=['name=apparmor,profile=docker-default']
     print(json.dumps(info))
-   else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':'7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic','Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
+   else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':kernel,'Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
    sys.exit(0)
  if ready_protocol() and args[:2]==['--host','unix:///var/run/docker.sock']:
   call=args[2:]

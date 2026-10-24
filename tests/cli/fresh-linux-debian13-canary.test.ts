@@ -17,7 +17,8 @@ for (const fault of ["binding", "backend", "canary", "service", "phase", "cleanu
       expect(report.installationEvidence).toBe("pending");
       expect(report.runtimeSupport).toBe("unverified");
       expect(report.error.code).toBe("GUEST_VERIFICATION_FAILED");
-      expect(report.error.message).toMatch(/canary|nftables service/);
+      expect(report.error.message).toBe(fault === "canary" ? "Owned detached canary differs"
+        : fault === "service" ? "nftables service execution or state differs" : "Original canary result binding differs");
       expect(report.debianDependencyPreservation.cleanup).toBe(false);
       const state = await Bun.file(join(root, "protocol-state.json")).json();
       expect(state.unexpected).toEqual([]);

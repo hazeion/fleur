@@ -94,6 +94,15 @@ test("unchanged Debian13 internal authority survives the actual guest fresh-logi
     expect(report.runs).toHaveLength(2);
     for (const round of [report.ordinaryUserDoctorAfterResume, ...report.runs]) expect(round).toMatchObject({ exitCode: 4, result: { command: "doctor", ok: false, data: { components: { daemon: { state: "ready" }, smoke: { state: "ready", cleanup: true }, release: { state: "unverified" } } } } });
     expect(state.restrictionCalls).toBe(1);
+    const observation = report.candidateDaemonObservation;
+    expect(observation.stable).toBe(true);
+    expect(observation.after).toEqual(observation.before);
+    expect(observation.before).toMatchObject({ runtimeAdmission: false, restartContinuityProof: false,
+      daemonIdSha256: Bun.CryptoHasher.hash("sha256", "fixture-daemon-id", "hex"),
+      info: { KernelVersion: "6.12.113+deb13-cloud-amd64", CgroupDriver: "systemd", CgroupVersion: "2" } });
+    expect(JSON.stringify(observation)).not.toContain("private-fixture");
+    const capture = [["info", "--format", "{{.ID}}"], ["info", "--format", "{{json .}}"], ["version", "--format", "{{json .Server}}"], ["info", "--format", "{{.ID}}"]];
+    expect(state.ordinaryDaemonQueries).toEqual([...capture, ...capture]);
     expect(state.sentinel).toBeUndefined();
     expect(state.unexpected).toEqual([]);
     expect(await Bun.file(join(root, "lab/fresh-linux-resume-started.json")).exists()).toBe(true);

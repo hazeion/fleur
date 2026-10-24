@@ -4,10 +4,10 @@ export const generatedGuidance = `<!-- fleur:generated:start version=${releaseVe
 
 Fleur prepares an environment for an existing coding agent. It does not launch or manage agents.
 Use client/ for interactive Preact islands, server/ for server code and shared/ for browser-safe contracts. Assets belong in assets/. Keep secrets in server-only configuration.
-The approved application imports are fleur/schema, fleur/database, fleur/server, fleur/client, fleur/routing, preact, preact/hooks and compiler-managed Preact JSX entry points. These contracts do not imply that the application runtime APIs are implemented in this creation release. Use only these imports and fixed dependencies. Suggest additional packages with the need and existing alternatives; do not install them or edit protected manifests, locks or tooling. Use Tailwind utilities and documented inline styles/CSS variables. Do not author stylesheets or load external JavaScript.
+The approved application imports are fleur/schema, fleur/database, fleur/server, fleur/client, fleur/routing, preact, preact/hooks and compiler-managed Preact JSX entry points. The read-page slice supplies schemas, tables/relations, read-only queries, routes and validated islands; see the package docs/read-pages.md and generated dist/reference declarations. Use only these imports and fixed dependencies. Suggest additional packages with the need and existing alternatives; do not install them or edit protected manifests, locks or tooling. Use Tailwind utilities and documented inline styles/CSS variables. Do not author stylesheets or load external JavaScript.
 Server components and operations are the default. Validate public inputs and outputs. Browser data requests must use Fleur operations. Database changes require reviewed migrations and explicit destructive authority; never reset development data to fix a test.
 Read docs/fleur.md for offline pinned guidance and .agents/skills/fleur-tdd/SKILL.md before changing testable behavior. Use disposable test data and independent review for substantial work.
-This creation release supplies the project layout and pinned tooling. Application APIs, lifecycle and database commands are not implemented by this slice; do not invent working APIs or claim a running application.
+This creation release supplies the project layout and pinned tooling. Application lifecycle and database management commands are not implemented by this slice; do not invent working APIs or claim a running application.
 <!-- fleur:generated:end -->
 `;
 export const tddGuidance = `---
@@ -34,7 +34,7 @@ After explicitly installing the two frozen graphs with Bun, bun install --frozen
 
 The initial shared/placeholder.ts only exports an empty module so strict types and lint have a real source input. Write the first requirements-based test before invoking bun run test. An empty tests directory has no fabricated passing test. No application build script or production artifact is supplied.
 
-Application runtime APIs and lifecycle commands are unavailable in this creation slice. No application is running after init. Database, migration, server rendering, reactive delivery, external retrieval and production operations require their later implementations; do not invent endpoints or success evidence.
+The installed package supplies inferred read-page APIs and an internal restricted rendering adapter, with a worked fixture in tests/runtime/fixtures/exercises in the source release. Consult docs/read-pages.md and dist/reference in the package. No application is running after init. Lifecycle commands, database management, mutations, reactive delivery, external retrieval and production operations require their later implementations; do not invent endpoints or success evidence.
 
 ## Application contracts
 

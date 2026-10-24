@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
+  },
+  "include": [
+    "./**/*.ts",
+    "../../src/schema.ts",
+    "../../src/database.ts",
+    "./**/*.tsx"
+  ]
+}

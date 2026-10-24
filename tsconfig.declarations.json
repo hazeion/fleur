@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist/reference",
+    "rootDir": "src",
+    "exactOptionalPropertyTypes": true
+  },
+  "include": ["src/schema.ts", "src/database.ts", "src/server.ts", "src/client.ts", "src/routing.ts"]
+}

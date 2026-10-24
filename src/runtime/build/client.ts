@@ -1,0 +1,50 @@
+import { build, type Plugin } from "vite";
+import { fileURLToPath } from "node:url";
+import { exportId, publicModules, preactModules } from "./worker";
+import type { AdmittedProject } from "./admission";
+
+export interface BrowserBuild { readonly entry: string; readonly files: ReadonlyMap<string, { readonly body: string | Uint8Array; readonly type: string }>; }
+export async function compileClient(project: AdmittedProject): Promise<BrowserBuild> {
+  const modules = [...project.shared, ...project.client];
+  const entry = [
+    `import {hydrateAdmitted} from ${JSON.stringify(fileURLToPath(new URL("../hydration.ts", import.meta.url)))};`,
+    ...modules.map((path, index) => `import * as m${index} from ${JSON.stringify(path)};`),
+    `hydrateAdmitted(Object.assign({}, ${modules.map((path, index) => `Object.fromEntries(Object.entries(m${index}).map(([key,value])=>[${JSON.stringify(exportId(project, path)+"#")}+key,value]))`).join(",")}));`,
+  ].join("\n");
+  const plugin: Plugin = {
+    name: "fleur-admitted-client", enforce: "pre",
+    resolveId(id, importer) {
+      if (importer && project.sources.has(importer)) {
+        const path = publicModules[id] ?? preactModules[id] ?? project.resolutions.get(importer+"\0"+id);
+        if (!path || project.server.includes(path)) throw new Error("SOURCE_REJECTED");
+        return path;
+      }
+      if (id === "fleur-client-entry") return "\0fleur-client-entry";
+      if (publicModules[id] || preactModules[id]) return publicModules[id] ?? preactModules[id];
+      if (project.server.includes(id)) throw new Error("SOURCE_REJECTED");
+    },
+    load(id) {
+      if (id === "\0fleur-client-entry") return entry;
+      if (project.server.includes(id)) throw new Error("SOURCE_REJECTED");
+      const source = project.sources.get(id);
+      if (source !== undefined) return source;
+    },
+  };
+  const result = await build({
+    configFile: false, envFile: false, envPrefix: [], publicDir: false, plugins: [plugin], logLevel: "silent",
+    root: project.root, resolve: { tsconfigPaths: false },
+    oxc: { jsx: { runtime: "automatic", importSource: "preact" } },
+    build: { write: false, sourcemap: true, minify: true, rolldownOptions: { input: "fleur-client-entry", output: { entryFileNames: "assets/client-[hash].js" } } },
+  });
+  if (Array.isArray(result) || !("output" in result)) throw new Error("Client build failed");
+  let filename: string | undefined;
+  const files = new Map<string, { body: string | Uint8Array; type: string }>();
+  for (const file of result.output) {
+    if (file.type === "chunk") {
+      if (file.isEntry) filename = "/"+file.fileName;
+      files.set("/"+file.fileName, { body: file.code, type: "text/javascript; charset=utf-8" });
+    } else files.set("/"+file.fileName, { body: file.source, type: file.fileName.endsWith(".map") ? "application/json" : "text/css; charset=utf-8" });
+  }
+  if (!filename) throw new Error("Client entry missing");
+  return Object.freeze({ entry: filename, files });
+}

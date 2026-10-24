@@ -81,10 +81,39 @@ jobs:
       - name: Real atomic filesystem placement with simulated Desktop host commands
         run: bun test tests/cli/setup-desktop.test.ts
 
+  read-runtime:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: x86_64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture '${{ matrix.architecture }}' --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-read-bun"
+          echo "$RUNNER_TEMP/fleur-read-bun" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Explicit browser verification prerequisites
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Restricted reads, owned PostgreSQL and browser production fixture
+        run: bun test tests/runtime
+      - name: Controller admission and physical exit regressions
+        run: python3 tests/runtime/review-native-controller.test.py
+
   verification:
     name: CLI verification
     if: ${{ always() }}
-    needs: ["scope", "packed-cli", "desktop-placement-fixtures"]
+    needs: ["scope", "packed-cli", "desktop-placement-fixtures", "read-runtime"]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

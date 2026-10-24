@@ -92,6 +92,7 @@ jobs:
             status=$?
             printf '{"formatVersion":1,"scope":"native-runner-virtualization-observation","nativeQualification":false,"vmCreated":false,"kvmUsable":"unproven","rootTransport":"unavailable","exitCode":%d}\n' "$status" > "$RUNNER_TEMP/fleur-virtualization-root.json"
           fi
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Packed doctor and owned Docker smoke twice
         env:
           FLEUR_OWNED_DISPOSABLE_HOST: "yes"

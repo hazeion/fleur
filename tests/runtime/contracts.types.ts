@@ -1,0 +1,91 @@
+import { schema, type Infer, type LocalDate, type Timestamp } from "../../src/schema";
+import { column, defineTable, type Row, type Insert } from "../../src/database";
+const publicExercise = schema.object({ id: schema.uuid(), name: schema.string(), deleted: schema.boolean().nullable(), note: schema.string().optional() });
+type Exercise = Infer<typeof publicExercise>;
+const id = schema.uuid().parse("550e8400-e29b-41d4-a716-446655440000");
+const accepted: Exercise = { id, name: "Squat", deleted: null };
+// @ts-expect-error Nullable remains required.
+const missingNullable: Exercise = { id, name: "Squat" };
+// @ts-expect-error UUID is validated, not an arbitrary string.
+const arbitraryId: Exercise = { id: "wrong", name: "Squat", deleted: null };
+const date: LocalDate = schema.localDate().parse("2024-02-29");
+// @ts-expect-error LocalDate and Timestamp are distinct.
+const instant: Timestamp = date;
+const exercises = defineTable("exercises", { columns: { id: column.uuid().primaryKey().generated(), name: column.string(), note: column.string().nullable() } });
+const row: Row<typeof exercises> = { id, name: "Squat", note: null, version: 1 };
+const insert: Insert<typeof exercises> = { name: "Squat", note: null };
+// @ts-expect-error Managed version cannot be supplied for insert.
+const badInsert: Insert<typeof exercises> = { name: "Squat", note: null, version: 1 };
+// @ts-expect-error Required nullable column cannot be omitted.
+const missingColumn: Insert<typeof exercises> = { name: "Squat" };
+// @ts-expect-error Foreign key types must match.
+column.safeInteger().references(exercises.id, { onDelete: "restrict" });
+// @ts-expect-error Set-null requires a nullable source.
+column.uuid().references(exercises.id, { onDelete: "set null" });
+void [accepted, missingNullable, arbitraryId, instant, row, insert, badInsert, missingColumn];
+
+import { defineQuery } from "../../src/schema";
+import { eq, defineRelations } from "../../src/database";
+import { definePage, href } from "../../src/routing";
+import { defineIsland } from "../../src/client";
+import { h } from "preact";
+const list = defineQuery({ input: schema.object({ count: schema.safeInteger() }), output: schema.array(publicExercise) });
+const page = definePage({ path: "/exercises/:id", params: schema.object({ id: schema.uuid() }) });
+href(page, { id });
+// @ts-expect-error Required route parameter cannot be omitted.
+href(page, {});
+// @ts-expect-error Path placeholders must match the declared schema.
+definePage({ path: "/exercises/:wrong", params: schema.object({ id: schema.uuid() }) });
+// @ts-expect-error Filter value follows the column type.
+eq(exercises.name, 1);
+const Name = defineIsland({ props: schema.object({ name: schema.string() }), component: ({ name }) => h("span", null, name) });
+// @ts-expect-error Island props are contextually inferred.
+Name({ name: 4 }, {});
+// @ts-expect-error Relation references require matching column types.
+defineRelations(exercises, ({ one }) => ({ invalid: one(exercises, { fields: [exercises.name], references: [exercises.id] }) }));
+void list;
+// @ts-expect-error Optional path parameters do not satisfy a required placeholder.
+definePage({ path: "/exercises/:id", params: schema.object({ id: schema.string().optional() }) });
+// @ts-expect-error Route parameters must be string-compatible.
+definePage({ path: "/exercises/:id", params: schema.object({ id: schema.safeInteger() }) });
+
+import type { ReadDb } from "../../src/database";
+function readContract(db: ReadDb) {
+  const result: Promise<{ id: typeof id; name: string }[]> = db.select(exercises, { fields: ["id", "name"], limit: 100 });
+  // @ts-expect-error Selection fields must exist on the table.
+  db.select(exercises, { fields: ["secret"] });
+  // @ts-expect-error Read handlers receive no write capability.
+  db.insert(exercises, { values: { name: "bad", note: null }, returning: ["id"] });
+  // @ts-expect-error Read handlers cannot open transactions.
+  db.transaction(() => {});
+  // @ts-expect-error Read handlers cannot obtain raw SQL connections.
+  db.connection();
+  return result;
+}
+void readContract;
+
+import { alias } from "../../src/database";
+const tags = defineTable("tags", { columns: { id: column.safeInteger().primaryKey(), exerciseId: column.uuid().references(exercises.id, { onDelete: "restrict" }), label: column.string() } });
+function joinedContract(db: ReadDb) {
+  const e = alias(exercises, "e"), t = alias(tags, "t");
+  const result = db.selectJoined({ from: e, joins: [{ type: "left", table: t, on: eq(e.id, t.exerciseId) }], fields: { exercise: e.name, tag: t.label } });
+  const correct: Promise<{ exercise: string; tag: string | null }[]> = result;
+  // @ts-expect-error Left-joined fields can be absent even when the stored column is required.
+  const nonnullable: Promise<{ exercise: string; tag: string }[]> = result;
+  void nonnullable;
+  return correct;
+}
+void joinedContract;
+
+function relationAndCursorContract(db: ReadDb) {
+  const parent = defineTable("parent", { columns: { id: column.safeInteger().primaryKey() } });
+  const child = defineTable("child", { columns: { id: column.safeInteger().primaryKey(), parentId: column.safeInteger().references(parent.id, { onDelete: "restrict" }) } });
+  defineRelations(parent, ({ one }) => ({
+    // @ts-expect-error Relation fields belong to the source, references to the target.
+    backwards: one(child, { fields: [child.parentId], references: [parent.id] }),
+  }));
+  const cursor = db.cursor(parent, { after: { id: 1 } });
+  // @ts-expect-error Cursor table identity must match the selected table.
+  db.select(child, { fields: ["id"], cursor });
+}
+void relationAndCursorContract;

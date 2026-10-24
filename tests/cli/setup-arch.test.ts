@@ -23,7 +23,7 @@ test("missing Arch Docker packages require installation, configuration and acces
         calls.push([...args]);
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
         if (args[0] === "stat") return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
-        return { status: "completed", exitCode: args.includes("--query") ? 1 : 0, stdout: "", stderr: "" };
+        return { status: "completed", exitCode: args.includes("--query") ? 1 : 0, stdout: "", stderr: args.includes("--query") ? ["containerd", "docker", "docker-compose", "runc"].map((name) => `error: package '${name}' was not found\n`).join("") : "" };
       },
     }, [profile]) });
     expect(outcome.result.error?.code).toBe("AUTHORITY_REQUIRED");
@@ -50,7 +50,7 @@ async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "un
     const fixtureBin = join(directory, "bin");
     const fixtureInventory = join(directory, "guard-inventory.json");
     await mkdir(fixtureBin);
-    await writeFile(join(fixtureBin, "pacman"), `#!${process.execPath}\nconst rows = await Bun.file(${JSON.stringify(fixtureInventory)}).json(); process.stdout.write(rows.join("\\n")); process.exit(rows.length === 4 ? 0 : 1);\n`, { mode: 0o700 });
+    await writeFile(join(fixtureBin, "pacman"), `#!${process.execPath}\nconst rows = await Bun.file(${JSON.stringify(fixtureInventory)}).json(); const names=["containerd","docker","docker-compose","runc"]; const present=new Set(rows.map((row)=>row.split(' ')[0])); const missing=names.filter((name)=>!present.has(name)); process.stdout.write(rows.length?rows.join("\\n")+"\\n":""); process.stderr.write(missing.map((name)=>"error: package '"+name+"' was not found\\n").join("")); process.exit(missing.length?1:0);\n`, { mode: 0o700 });
     const handlers = setupCommands({
       stateDirectory: join(directory, "state"), interactive: true,
       syncDirectory: async (path) => {
@@ -81,7 +81,10 @@ async function archScenario(mode: "valid" | "concurrent" | "bad-signature" | "un
           await writeFile(args[args.indexOf("--output") + 1]!, bytes[artifact[0]]!); return done();
         }
         if (args[0] === "pacman" && args.includes("--version")) return done("Pacman v7.1.0 - libalpm v16.0.0\n");
-        if (args[0] === "pacman" && args.includes("--query")) return done([...installed].sort().map((name) => `${name} ${fixturePackages[name]!.version}`).join("\n"), installed.size === 4 ? 0 : 1);
+        if (args[0] === "pacman" && args.includes("--query")) {
+          const missing = args.slice(args.indexOf("--") + 1).filter((name) => !installed.has(name));
+          return done([...installed].sort().map((name) => `${name} ${fixturePackages[name]!.version}\n`).join(""), missing.length ? 1 : 0, missing.map((name) => `error: package '${name}' was not found\n`).join(""));
+        }
         if (args[0] === "pacman" && args.includes("--print")) return done(Object.entries(fixturePackages).filter(([name]) => !installed.has(name)).map(([name, artifact]) => `${name}\t${artifact.version}\tx86_64`).join("\n") + (mode === "extra-dependency" ? "\nunreviewed-dependency\t1\tx86_64" : ""));
         if (args[0] === "pacman") return done();
         if (args[0] === "sudo" && args[2] === "pacman-key") return done();

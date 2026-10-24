@@ -48,10 +48,12 @@ def backend_version(code,out,error):
     return {'pacman':matches[0][0],'libalpm':matches[0][1]}
 
 
-def service_fields(code,out,error):
-    if code not in (0,1) or error:
+def service_fields(code,out,error,*,unit="docker.service"):
+    if code not in (0,1) or error or unit not in ('docker.service','docker.socket','containerd.service','nftables.service'):
         raise ValueError('Passive service query failed')
-    expected = {'LoadState','ActiveState','SubState','UnitFileState','FragmentPath','DropInPaths','Transient','MainPID'}
+    expected = {'LoadState','ActiveState','SubState','UnitFileState','FragmentPath','DropInPaths','Transient'}
+    if unit.endswith('.service'):
+        expected.add('MainPID')
     values = {}
     for line in out.splitlines():
         name,sep,value = line.partition('=')
@@ -204,7 +206,7 @@ def main():
         observe('mounts',['/usr/bin/findmnt','--json','--bytes','--output','TARGET,SOURCE,FSTYPE,SIZE,AVAIL'],storage)
         observe('disks',['/usr/bin/lsblk','--json','--bytes','--output','NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS'],storage)
         for unit in ('docker.service','docker.socket','containerd.service','nftables.service'):
-            observe('unit-'+unit,['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,DropInPaths,Transient,MainPID'],service_fields)
+            observe('unit-'+unit,['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,DropInPaths,Transient,MainPID'],lambda code,out,error,unit=unit:service_fields(code,out,error,unit=unit))
         report['files']=[]
         for path in ('/etc/pacman.conf','/etc/nftables.conf','/usr/lib/systemd/system/nftables.service','/usr/bin/nft'):
             context.verify(absolute_deadline=deadline)

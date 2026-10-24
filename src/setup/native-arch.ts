@@ -1,3 +1,4 @@
+import { archPackageNames, parseArchPackageState } from "./arch-package-state.ts";
 import { setupLinuxAccess } from "./linux-access.ts";
 import { setupArchService, archServicePolicy } from "./arch-service.ts";
 import { constants } from "node:fs";
@@ -29,7 +30,7 @@ export interface ArchInstallProfile {
   readonly packages: Readonly<Record<"docker" | "docker-compose" | "containerd" | "runc", ArchPackageArtifact>>;
 }
 
-const names = ["containerd", "docker", "docker-compose", "runc"] as const;
+const names = archPackageNames;
 const strongerPolicy = "\n[options]\nLocalFileSigLevel = Required TrustedOnly\n";
 function validProfile(profile: ArchInstallProfile): boolean {
   return profile.verified === true && profile.distribution === "arch" && profile.release === "rolling" && profile.architecture === "x64" && profile.snapshot === "2026-10-12" && Object.keys(profile.packages).length === names.length && names.every((name) => {
@@ -47,18 +48,12 @@ export async function setupNativeArch(input: CommandInput, host: SetupHost, iden
   if (!validProfile(profile) || !identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return unavailable("The exact Arch artifact profile or machine identity is unavailable.");
   const run = (args: readonly string[]) => remaining() > 0 ? host.run(args, remaining()) : Promise.resolve({ status: "timeout" as const, stdout: "", stderr: "" });
   const inventory = async () => {
-    const queried = await run(["pacman", "--query", "--", ...names]);
-    if (queried.status !== "completed" || ![0, 1].includes(queried.exitCode ?? -1)) return null;
-    const present: string[] = [];
-    for (const line of queried.stdout.split("\n").filter(Boolean)) {
-      const row = /^([a-z0-9-]+) ([^ ]+)$/.exec(line);
-      const name = row?.[1];
-      if (!name || !names.includes(name as typeof names[number]) || present.includes(name) || profile.packages[name as typeof names[number]].version !== row?.[2]) return null;
-      present.push(name);
-    }
-    if (queried.exitCode === 0 && present.length !== names.length) return null;
-    if (queried.stderr.trim() && queried.stderr.trim().split("\n").some((line) => !/^error: package '[a-z0-9-]+' was not found$/.test(line))) return null;
-    return { present: present.sort(), missing: names.filter((name) => !present.includes(name)) };
+    const budget = remaining();
+    if (budget <= 0) return null;
+    const queried = await host.run(["pacman", "--query", "--", ...names], budget, { cleanEnvironment: true });
+    if (queried.status !== "completed" || queried.terminationUnconfirmed === true) return null;
+    return parseArchPackageState(queried.exitCode ?? -1, queried.stdout, queried.stderr,
+      Object.fromEntries(names.map((name) => [name, profile.packages[name].version])) as Record<typeof names[number], string>);
   };
   try {
     return await withSetupLock(stateDirectory(host), async () => {

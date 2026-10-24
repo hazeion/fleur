@@ -1,8 +1,9 @@
 /** Fixed read-only guard executed by ALPM under its normal transaction lock. */
+import { archPackageNames, parseArchPackageState } from "./arch-package-state.ts";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
-const names = ["containerd", "docker", "docker-compose", "runc"];
+const names: readonly string[] = archPackageNames;
 async function guard(): Promise<boolean> {
   const path = process.argv[2];
   const checksum = process.argv[3];
@@ -45,15 +46,8 @@ async function guard(): Promise<boolean> {
   const timer = setTimeout(() => { child.kill("SIGKILL"); for (const reader of readers) void reader.cancel().catch(() => {}); }, 10000);
   try {
     const [stdout, stderr, status] = await Promise.all([collect(readers[0]!), collect(readers[1]!), child.exited]);
-    if (![0, 1].includes(status) || (stderr.trim() && stderr.trim().split("\n").some((line) => !/^error: package '[a-z0-9-]+' was not found$/.test(line)))) return false;
-    const present = new Set<string>();
-    for (const line of stdout.split("\n").filter(Boolean)) {
-      const row = /^([a-z0-9-]+) ([^ ]+)$/.exec(line);
-      const name = row?.[1];
-      if (!name || !names.includes(name) || present.has(name) || plan.missing.includes(name) || versions[name] !== row?.[2]) return false;
-      present.add(name);
-    }
-    return present.size === names.length - plan.missing.length;
+    const observed = parseArchPackageState(status, stdout, stderr, versions as Record<typeof archPackageNames[number], string>);
+    return observed !== null && JSON.stringify(observed.missing) === JSON.stringify([...plan.missing].sort());
   } finally { clearTimeout(timer); child.kill("SIGKILL"); for (const reader of readers) void reader.cancel().catch(() => {}); await child.exited; }
 }
 try { process.exitCode = await guard() ? 0 : 1; } catch { process.exitCode = 1; }

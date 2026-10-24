@@ -1373,3 +1373,61 @@ unconfirmed host state. Console diagnostics expose only fixed pattern names,
 line indices and hashes, preserving bootstrap secrets and making no causal or
 readiness claim. A fresh corrected observation and current-source checks remain
 required.
+
+
+## Corrected Arch observation and package-query integrity
+
+At `b6ae8ddf087b5b49ef1bfd1e30896612531187e7`, all applicable
+[CLI](https://github.com/hazeion/fleur/actions/runs/40097000183),
+[native prerequisite](https://github.com/hazeion/fleur/actions/runs/40097000176)
+and [compatibility](https://github.com/hazeion/fleur/actions/runs/40097000205)
+workflows passed. CLI recorded 1,317 tests and 12,501 assertions, types, full
+lint and two isolated generated-project checks. Independent review accepted both
+prerequisite reports and all four runtime reports against committed source. x64
+VFS used the existing bounded forced-reap/fallback retirement: 19,412 remaining
+files and 2,510 directories were removed in 2.535349 seconds after partial normal
+deletion. ARM VFS retired normally. Both met the original cleanup contract;
+no deadline or enforcement gate changed.
+
+The [corrected read-only Arch observation](https://github.com/hazeion/fleur/actions/runs/40097012115)
+passed independent review. Its report SHA256 is
+`563873d374b59c31bf4ca386133fd6cf0e5367624827431fd033a400d007d2e7`.
+It authenticated all fourteen committed sources, the complete pinned image and
+protected QEMU tools, clean cloud-init/exact nonce, raw Arch identity and
+continuous KVM/VM/QMP/overlay/SSH custody. All nineteen queries completed and
+retired. Guest and outer disposal passed; final host observations after service
+retirement matched the prepared package inventory and original default Docker.
+
+The measured image has 184 packages, no installed runtime quartet, and Pacman
+7.1.0/libalpm 16.0.1. Its original 2 GiB disk has about 488 MB available. The
+installer's reviewed backend policy remains 7.1.0/16.0.0, so this observation
+cannot admit installation. The socket-unit output remained unparsed and is not
+proof of absence. Installation, native qualification, runtime admission, human
+consent and performance flags all remain false.
+
+Review also found a real package-query defect: the Arch planner and transaction
+guard accepted exit 1 with empty or incomplete diagnostics as package absence.
+Regression tests demonstrated twelve intended failures against the previous
+source before correction. A shared bounded parser now requires the exact version
+of every present package and one complete C-locale not-found row for every
+missing package, with consistent exit status. Unknown, duplicate, conflicting,
+truncated, oversized or unconfirmed observations refuse. The external guard also
+requires the observed missing set to match the authorized plan. Existing once
+grants and retained private evidence remain unchanged on refusal.
+
+Fixture corrections supply native-format diagnostics and LF-terminated rows;
+existing assertions were preserved. Final targeted verification passed 71 tests
+and 333 assertions, types and full lint. Independent review passed 23 focused
+tests and 66 assertions; those tests overlap the final suite. This correction
+does not admit the unreviewed backend or replace fresh installation qualification.
+
+
+The next observation parser distinguishes the seven common unit properties from
+service-only `MainPID`, as documented by the
+[systemd unit interfaces](https://www.freedesktop.org/software/systemd/man/262/org.freedesktop.systemd1.html).
+Only the four fixed units are accepted; service PID, duplicate/missing-field and
+unknown-unit refusals remain. The fixed query vectors and all qualification
+requirements remain unchanged. The socket-shaped positive control failed on the
+old completeness check before correction; all 33 Arch Python methods then
+passed. This corrects a parser assumption, not the interpretation of the retained
+unparsed historical socket report. A fresh observation must establish its result.

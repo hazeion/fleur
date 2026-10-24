@@ -37,7 +37,7 @@ async function serviceFixture() {
         if (args.includes("info")) return state.active || state.manualDaemon ? done('{"ServerVersion":"29.9.0","OSType":"linux","Architecture":"amd64"}') : done("", 1, "Cannot connect to Docker daemon");
         if (args.includes("image")) return done("", 1, "No image");
       }
-      if (args[0] === "pacman") return args.includes("--query") ? done(Object.entries(packages).map(([name, value]) => `${name} ${value.version}`).join("\n")) : done();
+      if (args[0] === "pacman") return args.includes("--query") ? done(Object.entries(packages).map(([name, value]) => `${name} ${value.version}\n`).join("")) : done();
       if (args[0] === "stat" && args.at(-1) === "/var/lib/pacman/db.lck") return done("", 1, "No such file or directory");
       if (args[0] === "/usr/bin/stat" && args.includes("--format=%d|%i|%F")) {
         const path = args.at(-1)!;

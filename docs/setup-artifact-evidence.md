@@ -1516,3 +1516,36 @@ inventories were preserved. Transport was confirmed, stderr empty, and elapsed
 6,372ms was within the fixed 90-second bound. All runtime/native/installation
 admission flags remain false. Signal-zero capability is not SIGKILL deadline,
 resource, isolation or full lifecycle evidence.
+
+## Desktop runtime controller diagnosis
+
+The subsequent Desktop runtime harness imports source-bound images prepared on
+a disposable GitHub amd64 runner. Preparation is separate from native runtime
+qualification. Both OCI configuration and manifest identities are authenticated;
+Desktop executes the manifest identity. Complete image inventories include
+untagged images. Earlier attempts that omitted those images cannot establish
+cleanup or original-inventory preservation. Their failed receipts remain failed;
+separate ownership-verified cleanup does not change their original outcome.
+
+The controller diagnostic at source
+`0c55919` identified a verification error after successful Docker socket access.
+The fixed `sudo` root-launch command exited zero with exact root-confirmation
+output, but emitted two isolation warnings: its container hostname was not
+resolvable, and its capability-limited process could not emit an audit message.
+The independent diagnostic review has SHA256
+`9644ac776f6618951c719bf826698a543b872e31cccc504b199471973a7ea562`.
+That instrumented observation always refuses qualification, including if its
+underlying capability checks succeed.
+
+Source `9e685b8` corrects only this root-launch verification policy. It requires
+an actual completed exit zero, exact root-confirmation bytes, and either empty
+stderr or exactly both measured warnings in their original order. The warning
+hostname must match the controller's validated cgroup container ID. The warnings
+are retained in the result. Wrong identities, partial or additional diagnostics,
+changed output, failed exits and signals refuse. Generic Docker-command stderr
+checks remain strict. No capability, network permission, worker assertion,
+resource limit or deadline changes. Independent tests execute the actual main
+path and verify source, VM, cgroup, daemon and guardian refusals precede root
+launch, and that failed root launch never publishes success. All 71 Desktop
+host contract tests, 12 CI policy tests, types and full lint passed. Rebuilt
+authenticated inputs and actual native runtime qualification are still required.

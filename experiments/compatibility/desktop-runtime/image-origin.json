@@ -4,7 +4,7 @@
     "artifacts": {
       "controller-image.tar": {
         "bytes": 594260992,
-        "sha256": "a37d98c2b0a6769b274ce4b7dd49d4600dbdbcfce68729975e30d4c06dcf77cf"
+        "sha256": "aafdba9ef27909d736a68742bae1fbb1e413d4c5121afaece5ec7f805da9dd76"
       },
       "controller-packages.tsv": {
         "bytes": 5969,
@@ -20,15 +20,15 @@
       },
       "runtime-image.tar": {
         "bytes": 218508288,
-        "sha256": "acaa0e3fb704510f45ab59428c837f5b0a0578b0a24792640e293cf0e86d5a29"
+        "sha256": "a2809a441e42c22cf8f85c11ed63b3cb7c9d8e6417c6eed6b6529332d2be1de1"
       },
       "runtime-preparation.json": {
         "bytes": 10316,
-        "sha256": "549d5041ac1e3625c0ce59a70152d17d72f92cda929978d84f335444bba4bf51"
+        "sha256": "59457b8ef94779a3560e56f39852a0e87c8b09d1c74ed46fbb5f10370c91ea2b"
       },
       "source-manifest.json": {
         "bytes": 9941,
-        "sha256": "5dcf1544a8e70bf26e8f35199c7cc7abe25143a807f2de3017436233986fbf21"
+        "sha256": "82624641ff823e28aa0e6dd82184ecd5fb7fd83b7005628591502b1e19c4d2d5"
       }
     },
     "cleanup": [
@@ -41,19 +41,19 @@
         "resource": "image"
       }
     ],
-    "controllerImageId": "sha256:7f2de577feb746dbf47a9f03d1328773b20e7266d4a1e4853cab6fb2efe29bcb",
+    "controllerImageId": "sha256:a2ab1ff0208e73069c42b6892047c5249caa63554e895bf4ecff6643050f8484",
     "formatVersion": 1,
     "nativeQualification": false,
     "ok": true,
     "runtimeAdmission": false,
     "scope": "desktop-qualification-image-preparation",
-    "sourceCommit": "87b327fc446fc71f44de19b6cc5cb668d820fba9"
+    "sourceCommit": "42c4d27c5447b01689ba2ed212857b3f9fb3e1df"
   },
   "producer": {
-    "artifactId": 12566488635,
-    "imageOriginSha256": "49523f4ad29b216a96a0c2fa5ccb674a194040d4eb96019f119bb9869d37dbc2",
-    "workflowRunId": 40112384632,
-    "zipSha256": "9acdd6e12b4af3318bde8da79a70e9af08ac7c3086b12b698fefb296588f7339"
+    "artifactId": 12567604575,
+    "imageOriginSha256": "07700312cb7de1fd28cc3314d9147cd4b3243f6d54f87e7cd38e75a0761e0d21",
+    "workflowRunId": 40114888745,
+    "zipSha256": "3a80b1f9c48c9f0debd83c21f173e73de7e0c162b0eb260d022a609b52ce7297"
   },
   "runtimeAdmission": false,
   "scope": "source-owned-desktop-preparation-inputs"

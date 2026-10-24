@@ -350,6 +350,8 @@ def observe(mode,images_directory):
             relative='experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
         report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
+        binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
+        if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         phase='archive-validation'
         oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={};image_identities={}
         for name,config_image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
@@ -373,8 +375,6 @@ def observe(mode,images_directory):
             actual=inspect(image,'image')
             if not matches_image(actual,identity):raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
         image=image_identities['controller-image.tar'].manifest_image_id;runtime_image=image_identities['runtime-image.tar'].manifest_image_id;base_env=configs['controller-image.tar']['config']['Env']
-        binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
-        if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         phase='guardian-start'
         guardian,guardian_channel,guardian_ready=start_role('guardian',binding,image,base_env)
         binding={**binding,'guardianId':guardian['cid'],'preparedImage':{'imageId':runtime_image,**{key:prep[key] for key in ('architecture','baseImage','helperSha256','abuseSha256','runtimeSources')}}}

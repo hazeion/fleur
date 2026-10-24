@@ -37,9 +37,27 @@ owned_cases = {
     'owned26-resume-noble': ('26.04', '26.04'),
     'owned24-resume-resolute': ('24.04', '24.04'),
 }
+debian_cases = {
+    'owned13-fresh-resume': (('debian', '13'), 'native-candidate-debian13-amd64.json'),
+    'owned13-target-valid': (('debian', '13'), 'native-candidate-debian13-amd64.json'),
+    'owned13-noble-cross': (('debian', '13'), 'native-candidate-ubuntu24-amd64.json'),
+    'owned13-resolute-cross': (('debian', '13'), 'native-candidate-ubuntu26-amd64.json'),
+    'owned24-trixie-cross': (('ubuntu', '24.04'), 'native-candidate-debian13-amd64.json'),
+    'owned26-trixie-cross': (('ubuntu', '26.04'), 'native-candidate-debian13-amd64.json'),
+    'owned13-resume-noble': (('debian', '13'), 'native-candidate-debian13-amd64.json'),
+    'owned13-resume-resolute': (('debian', '13'), 'native-candidate-debian13-amd64.json'),
+    'owned24-resume-trixie': (('ubuntu', '24.04'), 'native-candidate-ubuntu24-amd64.json'),
+    'owned26-resume-trixie': (('ubuntu', '26.04'), 'native-candidate-ubuntu26-amd64.json'),
+}
+debian_resume = {
+    'owned13-resume-noble': 'native-candidate-ubuntu24-amd64.json',
+    'owned13-resume-resolute': 'native-candidate-ubuntu26-amd64.json',
+    'owned24-resume-trixie': 'native-candidate-debian13-amd64.json',
+    'owned26-resume-trixie': 'native-candidate-debian13-amd64.json',
+}
 owned_frame = None
 binding_arguments = []
-if scenario in owned_cases:
+if scenario in owned_cases or scenario in debian_cases:
     sys.path.insert(0, str(source.parent.parent/'experiments/compatibility/runtime-probe'))
     try:
         from test_owned_guest import OwnedGuestCustody, NONCE, BOOT
@@ -48,7 +66,8 @@ if scenario in owned_cases:
             # This synthetic guest owns a separate environment. Use the policy
             # fixture's normal setup/cleanup instead of inheriting CI host scope.
             policy.setUp()
-            code, owned_frame = policy.observe(release=owned_cases[scenario][0], ordinary_uid=uid)
+            distribution, release = debian_cases[scenario][0] if scenario in debian_cases else ('ubuntu', owned_cases[scenario][0])
+            code, owned_frame = policy.observe(distribution=distribution, release=release, ordinary_uid=uid)
         finally:
             policy.doCleanups()
         if code != 0 or owned_frame.get('fixtureCustodyValidated') is not True:
@@ -64,6 +83,8 @@ tools.mkdir(mode=0o700)
 state_path = root / "protocol-state.json"
 state_path.write_text(json.dumps({"rootPolicyFrame": owned_frame, "installed": False, "enrolled": False, "installPrompts": [], "enrollmentPrompts": [], "staleReprobes": 0, "unexpected": [], "uid": uid, "scenario": scenario}))
 catalog_file = source.parent / ('native-candidate-ubuntu26-amd64.json' if scenario == 'crossed-catalog' or scenario in owned_cases and owned_cases[scenario][1] == '26.04' else 'native-candidate-ubuntu24-amd64.json')
+if scenario in debian_cases:
+    catalog_file = source.parent/debian_cases[scenario][1]
 catalog_bytes = catalog_file.read_bytes()
 catalog = json.loads(catalog_bytes)
 metadata = {key: catalog[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}
@@ -140,6 +161,7 @@ TOOL = r'''import json,os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']);p=root/'protocol-state.json';s=json.loads(p.read_text());name=pathlib.Path(sys.argv[0]).name;args=sys.argv[1:];uid=s['uid'];package_checksum='a'*64;enrollment_checksum='b'*64
 
 def save():p.write_text(json.dumps(s))
+def ready_protocol():return s['scenario'].startswith('ordinary-admitted') or s['scenario']=='owned13-fresh-resume' and s.get('freshSession',False)
 def envelope(command,data,code,error):
  print(json.dumps({'formatVersion':1,'command':command,'ok':False,'truncated':False,'data':data,'error':{'code':error}}));save();sys.exit(code)
 def admitted(command):
@@ -150,6 +172,8 @@ def admitted(command):
  data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
  if s['scenario'].startswith('ordinary-admitted26'):
   evidence='5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07';data['components']['release']={'state':'verified','profile':'ubuntu-26.04-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
+ if s['scenario']=='owned13-fresh-resume':
+  data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
  if command=='doctor' and s['scenario']=='ordinary-admitted-release-refused':
   data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
  print(json.dumps({'formatVersion':1,'command':command,'ok':True,'data':data,'error':None,'truncated':False}));save();sys.exit(0)
@@ -170,9 +194,9 @@ if name=='python3' and args[:3]==['-I','/usr/local/lib/fleur-owned-guest.py','--
  print(json.dumps(frame));sys.exit(0)
 if name=='bun':
  if args==['--version']:print('1.4.3');sys.exit(0)
- if args and args[0]=='-e' and s['scenario'].startswith('ordinary-admitted'):sys.stdout.write('oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e');sys.exit(0)
+ if args and args[0]=='-e' and ready_protocol():sys.stdout.write('oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e');sys.exit(0)
  command=args[1]
- if s['scenario'].startswith('ordinary-admitted') and s['installed'] and command in ('doctor','setup'):admitted(command)
+ if ready_protocol() and s['installed'] and command in ('doctor','setup'):admitted(command)
  if command=='doctor':
   if s.get('freshSession') and s['scenario'].startswith('resume-doctor-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,4,'PREREQUISITE_UNAVAILABLE')
   if s['installed'] and s['scenario'].startswith('doctor-data-'):envelope(command,None if s['scenario'].endswith('-null') else 7,4,'PREREQUISITE_UNAVAILABLE')
@@ -231,7 +255,7 @@ if name=='uname' and s['scenario'] in ('command-orphan','command-orphan-timeout'
   (root/'orphan-heartbeat').write_text(str(time.monotonic()));time.sleep(0.02)
 if name=='uname':print('x86_64' if args==['-m'] else 'Linux 6.8.0-fixture x86_64 GNU/Linux');sys.exit(0)
 if name=='systemd-detect-virt':print('qemu');sys.exit(0)
-if name=='dpkg-query' and s['scenario']=='owned26-target-valid':
+if name=='dpkg-query' and s['scenario'] in ('owned26-target-valid', 'owned13-target-valid'):
  s['targetBoundaryObserved']=True;save();print('TARGET_BOUNDARY_OBSERVED',file=sys.stderr);sys.exit(42)
 if name=='dpkg-query':
  if '--show' not in args:raise RuntimeError('Unexpected package mutation/query')
@@ -258,10 +282,10 @@ if name=='getent':
  else:raise RuntimeError('Unexpected directory lookup')
  sys.exit(0)
 if name=='stat':print('1|'+('3' if s.get('freshSession') and s['scenario']=='resume-socket-change' else '2')+'|socket|0|997|660');sys.exit(0)
-if name=='python3' and s['scenario'].startswith('ordinary-admitted') and args[0].endswith('/runtime-probe/run.py'):
+if name=='python3' and ready_protocol() and args[0].endswith('/runtime-probe/run.py'):
  s['restrictionCalls']=s.get('restrictionCalls',0)+1;save();print(json.dumps({'bounded_probe_passed':True,'cleanup_complete':True,'v1_gate_passed':False}));sys.exit(0)
 if name=='docker':
- if s['scenario'].startswith('ordinary-admitted') and args[:2]==['--host','unix:///var/run/docker.sock']:
+ if ready_protocol() and args[:2]==['--host','unix:///var/run/docker.sock']:
   query=args[2:]
   if query in (['info','--format','{{json .}}'],['version','--format','{{json .Server}}']):
    s.setdefault('ordinaryDaemonQueries',[]).append(query);save()
@@ -277,7 +301,7 @@ if name=='docker':
     print(json.dumps(info))
    else:print(json.dumps({'Version':'29.9.1','GitCommit':'b26fb77','KernelVersion':'7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic','Os':'linux','Arch':'amd64','Platform':{'Name':'Docker Engine - Community','Private':'private-fixture-platform'},'Components':[{'Name':'Engine','Version':'29.9.1','Details':{'GitCommit':'b26fb77','Private':'private-fixture-component'}},{'Name':'containerd','Version':'v2.4.2','Details':{'GitCommit':'b7a25261e029d68978bbf290df0a62fc819b3c51'}},{'Name':'runc','Version':'1.5.2','Details':{'GitCommit':'v1.5.2-0-g29dd3dc2'}}],'ID':'private-fixture-daemon-id'}))
    sys.exit(0)
- if s['scenario'].startswith('ordinary-admitted') and args[:2]==['--host','unix:///var/run/docker.sock']:
+ if ready_protocol() and args[:2]==['--host','unix:///var/run/docker.sock']:
   call=args[2:]
   if call[:2]==['ps','--all']:print('');sys.exit(0)
   if call[0]=='create':
@@ -553,7 +577,7 @@ os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/u
 sys.argv = [str(source), nonce, *binding_arguments]
 with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance + (61 if scenario == "command-orphan-timeout" and (root / "orphan-heartbeat").exists() else 0)), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
-        if scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+        if scenario == 'owned13-fresh-resume' or scenario in debian_resume or scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()
             with contextlib.redirect_stdout(first_output):
                 try:
@@ -568,8 +592,8 @@ with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_ad
             state_path.write_text(json.dumps(state))
             if scenario == "resume-boot-change":
                 known["/proc/sys/kernel/random/boot_id"] = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee\n"
-            if scenario in ('resume-catalog-change', 'owned26-resume-noble', 'owned24-resume-resolute'):
-                replacement_name = 'native-candidate-ubuntu24-amd64.json' if scenario == 'owned26-resume-noble' else 'native-candidate-ubuntu26-amd64.json'
+            if scenario in debian_resume or scenario in ('resume-catalog-change', 'owned26-resume-noble', 'owned24-resume-resolute'):
+                replacement_name = debian_resume[scenario] if scenario in debian_resume else ('native-candidate-ubuntu24-amd64.json' if scenario == 'owned26-resume-noble' else 'native-candidate-ubuntu26-amd64.json')
                 replacement_bytes = (source.parent/replacement_name).read_bytes()
                 replacement = json.loads(replacement_bytes)
                 changed_metadata = {key: replacement[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}

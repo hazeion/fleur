@@ -1,0 +1,120 @@
+{
+  "formatVersion": 1,
+  "catalogId": "debian-13-amd64-docker-2026-10-19",
+  "artifactAuthentication": "authenticated",
+  "installationEvidence": "pending",
+  "runtimeSupport": "unverified",
+  "authentication": {
+    "observedDate": "2026-10-19",
+    "offlineReverificationDate": "2026-10-23",
+    "method": "official Docker signed InRelease, authenticated Packages index and actual payload SHA256; cached signatures and controls reverified offline",
+    "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "signingSubkey": "D3306A018370199E527AE7997EA0A9C3F273FCD8",
+    "keyUrl": "https://download.docker.com/linux/debian/gpg",
+    "keySha256": "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570",
+    "inReleaseSha256": "fe8b7cca4253705c8d458d390a7e495a4581dae5a8fefc04234c53563667ba64",
+    "packagesIndexSha256": "bad1d1752e790cd5a1c0cd9f9379ba7d3262e71bf6dec4c6b6d6f1789888b273",
+    "maintainerScriptsSha256": "a9a9c699e6a73a41e15d12ecfe8d2ac29d70753ce3ca1308589bcccf32631097",
+    "maintainerScriptsScope": "trixie-amd64 five packages",
+    "maintainerScriptsDigestEncoding": "UTF-8 json.dumps(trixie-amd64 package->exact tar member->text, sort_keys=True, separators=(comma,colon)); no trailing newline",
+    "historicalSixProfileMaintainerScriptsSha256": "57a1b1785a8df71ff784b89a7afc0b86e24e4005eb7ca06b84fac73bef7d465b",
+    "cachedVerificationEvidenceSha256": "89770863773d5a7213b7b6f1d0cc34038aa2e3838c02b70f5eb00649905f101e",
+    "offlineVerifierSourceSha256": "c7d03d2a542f43c76d4f165aee3ee679f33a9172c65ac303165d891f3ffd20c9",
+    "nativeExecutionVerified": false
+  },
+  "profile": {
+    "method": "docker-official-apt",
+    "verified": true,
+    "distribution": "debian",
+    "release": "13",
+    "architecture": "x64",
+    "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+    "packages": {
+      "docker-ce": "5:29.9.1-1~debian.13~trixie",
+      "docker-ce-cli": "5:29.9.1-1~debian.13~trixie",
+      "containerd.io": "2.4.2-2~debian.13~trixie",
+      "docker-buildx-plugin": "0.38.0-1~debian.13~trixie",
+      "docker-compose-plugin": "5.6.0-1~debian.13~trixie"
+    }
+  },
+  "artifacts": [
+    {
+      "name": "docker-ce",
+      "version": "5:29.9.1-1~debian.13~trixie",
+      "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-ce_29.9.1-1~debian.13~trixie_amd64.deb",
+      "sha256": "b33133205350e2765df0cc382f5a3ee44c2cfd4cdc3dc6ba32eca40839ac3574",
+      "size": 24553192,
+      "depends": "containerd.io (>= 2.1.5), docker-ce-cli, iptables, nftables, libc6 (>= 2.34), libsystemd0",
+      "preDepends": "init-system-helpers (>= 1.54~)"
+    },
+    {
+      "name": "docker-ce-cli",
+      "version": "5:29.9.1-1~debian.13~trixie",
+      "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-ce-cli_29.9.1-1~debian.13~trixie_amd64.deb",
+      "sha256": "c89d977d8073de91e7afcd099c82e16cef5506e4d446d006b240e77f78ba4b7d",
+      "size": 17593628,
+      "depends": "libc6 (>= 2.34)",
+      "preDepends": null
+    },
+    {
+      "name": "containerd.io",
+      "version": "2.4.2-2~debian.13~trixie",
+      "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/containerd.io_2.4.2-2~debian.13~trixie_amd64.deb",
+      "sha256": "a3e696cb98baafbb63895dc18b53f143088a2ead95c57820ac90dc5e1d61b05d",
+      "size": 23262120,
+      "depends": "libc6 (>= 2.38), libseccomp2 (>= 2.6.0)",
+      "preDepends": null
+    },
+    {
+      "name": "docker-buildx-plugin",
+      "version": "0.38.0-1~debian.13~trixie",
+      "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~debian.13~trixie_amd64.deb",
+      "sha256": "16397aa4052faf9914cfde37ec335c0b5898c6ad2a363b7e12dd897cb6fc5e9b",
+      "size": 17784020,
+      "depends": null,
+      "preDepends": null
+    },
+    {
+      "name": "docker-compose-plugin",
+      "version": "5.6.0-1~debian.13~trixie",
+      "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-compose-plugin_5.6.0-1~debian.13~trixie_amd64.deb",
+      "sha256": "500327ad3ca6c52f6d142225c7e6830c46a27ff0348a2b2291f0a143d99872ac",
+      "size": 8080280,
+      "depends": null,
+      "preDepends": null
+    }
+  ],
+  "controls": {
+    "docker-ce": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "ba7f29c28f7310e9360b4b81165f48927f28bf80ac7c42bebca987a1693b60d8",
+      "controlTarSha256": "43ee2a73b3a2d352335947d0f20a5d2ab9b1ee71f5d1d9cf953a4a371e691941"
+    },
+    "docker-ce-cli": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "b096410cafc65160cc53c0e5e4749c1ad1ea93bf3859a865e2767a6840d0406c",
+      "controlTarSha256": "02a5eeb089aada474d772f85e03c190dd304384cea88949590e66764fffff5ad"
+    },
+    "containerd.io": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "007c5bc915918bd2b86f106fc7132478737e019d29d919be74571fb21e9c4d02",
+      "controlTarSha256": "43d69b069c30a3ac563197d9b022264cf818dacd0826e7e28586e6cf7c6c7c65"
+    },
+    "docker-buildx-plugin": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "0976ceef17b948e4b7ee25247e53fef8fc09320654c85381acab6947f87df5e3",
+      "controlTarSha256": "3e4df7bdb0a1b1ef257f9d6cbf824d4f40feb02f047d11e2360ac44c26ecdd2a"
+    },
+    "docker-compose-plugin": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "1bf9f7fb09d5788f599d1c26b9dbe42b709aa2ade72b3459b4a5b27bcc59d67b",
+      "controlTarSha256": "718f3c52eab5e4e956612076dc1a47b81871d926a87051443c74cf9cc67084a4"
+    }
+  },
+  "limits": [
+    "Legacy verified:true means source-owned internal catalog admission only; it is not ordinary release qualification.",
+    "All five payloads, control fields and scoped maintainer scripts are authenticated; no package or maintainer script was executed by the cached artifact audit.",
+    "Fresh guest dependency closure, native package-manager behavior and complete runtime evidence remain pending.",
+    "Ordinary production installation/readiness records are unchanged; no Debian row is admitted."
+  ]
+}

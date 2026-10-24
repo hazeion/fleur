@@ -6,6 +6,11 @@ import type catalogShape from "./native-candidate-ubuntu24-amd64.json";
 import { productionHost } from "../src/setup/host.ts";
 
 const defaultCatalogSha256 = "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58";
+const candidateCatalogs = {
+  "ubuntu24-amd64": { file: "./native-candidate-ubuntu24-amd64.json", sha256: defaultCatalogSha256 },
+  "ubuntu26-amd64": { file: "./native-candidate-ubuntu26-amd64.json", sha256: "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a" },
+  "debian13-amd64": { file: "./native-candidate-debian13-amd64.json", sha256: "4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1" },
+} as const;
 const markerName = "internal-native-candidate.json";
 const catalogName = "internal-native-candidate-catalog.json";
 const disclosure = "INTERNAL NATIVE CANDIDATE: artifact-authenticated catalog; installation evidence pending; runtime support unverified.\n";
@@ -119,9 +124,9 @@ async function publish(scratch: string, output: Awaited<ReturnType<typeof output
     await output.verify();
   } finally { try { await sourceDirectory?.close(); } finally { library.close(); } }
 }
-async function build(output: string, fixture: "ubuntu24-amd64" | "ubuntu26-amd64" = "ubuntu24-amd64") {
-  const catalogSha256 = fixture === "ubuntu24-amd64" ? defaultCatalogSha256 : "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a";
-  const catalogBytes = await readFile(new URL(fixture === "ubuntu24-amd64" ? "./native-candidate-ubuntu24-amd64.json" : "./native-candidate-ubuntu26-amd64.json", import.meta.url));
+async function build(output: string, fixture: keyof typeof candidateCatalogs = "ubuntu24-amd64") {
+  const { sha256: catalogSha256, file } = candidateCatalogs[fixture];
+  const catalogBytes = await readFile(new URL(file, import.meta.url));
   if (hash(catalogBytes) !== catalogSha256) throw new Error("The source-owned candidate catalog changed; review and pin it explicitly.");
   const catalog = JSON.parse(catalogBytes.toString("utf8")) as typeof catalogShape;
   output = join(await realpath(dirname(output)), basename(output));
@@ -183,10 +188,10 @@ async function build(output: string, fixture: "ubuntu24-amd64" | "ubuntu26-amd64
   } finally { try { await ownedOutput?.directory.close(); } finally { await rm(scratch, { recursive: true, force: true }); } }
 }
 const args = process.argv.slice(2);
-if ((args.length !== 2 && args.length !== 4) || args[0] !== "--out" || !args[1] || (args.length === 4 && (args[2] !== "--fixture" || !["ubuntu24-amd64", "ubuntu26-amd64"].includes(args[3]!)))) {
-  process.stderr.write("Use --out <new-owned-directory> [--fixture <ubuntu24-amd64|ubuntu26-amd64>]; candidate profiles are source-owned.\n");
+if ((args.length !== 2 && args.length !== 4) || args[0] !== "--out" || !args[1] || (args.length === 4 && (args[2] !== "--fixture" || !Object.hasOwn(candidateCatalogs, args[3]!)))) {
+  process.stderr.write("Use --out <new-owned-directory> [--fixture <ubuntu24-amd64|ubuntu26-amd64|debian13-amd64>]; candidate profiles are source-owned.\n");
   process.exitCode = 2;
 } else {
-  try { await build(resolve(args[1]), args[3] === "ubuntu26-amd64" ? "ubuntu26-amd64" : "ubuntu24-amd64"); }
+  try { await build(resolve(args[1]), (args[3] ?? "ubuntu24-amd64") as keyof typeof candidateCatalogs); }
   catch (error) { process.stderr.write((error instanceof Error ? error.message : "Internal candidate build failed") + "\n"); process.exitCode = 1; }
 }

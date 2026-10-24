@@ -707,7 +707,7 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
         raise RuntimeError("Original owned guest fixture binding changed")
     os_release = observed.get('osRelease')
     if (type(os_release) is not dict or set(os_release) != {'id', 'versionId', 'sha256'}
-            or os_release['id'] != 'ubuntu' or os_release['versionId'] not in ('24.04', '26.04')
+            or (os_release['id'], os_release['versionId']) not in (('ubuntu','24.04'), ('ubuntu','26.04'), ('debian','13'))
             or type(os_release['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', os_release['sha256']) is None):
         raise RuntimeError('Original owned guest OS binding is incomplete')
     REPORT['ownedGuestCustody'] = {key: observed[key] for key in ('formatVersion', 'scope', 'ok', *binding._fields,
@@ -716,8 +716,9 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
 
 
 INTERNAL_CATALOGS = {
-    'ubuntu-24.04-amd64-docker-2026-10-19': ('540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58', '24.04'),
-    'ubuntu-26.04-amd64-docker-2026-10-19': ('e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a', '26.04'),
+    'ubuntu-24.04-amd64-docker-2026-10-19': ('540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58', 'ubuntu', '24.04', 'x64'),
+    'ubuntu-26.04-amd64-docker-2026-10-19': ('e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a', 'ubuntu', '26.04', 'x64'),
+    'debian-13-amd64-docker-2026-10-19': ('4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1', 'debian', '13', 'x64'),
 }
 
 
@@ -772,7 +773,7 @@ def checked_internal_candidate():
         catalog_id = metadata.get('catalogId') if type(metadata) is dict else None
         if type(catalog_id) is not str or catalog_id not in INTERNAL_CATALOGS:
             raise RuntimeError('Internal candidate target is not source-owned')
-        expected_sha, release = INTERNAL_CATALOGS[catalog_id]
+        expected_sha, distribution, release, architecture = INTERNAL_CATALOGS[catalog_id]
         raw = read('internal-native-candidate-catalog.json')
         if hashlib.sha256(raw).hexdigest() != expected_sha:
             raise RuntimeError('Internal candidate catalog bytes differ')
@@ -781,7 +782,7 @@ def checked_internal_candidate():
         if (metadata.get('internalArtifact') is not True or metadata.get('catalogSha256') != expected_sha
                 or json.dumps(metadata.get('legacyProfileAdmission'), sort_keys=True, allow_nan=False) != json.dumps({'verified':True, 'meaning':'internal-catalog-admission-only'}, sort_keys=True)
                 or json.dumps({key:metadata.get(key) for key in fields}, sort_keys=True, allow_nan=False) != json.dumps({key:catalog[key] for key in fields}, sort_keys=True, allow_nan=False)
-                or catalog['profile']['distribution'] != 'ubuntu' or catalog['profile']['release'] != release or catalog['profile']['architecture'] != 'x64'):
+                or (catalog['profile']['distribution'], catalog['profile']['release'], catalog['profile']['architecture']) != (distribution, release, architecture)):
             raise RuntimeError('Internal candidate catalog metadata differs')
         for name, expected in records:
             check_budget()
@@ -839,7 +840,7 @@ def verify_guest_candidate_target(owned_binding):
         # these bytes. Do not replace that proof with another /etc pathname read.
         observed = REPORT.get('ownedGuestCustody', {}).get('osRelease')
         if (type(observed) is not dict or set(observed) != {'id', 'versionId', 'sha256'}
-                or observed['id'] != 'ubuntu' or observed['versionId'] not in ('24.04', '26.04')
+                or (observed['id'], observed['versionId']) not in (('ubuntu','24.04'), ('ubuntu','26.04'), ('debian','13'))
                 or type(observed['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', observed['sha256']) is None):
             raise RuntimeError('Original owned guest candidate target OS binding changed')
         fields = {'ID':observed['id'], 'VERSION_ID':observed['versionId']}
@@ -860,16 +861,16 @@ def verify_guest_candidate_target(owned_binding):
             raise RuntimeError('Legacy guest candidate target requires the original Ubuntu24 fixture')
         os_evidence = {'source':'legacy-nonce-only-observation', 'fixtureCustodyValidated':False,
                        'id':fields['ID'], 'versionId':release, 'sha256':hashlib.sha256(os_release.encode()).hexdigest()}
-    if fields.get('ID') != 'ubuntu' or release not in ('24.04', '26.04') or run(['uname', '-m'])[1].strip() != 'x86_64':
+    if (fields.get('ID'), release) not in (('ubuntu','24.04'), ('ubuntu','26.04'), ('debian','13')) or run(['uname', '-m'])[1].strip() != 'x86_64':
         raise RuntimeError('Guest candidate target differs from the closed native tuple')
     try:
         (ROOT/'package/internal-native-candidate.json').lstat()
     except FileNotFoundError:
-        if release not in ORDINARY_QUALIFICATIONS:
+        if fields.get('ID') != 'ubuntu' or release not in ORDINARY_QUALIFICATIONS:
             raise RuntimeError('Ordinary guest candidate target is not admitted')
     else:
         catalog = checked_internal_candidate()
-        if catalog['profile']['release'] != release:
+        if (catalog['profile']['distribution'], catalog['profile']['release'], catalog['profile']['architecture']) != (fields['ID'], release, 'x64'):
             raise RuntimeError('Internal candidate target differs from the original guest OS')
     return os_release, os_evidence
 

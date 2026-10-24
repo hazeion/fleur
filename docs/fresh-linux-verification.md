@@ -1,6 +1,6 @@
 # Fresh Ubuntu guest verification
 
-`scripts/verify-fresh-linux.ts` verifies an owned full-system Ubuntu 24.04 or 26.04 amd64 guest using its fixed internal candidate or source-owned ordinary installation profile. The default fixture remains Ubuntu 24.04. The ordinary catalog contains the two exact reviewed prerequisite tuples. Internal candidate verification does not add release admission. Local tests cover refusal, transport and artifact boundaries; actual guest execution and its evidence are recorded separately below.
+`scripts/verify-fresh-linux.ts` verifies an owned full-system Ubuntu 24.04, Ubuntu 26.04 or Debian 13 amd64 guest. Ubuntu targets offer fixed internal candidates and source-owned ordinary installation profiles. Debian currently permits only its fixed internal candidate. The default fixture remains Ubuntu 24.04. The ordinary catalog contains the two exact reviewed prerequisite tuples. Internal candidate verification does not add release admission. Local tests cover refusal, transport and artifact boundaries; actual guest execution and its evidence are recorded separately below.
 
 The command has two modes:
 
@@ -268,3 +268,38 @@ custody binding and checks both against the initial and resumed guest reports.
 Ordinary terminal profile/evidence selection uses only that original OS record.
 Legacy sessions without an original OS record remain Ubuntu 24-only; an explicit
 Ubuntu 26 report cannot adopt that fallback.
+
+
+### Debian 13 x64 internal verification preparation
+
+The final `--fixture debian13-amd64` selector binds the authenticated Trixie catalog,
+342,818,816-byte image with SHA256
+`87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02`,
+and its measured 3,221,225,472-byte virtual size. The [artifact evidence](setup-artifact-evidence.md#debian-13-x64-retained-image-input)
+records its official TLS/checksum origin and structure checks. File size and
+virtual size are separate checks.
+
+On an eligible owned verification host with the existing tools and exact retained
+inputs, the internal command is:
+
+```sh
+FLEUR_OWNED_DISPOSABLE_HOST=yes bun scripts/verify-fresh-linux.ts \
+  --run --image "$FLEUR_DEBIAN13_IMAGE" --candidate source-owned \
+  --bun-archive "$FLEUR_BUN_ZIP" \
+  --recorded-helper-artifacts "$FLEUR_RECORDED_HELPERS" \
+  --fixture debian13-amd64
+```
+
+The Ubuntu compiler closure and ordinary Debian qualification are refused before
+artifact reads. The fixed recorded pair retains its own compiler/source provenance;
+it does not transfer Ubuntu kernel enforcement evidence. No dependency is silently
+preinstalled to make the guest succeed. Missing package dependencies, service
+provenance, enrollment or runtime requirements remain failures.
+
+Protected custody, initial setup, and fresh-login resume must agree on the original
+distribution, release and architecture. Crossed Debian/Ubuntu catalogs fail before
+new authority. The original four-field binding and protected OS digest remain
+unchanged. Internal Doctor rounds retain exit 4 and release state unverified even
+when their component checks pass. This preparation supplies no Debian boot,
+installation or runtime qualification; actual repeated execution and independent
+report review remain required.

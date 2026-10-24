@@ -652,3 +652,24 @@ OS bytes, boot and ordinary-user identity remain bound; crossed distributions,
 releases, architectures and unknown fixture choices refuse before guest work.
 This changes neither the Ubuntu default nor ordinary Debian admission. Catalog,
 guest verification, boot, installation and runtime qualification remain pending.
+
+
+## Debian 13 x64 internal catalog inputs
+
+An offline audit reverified the cached official Docker key and RSA signing subkey,
+Trixie InRelease, its authenticated amd64 Packages index, all five complete package
+hashes/sizes, and actual control identity/dependency fields. The scoped maintainer
+script ledger is 9,058 bytes with SHA256
+`a9a9c699e6a73a41e15d12ecfe8d2ac29d70753ce3ca1308589bcccf32631097`.
+Audit report SHA256:
+`89770863773d5a7213b7b6f1d0cc34038aa2e3838c02b70f5eb00649905f101e`.
+Independent read-only review accepted the signature, index, payload and control
+checks. No package was extracted or executed.
+
+The separate [Trixie internal catalog](../scripts/native-candidate-debian13-amd64.json)
+has SHA256 `4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1`.
+Its legacy verified field means internal artifact admission only. Installation
+remains pending and runtime support unverified. The builder and guest consumer
+bind this exact catalog to Debian 13 x64; ordinary production profiles stay
+unchanged. Dependency-environment readiness, native package-manager behavior,
+installation and runtime evidence remain separate requirements.

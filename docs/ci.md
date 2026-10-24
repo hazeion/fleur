@@ -74,7 +74,10 @@ a full verification run even for documentation-only changes.
 The native workflow accepts an optional `debian_helpers` manual input containing
 only the recorded amd64 helper pair as compact base64 JSON. Empty input preserves
 the ordinary x64/ARM readiness run. Nonempty input additionally runs the fixed
-Debian 13 x64 KVM verifier inside the existing x64 job; invalid input fails that
+Debian 13 x64 KVM verifier inside the existing x64 job. The optional boolean
+`debian_recovery` selects the fixed interrupted-recovery verifier and requires
+the same helper pair; missing helpers fail before provisioning. Its default is
+false. Neither selector changes the ordinary ARM checks. Invalid input fails that
 job and its required summary. The payload is read as data from the event file,
 never interpolated into a shell. Exact source-owned helper sizes and SHA256 pins
 are checked before provisioning. No caller URL, package, profile or command is

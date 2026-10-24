@@ -1094,3 +1094,56 @@ the guest kind, package and catalog alongside the independent outer archive hash
 wrong guest kind/package/catalog still refuse. All 21 wrapper contracts passed.
 The waiting dispatch was stopped before VM creation, and superseded PR workflows
 were cancelled. Those cancelled workflows are not passing candidate evidence.
+
+## Debian 13 x64 ordinary fresh qualification
+
+The actual ordinary package at source
+`5f5e13e768117f33160e5fef6eabfabb309c682d` passed two independent fresh KVM
+runs in [manual run 40086384817](https://github.com/hazeion/fleur/actions/runs/40086384817),
+attempts 1 and 2. Both used ordinary archive SHA256
+`c0fe9b56d930db163acb102435c77100ac13084c426ed6d7e26da1922f211c4e`.
+Independent review accepted these report hashes:
+
+- First: `2210599daca9df88b3f4f794445dfe389d19d8623d24be5e9e6d6f33052eed50`.
+- Repeat: `2b5c1dd9fc1c22db5b6af1a801e18848029e8323278c448df260a243e2a2cdb6`.
+
+Each installed the exact eight-package closure, preserved original packages and
+account groups until separate enrollment, refused both stale sessions, completed
+a genuine fresh login and separate smoke-image acquisition, and passed two
+Doctor rounds and two ready setup reprobes with snapshots/grants preserved.
+All four firewall canary observations and explicit cleanup passed. The nftables
+service stayed inactive, disabled and unexecuted. Full original runtime,
+restriction, sentinel and disposal requirements passed. Physical pause observations
+were 59/66/53/67 ms and 31/68/30/28 ms, below the unchanged 250 ms limit.
+
+All three applicable CI workflows passed at that source, including 1,267 CLI
+tests and 12,150 assertions, types, full lint, generated-project checks, both
+native architectures, both macOS fixture architectures and all compatibility
+jobs. This qualifies Debian x64 fresh ordinary installation only. It does not
+establish Debian interrupted recovery or the remaining native platform matrix.
+
+## Debian interrupted-recovery verifier preparation
+
+The fixed recovery lane uses the ordinary Debian package and recorded helper
+pair on the existing hosted x64 KVM runner. It exercises completed installation
+effects with a missing parent receipt, preserves the historical outcome as
+unknown, performs a real reboot of the same held VM/overlay, and requires
+separate read-only inspection authority before fresh-login and runtime checks.
+The original host aggregate deadline remains 900 seconds across these phases.
+The authenticated same-boot access checkpoint retains its original guest
+deadline; a later SSH connection cannot reset it.
+
+Four-column package observations retain real dpkg status and error flags before
+installation and after interruption/reboot. Exactly the eight declared effects
+may differ. Persistent nftables configuration, unit/helper state and service
+nonexecution are compared across the reboot. Kernel firewall canaries have
+separate boot-bound ledgers: the first chain must be explicitly removed before
+reboot, and a newly owned chain is created before reconciliation. No continuity
+of volatile kernel rules across a reboot is claimed. Failed observations remain
+failures even when full owned VM disposal succeeds.
+
+The source record binds the exact seven staged qualification files, tracked
+source commit and actual ordinary archive hash. Every guest continuation
+reauthenticates those inputs against the host-held record digest. Mocked contract,
+bridge, source and deadline tests are verifier evidence only. Native recovery
+qualification still requires executed reports and independent review.

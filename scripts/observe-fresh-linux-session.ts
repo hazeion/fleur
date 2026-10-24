@@ -185,6 +185,8 @@ export async function observeGuestSessions(target: SessionTarget, signal?: Abort
   catch (error) { return failure("SESSION_FAILED", error instanceof Error ? error.message : "Idle resume relay cleanup is unconfirmed"); }
   return observed;
 }
+export { checkRecordedInputs, checkRecordedTerminal, checkOriginalOs, checkTerminalProof, numericGroups };
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const cancellation = new AbortController();

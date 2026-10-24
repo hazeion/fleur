@@ -8,6 +8,11 @@ on:
         required: false
         default: ""
         type: string
+      debian_recovery:
+        description: Run the fixed Debian interrupted-recovery case; requires debian_helpers
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
 # Retire superseded PR work; retain every main-branch verification run.
@@ -52,7 +57,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             architecture: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.debian_helpers != '' && matrix.architecture == 'x86_64' && 40 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery) && matrix.architecture == 'x86_64' && 40 || 10 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
         with:
@@ -83,7 +88,7 @@ jobs:
           FLEUR_NATIVE_REPORT: ${{ runner.temp }}/fleur-native-setup.json
         run: bun scripts/verify-native-setup.ts
       - name: Fresh Debian 13 native KVM qualification
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debian_helpers != '' && matrix.architecture == 'x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery) && matrix.architecture == 'x86_64' }}
         timeout-minutes: 38
         env:
           FLEUR_RUNNER_ENVIRONMENT: ${{ runner.environment }}

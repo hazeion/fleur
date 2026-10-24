@@ -1,6 +1,7 @@
 """Fixed manual GitHub-hosted Debian 13 qualification. No release admission."""
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -95,14 +96,14 @@ def admitted_ordinary_round(observed, command):
                 'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
 
 
-def accepted_guest(report, source):
+def _accepted_guest(report, source, scope, preservation):
     if not isinstance(report, dict):
         return False
     guest = report.get('guest', {})
     candidate = report.get('candidate', {})
     catalog = '032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d'
     return (report.get('ok') is True and report.get('executed') is True
-            and report.get('scope') == 'fresh-full-system-guest'
+            and report.get('scope') == scope
             and report.get('installationEvidence') == 'verified-full-system-guest'
             and report.get('fixture', {}).get('id') == 'debian13-amd64'
             and report.get('fixture', {}).get('catalogSha256') == catalog
@@ -122,17 +123,83 @@ def accepted_guest(report, source):
             and all(admitted_ordinary_round(observed, 'doctor') for observed in guest['runs'])
             and len(guest.get('readySetupReprobes', [])) == 2
             and all(admitted_ordinary_round(observed, 'setup') and observed.get('snapshotPreserved') is True and observed.get('grantsPreserved') is True for observed in guest['readySetupReprobes'])
-            and guest.get('debianDependencyPreservation', {}).get('backend') == 'nf_tables'
-            and guest.get('debianDependencyPreservation', {}).get('cleanup') is True
-            and set(guest.get('debianDependencyPreservation', {}).get('observations', {})) == {'before', 'afterInstall', 'freshLogin', 'afterRuntime'}
+            and preservation
             and guest.get('installationEvidence') == 'verified-full-system-guest'
             and guest.get('sentinelCleanup') is True
             and guest.get('restrictionProbe', {}).get('exitCode') == 0
             and guest.get('restrictionProbe', {}).get('result', {}).get('bounded_probe_passed') is True
             and guest.get('restrictionProbe', {}).get('result', {}).get('cleanup_complete') is True
-            and report.get('cleanup') == {'ownedVmReaped': True, 'credentialsRemoved': True}
+            and type(report.get('cleanup')) is dict
+            and set(report['cleanup']) == {'ownedVmReaped','credentialsRemoved'}
+            and all(report['cleanup'][key] is True for key in ('ownedVmReaped','credentialsRemoved'))
             and report.get('artifactDisposal', {}).get('complete') is True
             and report.get('humanConsentProof') is False)
+
+
+def accepted_guest(report, source):
+    if not isinstance(report, dict):
+        return False
+    preservation = report.get('guest', {}).get('debianDependencyPreservation', {})
+    return _accepted_guest(report, source, 'fresh-full-system-guest',
+        preservation.get('backend') == 'nf_tables' and preservation.get('cleanup') is True
+        and set(preservation.get('observations', {})) == {'before', 'afterInstall', 'freshLogin', 'afterRuntime'})
+
+
+def accepted_recovery_guest(report, source):
+    try:
+        if not isinstance(report, dict) or not re.fullmatch('[a-f0-9]{40}', source):
+            return False
+        guest, record, reboot = report['guest'], report['qualificationSource'], report['interruptionReboot']
+        names = {'fresh-linux-guest.py','fleur-interrupted-guest.py','fleur-transition-owned-reboot.py',
+                 'fleur-interruption-supervisor-selftest.py','fleur-native-inspector-conformance.ts',
+                 'debian_recovery_contract.py','debian-recovery-preservation.py'}
+        if (type(record) is not dict or set(record) != {'formatVersion','scope','sourceCommit','ordinaryArchiveSha256','files','sha256'}
+                or type(record['formatVersion']) is not int or record['formatVersion'] != 1
+                or record['scope'] != 'source-owned-debian-interruption-inputs' or record['sourceCommit'] != source
+                or record != guest['qualificationSource'] or record['ordinaryArchiveSha256'] != report['executionArtifact']['sha256']
+                or not re.fullmatch('[a-f0-9]{64}', record['ordinaryArchiveSha256'])
+                or type(record['files']) is not dict or set(record['files']) != names
+                or any(type(value) is not str or not re.fullmatch('[a-f0-9]{64}', value) for value in record['files'].values())
+                or hashlib.sha256(json.dumps({key:value for key,value in record.items() if key != 'sha256'},separators=(',',':')).encode()).hexdigest() != record['sha256']
+                or guest.get('assistedRecoveryQualified') is not True or guest.get('automaticRecoveryQualified') is not False
+                or guest.get('recoveryQualification') != 'separately-scoped-read-only-inspection'):
+            return False
+        old, current, transition = reboot['originalBinding'], reboot['renewedBinding'], reboot['transition']
+        if (any(reboot[key] is not True for key in ('sameContinuouslyHeldQmp','samePinnedSshHostKey','sameOwnedVmProcess'))
+                or any(type(reboot[key]) is not dict or set(reboot[key]) != {'sameName','running','sameOverlay'}
+                       or any(value is not True for value in reboot[key].values()) for key in ('qmpBefore','qmpAfter'))
+                or reboot['beforeOverlay'] != reboot['afterOverlay'] or set(reboot['beforeOverlay']) != {'dev','ino'}
+                or any(type(value) is not str or not re.fullmatch('[0-9]{1,24}',value) for value in reboot['beforeOverlay'].values())
+                or int(reboot['beforeOverlay']['ino']) <= 0
+                or any(transition[key] != value for key,value in {
+                    'originalBootId':old['bootId'],'currentBootId':current['bootId'],
+                    'originalManifestSha256':old['manifestSha256'],'currentManifestSha256':current['manifestSha256'],
+                    'nonce':old['nonce'],'uid':old['uid'],'historicalTransactionOutcome':'unknown',
+                    'helperSha256':record['files']['fleur-transition-owned-reboot.py']}.items())
+                or transition['runtimeAdmission'] is not False or transition['humanConsentProof'] is not False):
+            return False
+        spec = importlib.util.spec_from_file_location('fixed_debian_recovery_contract',REPO / 'scripts/debian_recovery_contract.py')
+        contract = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(contract)
+        contract.validate_two_boot_preservation(old,current,guest['debianRecoveryPreservation'])
+        return _accepted_guest(report,source,'debian-interrupted-full-system-guest',True)
+    except (KeyError,TypeError,ValueError,AttributeError):
+        return False
+
+
+def qualification_mode(inputs):
+    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery'}:
+        raise ValueError('Unexpected manual inputs')
+    value = inputs.get('debian_recovery',False)
+    if type(value) is bool:
+        recovery = value
+    elif type(value) is str and value in ('true','false'):
+        recovery = value == 'true'
+    else:
+        raise ValueError('Canonical recovery selector required')
+    if recovery and (type(inputs.get('debian_helpers')) is not str or not inputs['debian_helpers']):
+        raise ValueError('Recovery requires the exact recorded helper pair')
+    return recovery
 
 
 def validate_tool_plan(text, manifest):
@@ -502,8 +569,8 @@ def main():
         if len(event_bytes) > 256 * 1024:
             raise ValueError('Event exceeds bounded input')
         event = json.loads(event_bytes, object_pairs_hook=unique_object)
-        if set(event.get('inputs', {})) != {'debian_helpers'}:
-            raise ValueError('Unexpected manual inputs')
+        recovery = qualification_mode(event.get('inputs', {}))
+        report['case'] = 'interrupted-recovery' if recovery else 'fresh-installation'
         origin = json.loads((REPO / 'experiments/compatibility/runtime-probe/recorded-helper-origin.json').read_text())
         helpers = decode_helpers(event['inputs']['debian_helpers'], {entry['name']: entry for entry in origin['helpers']})
         # Refuse unavailable device/group instead of changing permissions or falling back to emulation.
@@ -606,13 +673,13 @@ def main():
             size = path.stat().st_size
             if size <= 0 or size > limit or name == 'debian.qcow2' and size != limit or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                 raise ValueError('Fixed verification download identity differs')
-        service = Service(root, os.getuid(), gid, [str(bun), str(REPO / 'scripts/verify-fresh-linux.ts'), '--run', '--image', str(root / 'debian.qcow2'), '--candidate', 'ordinary-source-owned', '--bun-archive', str(root / 'bun.zip'), '--recorded-helper-artifacts', str(helper_dir), '--fixture', 'debian13-amd64'], env)
+        service = Service(root, os.getuid(), gid, [str(bun), str(REPO / ('scripts/verify-debian-recovery.ts' if recovery else 'scripts/verify-fresh-linux.ts')), '--run', '--image', str(root / 'debian.qcow2'), '--candidate', 'ordinary-source-owned', '--bun-archive', str(root / 'bun.zip'), '--recorded-helper-artifacts', str(helper_dir), '--fixture', 'debian13-amd64'], env)
         services.append(service)
         service.launch()
         report['service'] = service.wait()
         report['guestVerifier'] = json.loads(service.output.read_text())
         report['serviceStderr'] = service.error.read_text()[-16384:]
-        if report['service']['exitCode'] != 0 or report['service']['cancelled'] or report['service']['terminal'].get('result') != 'success' or not accepted_guest(report['guestVerifier'], os.environ['GITHUB_SHA']):
+        if report['service']['exitCode'] != 0 or report['service']['cancelled'] or report['service']['terminal'].get('result') != 'success' or not (accepted_recovery_guest if recovery else accepted_guest)(report['guestVerifier'], os.environ['GITHUB_SHA']):
             raise RuntimeError('Native guest qualification failed')
         report['ok'] = True
     except BaseException as error:

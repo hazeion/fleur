@@ -77,7 +77,7 @@ async function run(args: readonly string[], timeoutMs: number, context?: HostCom
   let child: ReturnType<typeof Bun.spawn>;
   const passiveStat = process.platform === "linux" && args.length === 5 && args[0] === "/usr/bin/stat" && args[1] === "--dereference" && args[2] === "--format=%d|%i|%F" && args[3] === "--" && args[4]!.startsWith("/");
   const environment = context?.cleanEnvironment ? { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LC_ALL: "C", LANG: "C" } : { ...process.env, ...(passiveStat ? { LC_ALL: "C", LANG: "C" } : {}) };
-  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: artifactOutput?.descriptor ?? "pipe", stderr: "pipe", cwd: context?.cwd, env: args.includes("--host") ? { ...environment, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : environment }); }
+  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: artifactOutput?.descriptor ?? "pipe", stderr: "pipe", ...(context?.cwd === undefined ? {} : { cwd: context.cwd }), env: args.includes("--host") ? { ...environment, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : environment }); }
   catch (error) { return { status: (error as { code?: string }).code === "ENOENT" ? "missing" : "completed", exitCode: 126, stdout: "", stderr: "Executable could not be started." }; }
   const stderr = child.stderr as ReadableStream<Uint8Array>;
   const stdoutReader = artifactOutput ? undefined : (child.stdout as ReadableStream<Uint8Array>).getReader();

@@ -13,19 +13,38 @@
     "docs/setup.md",
     "docs/setup-arch-services.md",
     "docs/setup-desktop.md",
-    "docs/setup-artifact-evidence.md"
+    "docs/setup-artifact-evidence.md",
+    "dist/reference",
+    "docs/read-pages.md"
   ],
   "engines": {
     "bun": "1.4.3"
   },
   "scripts": {
-    "test": "bun test tests/cli tests/ci",
-    "types": "bun ./node_modules/typescript/bin/tsc --noEmit",
-    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli tests/ci scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli tests/ci scripts"
+    "test": "bun test tests/cli tests/ci tests/runtime && python3 tests/runtime/review-native-controller.test.py && python3 tests/runtime/review-native-races.test.py",
+    "types": "bun ./node_modules/typescript/bin/tsc --noEmit && bun ./node_modules/typescript/bin/tsc --noEmit -p tests/runtime/tsconfig.json",
+    "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli tests/ci tests/runtime scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli tests/ci tests/runtime scripts",
+    "build:reference": "bun ./node_modules/typescript/bin/tsc -p tsconfig.declarations.json && bun scripts/verify-read-reference.ts",
+    "prepack": "\"$npm_execpath\" ./node_modules/typescript/bin/tsc -p tsconfig.declarations.json"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@types/bun": "1.4.3",
+    "oxlint": "1.87.0",
     "typescript": "7.0.2",
-    "oxlint": "1.87.0"
+    "vite": "8.3.4"
+  },
+  "dependencies": {
+    "preact": "11.0.1",
+    "preact-render-to-string": "6.8.0",
+    "rolldown": "1.2.15",
+    "zod": "4.6.7"
+  },
+  "exports": {
+    "./schema": "./src/schema.ts",
+    "./database": "./src/database.ts",
+    "./server": "./src/server.ts",
+    "./client": "./src/client.ts",
+    "./routing": "./src/routing.ts"
   }
 }

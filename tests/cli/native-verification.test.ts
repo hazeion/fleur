@@ -187,6 +187,10 @@ process.stdout.write(output + (command === "start" ? "" : "\\n"));
       await mkdir(source);
       for (const name of ["src", "bin", "docs"]) await cp(join(repository, name), join(source, name), { recursive: true });
       await copyFile(join(repository, "package.json"), join(source, "package.json"));
+      for (const name of ["tsconfig.json", "tsconfig.declarations.json"]) await copyFile(join(repository, name), join(source, name));
+      // Packing now generates the public declaration reference. Build tools remain
+      // outside the packed runtime, which still executes with the restricted PATH.
+      await symlink(join(repository, "node_modules"), join(source, "node_modules"), "dir");
       await mkdir(join(source, "scripts"));
       verifier = join(source, "scripts/verify-native-setup.ts");
       await copyFile(join(repository, "scripts/verify-native-setup.ts"), verifier);

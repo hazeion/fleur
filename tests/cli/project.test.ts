@@ -296,7 +296,10 @@ test("both instruction files reference offline pinned guidance and the approved 
   }
   const offline = await readFile(join(cwd, "docs", "fleur.md"), "utf8");
   expect(offline).toContain("Fleur 0.1.0");
-  expect(offline).toContain("Application runtime APIs and lifecycle commands are unavailable");
+  expect(offline).toContain("inferred read-page APIs and an internal restricted rendering adapter");
+  expect(offline).toContain("docs/read-pages.md and dist/reference");
+  expect(offline).toContain("No application is running after init");
+  expect(offline).toContain("Lifecycle commands, database management, mutations, reactive delivery, external retrieval and production operations require their later implementations");
   expect(offline).toContain("bun run types");
   expect(offline).toContain("TypeScript 6.0.3");
 });

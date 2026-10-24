@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import type { SetupHost } from "../../src/setup/commands.ts";
 
 type FixtureContainer = { Id: string; Name: string; Image: string; Mounts: unknown[]; Config: Record<string, unknown>; HostConfig: Record<string, unknown>; State: { Running: boolean; Pid: number } };
-async function scenario(mode: "source-race" | "uncertain-start" | "ownership-drift" | "native-absence") {
+async function scenario(mode: "source-race" | "uncertain-start" | "ownership-drift" | "native-absence" | "native-manager-label") {
   const directory = await mkdtemp(join(tmpdir(), "fleur-desktop-control-review-"));
   const repository = resolve(import.meta.dir, "../..");
   try {
@@ -49,7 +49,7 @@ async function scenario(mode: "source-race" | "uncertain-start" | "ownership-dri
           const program = args.slice(args.lastIndexOf(image) + 1);
           if (manager) managerPrograms.push(program.at(-1)!);
           const memory = manager ? 268435456 : 536870912;
-          const value: FixtureContainer = { Id: id, Name: `/${name}`, Image: image, Mounts: [], State: { Running: false, Pid: 0 }, Config: { User: manager ? "0:0" : "65534:65534", Entrypoint: ["/usr/local/bin/bun"], Cmd: program, Env: ["PATH=/usr/bin:/bin", ...environment], Volumes: null, Labels: { "dev.fleur.desktop-control-owner": nonce, "dev.fleur.desktop-control-role": manager ? "manager" : "worker" } }, HostConfig: { Privileged: false, Binds: null, NetworkMode: "none", ReadonlyRootfs: true, PidMode: manager ? "host" : "", CgroupnsMode: manager ? "host" : "private", CapDrop: ["ALL"], CapAdd: manager ? ["KILL", "SYS_PTRACE"] : null, Memory: memory, MemorySwap: memory, NanoCpus: 1000000000, PidsLimit: 64, SecurityOpt: manager ? ["no-new-privileges", "seccomp=unconfined"] : ["no-new-privileges"] } };
+          const value: FixtureContainer = { Id: id, Name: `/${name}`, Image: image, Mounts: [], State: { Running: false, Pid: 0 }, Config: { User: manager ? "0:0" : "65534:65534", Entrypoint: ["/usr/local/bin/bun"], Cmd: program, Env: ["PATH=/usr/bin:/bin", ...environment], Volumes: null, Labels: { "dev.fleur.desktop-control-owner": nonce, "dev.fleur.desktop-control-role": manager ? "manager" : "worker" } }, HostConfig: { Privileged: false, Binds: null, NetworkMode: "none", ReadonlyRootfs: true, PidMode: manager ? "host" : "", CgroupnsMode: manager ? "host" : "private", CapDrop: ["ALL"], CapAdd: manager ? ["KILL", "SYS_PTRACE"] : null, Memory: memory, MemorySwap: memory, NanoCpus: 1000000000, PidsLimit: 64, SecurityOpt: manager ? ["no-new-privileges", "seccomp=unconfined", ...(mode === "native-manager-label" ? ["label=disable"] : [])] : ["no-new-privileges"] } };
           names.set(name, id); states.set(id, value); return done(`${id}\n`);
         }
         if (command === "start") {
@@ -105,5 +105,17 @@ test("actual Desktop lowercase absence protocol permits fresh creation and confi
   expect(result.remaining).toEqual([]);
   expect(result.report.originalPreserved).toBe(true);
   expect(result.report.transportUncertain).toBe(false);
+  expect(result.report.cleanup).toEqual([{ kind: "worker", absent: true }, { kind: "manager", absent: true }]);
+});
+
+
+test("actual host-PID manager label normalization preserves controller ownership and cleanup gates", async () => {
+  const result = await scenario("native-manager-label");
+  expect(result.report.error).toBe("CONTROL_CAPABILITY_UNPROVEN");
+  expect(result.report.ok).toBe(false); // The profile alone never proves control capability.
+  expect(result.managerPrograms).toEqual([result.originalProgram]);
+  expect(result.removed).toEqual(["1".repeat(64), "2".repeat(64)]);
+  expect(result.remaining).toEqual([]);
+  expect(result.report.originalPreserved).toBe(true);
   expect(result.report.cleanup).toEqual([{ kind: "worker", absent: true }, { kind: "manager", absent: true }]);
 });

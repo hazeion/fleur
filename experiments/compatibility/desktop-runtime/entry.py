@@ -86,13 +86,14 @@ def emit(value):
     data=(json.dumps(value,separators=(',',':'))+'\n').encode()
     if len(data)>1048576 or os.write(1,data)!=len(data):raise RuntimeError('FRAME_OUTPUT_FAILED')
 
-def acknowledge(binding,phase):
-    end=time.monotonic()+20;data=bytearray()
+def acknowledge(binding,phase,absolute_deadline=None):
+    end=min(time.monotonic()+20,absolute_deadline) if absolute_deadline is not None else time.monotonic()+20;data=bytearray()
     while b'\n' not in data:
         if not select.select([0],[],[],max(0,end-time.monotonic()))[0]:raise RuntimeError('ACK_DEADLINE_EXPIRED')
         block=os.read(0,1024)
         if not block or len(data)+len(block)>1024:raise RuntimeError('ACK_BOUND_OR_EOF')
         data.extend(block)
+    if time.monotonic()>=end:raise RuntimeError('ACK_DEADLINE_EXPIRED')
     expected={'kind':'ack','phase':phase,'nonce':binding['nonce']}
     if bytes(data)!=(json.dumps(expected,separators=(',',':'))+'\n').encode():raise RuntimeError('ACK_BINDING_CHANGED')
 
@@ -153,7 +154,14 @@ def main():
                 ledger={'kind':'ownership','nonce':binding['nonce'],'bootId':binding['bootId'],'daemonId':binding['daemonId'],'imageId':image_id,'workers':worker_ledger(tag,image_id)}
                 emit(ledger);acknowledge(binding,'ownership')
             launch=guardian_launcher(binding['guardianId'],ROOT_GUARD)
-            def deadline(cid,pid,end):return HostDeadlineGuard(cid,pid,end,launcher=launch)
+            def deadline(cid,pid,end):
+                guard=HostDeadlineGuard(cid,pid,end,launcher=launch)
+                try:
+                    emit({'kind':'guard-binding','nonce':binding['nonce'],'containerId':cid,'pid':pid,'deadlineVmMonotonic':end})
+                    acknowledge(binding,'guard-'+cid,absolute_deadline=end)
+                    return guard
+                except BaseException:
+                    guard.close();raise
             def cleanup(name,image_id,owner):
                 result=processes.bounded(['docker','inspect',name,'--format','{{json .}}'])
                 if result.returncode==1 and result.stdout==b'\n' and result.stderr==('error: no such object: '+name+'\n').encode():return 'absent'

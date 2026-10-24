@@ -57,7 +57,8 @@ may see newer committed data. Results default to 100 rows, permit at most 500,
 and fail if encoded public JSON exceeds 1 MiB. The five-second database budget
 includes pool queueing; cold Docker startup precedes that database budget. Cancellation
 starts at expiry, and cleanup verifies transaction state before reusing a
-connection. Unconfirmed connections are quarantined.
+connection. If cleanup and backend termination cannot be confirmed, the reserved
+connection is closed and discarded; it is never returned for reuse.
 
 For pagination, declare a root `cursor: schema.string().optional()` input. This
 field is reserved for continuation. Return a token from

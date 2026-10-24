@@ -149,7 +149,9 @@ def main():
                 raise RuntimeError('QUERY_LIMIT')
             send(worker.stdin, decision['value'])
         # The pidfd, rather than Docker attach exit, proves physical retirement.
-        guard.stdin.close()
+        # Final bytes precede the worker's exit_group(0). Keep the independent
+        # guard armed until its pidfd observes exit; EOF here would kill a healthy
+        # worker in that interval and turn its successful exit into status 137.
         guard_record = json.loads(line(guard.stdout, 512, deadline+.25))
         if type(guard_record) is not dict or guard_record.get('physical_exit_confirmed') is not True or guard_record.get('outcome') not in ('premature-exit', 'cancelled'):
             raise RuntimeError('TERMINATION_UNCONFIRMED')

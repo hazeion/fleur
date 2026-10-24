@@ -122,7 +122,8 @@ export class ReadBroker {
       publicResult(result);
       return result;
     } catch (error) {
-      if (abort.signal.aborted || (error && typeof error === "object" && "code" in error && error.code === "57014")) throw new Error("QUERY_TIMEOUT");
+      if (abort.signal.aborted || performance.now() - started >= 5000
+        || (error instanceof SQL.PostgresError && (error.errno === "57014" || error.code === "ERR_POSTGRES_CONNECTION_TIMEOUT"))) throw new Error("QUERY_TIMEOUT");
       if (error instanceof PublicOperationError) throw error;
       if (error instanceof Error && ["QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED"].includes(error.message)) throw error;
       throw new Error("INTERNAL_FAILURE");
@@ -146,6 +147,10 @@ export class ReadBroker {
           lease.expire();
           const stopped = await control("terminate");
           if (stopped === "applied" || stopped === "absent") borrowed.release();
+          // An unverified connection must never return to circulation. Closing
+          // this reserved handle discards its socket; the driver's onClose
+          // releases only its slot, so healthy reads and pool shutdown can finish.
+          else await borrowed.close({ timeout: 0 });
         } finally { clearTimeout(cleanupTimer); }
       }
     }

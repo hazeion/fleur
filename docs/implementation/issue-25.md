@@ -64,3 +64,31 @@ RAM, Docker Engine 29.9.2 with eight virtual CPUs and approximately 7.75 GiB RAM
 Bun 1.4.3 and Playwright 1.64.0. The browser driver used Node 24.22.1. These slice
 checks do not claim the complete application's reference performance targets or
 qualify additional release platforms.
+
+Further CI timing regressions exposed completion/exit races and server timeout
+classification. Five deterministic guard/controller tests first reproduced four
+failures: cancelling a healthy worker between final bytes and exit, treating
+deadline-time EOF as early cancellation, extending its termination tolerance,
+and concealing a late-observed natural exit. The corrected controller waits for
+pidfd evidence; the guard retains the original deadline and reports observed
+lateness. All five regressions and the three existing controller tests passed.
+A real PostgreSQL cancellation before the host timer first returned the wrong
+public error; using Bun's SQLSTATE field corrected it.
+
+The initial complete local suite reported 1,432 passes and 11 failures. These
+were the packaging hook, native-verifier packaging prerequisites and obsolete
+guidance assertion. The corrected hook uses the invoking Bun executable even
+without Bun on PATH; trusted verifier fixtures provide declaration-build inputs
+while packed execution retains its restricted PATH. The affected CLI suites
+then passed 51 tests and 407 assertions. Sequential runtime verification passed
+73 tests and 302 assertions, including production browser navigation/hydration
+and repeated native deadlines. Types, both lint engines and generated declaration
+consumer verification passed.
+
+An independent real-PostgreSQL regression also forced both cleanup verification
+and backend-control failure. It reproduced pool starvation after four retained
+reservations. Recovery now closes that individual reserved connection without
+returning it for reuse, allowing healthy reads and shutdown to proceed. This
+preserves the existing operation deadline and cleanup controls.
+The combined PostgreSQL suites then passed 13 tests and 37 assertions; types,
+full lint, declaration consumers and all 12 CI policy tests passed afterward.

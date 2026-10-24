@@ -55,16 +55,19 @@ def supervise(container_id, pid, deadline, bind, kill, close, control_fd, emit):
             raise RuntimeError('worker deadline expired while binding')
         emit({'kind':'armed'})
         ready = select.select([fd, control_fd], [], [], max(0, deadline-time.monotonic()))[0]
+        observed = time.monotonic()
         if fd in ready:
-            emit({'kind':'result','outcome':'premature-exit','physical_exit_confirmed':True,
-                  'kill_lateness_ms':0,'physical_exit_lateness_ms':0})
+            emit({'kind':'result','outcome':'late-termination' if observed > deadline+TERMINATION_TOLERANCE else 'premature-exit','physical_exit_confirmed':True,
+                  'kill_lateness_ms':0,'physical_exit_lateness_ms':max(0, round(1000*(observed-deadline)))})
             return
-        cancelled = control_fd in ready
-        if cancelled:
+        if control_fd in ready:
             # EOF or any control byte retires this already-bound worker. There
             # is no command that can select another process or extend its time.
             os.read(control_fd, 1)
         requested = time.monotonic()
+        # A controller timeout can close this channel at the same instant as the
+        # deadline. It cannot reset the termination tolerance through EOF.
+        cancelled = control_fd in ready and requested < deadline
         kill(fd)
         killed = True
         bound = (requested if cancelled else deadline) + TERMINATION_TOLERANCE

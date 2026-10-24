@@ -115,7 +115,9 @@ jobs:
       - name: Restricted reads, owned PostgreSQL and browser production fixture
         run: bun test tests/runtime
       - name: Controller admission and physical exit regressions
-        run: python3 tests/runtime/review-native-controller.test.py
+        run: |
+          python3 tests/runtime/review-native-controller.test.py
+          python3 tests/runtime/review-native-races.test.py
 
   verification:
     name: CLI verification

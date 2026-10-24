@@ -5,14 +5,22 @@ import { ownedPostgres } from "./owned-postgres";
 
 let fixture: Awaited<ReturnType<typeof ownedPostgres>>;
 const exercises = defineTable("exercises", { columns: { id: column.safeInteger().primaryKey(), name: column.string(), note: column.string().nullable() } });
+const cancelledReads = defineTable("cancelled_reads", { columns: { id: column.safeInteger().primaryKey(), name: column.string() } });
 let broker: ReadBroker;
 beforeAll(async () => {
   fixture = await ownedPostgres();
   await fixture.sql.unsafe("CREATE TABLE exercises (id bigint PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
   await fixture.sql.unsafe("INSERT INTO exercises (id,name) SELECT n, 'Exercise ' || n FROM generate_series(1, 502) n");
-  broker = new ReadBroker({ url: fixture.url, tables: [exercises] });
+  await fixture.sql.unsafe("CREATE FUNCTION cancelled_read() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cancelled by server' USING ERRCODE = '57014'; END $$");
+  await fixture.sql.unsafe("CREATE VIEW cancelled_reads AS SELECT 1::bigint AS id, cancelled_read() AS name");
+  broker = new ReadBroker({ url: fixture.url, tables: [exercises, cancelledReads] });
 }, 180_000);
 afterAll(async () => { await broker?.close(); await fixture?.cleanup(); });
+
+test("server cancellation before the host timer retains the public query timeout", async () => {
+  await expect(broker.read(db => db.select(cancelledReads, { fields: ["id", "name"] }))).rejects.toThrow("QUERY_TIMEOUT");
+  expect(await broker.read(db => db.select(exercises, { fields: ["id"], limit: 1 }))).toEqual([{ id: 1 }]);
+});
 
 test("registered read selection defaults to 100 rows and projects only declared fields", async () => {
   const rows = await broker.read(db => db.select(exercises, { fields: ["id", "name"], orderBy: [{ field: "id", direction: "asc" }] }));

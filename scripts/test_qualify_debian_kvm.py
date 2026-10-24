@@ -200,16 +200,23 @@ class InputContract(unittest.TestCase):
             with self.subTest(value=str(value)[:80]), self.assertRaises((ValueError, TypeError)):
                 module.decode_helpers(value, self.pins)
 
+    def ready(self, command):
+        evidence = '6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e'
+        return {'exitCode': 0, 'result': {'formatVersion': 1, 'command': command, 'ok': True, 'error': None, 'truncated': False,
+                'data': {'components': {**{name: {'state': 'ready'} for name in ('cli', 'daemon', 'compose')},
+                    'smoke': {'state': 'ready', 'cleanup': True}, 'release': {'state': 'verified', 'profile': 'debian-13-x64-docker-29.9.1',
+                        'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}}}}}}
+
     def test_terminal_gate_requires_real_guest_disposal(self):
         source = 'a' * 40
         catalog = '032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d'
         proof = {'ok': True, 'executed': True, 'scope': 'fresh-full-system-guest', 'installationEvidence': 'verified-full-system-guest',
                  'fixture': {'id': 'debian13-amd64', 'catalogSha256': catalog}, 'capabilities': {'architecture': 'x64'},
-                 'candidate': {'catalogSha256': catalog, 'internalArtifact': True, 'candidate': {'sha256': 'b' * 64}},
-                 'executionArtifact': {'kind': 'internal-candidate', 'sha256': 'b' * 64},
+                 'candidate': {'catalogSha256': catalog, 'internalArtifact': True, 'ordinary': {'sha256': 'b' * 64}},
+                 'executionArtifact': {'kind': 'ordinary', 'packageName': 'fleur', 'sha256': 'b' * 64},
                  'restrictionSource': {'commit': source}, 'accelerator': 'kvm', 'boot': {'accelerator': 'kvm'},
                  'ownedGuestCustody': {'fixtureCustodyValidated': True},
-                 'guest': {'ok': True, 'runs': [{}, {}], 'installationEvidence': 'verified-full-system-guest', 'sentinelCleanup': True,
+                 'guest': {'ok': True, 'runs': [self.ready('doctor'), self.ready('doctor')], 'readySetupReprobes': [{**self.ready('setup'), 'snapshotPreserved': True, 'grantsPreserved': True} for _ in range(2)], 'debianDependencyPreservation': {'backend': 'nf_tables', 'cleanup': True, 'observations': {phase: {} for phase in ('before', 'afterInstall', 'freshLogin', 'afterRuntime')}}, 'installationEvidence': 'verified-full-system-guest', 'sentinelCleanup': True,
                            'restrictionProbe': {'exitCode': 0, 'result': {'bounded_probe_passed': True, 'cleanup_complete': True}}},
                  'cleanup': {'ownedVmReaped': True, 'credentialsRemoved': True},
                  'artifactDisposal': {'complete': True}, 'humanConsentProof': False}
@@ -222,6 +229,24 @@ class InputContract(unittest.TestCase):
         for field, value in [('accelerator', 'tcg'), ('restrictionSource', {'commit': 'c' * 40}), ('guest', {'ok': True, 'runs': [{}, {}]}), ('ok', False), ('installationEvidence', 'pending'), ('cleanup', {'ownedVmReaped': True, 'credentialsRemoved': False}), ('artifactDisposal', {'complete': False}), ('humanConsentProof', True)]:
             with self.subTest(field=field):
                 self.assertFalse(module.accepted_guest({**proof, field: value}, source))
+
+        import copy
+        mutations = [
+            lambda p: p['executionArtifact'].update(kind='internal-candidate'),
+            lambda p: p['executionArtifact'].update(packageName='fleur-internal-native-verification'),
+            lambda p: p['candidate']['ordinary'].update(sha256='c'*64),
+            lambda p: p['guest']['runs'][0].update(exitCode=4),
+            lambda p: p['guest']['runs'][1]['result']['data']['components']['release'].update(profile='ubuntu-26.04-x64-docker-29.9.1'),
+            lambda p: p['guest']['readySetupReprobes'].pop(),
+            lambda p: p['guest']['readySetupReprobes'][0].update(snapshotPreserved=False),
+            lambda p: p['guest']['readySetupReprobes'][1].update(grantsPreserved=False),
+            lambda p: p['guest']['debianDependencyPreservation'].update(cleanup=False),
+            lambda p: p['guest']['debianDependencyPreservation']['observations'].pop('freshLogin'),
+        ]
+        for mutate in mutations:
+            invalid = copy.deepcopy(proof)
+            mutate(invalid)
+            self.assertFalse(module.accepted_guest(invalid, source))
 
     def test_output_limit_retires_command_before_later_side_effect(self):
         import tempfile

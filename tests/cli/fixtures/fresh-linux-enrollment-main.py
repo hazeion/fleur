@@ -50,6 +50,7 @@ debian_cases = {
     'owned26-resume-trixie': (('ubuntu', '26.04'), 'native-candidate-ubuntu26-amd64.json'),
 }
 debian_cases.update({'owned13-canary-'+fault:(('debian','13'),'native-candidate-debian13-amd64.json') for fault in ('binding','backend','canary','service','phase','cleanup')})
+debian_cases.update({name:(('debian','13'),'native-candidate-debian13-amd64.json') for name in ('ordinary-admitted13','ordinary-admitted13-missing-dependency','ordinary-admitted13-artifact-hash','ordinary-admitted13-dependency-version','ordinary-admitted13-duplicate-field','ordinary-admitted13-canary','ordinary-admitted13-service')})
 debian_resume = {
     'owned13-resume-noble': 'native-candidate-ubuntu24-amd64.json',
     'owned13-resume-resolute': 'native-candidate-ubuntu26-amd64.json',
@@ -152,6 +153,18 @@ if scenario.startswith("ordinary-"):
             rows=json.loads(target.read_text());rows['entries'].append(rows['entries'][0]);target.write_text(json.dumps(rows))
     if scenario == "ordinary-invalid-evidence":
         value=json.loads(target.read_text());value['entries'][0]['evidence']['sourceCommit']='0'*40;target.write_text(json.dumps(value))
+    if scenario.startswith('ordinary-admitted13'):
+        catalog=json.loads(catalog_bytes)
+        profile={**catalog['profile'],'artifacts':{item['name']:{'architecture':'amd64',**{key:item[key] for key in ('name','version','url','sha256','size')}} for item in catalog['artifacts'] if item['name'] in catalog['profile']['packages']}}
+        if scenario == 'ordinary-admitted13-missing-dependency':
+            del profile['distroDependencies']['artifacts']['nftables']
+        if scenario == 'ordinary-admitted13-artifact-hash':
+            profile['artifacts']['docker-ce']['sha256']='0'*64
+        if scenario == 'ordinary-admitted13-dependency-version':
+            profile['distroDependencies']['artifacts']['nftables']['version']='1.1.3-2'
+        target.write_text(json.dumps({'formatVersion':1,'entries':[{'evidence':{'reportSha256':'6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e','sourceCommit':'300cdaf30e1ea4786b096786e458f698984fe038','artifactCatalogSha256':'032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d'},'profile':profile}]}))
+        if scenario == 'ordinary-admitted13-duplicate-field':
+            target.write_text(target.read_text().replace('"verified": true','"verified": false, "verified": true'))
 for name in ["fleur-internal-native-candidate.tgz", "runtime-probe.tar", "bun.zip"]:
     (lab / name).write_bytes(("owned fixture " + name).encode())
 
@@ -165,7 +178,7 @@ TOOL = r'''import json,os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']);p=root/'protocol-state.json';s=json.loads(p.read_text());name=pathlib.Path(sys.argv[0]).name;args=sys.argv[1:];uid=s['uid'];package_checksum='a'*64;enrollment_checksum='b'*64
 
 def save():p.write_text(json.dumps(s))
-def ready_protocol():return s['scenario'].startswith('ordinary-admitted') or s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup') and s.get('freshSession',False)
+def ready_protocol():return s['scenario'].startswith('ordinary-admitted') and not s['scenario'].startswith('ordinary-admitted13') or (s['scenario'].startswith('ordinary-admitted13') or s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup')) and s.get('freshSession',False)
 def envelope(command,data,code,error):
  print(json.dumps({'formatVersion':1,'command':command,'ok':False,'truncated':False,'data':data,'error':{'code':error}}));save();sys.exit(code)
 def admitted(command):
@@ -176,6 +189,8 @@ def admitted(command):
  data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
  if s['scenario'].startswith('ordinary-admitted26'):
   evidence='5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07';data['components']['release']={'state':'verified','profile':'ubuntu-26.04-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
+ if s['scenario'].startswith('ordinary-admitted13'):
+  evidence='6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e';data['components']['release']={'state':'verified','profile':'debian-13-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
  if s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup'):
   data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
  if command=='doctor' and s['scenario']=='ordinary-admitted-release-refused':
@@ -259,8 +274,8 @@ if name=='sudo':
  if phase=='afterInstall':
   if s['scenario']=='owned13-canary-binding':frame['binding']={**binding,'bootId':'0'*36}
   if s['scenario']=='owned13-canary-backend':frame['backend']='legacy';frame['toolVersion']='iptables v1.8.11 (legacy)'
-  if s['scenario']=='owned13-canary-canary':frame['canary']=canary.replace('RETURN','ACCEPT')
-  if s['scenario']=='owned13-canary-service':frame['service']['ExecMainStartTimestampMonotonic']='42'
+  if s['scenario'] in ('owned13-canary-canary','ordinary-admitted13-canary'):frame['canary']=canary.replace('RETURN','ACCEPT')
+  if s['scenario'] in ('owned13-canary-service','ordinary-admitted13-service'):frame['service']['ExecMainStartTimestampMonotonic']='42'
   if s['scenario']=='owned13-canary-phase':frame['phase']='freshLogin'
  if phase=='cleanup' and s['scenario']=='owned13-canary-cleanup':frame['cleanup']=False
  print(json.dumps(frame));sys.exit(0)
@@ -274,7 +289,7 @@ if name=='uname' and s['scenario'] in ('command-orphan','command-orphan-timeout'
  if s['scenario']=='command-orphan':os.write(1,b'x'*(2*1024*1024+1))
  while True:
   (root/'orphan-heartbeat').write_text(str(time.monotonic()));time.sleep(0.02)
-if name=='uname':print('x86_64' if args==['-m'] else 'Linux '+('6.12.113+deb13-cloud-amd64' if s['scenario'].startswith('owned13-') else '6.8.0-fixture')+' x86_64 GNU/Linux');sys.exit(0)
+if name=='uname':print('x86_64' if args==['-m'] else 'Linux '+('6.12.113+deb13-cloud-amd64' if s['scenario'].startswith(('owned13-','ordinary-admitted13')) else '6.8.0-fixture')+' x86_64 GNU/Linux');sys.exit(0)
 if name=='systemd-detect-virt':print('qemu');sys.exit(0)
 if name=='dpkg-query' and s['scenario'] in ('owned26-target-valid', 'owned13-target-valid'):
  s['targetBoundaryObserved']=True;save();print('TARGET_BOUNDARY_OBSERVED',file=sys.stderr);sys.exit(42)
@@ -312,7 +327,7 @@ if name=='docker':
    s.setdefault('ordinaryDaemonQueries',[]).append(query);save();print('fixture-daemon-id');sys.exit(0)
   if query in (['info','--format','{{json .}}'],['version','--format','{{json .Server}}']):
    s.setdefault('ordinaryDaemonQueries',[]).append(query);save()
-   kernel='6.12.113+deb13-cloud-amd64' if s['scenario'].startswith('owned13-') else '7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic'
+   kernel='6.12.113+deb13-cloud-amd64' if s['scenario'].startswith(('owned13-','ordinary-admitted13')) else '7.0.0-38-generic' if s['scenario'].startswith('ordinary-admitted26') else '6.8.0-147-generic'
    if query[0]=='info':
     info={'ServerVersion':'29.9.1','KernelVersion':kernel,'OSType':'linux','Architecture':'x86_64','Driver':'overlayfs','CgroupDriver':'systemd','CgroupVersion':'2','MemoryLimit':True,'SwapLimit':True,'CpuCfsPeriod':True,'CpuCfsQuota':True,'PidsLimit':True,'SecurityOptions':['name=apparmor,profile=default','name=seccomp,profile=builtin','name=cgroupns'],'Name':'private-fixture-daemon-name','Labels':['private-fixture-daemon-label']}
     if s['scenario']=='ordinary-admitted-security-duplicate':info['SecurityOptions']=['name=apparmor','name=apparmor']
@@ -601,14 +616,14 @@ os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/u
 sys.argv = [str(source), nonce, *binding_arguments]
 with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance + (61 if scenario == "command-orphan-timeout" and (root / "orphan-heartbeat").exists() else 0)), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
-        if scenario in ('owned13-fresh-resume','owned13-canary-cleanup') or scenario in debian_resume or scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+        if scenario in ('owned13-fresh-resume','owned13-canary-cleanup','ordinary-admitted13') or scenario in debian_resume or scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()
             with contextlib.redirect_stdout(first_output):
                 try:
                     runpy.run_path(str(source), run_name="__main__")
                 except SystemExit as first_exit:
                     if first_exit.code != 3:
-                        raise RuntimeError("Fixture initial workflow did not reach its genuine handoff")
+                        raise RuntimeError("Fixture initial workflow did not reach its genuine handoff: " + json.dumps(json.loads(first_output.getvalue()).get('error'))[:2048])
             initial = json.loads(first_output.getvalue())
             (root / "first-session-report.json").write_text(json.dumps(initial))
             state = json.loads(state_path.read_text())

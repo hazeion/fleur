@@ -867,7 +867,7 @@ def verify_guest_candidate_target(owned_binding):
     try:
         (ROOT/'package/internal-native-candidate.json').lstat()
     except FileNotFoundError:
-        if fields.get('ID') != 'ubuntu' or release not in ORDINARY_QUALIFICATIONS:
+        if release not in ORDINARY_QUALIFICATIONS or fields.get('ID') != ORDINARY_QUALIFICATIONS[release]['distribution']:
             raise RuntimeError('Ordinary guest candidate target is not admitted')
     else:
         catalog = checked_internal_candidate()
@@ -877,12 +877,17 @@ def verify_guest_candidate_target(owned_binding):
 
 
 ORDINARY_QUALIFICATIONS = {
-    '24.04': {'suite':'noble', 'reportSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
+    '24.04': {'distribution':'ubuntu', 'suite':'noble', 'reportSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
               'sourceCommit':'a9606d74fd55b252c0aab8432ff72ec513457a5e',
               'artifactCatalogSha256':'540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'},
-    '26.04': {'suite':'resolute', 'reportSha256':'5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07',
+    '26.04': {'distribution':'ubuntu', 'suite':'resolute', 'reportSha256':'5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07',
               'sourceCommit':'ad3869c6d34e01bebd16a248adeb8c3e53d53d8a',
               'artifactCatalogSha256':'e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a'},
+    '13': {'distribution':'debian', 'suite':'trixie',
+           'reportSha256':'6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e',
+           'sourceCommit':'300cdaf30e1ea4786b096786e458f698984fe038',
+           'artifactCatalogSha256':'032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d',
+           'profileSha256':'588ab6035cc9ff24d0591cd10a0fe3c066f092f7bdf297610907ce4835289983'},
 }
 
 
@@ -892,8 +897,8 @@ def ordinary_target_release():
         # Legacy nonce-only fixtures remain limited to Ubuntu24 by the OS gate.
         return '24.04'
     os_release = custody.get('osRelease') if type(custody) is dict else None
-    if (type(os_release) is not dict or os_release.get('id') != 'ubuntu'
-            or os_release.get('versionId') not in ORDINARY_QUALIFICATIONS):
+    if (type(os_release) is not dict or os_release.get('versionId') not in ORDINARY_QUALIFICATIONS
+            or os_release.get('id') != ORDINARY_QUALIFICATIONS[os_release['versionId']]['distribution']):
         raise RuntimeError('Original ordinary target OS is unavailable')
     return os_release['versionId']
 
@@ -909,6 +914,13 @@ def checked_ordinary_profile(entry):
     evidence = {key:qualification[key] for key in ('reportSha256', 'sourceCommit', 'artifactCatalogSha256')}
     if entry['evidence'] != evidence:
         raise RuntimeError('Compiled ordinary profile evidence differs')
+    if qualification['distribution'] == 'debian':
+        # Pin the entire canonical eight-package profile, including every nested
+        # dependency authority, artifact and side effect, to the measured catalog.
+        digest = hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if digest != qualification['profileSha256']:
+            raise RuntimeError('Compiled ordinary Debian dependency closure differs')
+        return release, {**profile['packages'], **{name: artifact['version'] for name, artifact in profile['distroDependencies']['artifacts'].items()}}
     suite = qualification['suite']
     expected = {'docker-ce': f'5:29.9.1-1~ubuntu.{release}~{suite}', 'docker-ce-cli': f'5:29.9.1-1~ubuntu.{release}~{suite}',
                 'containerd.io': f'2.4.2-2~ubuntu.{release}~{suite}', 'docker-buildx-plugin': f'0.38.0-1~ubuntu.{release}~{suite}',
@@ -956,7 +968,14 @@ def installation_packages():
             raise RuntimeError('Compiled ordinary profile metadata changed')
     finally:
         os.close(fd)
-    value = json.loads(body)
+    def unique(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise RuntimeError('Compiled ordinary profile contains duplicate fields')
+            result[name] = value
+        return result
+    value = json.loads(body, object_pairs_hook=unique)
     if (type(value) is not dict or set(value) != {'formatVersion', 'entries'} or type(value['formatVersion']) is not int
             or value['formatVersion'] != 1 or type(value['entries']) is not list or not 1 <= len(value['entries']) <= len(ORDINARY_QUALIFICATIONS)):
         raise RuntimeError('Exact compiled ordinary profile record required')
@@ -1074,7 +1093,11 @@ custody();print(json.dumps({'binding':binding,'phase':phase,'backend':'nf_tables
 
 
 def debian_dependency_preservation(phase, owned_binding):
-    if REPORT.get('executionArtifact', {}).get('catalogId') != 'debian-13-amd64-docker-2026-10-19':
+    artifact = REPORT.get('executionArtifact', {})
+    internal = artifact.get('catalogId') == 'debian-13-amd64-docker-2026-10-19'
+    ordinary = (artifact.get('kind') == 'ordinary' and artifact.get('packageName') == 'fleur'
+                and artifact.get('artifactCatalogSha256') == ORDINARY_QUALIFICATIONS['13']['artifactCatalogSha256'])
+    if not internal and not ordinary:
         return
     if type(owned_binding) is not OwnedGuestBinding:
         raise RuntimeError('Debian dependency canary requires the original owned guest')
@@ -1287,7 +1310,7 @@ def admitted_readiness(observed, command):
     evidence = ORDINARY_QUALIFICATIONS[release]['reportSha256']
     return (all(type(components.get(name)) is dict and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
             and components['smoke'].get('cleanup') is True
-            and components.get('release') == {'state': 'verified', 'profile': f'ubuntu-{release}-x64-docker-29.9.1',
+            and components.get('release') == {'state': 'verified', 'profile': f"{ORDINARY_QUALIFICATIONS[release]['distribution']}-{release}-x64-docker-29.9.1",
                                                'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
 
 

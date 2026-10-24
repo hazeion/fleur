@@ -1,6 +1,6 @@
 import type { VerifiedReadinessProfile } from "./readiness.ts";
 
-/** Exact measured Ubuntu readiness tuples; installation qualification is separate. */
+/** Exact measured native readiness tuples; installation qualification is separate. */
 export const verifiedReadinessProfiles = [{
   id: "ubuntu-24.04-x64-docker-29.9.1",
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64" },
@@ -73,5 +73,24 @@ export const verifiedReadinessProfiles = [{
   evidence: {
     readinessSha256: "2c29e92c1eba819c44f33361b8ac5ba319ae9343dc9cba4e64973b304774c7fd",
     isolationSha256: "a3f687541d7438b370b8c2dcbf74d2cf8c2b7a248f385257b68d31c72eba9402",
+  },
+}, {
+  id: "debian-13-x64-docker-29.9.1",
+  host: { system: "linux", distribution: "debian", release: "13", architecture: "x64" },
+  bun: "1.4.3",
+  cli: { version: "29.9.1", commit: "dfc520d" },
+  // This Engine build reports its default AppArmor template as profile=default.
+  engine: {
+    version: "29.9.1", commit: "b26fb77", kernel: "6.12.113+deb13-cloud-amd64",
+    platform: "Docker Engine - Community", cgroupDriver: "systemd", cgroupVersion: "2",
+    operatingMode: "rootful", securityOptions: ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"],
+  },
+  containerd: { version: "v2.4.2", commit: "b7a25261e029d68978bbf290df0a62fc819b3c51" },
+  runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" },
+  compose: "5.6.0",
+  image: "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e",
+  evidence: {
+    readinessSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e",
+    isolationSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e",
   },
 }] as const satisfies readonly VerifiedReadinessProfile[];

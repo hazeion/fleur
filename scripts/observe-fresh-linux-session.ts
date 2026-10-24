@@ -55,8 +55,9 @@ function checkRecordedTerminal(guest: Record<string, unknown>, binding: Readonly
       || context.cleanup_confirmed !== false || context.retained !== true || context.ledger_verified !== true) throw new Error("Guest recorded helper origin or owned disposal scope differs");
 }
 const ordinaryQualifications = {
-  "24.04": { profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" },
-  "26.04": { profile: "ubuntu-26.04-x64-docker-29.9.1", evidence: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" },
+  "ubuntu:24.04": { profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" },
+  "ubuntu:26.04": { profile: "ubuntu-26.04-x64-docker-29.9.1", evidence: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" },
+  "debian:13": { profile: "debian-13-x64-docker-29.9.1", evidence: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e" },
 } as const;
 function checkOriginalOs(guest: Record<string, unknown>, binding?: Readonly<OwnedGuestBinding>, original?: Readonly<OwnedGuestOsRelease>): void {
   const custody = guest.ownedGuestCustody as Record<string, unknown> | undefined;
@@ -79,8 +80,9 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>, origin
     const envelope = observed?.result; const components = envelope?.data?.components;
     const artifact = guest.executionArtifact as { kind?: unknown; packageName?: unknown } | undefined;
     if (artifact?.kind === "ordinary") {
-      if (originalOs?.id === "debian") throw new Error("Ordinary qualification is unavailable for this guest distribution.");
-      const { profile, evidence } = ordinaryQualifications[originalOs?.versionId ?? "24.04"];
+      const key = originalOs ? `${originalOs.id}:${originalOs.versionId}` : "ubuntu:24.04";
+      if (!Object.hasOwn(ordinaryQualifications, key)) throw new Error("Ordinary qualification is unavailable for this guest distribution.");
+      const { profile, evidence } = ordinaryQualifications[key as keyof typeof ordinaryQualifications];
       if (artifact.packageName !== "fleur" || observed?.exitCode !== 0 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== true || envelope.error !== null || envelope.truncated !== false
           || !isDeepStrictEqual(Object.keys(envelope).sort(), ["formatVersion", "command", "ok", "data", "error", "truncated"].sort())
           || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true

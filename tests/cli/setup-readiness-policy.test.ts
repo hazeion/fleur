@@ -231,6 +231,91 @@ function ubuntuFixture(release: "24.04" | "26.04" = "24.04") {
   return { ...fixture, host };
 }
 
+function debianFixture() {
+  const fixture = ubuntuFixture();
+  fixture.info.KernelVersion = "6.12.113+deb13-cloud-amd64";
+  fixture.server.KernelVersion = "6.12.113+deb13-cloud-amd64";
+  const host: SetupHost = { ...fixture.host, host: async () => ({
+    system: "linux", distribution: "debian", release: "13", architecture: "x64", translated: false,
+    bootId: "11111111-1111-4111-8111-111111111111", machineId: "c".repeat(64),
+  }) };
+  return { ...fixture, host };
+}
+
+test("ordinary Debian Doctor uses the exact measured compiled tuple after owned smoke cleanup", async () => {
+  const fixture = debianFixture();
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode).toBe(0);
+  const evidence = "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e";
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "debian-13-x64-docker-29.9.1", evidence: { readinessSha256: evidence, isolationSha256: evidence } } } } });
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("ordinary ready Debian setup reuses the measured tuple without new authority or package work", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-debian-ready-");
+  try {
+    const fixture = debianFixture();
+    const host: SetupHost = { ...fixture.host, stateDirectory: directory, interactive: true,
+      confirmHuman: async () => { throw new Error("Ready installation requires no new grant"); } };
+    const outcome = await runCli(["setup", "--json"], { cwd: directory, handlers: setupCommands(host) });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "debian-13-x64-docker-29.9.1" } } } });
+    expect(fixture.commands.some((args) => ["sudo", "apt-get", "dpkg", "systemctl"].includes(args[0]!) || args.includes("pull"))).toBe(false);
+    expect(fixture.containers.size).toBe(0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test.each(["x64", "arm64"])("ordinary Debian %s setup keeps exact dependency scope and separate human authority", async (architecture) => {
+  const { mkdtemp, rm, readdir } = await import("node:fs/promises");
+  const directory = await mkdtemp("/tmp/fleur-debian-authority-");
+  const commands: string[][] = [];
+  try {
+    const host: SetupHost = {
+      stateDirectory: directory,
+      host: async () => ({ system: "linux", distribution: "debian", release: "13", architecture, translated: false, bootId: "11111111-1111-4111-8111-111111111111", machineId: "c".repeat(64) }),
+      run: async (args) => {
+        commands.push([...args]);
+        if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
+        if (args[0] === "dpkg-query") return { status: "completed", exitCode: 1, stdout: "nftables\t\tnot-installed\tok\n", stderr: "" };
+        if (args[0] === "stat" && args.at(-1) === "/etc/nftables.conf") return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
+        if (args[0] === "find") return { status: "completed", exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "systemctl") return { status: "completed", exitCode: 0, stdout: "LoadState=not-found\nActiveState=inactive\nSubState=dead\nUnitFileState=\nFragmentPath=\nDropInPaths=\nTransient=no\n", stderr: "" };
+        throw new Error("Package work requires separate human authority");
+      },
+    };
+    const outcome = await runCli(["setup", "--json"], { cwd: directory, handlers: setupCommands(host) });
+    expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(3);
+    if (architecture === "x64") {
+      expect(outcome.result).toMatchObject({ error: { code: "AUTHORITY_REQUIRED" }, data: { plan: { verified: true, requiredAuthorities: ["install", "configuration", "docker-access", "service-start", "service-enable"], target: expect.stringContaining("Debian dependencies libjansson4=2.14-2+b3, libnftables1=1.1.3-1, nftables=1.1.3-1; nftables configuration and helper state, systemd daemon-reload, ldconfig") } } });
+      expect(commands.map((args) => args[0])).toEqual(["docker", "dpkg-query", "stat", "find", "systemctl"]);
+      expect(await readdir(directory)).toEqual(["setup.lock"]);
+    } else {
+      expect(outcome.result).toMatchObject({ error: { code: "HUMAN_ACTION_REQUIRED" }, data: { plan: { verified: false } } });
+      expect(commands).toEqual([["docker", "--version"]]);
+      expect(await readdir(directory)).toEqual([]);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test.each(["kernel", "architecture", "release", "translated", "engine-build", "containerd-build", "cgroup-driver", "cgroup-version", "rootless", "security-profile"])("Debian admission refuses unmeasured %s drift", async (kind) => {
+  const fixture = debianFixture();
+  const identity = { ...await fixture.host.host() };
+  if (kind === "kernel") { fixture.info.KernelVersion = "6.12.114+deb13-cloud-amd64"; fixture.server.KernelVersion = fixture.info.KernelVersion; }
+  if (kind === "architecture") identity.architecture = "arm64";
+  if (kind === "release") identity.release = "14";
+  if (kind === "translated") identity.translated = true;
+  if (kind === "engine-build") { fixture.server.GitCommit = "f00beef"; fixture.server.Components[0]!.Details.GitCommit = "f00beef"; }
+  if (kind === "containerd-build") fixture.server.Components[1]!.Details.GitCommit = "f00beef";
+  if (kind === "cgroup-driver") fixture.info.CgroupDriver = "cgroupfs";
+  if (kind === "cgroup-version") fixture.info.CgroupVersion = "1";
+  if (kind === "rootless") fixture.info.SecurityOptions.push("name=rootless");
+  if (kind === "security-profile") fixture.info.SecurityOptions[0] = "name=apparmor";
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...fixture.host, host: async () => identity }) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.containers.size).toBe(0);
+});
+
 test("ordinary doctor recognizes only the source-mapped Ubuntu qualification without a profile override", async () => {
   const fixture = ubuntuFixture();
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });

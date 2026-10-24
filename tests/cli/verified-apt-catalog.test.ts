@@ -21,9 +21,16 @@ test("APT catalog validates the complete Debian dependency schema from the pinne
   expect(Object.keys(profiles[0]!.distroDependencies!.artifacts)).toEqual(["libjansson4", "libnftables1", "nftables"]);
 });
 
-test("preparing the loader does not admit a Debian or ARM production profile", () => {
+test("production catalog admits only the three measured x64 installation profiles", () => {
   expect<unknown>(verifiedInstallProfiles).toEqual(packaged.entries.map((entry) => entry.profile));
-  expect(verifiedInstallProfiles.map((profile) => [profile.distribution, profile.release, profile.architecture])).toEqual([["ubuntu", "24.04", "x64"], ["ubuntu", "26.04", "x64"]]);
+  expect(verifiedInstallProfiles.map((profile) => [profile.distribution, profile.release, profile.architecture])).toEqual([["ubuntu", "24.04", "x64"], ["ubuntu", "26.04", "x64"], ["debian", "13", "x64"]]);
+});
+
+test("production Debian profile retains the complete authenticated candidate closure and measured evidence", async () => {
+  const expected = await candidate();
+  const entry = packaged.entries.find((item) => item.profile.distribution === "debian")!;
+  expect(entry.profile).toEqual(expected.entries[0]!.profile);
+  expect(entry.evidence).toEqual({ reportSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e", sourceCommit: "300cdaf30e1ea4786b096786e458f698984fe038", artifactCatalogSha256: digest });
 });
 
 test("malformed foreign or inconsistent dependency authority closes the catalog", async () => {

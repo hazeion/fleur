@@ -9,7 +9,7 @@ async function command(args: string[], cwd: string, env: Record<string, string>,
   return { stdout, stderr, exit };
 }
 
-test("the fixed Debian13 builder emits only authenticated Trixie internal policy without ordinary admission", async () => {
+test("the fixed Debian13 builder emits only authenticated Trixie internal policy with deliberately unverified internal readiness", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-candidate-debian13-"));
   try {
     const bin = join(root, "bin"); await mkdir(bin); await symlink(process.execPath, join(bin, "bun"));

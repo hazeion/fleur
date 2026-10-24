@@ -417,7 +417,6 @@ try {
   if (process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") fail("OWNED_HOST_REQUIRED", "Explicit owned disposable host opt-in is required.");
   if ((args.length !== 7 && args.length !== 9) || (args.length === 9 && args[7] !== "--compiler-debs" && args[7] !== "--recorded-helper-artifacts") || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate <source-owned|ordinary-source-owned> --bun-archive <exact-Bun-zip> [--compiler-debs <exact-payload-directory> | --recorded-helper-artifacts <fixed-pair-directory>] [--fixture <ubuntu24-amd64|ubuntu26-amd64|debian13-amd64>].");
   if (selectedFixture.id !== "ubuntu24-amd64" && args[7] !== "--recorded-helper-artifacts") fail("ARGUMENT_INVALID", "This target requires the recorded helper pair; the Ubuntu24 compiler closure is not admitted there.");
-  if (selectedFixture.id === "debian13-amd64" && args[4] !== "source-owned") fail("ARGUMENT_INVALID", "Debian13 verification admits only its internal source-owned catalog; ordinary readiness is unqualified.");
   accelerator();
   // A candidate archive supplied by a caller is never executed. Build from this source.
   if (args[4] !== "source-owned" && args[4] !== "ordinary-source-owned") {

@@ -128,6 +128,104 @@
           }
         }
       }
+    },
+    {
+      "evidence": {
+        "reportSha256": "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e",
+        "sourceCommit": "300cdaf30e1ea4786b096786e458f698984fe038",
+        "artifactCatalogSha256": "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d"
+      },
+      "profile": {
+        "method": "docker-official-apt",
+        "verified": true,
+        "distribution": "debian",
+        "release": "13",
+        "architecture": "x64",
+        "repositoryFingerprint": "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+        "packages": {
+          "docker-ce": "5:29.9.1-1~debian.13~trixie",
+          "docker-ce-cli": "5:29.9.1-1~debian.13~trixie",
+          "containerd.io": "2.4.2-2~debian.13~trixie",
+          "docker-buildx-plugin": "0.38.0-1~debian.13~trixie",
+          "docker-compose-plugin": "5.6.0-1~debian.13~trixie"
+        },
+        "distroDependencies": {
+          "repositoryFingerprint": "04B54C3CDCA79751B16BC6B5225629DF75B188BD",
+          "signingFingerprint": "B8E5F13176D2A7A75220028078DBA3BC47EF2265",
+          "inReleaseSha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+          "packagesIndexSha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+          "maintainerScriptsSha256": "c8d9621167b75774c7fa17e07ad845afadaa405b3a38388195383f7314728f17",
+          "effects": "nftables-configuration-helper-state-systemd-reload-and-ldconfig",
+          "artifacts": {
+            "libjansson4": {
+              "name": "libjansson4",
+              "version": "2.14-2+b3",
+              "architecture": "amd64",
+              "url": "https://deb.debian.org/debian/pool/main/j/jansson/libjansson4_2.14-2+b3_amd64.deb",
+              "sha256": "60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e",
+              "size": 39792
+            },
+            "libnftables1": {
+              "name": "libnftables1",
+              "version": "1.1.3-1",
+              "architecture": "amd64",
+              "url": "https://deb.debian.org/debian/pool/main/n/nftables/libnftables1_1.1.3-1_amd64.deb",
+              "sha256": "c7cbee3dce8452ae5c3c4269f6f52e96b896d36a46ea3c490e0e11e8ff359896",
+              "size": 332448
+            },
+            "nftables": {
+              "name": "nftables",
+              "version": "1.1.3-1",
+              "architecture": "amd64",
+              "url": "https://deb.debian.org/debian/pool/main/n/nftables/nftables_1.1.3-1_amd64.deb",
+              "sha256": "2ddfa61baaf3a76e2c499db9e521ba6affb226f85af0b6fef739f346ac5f0c39",
+              "size": 75864
+            }
+          }
+        },
+        "artifacts": {
+          "docker-ce": {
+            "architecture": "amd64",
+            "name": "docker-ce",
+            "version": "5:29.9.1-1~debian.13~trixie",
+            "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-ce_29.9.1-1~debian.13~trixie_amd64.deb",
+            "sha256": "b33133205350e2765df0cc382f5a3ee44c2cfd4cdc3dc6ba32eca40839ac3574",
+            "size": 24553192
+          },
+          "docker-ce-cli": {
+            "architecture": "amd64",
+            "name": "docker-ce-cli",
+            "version": "5:29.9.1-1~debian.13~trixie",
+            "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-ce-cli_29.9.1-1~debian.13~trixie_amd64.deb",
+            "sha256": "c89d977d8073de91e7afcd099c82e16cef5506e4d446d006b240e77f78ba4b7d",
+            "size": 17593628
+          },
+          "containerd.io": {
+            "architecture": "amd64",
+            "name": "containerd.io",
+            "version": "2.4.2-2~debian.13~trixie",
+            "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/containerd.io_2.4.2-2~debian.13~trixie_amd64.deb",
+            "sha256": "a3e696cb98baafbb63895dc18b53f143088a2ead95c57820ac90dc5e1d61b05d",
+            "size": 23262120
+          },
+          "docker-buildx-plugin": {
+            "architecture": "amd64",
+            "name": "docker-buildx-plugin",
+            "version": "0.38.0-1~debian.13~trixie",
+            "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-buildx-plugin_0.38.0-1~debian.13~trixie_amd64.deb",
+            "sha256": "16397aa4052faf9914cfde37ec335c0b5898c6ad2a363b7e12dd897cb6fc5e9b",
+            "size": 17784020
+          },
+          "docker-compose-plugin": {
+            "architecture": "amd64",
+            "name": "docker-compose-plugin",
+            "version": "5.6.0-1~debian.13~trixie",
+            "url": "https://download.docker.com/linux/debian/dists/trixie/pool/stable/amd64/docker-compose-plugin_5.6.0-1~debian.13~trixie_amd64.deb",
+            "sha256": "500327ad3ca6c52f6d142225c7e6830c46a27ff0348a2b2291f0a143d99872ac",
+            "size": 8080280
+          }
+        }
+      }
     }
   ]
 }

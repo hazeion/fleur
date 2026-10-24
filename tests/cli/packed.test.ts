@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { machine, tmpdir } from "node:os";
+import { lstat, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { productionHost } from "../../src/setup/host.ts";
 
 let scratch: string;
 let executable: string;
@@ -100,21 +101,49 @@ test("packed prerequisite commands use the real executable and isolated user sta
   const diagnosed = await cli("--json", "doctor");
   expect(diagnosed.exit).toBe(4);
   expect(JSON.parse(diagnosed.stdout)).toMatchObject({ command: "doctor", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { components: { cli: { state: "missing" } } } });
+  // Collect facts before invoking setup. Never derive expectations from its response.
+  const host = await productionHost().host();
+  const apt = await Bun.file(join(scratch, "package/src/setup/verified-apt-profiles.json")).json();
+  const desktop = await Bun.file(join(scratch, "package/src/setup/verified-desktop-profiles.json")).json();
+  for (const [name, packed] of [["verified-apt-profiles.json", apt], ["verified-desktop-profiles.json", desktop]] as const) {
+    expect(packed).toEqual(await Bun.file(join(import.meta.dir, "../../src/setup", name)).json());
+  }
+  const aptProfile = apt.entries.find(({ profile }: { profile: { distribution: string; release: string; architecture: string } }) => host.system === "linux" && profile.distribution === host.distribution && profile.release === host.release && profile.architecture === host.architecture);
+  const desktopProfile = desktop.entries.find(({ profile }: { profile: { release: string; architecture: string } }) => host.system === "darwin" && profile.release === host.release && profile.architecture === host.architecture);
+  const existingApp = host.system === "darwin" ? await lstat("/Applications/Docker.app").catch((error: unknown) => { if ((error as { code?: string }).code === "ENOENT") return null; throw error; }) : null;
   const setup = await cli("--json", "setup");
-  // This approved tuple now inspects package state before asking for grants.
-  // With dpkg-query deliberately absent, it must refuse unknown packages.
-  // Derive the expected contract from host facts, never from setup's response.
-  const release = process.platform === "linux" ? await Bun.file("/etc/os-release").text() : "";
-  const machineId = process.platform === "linux" && await Bun.file("/etc/machine-id").exists() ? (await Bun.file("/etc/machine-id").text()).trim() : "";
-  const qualifiedAptHost = process.platform === "linux" && process.arch === "x64" && machine() === "x86_64"
-    && /^ID=["']?ubuntu["']?$/m.test(release) && /^VERSION_ID=["']?24\.04["']?$/m.test(release) && /^[a-f0-9]{32}$/i.test(machineId);
-  if (qualifiedAptHost) {
+  const result = JSON.parse(setup.stdout);
+  const supported = ["x64", "arm64"].includes(host.architecture) && (host.system === "darwin" && /^\d+\./.test(host.release) && Number(host.release.split(".")[0]) >= 13
+    || host.system === "linux" && (host.distribution === "ubuntu" && ["24.04", "26.04"].includes(host.release) || host.distribution === "debian" && host.release === "13" || host.distribution === "arch" && host.architecture === "x64"));
+  if (host.translated !== false || !supported) {
     expect(setup.exit).toBe(4);
-    expect(JSON.parse(setup.stdout)).toMatchObject({ command: "setup", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { packageState: { state: "unavailable", present: [], missing: [] } } });
+    expect(result).toMatchObject({ command: "setup", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Assisted setup requires a supported native platform." } });
+  } else if (aptProfile && host.machineId && /^[a-f0-9]{64}$/.test(host.machineId) && host.bootId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(host.bootId)) {
+    // With dpkg-query deliberately absent, every admitted APT tuple must refuse unknown package state.
+    expect(setup.exit).toBe(4);
+    expect(result).toMatchObject({ command: "setup", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { packageState: { state: "unavailable", present: [], missing: [] } } });
+  } else if (desktopProfile) {
+    if (!host.machineId || !/^[a-f0-9]{64}$/.test(host.machineId)) {
+      expect(setup.exit).toBe(4);
+      expect(result).toMatchObject({ error: { code: "PREREQUISITE_UNAVAILABLE", message: "Desktop requires an authenticated exact source-owned artifact profile." } });
+    } else if (existingApp) {
+      expect(setup.exit).toBe(4);
+      expect(result).toMatchObject({ command: "setup", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "An existing Docker application was preserved. Setup never replaces or repairs it automatically." } });
+      const after = await lstat("/Applications/Docker.app");
+      for (const key of ["dev", "ino", "mode", "uid", "gid", "size", "mtimeMs", "ctimeMs"] as const) expect(after[key]).toBe(existingApp[key]);
+    } else {
+      expect(setup.exit).toBe(3);
+      expect(result).toMatchObject({ command: "setup", ok: false, error: { code: "AUTHORITY_REQUIRED" }, data: { plan: { method: "docker-desktop-official-dmg", artifactAuthentication: "authenticated", nativeEvidence: "verified", requiredAuthorities: ["image-acquire", "install"] }, resumable: true } });
+    }
   } else {
     expect(setup.exit).toBe(3);
-    expect(JSON.parse(setup.stdout)).toMatchObject({ command: "setup", ok: false, error: { code: "HUMAN_ACTION_REQUIRED" }, data: { grantsCreated: false, resumable: true } });
+    expect(result).toMatchObject({ command: "setup", ok: false, error: { code: "HUMAN_ACTION_REQUIRED" } });
+    if (aptProfile) expect(result.data).toMatchObject({ grantsCreated: false, resumable: true });
+    else expect(result.data).toMatchObject({ plan: { verified: false }, grantsCreated: false, resumable: true });
   }
+  const finalGrants = await cli("--json", "setup", "grants", "list");
+  expect(finalGrants.exit).toBe(0);
+  expect(JSON.parse(finalGrants.stdout)).toMatchObject({ data: { grants: [] } });
   await writeFile(join(scratch, "fleur.json"), "broken project metadata");
   try {
     const revoked = await cli("--json", "setup", "grants", "revoke", "00000000-0000-0000-0000-000000000000");
@@ -130,6 +159,6 @@ test("packed release carries its offline creation and prerequisite documentation
   expect(await Bun.file(join(scratch, "package/docs/project-creation.md")).exists()).toBe(true);
   expect(await Bun.file(join(scratch, "package/docs/setup.md")).exists()).toBe(true);
   const setupDocumentation = await Bun.file(join(scratch, "package/docs/setup.md")).text();
-  expect(setupDocumentation).toContain("The source-owned catalog includes exact Ubuntu 24.04 and 26.04 x64 prerequisite tuples.");
+  expect(setupDocumentation).toContain("The source-owned catalog includes exact Ubuntu 24.04, Ubuntu 26.04 and Debian 13 x64 prerequisite tuples.");
   expect(setupDocumentation).toContain("Platforms without an admitted installer row require manual setup.");
 });

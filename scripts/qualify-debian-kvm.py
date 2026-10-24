@@ -78,6 +78,23 @@ def admit_runner_image(manifest, actual):
     return dict(next(record for record in records if record['version'] == actual))
 
 
+def admitted_ordinary_round(observed, command):
+    if not isinstance(observed, dict) or type(observed.get('exitCode')) is not int or observed['exitCode'] != 0:
+        return False
+    envelope = observed.get('result')
+    if (not isinstance(envelope, dict) or set(envelope) != {'formatVersion', 'command', 'ok', 'data', 'error', 'truncated'}
+            or type(envelope['formatVersion']) is not int or envelope['formatVersion'] != 1 or envelope['command'] != command
+            or envelope['ok'] is not True or envelope['error'] is not None or envelope['truncated'] is not False
+            or not isinstance(envelope['data'], dict) or not isinstance(envelope['data'].get('components'), dict)):
+        return False
+    components = envelope['data']['components']
+    evidence = '6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e'
+    return (all(isinstance(components.get(name), dict) and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
+            and components['smoke'].get('cleanup') is True
+            and components.get('release') == {'state': 'verified', 'profile': 'debian-13-x64-docker-29.9.1',
+                'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
+
+
 def accepted_guest(report, source):
     if not isinstance(report, dict):
         return False
@@ -91,14 +108,21 @@ def accepted_guest(report, source):
             and report.get('fixture', {}).get('catalogSha256') == catalog
             and candidate.get('catalogSha256') == catalog
             and candidate.get('internalArtifact') is True
-            and report.get('executionArtifact', {}).get('kind') == 'internal-candidate'
-            and report.get('executionArtifact', {}).get('sha256') == candidate.get('candidate', {}).get('sha256')
-            and re.fullmatch('[a-f0-9]{64}', candidate.get('candidate', {}).get('sha256', '')) is not None
+            and report.get('executionArtifact', {}).get('kind') == 'ordinary'
+            and report.get('executionArtifact', {}).get('packageName') == 'fleur'
+            and report.get('executionArtifact', {}).get('sha256') == candidate.get('ordinary', {}).get('sha256')
+            and re.fullmatch('[a-f0-9]{64}', candidate.get('ordinary', {}).get('sha256', '')) is not None
             and report.get('restrictionSource', {}).get('commit') == source
             and report.get('accelerator') == 'kvm' and report.get('boot', {}).get('accelerator') == 'kvm'
             and report.get('capabilities', {}).get('architecture') == 'x64'
             and report.get('ownedGuestCustody', {}).get('fixtureCustodyValidated') is True
             and guest.get('ok') is True and len(guest.get('runs', [])) == 2
+            and all(admitted_ordinary_round(observed, 'doctor') for observed in guest['runs'])
+            and len(guest.get('readySetupReprobes', [])) == 2
+            and all(admitted_ordinary_round(observed, 'setup') and observed.get('snapshotPreserved') is True and observed.get('grantsPreserved') is True for observed in guest['readySetupReprobes'])
+            and guest.get('debianDependencyPreservation', {}).get('backend') == 'nf_tables'
+            and guest.get('debianDependencyPreservation', {}).get('cleanup') is True
+            and set(guest.get('debianDependencyPreservation', {}).get('observations', {})) == {'before', 'afterInstall', 'freshLogin', 'afterRuntime'}
             and guest.get('installationEvidence') == 'verified-full-system-guest'
             and guest.get('sentinelCleanup') is True
             and guest.get('restrictionProbe', {}).get('exitCode') == 0
@@ -580,7 +604,7 @@ def main():
             size = path.stat().st_size
             if size <= 0 or size > limit or name == 'debian.qcow2' and size != limit or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                 raise ValueError('Fixed verification download identity differs')
-        service = Service(root, os.getuid(), gid, [str(bun), str(REPO / 'scripts/verify-fresh-linux.ts'), '--run', '--image', str(root / 'debian.qcow2'), '--candidate', 'source-owned', '--bun-archive', str(root / 'bun.zip'), '--recorded-helper-artifacts', str(helper_dir), '--fixture', 'debian13-amd64'], env)
+        service = Service(root, os.getuid(), gid, [str(bun), str(REPO / 'scripts/verify-fresh-linux.ts'), '--run', '--image', str(root / 'debian.qcow2'), '--candidate', 'ordinary-source-owned', '--bun-archive', str(root / 'bun.zip'), '--recorded-helper-artifacts', str(helper_dir), '--fixture', 'debian13-amd64'], env)
         services.append(service)
         service.launch()
         report['service'] = service.wait()

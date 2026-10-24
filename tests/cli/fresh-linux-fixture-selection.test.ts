@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 async function observe(args: string[]) {
   const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/verify-fresh-linux.ts"), ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10000, env: { PATH: "", FLEUR_OWNED_DISPOSABLE_HOST: "yes" } });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -39,10 +41,16 @@ test("Debian13 verification observation binds its exact image and internal catal
   expect(result.report).toMatchObject({ fixture: { id: "debian13-amd64", catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d", os: { id: "debian", versionId: "13" }, virtualSize: 3221225472, image: { sha256: "87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02", size: 342818816 } }, executed: false, installationEvidence: "pending", runtimeSupport: "unverified" });
 });
 
-test("Debian13 refuses ordinary qualification before reading artifacts or launching tools", async () => {
-  const result = await observe(["--run", "--image", "/missing-image", "--candidate", "ordinary-source-owned", "--bun-archive", "/missing-bun", "--recorded-helper-artifacts", "/missing-pair", "--fixture", "debian13-amd64"]);
-  expect(result.report.error).toMatchObject({ code: "ARGUMENT_INVALID", message: expect.stringContaining("internal source-owned catalog") });
-  expect(result.report.executed).toBe(false);
+test("Debian13 ordinary qualification authenticates its fixed image before tools or authority", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-ordinary13-image-"));
+  try {
+    const image = join(root, "image.qcow2"); await writeFile(image, "unauthenticated bytes");
+    const result = await observe(["--run", "--image", image, "--candidate", "ordinary-source-owned", "--bun-archive", "/missing-bun", "--recorded-helper-artifacts", "/missing-pair", "--fixture", "debian13-amd64"]);
+    expect(result.report.error).toMatchObject({ code: "ARTIFACT_MISMATCH", message: expect.stringContaining("Artifact size differs") });
+    expect(result.report.executed).toBe(false);
+    expect(result.report.boot).toBeUndefined();
+    expect(result.report.candidate).toBeUndefined();
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("Debian13 refuses the Ubuntu compiler closure before reading artifacts", async () => {

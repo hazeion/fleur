@@ -1040,3 +1040,47 @@ This is fresh input-authentication evidence, without a claim of global revocatio
 absence. No image structure check was rerun, no VM or installer executed, and no
 native Arch support was admitted. Launch still requires reviewed source-owned
 custody and structure checks under an available attested toolchain.
+
+## Debian candidate repeats and ordinary catalog admission
+
+Source `300cdaf30e1ea4786b096786e458f698984fe038` passed all three full PR
+workflow summaries, including both native runtime and VFS cleanup platforms.
+Its [first fresh Debian KVM run](https://github.com/hazeion/fleur/actions/runs/40084282519/attempts/1)
+and [x64-only fresh repeat](https://github.com/hazeion/fleur/actions/runs/40084282519/attempts/2)
+both passed independent review. Report SHA256 values:
+
+- First: `6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e`.
+- Repeat: `5900a5954f240b9c3a85b1cfdb8636eba812b497b6a5e4a1e4c6b625e377c543`.
+
+Each fresh VM installed exactly the five Docker packages and three Debian
+libraries/helpers, preserved every original package and the disconnected owned
+firewall canary, retained an inactive, disabled nftables service with no execution,
+completed genuine fresh-login enrollment and two smoke rounds, and passed the
+full original bounded runtime restrictions. VM, credentials, overlay, scratch and
+service-cgroup disposal completed. The stable measured daemon tuple matched
+across both attempts; nonce and daemon identity differed between fresh VMs.
+
+The ordinary catalog now maps only this exact Debian 13 x64 package closure and
+measured readiness tuple to the first report. The complete canonical installation
+profile SHA256 is
+`588ab6035cc9ff24d0591cd10a0fe3c066f092f7bdf297610907ce4835289983`.
+The ordinary guest verifier requires the complete closure, original Debian OS,
+matching source-owned evidence, repeated Doctor/setup success with grants and
+state preserved, and all existing canary, restriction and disposal checks.
+Duplicate metadata fields, altered payloads/dependencies and crossed OS/evidence
+bindings are refused before installation authority. The fixed hosted wrapper now
+selects the actual ordinary packed archive and checks its package/hash identity.
+These changes prepare the next native ordinary run; no ordinary-package or
+Debian interrupted-recovery success is claimed yet. ARM installation, Apple
+Silicon and native Arch qualifications remain separate outstanding requirements.
+
+The full local macOS test run also exposed a stale packed-executable oracle: it
+expected manual setup on every non-Ubuntu host, despite the already admitted
+Intel Desktop method. Actual setup correctly refused to replace the existing
+Docker application. The corrected test gathers host facts before setup, matches
+only exact packed catalogs, and requires the specific platform, unknown-package,
+missing-identity, existing-application or separate-authority result. It never
+chooses an expectation from setup's response or accepts multiple exit codes.
+Existing application entry identity/metadata and empty grants are checked.
+Independent verification passed all eight packed tests with 85 assertions. This
+corrects test logic; no product setup refusal changed.

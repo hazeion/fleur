@@ -773,6 +773,72 @@ def validate_product_receipt(receipt, marker, fence, original_boot, current_boot
         validate_inspection_evidence(receipt['inspection'], marker, fence, current_boot, inspection_plan, authorization, conformance)
 
 
+
+RECOVERY_HOST_OBSERVATION = r"""
+import { constants } from 'node:fs';
+import { lstat,open } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [root,budgetText,bindingText]=process.argv.slice(1);
+const budget=Number(budgetText), binding=JSON.parse(bindingText);
+if (process.argv.length!==4 || !root.startsWith(process.env.HOME+'/lab/') || process.platform!=='linux' || process.arch!=='x64' || process.getuid()<=0 || !Number.isFinite(budget) || budget<=0 || budget>20000) throw Error('Fixed owned read-only observation required');
+const deadline=performance.now()+budget;
+const remaining=()=>Math.max(0,Math.floor(deadline-performance.now()));
+const {productionHost}=await import(pathToFileURL(join(root,'src/setup/host.ts')).href);
+const {selectNativeProfile,nativeInstallProfiles}=await import(pathToFileURL(join(root,'src/setup/native.ts')).href);
+const {aptHealthArgs,healthyDpkgSnapshot}=await import(pathToFileURL(join(root,'src/setup/apt-health.ts')).href);
+const {canonicalAptSnapshot,aptPackageVersions}=await import(pathToFileURL(join(root,'src/setup/apt-dependencies.ts')).href);
+const {aptServicePolicy}=await import(pathToFileURL(join(root,'src/setup/apt-service.ts')).href);
+const host=productionHost(),identity=await host.host();
+const profile=selectNativeProfile(identity,nativeInstallProfiles);
+if (identity.system!=='linux' || identity.distribution!=='debian' || identity.release!=='13' || identity.architecture!=='x64' || identity.translated!==false || identity.bootId!==binding.bootId || process.getuid()!==binding.uid || profile?.method!=='docker-official-apt') throw Error('Current compiled Debian profile required');
+const result={formatVersion:1,scope:'debian-recovery-readonly-host-observation',readOnly:true,binding,packageLockObservation:await host.aptPackageLocks(remaining()),lockFiles:{},kernelLocks:null,health:null,serviceProvenance:null};
+for (const path of ['/var/lib/dpkg/lock','/var/lib/dpkg/lock-frontend','/var/lib/apt/lists/lock','/var/cache/apt/archives/lock']) {
+ if (!remaining()) throw Error('Read-only observation deadline expired');
+ try { const info=await lstat(path,{bigint:true});result.lockFiles[path]={regular:info.isFile()&&!info.isSymbolicLink(),dev:String(info.dev),ino:String(info.ino),uid:String(info.uid),gid:String(info.gid),mode:String(info.mode),nlink:String(info.nlink)}; }
+ catch(error) { result.lockFiles[path]={errorCode:typeof error?.code==='string'?error.code.slice(0,32):'UNKNOWN'}; }
+}
+const kernel=await open('/proc/locks',constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+try {
+ const info=await kernel.stat();if(!info.isFile()||info.uid!==0)throw Error('Unprotected kernel lock observation');
+ const bytes=Buffer.alloc(2097153);let used=0;
+ while(used<bytes.length){if(!remaining())throw Error('Kernel lock observation deadline expired');const part=await kernel.read(bytes,used,bytes.length-used,used);if(!part.bytesRead)break;used+=part.bytesRead;}
+ if(used>2097152)throw Error('Kernel lock observation exceeded bound');
+ result.kernelLocks={bytes:used,sha256:Bun.CryptoHasher.hash('sha256',bytes.subarray(0,used),'hex'),prefix:bytes.subarray(0,Math.min(used,16384)).toString('utf8'),prefixTruncated:used>16384};
+} finally {await kernel.close();}
+const health=await host.run(aptHealthArgs,remaining(),{outputLimitBytes:2097152});
+const snapshot=health.status==='completed'&&health.exitCode===0&&!health.terminationUnconfirmed?canonicalAptSnapshot(profile.distroDependencies,healthyDpkgSnapshot(health.stdout)):null;
+result.health={status:health.status,exitCode:health.exitCode??null,terminationUnconfirmed:health.terminationUnconfirmed===true,stdoutBytes:Buffer.byteLength(health.stdout),stdoutSha256:Bun.CryptoHasher.hash('sha256',health.stdout,'hex'),parsed:snapshot!==null,rows:snapshot?.size??null,expectedPackages:Object.fromEntries(Object.keys(aptPackageVersions(profile)).map(name=>[name,snapshot?.get(name)??null]))};
+try {await aptServicePolicy(profile).provenance(host,remaining);result.serviceProvenance={verified:true};}
+catch(error){result.serviceProvenance={verified:false,error:typeof error?.message==='string'?error.message.slice(0,512):'unavailable'};}
+if(!remaining())throw Error('Read-only observation deadline expired');
+console.log(JSON.stringify(result));
+"""
+
+
+def observe_recovery_host(label, binding):
+    if label not in ('beforeReconciliation', 'afterReconciliationRefusal'):
+        raise RuntimeError('Fixed read-only reconciliation observation phase required')
+    deadline = time.monotonic() + guest.budget_seconds(20)
+    guest.verify_owned_binding(binding, absolute_deadline=deadline)
+    budget_ms = min(20000, int((deadline - time.monotonic()) * 1000))
+    _, text, _ = guest.run([guest.BUN, '--config=/dev/null', '--no-env-file', '--no-macros', '--no-install', '-e',
+        RECOVERY_HOST_OBSERVATION, '--', str(Path(guest.CLI).parent.parent), str(budget_ms), json.dumps(binding._asdict())],
+        timeout=20, absolute_deadline=deadline)
+    if len(text.encode()) > 65536:
+        raise RuntimeError('Read-only recovery host observation exceeded bound')
+    observation = json.loads(text, object_pairs_hook=bridge.unique_object)
+    if (type(observation) is not dict or observation.get('formatVersion') != 1
+        or observation.get('scope') != 'debian-recovery-readonly-host-observation' or observation.get('readOnly') is not True
+        or observation.get('binding') != binding._asdict()):
+        raise RuntimeError('Read-only recovery host observation lost original binding')
+    guest.verify_owned_binding(binding, absolute_deadline=deadline)
+    records = guest.REPORT.setdefault('recoveryHostObservations', {})
+    if label in records:
+        raise RuntimeError('Read-only recovery observation phase already recorded')
+    records[label] = observation
+
+
 def resume_phase():
     if len(sys.argv) < 6 or sys.argv[1] != '--resume-interruption' or not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]):
         raise RuntimeError('Explicit original interruption checkpoint digest required')
@@ -826,12 +892,14 @@ def resume_phase():
     if before != guest.REPORT['retainedStateBeforeReboot']:
         raise RuntimeError('Product evidence or authority changed across reboot')
     guest.REPORT['packagesAfterReboot'] = exact_packages()
+    observe_recovery_host('beforeReconciliation', binding)
     guest.REPORT['doctorBeforeReconciliation'] = guest.command_json('doctor')
     if guest.REPORT['doctorBeforeReconciliation']['exitCode'] != 5 or guest.object_field(guest.REPORT['doctorBeforeReconciliation']['result'], 'error').get('code') != 'RECOVERY_REQUIRED':
         raise RuntimeError('Doctor bypassed unresolved original installation after reboot')
     guest.REPORT['automaticRecovery'] = guest.command_json('setup')
     recovered = guest.REPORT['automaticRecovery']
     if recovered['exitCode'] == 5:
+        observe_recovery_host('afterReconciliationRefusal', binding)
         if state_snapshot(marker) != before:
             raise RuntimeError('Refused automatic recovery changed original product evidence')
         guest.REPORT['phase'] = 'manual-recovery-required'

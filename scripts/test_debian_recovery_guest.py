@@ -205,5 +205,58 @@ class CheckpointSerializationRequirements(unittest.TestCase):
         self.assertIsNone(module.contract.validate_two_boot_preservation(old,new,restored))
 
 
+class ReadonlyHostObservationRequirements(unittest.TestCase):
+    def setUp(self):
+        self.now=1000.0;self.calls=[]
+        self.owner={'nonce':'11111111-1111-4111-8111-111111111111','bootId':'22222222-2222-4222-8222-222222222222','uid':1000,'manifestSha256':'b'*64}
+        self.binding=SimpleNamespace(_asdict=lambda:dict(self.owner))
+        self.result={'formatVersion':1,'scope':'debian-recovery-readonly-host-observation','readOnly':True,
+                     'binding':dict(self.owner),'packageLockObservation':'unknown','serviceProvenance':{'verified':False}}
+        self.response=json.dumps(self.result)
+        def verify(binding,**kwargs):
+            self.assertIs(binding,self.binding);self.calls.append(('verify',kwargs));self.now+=0.5
+        def run(arguments,**kwargs):
+            self.calls.append(('run',arguments,kwargs));self.now+=0.5;return 0,self.response,''
+        guest=SimpleNamespace(BUN='/fixture/bun',CLI='/fixture/lab/package/bin/fleur.ts',REPORT={'ok':False,'automaticRecovery':{'exitCode':5}},
+                              verify_owned_binding=verify,budget_seconds=lambda maximum:min(maximum,7),run=run)
+        bridge_tree=ast.parse((HERE/'debian-recovery-preservation.py').read_text())
+        unique=next(node for node in bridge_tree.body if isinstance(node,ast.FunctionDef) and node.name=='unique_object')
+        hook={};exec(compile(ast.Module(body=[unique],type_ignores=[]),'<unique-observation-json>','exec'),hook)
+        root=next(ast.literal_eval(node.value) for node in PORT.body if isinstance(node,ast.Assign)
+                  and any(isinstance(t,ast.Name) and t.id=='RECOVERY_HOST_OBSERVATION' for t in node.targets))
+        namespace={'guest':guest,'time':SimpleNamespace(monotonic=lambda:self.now),'Path':Path,'json':json,
+                   'bridge':SimpleNamespace(unique_object=hook['unique_object']),'RECOVERY_HOST_OBSERVATION':root}
+        function=next(node for node in PORT.body if isinstance(node,ast.FunctionDef) and node.name=='observe_recovery_host')
+        exec(compile(ast.Module(body=[function],type_ignores=[]),'<actual-observation-wrapper>','exec'),namespace)
+        self.observe=namespace['observe_recovery_host'];self.guest=guest
+
+    def test_both_custody_checks_and_child_share_original_twenty_second_or_global_deadline(self):
+        self.observe('beforeReconciliation',self.binding)
+        self.assertEqual([call[0] for call in self.calls],['verify','run','verify'])
+        self.assertEqual(self.calls[0][1],{'absolute_deadline':1007.0})
+        self.assertEqual(self.calls[1][2],{'timeout':20,'absolute_deadline':1007.0})
+        self.assertEqual(self.calls[2][1],{'absolute_deadline':1007.0})
+        self.assertEqual(self.calls[1][1][-2],'6500')
+        self.assertEqual(self.guest.REPORT['recoveryHostObservations']['beforeReconciliation'],self.result)
+        self.assertIs(self.guest.REPORT['ok'],False)
+        self.assertEqual(self.guest.REPORT['automaticRecovery'],{'exitCode':5})
+
+    def test_bad_phase_makes_no_custody_or_child_call(self):
+        with self.assertRaises(RuntimeError):self.observe('afterRuntime',self.binding)
+        self.assertEqual(self.calls,[])
+
+    def test_unbound_malformed_duplicate_or_oversized_observation_is_never_recorded(self):
+        for field,value in [('scope','other'),('readOnly',False),('binding',{**self.owner,'uid':1001})]:
+            with self.subTest(field=field):
+                self.setUp();self.response=json.dumps({**self.result,field:value})
+                with self.assertRaises(RuntimeError):self.observe('beforeReconciliation',self.binding)
+                self.assertNotIn('recoveryHostObservations',self.guest.REPORT)
+        for response in ('x'*65537,'{"formatVersion":1,"formatVersion":1}'):
+            with self.subTest(length=len(response)):
+                self.setUp();self.response=response
+                with self.assertRaises((RuntimeError,ValueError)):self.observe('beforeReconciliation',self.binding)
+                self.assertNotIn('recoveryHostObservations',self.guest.REPORT)
+
+
 if __name__ == '__main__':
     unittest.main()

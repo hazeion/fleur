@@ -1170,3 +1170,26 @@ configuration-preservation and service-nonexecution checks. Independent tests
 execute the generated root reader and prove both exact mode requests. This is a
 confirmed verifier correction, without claiming it caused the earlier native
 failure whose guest diagnosis was lost. Fresh native recovery remains pending.
+
+The next candidate, `eca5b04e5ec3b718c9572db96faa62167a06806f`, passed
+all three applicable CI workflows, including 1,270 CLI tests and 12,175
+assertions, types, full lint and all four independently reviewed runtime reports.
+Its native recovery attempt in
+[run 40090657614](https://github.com/hazeion/fleur/actions/runs/40090657614)
+failed after reboot. Report SHA256 is
+`eb758b47a03774982853d82742a1e4b53d6e238e2dab28fd8a2f8b16d4259709`.
+The initial interruption, exact eight package effects, original canary cleanup,
+same-VM reboot custody and persistent configuration preservation passed.
+Doctor correctly required recovery. Setup then refused reconciliation before
+offering inspection authority, retaining the pending transaction and grants.
+Full VM, overlay, credential, scratch, service cgroup and unit disposal passed.
+These are partial observations, not accepted recovery qualification.
+
+Read-only diagnostic observations now record the actual packaged host's lock
+verdict, fixed lock-file metadata, bounded kernel lock inventory, package health
+and service provenance around reconciliation. Both custody checks and all
+observations share one 20-second deadline within the original aggregate budget.
+They neither repair host state nor change any acceptance decision. Independent
+protocol tests and direct reconciliation tests exercise unknown/busy lock refusal,
+native-shaped retained packages and separate inspection authority. The native
+cause remains unconfirmed until a new executed report identifies the refusal.

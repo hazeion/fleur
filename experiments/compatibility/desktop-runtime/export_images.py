@@ -19,6 +19,13 @@ def command(args,timeout=30):
     if result.returncode:raise RuntimeError('image export command failed: '+args[0])
     return result.stdout
 
+def inspect_preparation(kind,target,runner=subprocess.run):
+    if kind not in ('container','image'):raise RuntimeError('fixed preparation object type required')
+    found=runner(['docker','inspect','--type',kind,target,'--format','{{json .}}'],capture_output=True,text=True,timeout=5)
+    if found.returncode==0 and not found.stderr:return json.loads(found.stdout)
+    if found.returncode==1 and found.stdout in ('','\n') and found.stderr in ('Error: No such object: '+target+'\n','error: no such object: '+target+'\n','Error: No such '+kind+': '+target+'\n','error: no such '+kind+': '+target+'\n','Error response from daemon: No such '+kind+': '+target+'\n'):return None
+    raise RuntimeError('preparation ownership inspection uncertain')
+
 def main(output):
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted' or platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('disposable native GitHub amd64 preparation only')
     commit=command(['git','rev-parse','HEAD']).decode().strip()
@@ -60,14 +67,9 @@ def main(output):
             pending=result
     finally:
         cleanup=[]
-        def inspect(target):
-            found=subprocess.run(['docker','inspect',target,'--format','{{json .}}'],capture_output=True,text=True,timeout=5)
-            if found.returncode==0 and not found.stderr:return json.loads(found.stdout)
-            if found.returncode==1 and found.stdout in ('','\n') and found.stderr in ('Error: No such object: '+target+'\n','error: no such object: '+target+'\n','Error response from daemon: No such container: '+target+'\n'):return None
-            raise RuntimeError('preparation ownership inspection uncertain')
         for kind,target in (('container',container),('image',tag)):
             try:
-                value=inspect(target)
+                value=inspect_preparation(kind,target)
                 if value is not None:
                     if value.get('Config',{}).get('Labels',{}).get('dev.fleur.desktop-preparation-owner')!=nonce:raise RuntimeError('preparation ownership changed')
                     if kind=='container':
@@ -77,7 +79,7 @@ def main(output):
                         if image is None or value.get('Id')!=image:raise RuntimeError('preparation image changed')
                         args=['docker','image','rm',tag]
                     retired=subprocess.run(args,capture_output=True,timeout=15)
-                    if retired.returncode or inspect(target) is not None:raise RuntimeError('preparation removal uncertain')
+                    if retired.returncode or inspect_preparation(kind,target) is not None:raise RuntimeError('preparation removal uncertain')
                 cleanup.append({'resource':kind,'absent':True})
             except Exception:
                 cleanup.append({'resource':kind,'absent':False})

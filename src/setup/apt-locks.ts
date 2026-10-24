@@ -36,15 +36,16 @@ export async function observeAptLocks(timeoutMs: number, io: AptLockFilesystem =
     const paths = ["/var/lib/dpkg/lock", "/var/lib/dpkg/lock-frontend", "/var/lib/apt/lists/lock", archiveLock];
     const identity = async (path: string): Promise<AptLockFileIdentity | null> => {
       try { return await io.identity(path); }
-      catch (error) { if (path === archiveLock && (error as { code?: string })?.code === "ENOENT") return null; throw error; }
+      catch (error) { if ((path === archiveLock || path === archiveParents.at(-1)) && (error as { code?: string })?.code === "ENOENT") return null; throw error; }
     };
     const snapshots = await Promise.all(paths.map(identity));
     if (snapshots.some((info) => info !== null && (!info.regular || info.uid !== 0n || info.nlink !== 1n || (info.mode & 0o022n) !== 0n))) return "unknown";
     // A minimal host using a private archive cache need never have created the
-    // global archive lock. Observe its absence only under a protected, stable
-    // directory chain. Never create a lock or infer absence from other errors.
-    const parents = snapshots.at(-1) === null ? await Promise.all(archiveParents.map((path) => io.identity(path))) : [];
-    if (parents.some((info) => info.uid !== 0n || (info.mode & 0o170000n) !== 0o040000n || (info.mode & 0o022n) !== 0n || info.nlink < 1n || info.regular)) return "unknown";
+    // global archive directory or lock. Observe their absence only beneath a
+    // protected, stable directory chain. Never create either path or infer
+    // absence from other errors. All higher ancestors must exist.
+    const parents = snapshots.at(-1) === null ? await Promise.all(archiveParents.map(identity)) : [];
+    if (parents.some((info) => info !== null && (info.uid !== 0n || (info.mode & 0o170000n) !== 0o040000n || (info.mode & 0o022n) !== 0n || info.nlink < 1n || info.regular))) return "unknown";
     const identities = snapshots.filter((info) => info !== null).map((info) => ({ major: ((info.dev >> 8n) & 0xfffn) | ((info.dev >> 32n) & 0xfffff000n), minor: (info.dev & 0xffn) | ((info.dev >> 12n) & 0xffffff00n), inode: info.ino }));
     const bytes = await io.locks(deadline);
     if (bytes.byteLength > 2097152) return "unknown";
@@ -56,8 +57,8 @@ export async function observeAptLocks(timeoutMs: number, io: AptLockFilesystem =
     const after = await Promise.all(paths.map(identity));
     if (after.some((info, index) => { const before = snapshots[index]!; return info === null || before === null ? info !== before : !sameIdentity(before, info); })) return "unknown";
     if (parents.length) {
-      const current = await Promise.all(archiveParents.map((path) => io.identity(path)));
-      if (current.some((info, index) => !sameIdentity(parents[index]!, info))) return "unknown";
+      const current = await Promise.all(archiveParents.map(identity));
+      if (current.some((info, index) => { const before = parents[index]!; return info === null || before === null ? info !== before : !sameIdentity(before, info); })) return "unknown";
     }
     return performance.now() < deadline ? "clear" : "unknown";
   } catch { return "unknown"; }

@@ -110,8 +110,8 @@ for (const locks of ["busy", "unknown"] as const) {
   });
 }
 
-for (const busy of [false, true]) {
-  test(`actual Debian reconciler uses passive native-shaped archive absence without bypassing ${busy ? "contention" : "inspection authority"}`, async () => {
+for (const { busy, directoryAbsent } of [{ busy: false, directoryAbsent: false }, { busy: true, directoryAbsent: false }, { busy: false, directoryAbsent: true }, { busy: true, directoryAbsent: true }]) {
+  test(`actual Debian reconciler uses passive native-shaped archive ${directoryAbsent ? "directory and lock" : "lock"} absence without bypassing ${busy ? "contention" : "inspection authority"}`, async () => {
     let kernelReads = 0;
     const identities = new Map([
       ["/var/lib/dpkg/lock", 5074n], ["/var/lib/dpkg/lock-frontend", 5073n], ["/var/lib/apt/lists/lock", 77n],
@@ -121,6 +121,7 @@ for (const busy of [false, true]) {
       system: "linux",
       identity: async (path) => {
         if (path === "/var/cache/apt/archives/lock") throw Object.assign(Error("Native-shaped absent global archive lock"), { code: "ENOENT" });
+        if (directoryAbsent && path === "/var/cache/apt/archives") throw Object.assign(Error("Native-shaped absent global archive directory"), { code: "ENOENT" });
         const ino = identities.get(path);
         if (ino !== undefined) return { dev: 65025n, ino, uid: 0n, mode: 0o100600n, nlink: 1n, regular: true };
         const i = ancestors.indexOf(path);

@@ -34,8 +34,10 @@ test("every ancestor must remain an accessible protected actual directory", asyn
       const base = observer();
       expect(await observeAptLocks(1000, { ...base, identity: async (path) => ({ ...await base.identity(path), ...(path === parent ? change : {}) }) })).toBe("unknown");
     }
-    const base = observer();
-    expect(await observeAptLocks(1000, { ...base, identity: async (path) => { if (path === parent) throw error("ENOENT"); return base.identity(path); } })).toBe("unknown");
+    if (parent !== "/var/cache/apt/archives") {
+      const base = observer();
+      expect(await observeAptLocks(1000, { ...base, identity: async (path) => { if (path === parent) throw error("ENOENT"); return base.identity(path); } })).toBe("unknown");
+    }
   }
 });
 
@@ -71,5 +73,36 @@ test("an existing archive lock retains its original custody, contention, and sta
 test("archive absence cannot turn malformed or oversized kernel evidence into clear state", async () => {
   for (const bytes of [Buffer.from("1: FLOCK ADVISORY WRITE 700 fe:01:not-an-inode 0 EOF\n"), Buffer.alloc(2097153)]) {
     expect(await observeAptLocks(1000, { ...observer(), locks: async () => bytes })).toBe("unknown");
+  }
+});
+
+test("only the measured absent final archive directory may accompany an absent archive lock", async () => {
+  const base = observer(); const archiveDirectory = "/var/cache/apt/archives";
+  const absentDirectory: AptLockFilesystem = { ...base, identity: async (path) => { if (path === archiveDirectory) throw error("ENOENT"); return base.identity(path); } };
+  expect(await observeAptLocks(1000, absentDirectory)).toBe("clear");
+  for (const code of ["ENOTDIR", "EACCES", "EPERM", "ELOOP", "EIO"]) {
+    expect(await observeAptLocks(1000, { ...base, identity: async (path) => { if (path === archiveDirectory) throw error(code); return base.identity(path); } })).toBe("unknown");
+  }
+  for (const parent of ancestors.slice(0, -1)) {
+    expect(await observeAptLocks(1000, { ...absentDirectory, identity: async (path) => { if (path === parent) throw error("ENOENT"); return absentDirectory.identity(path); } })).toBe("unknown");
+  }
+});
+
+test("absent final archive directory cannot appear or mask higher-ancestor replacement across kernel observation", async () => {
+  for (const path of ancestors) {
+    let kernelRead = false; const base = observer();
+    const io: AptLockFilesystem = { ...base, locks: async (deadline) => { kernelRead = true; return base.locks(deadline); }, identity: async (current) => {
+      if (current === "/var/cache/apt/archives" && (!kernelRead || path !== current)) throw error("ENOENT");
+      const info = await base.identity(current);
+      return { ...info, ...(kernelRead && path === current && path !== "/var/cache/apt/archives" ? { ino: 88000n } : {}) };
+    } };
+    expect(await observeAptLocks(1000, io)).toBe("unknown");
+  }
+  for (const code of ["ENOENT", "EACCES"]) {
+    let kernelRead = false; const base = observer();
+    expect(await observeAptLocks(1000, { ...base, locks: async (deadline) => { kernelRead = true; return base.locks(deadline); }, identity: async (path) => {
+      if (kernelRead && path === "/var/cache/apt/archives") throw error(code);
+      return base.identity(path);
+    } })).toBe("unknown");
   }
 });

@@ -23,6 +23,14 @@ test("native Debian recovery observes clear locks when only the unused protected
   expect(await observeAptLocks(2000, fixture())).toBe("clear");
 });
 
+test("native Debian recovery observes a wholly absent archive directory under its protected parent", async () => {
+  const io = fixture();
+  expect(await observeAptLocks(2000, { ...io, identity: async (path) => {
+    if (path === "/var/cache/apt/archives") throw absent();
+    return io.identity(path);
+  } })).toBe("clear");
+});
+
 test("an absent archive lock does not hide a held dpkg lock or malformed kernel inventory", async () => {
   for (const [locks, expected] of [["1: POSIX ADVISORY WRITE 700 fe:01:5073 0 EOF\n", "busy"], ["unknown kernel lock format\n", "unknown"]] as const) {
     expect(await observeAptLocks(2000, { ...fixture(), locks: async () => Buffer.from(locks) })).toBe(expected);

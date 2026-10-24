@@ -1242,3 +1242,25 @@ include ancestor metadata needed to identify which new custody condition
 refused. Read-only observations now include all five fixed ancestors and actual
 directory type. No further product policy is changed before those facts are
 measured. Recovery remains unqualified.
+
+The nine-path [diagnostic run](https://github.com/hazeion/fleur/actions/runs/40093201571)
+at `f9fd4e4d89d50a8c1de730e0260ddc07ac8cdd8a` establishes that the fixed
+archive directory `/var/cache/apt/archives` itself is absent. Both observations
+return `ENOENT` for it and its lock. `/`, `/var`, `/var/cache` and
+`/var/cache/apt` are root-owned actual mode `0755` directories with unchanged
+identities. Report SHA256 is
+`8b59c72cdd0dbefe032b59730a2f2a0bcf45db2636871a789adb34624b26cd90`.
+The first correction's requirement for an existing archive directory therefore
+still refused the measured minimal-host layout. Superseded diagnostic PR runs
+were cancelled and are not passing evidence.
+
+The observer now permits only that final archive directory to share the lock's
+exact observed absence, anchored by the four existing protected ancestors.
+Both absences and every existing identity are checked again after the kernel
+observation. Higher missing ancestors, all permission/traversal errors, unsafe
+directories, appearance/disappearance races, contention and malformed kernel
+evidence still refuse. It creates neither path. Independent intended-red tests
+reproduced this second condition before the correction; the actual reconciler
+tests retain separate inspection authority and refusal before health checks for
+busy locks with both native-shaped absent layouts. Fresh native execution and
+all applicable final-candidate checks remain required.

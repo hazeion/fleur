@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 
-function scenario(mode: "normal" | "foreign" | "referenced" | "partial") {
+function scenario(mode: "normal" | "foreign" | "referenced" | "partial", architecture = "x86_64") {
   const result = Bun.spawnSync([process.execPath, "-e", `
     import { mock } from "bun:test";
     const mode = ${JSON.stringify(mode)};
     const endpoint = "unix:///var/run/docker.sock";
-    const images = new Map(), calls = [], removed = [];
+    const images = new Map(), calls = [], removed = [], dockerfiles = [];
     let block = true;
     mock.module("./src/runtime/native/endpoint.ts", () => ({ selectedEndpoint: async () => endpoint }));
     mock.module("./src/runtime/native/command.ts", () => ({ nativeCommand: async supplied => {
@@ -13,12 +13,13 @@ function scenario(mode: "normal" | "foreign" | "referenced" | "partial") {
       calls.push(args);
       if (args[0] !== "docker" || args[1] !== "--host" || args[2] !== endpoint) throw new Error("endpoint drift");
       args.splice(1, 2);
-      if (args[1] === "info") return "x86_64";
+      if (args[1] === "info") return ${JSON.stringify(architecture)};
       if (args[1] === "build") {
         const tag = args[args.indexOf("-t") + 1];
         if (mode === "partial" && tag.endsWith("-worker")) throw new Error("BUILD_REJECTED");
         const owner = tag.replace(/^fleur-read-build-/, "").replace(/-(controller|worker)$/, "");
         const dockerfile = await Bun.file(args.at(-1) + "/Dockerfile").text();
+        dockerfiles.push(dockerfile);
         const labelled = dockerfile.includes("LABEL dev.fleur.read-image-owner=" + owner);
         images.set(tag, { Id: "sha256:" + (tag.endsWith("-worker") ? "a" : "b").repeat(64), RepoTags: [tag + ":latest"],
           Config: { Labels: labelled ? { "dev.fleur.read-image-owner": owner } : {} } });
@@ -62,7 +63,7 @@ function scenario(mode: "normal" | "foreign" | "referenced" | "partial") {
       await prepared.dispose();
       const callsAfterSuccess = calls.length;
       await prepared.dispose();
-      console.log(JSON.stringify({ refusal, removedBeforeRetry, removed, remaining: [...images.keys()], calls,
+      console.log(JSON.stringify({ refusal, removedBeforeRetry, removed, remaining: [...images.keys()], calls, dockerfiles,
         callsAfterSuccess, callsAfterRepeat: calls.length }));
     }
   `], { cwd: new URL("../..", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
@@ -71,8 +72,19 @@ function scenario(mode: "normal" | "foreign" | "referenced" | "partial") {
   return JSON.parse(result.stdout.toString()) as {
     failure?: string; refusal?: string; removedBeforeRetry: number; removed: string[];
     remaining: string[]; callsAfterSuccess: number; callsAfterRepeat: number;
+    dockerfiles: string[];
   };
 }
+
+test("native ARM image preparation pairs the controller base with its native compiler", () => {
+  // Ubuntu's published 24.04 OCI index identifies this immutable child as arm64/v8.
+  const result = scenario("normal", "aarch64");
+  expect(result.dockerfiles).toHaveLength(2);
+  for (const dockerfile of result.dockerfiles) {
+    expect(dockerfile).toStartWith("FROM ubuntu@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d AS controller\n");
+    expect(dockerfile).toContain("/usr/bin/aarch64-linux-gnu-gcc-13");
+  }
+});
 
 test("native image disposal removes its owned tags and repeated disposal has no effects", () => {
   const result = scenario("normal");

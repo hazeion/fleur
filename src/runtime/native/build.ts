@@ -43,8 +43,9 @@ export async function prepareNativeImages(application: string): Promise<NativeIm
     if (!arm && architecture !== "x86_64" && architecture !== "amd64") throw new Error("Unsupported native architecture");
     const compiler = arm ? "aarch64-linux-gnu-gcc-13" : "x86_64-linux-gnu-gcc-13";
     const compilerHash = arm ? "a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d" : "1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26";
+    const controllerBase = arm ? "18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d" : "a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc";
     const base = arm ? "bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023" : "c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e";
-    await writeFile(join(directory, "Dockerfile"), `FROM ubuntu@sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc AS controller
+    await writeFile(join(directory, "Dockerfile"), `FROM ubuntu@sha256:${controllerBase} AS controller
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install --yes --no-install-recommends python3 docker.io gcc-13=13.3.0-6ubuntu2~24.04.1 libc6-dev && rm -rf /var/lib/apt/lists/*
 RUN echo '${compilerHash}  /usr/bin/${compiler}' | sha256sum --check

@@ -54,6 +54,11 @@ procedure excludes unrelated heavy work. Final local verification runs
 sequentially with the same deadlines and assertions; its results and the required
 CI outcomes are recorded in the pull request before merge.
 
+The first ARM CI run found the native compiler paired with an amd64 controller
+base image. An architecture-pairing regression reproduced that mismatch; selecting
+the immutable arm64 child from the same Ubuntu 24.04 image index made the focused
+suite pass. Native CI remains necessary evidence for that corrected image.
+
 Local verification used Intel macOS 15.7.7, a four-core Core i7-7820HQ with 16 GiB
 RAM, Docker Engine 29.9.2 with eight virtual CPUs and approximately 7.75 GiB RAM,
 Bun 1.4.3 and Playwright 1.64.0. The browser driver used Node 24.22.1. These slice

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { aptCacheArchiveFilename, aptPackageArtifacts, aptPackageVersions, aptPlanTarget, canonicalAptSnapshot } from "./apt-dependencies.ts";
 import type { Json } from "../cli/result.ts";
 import { authorizeAptInspection, verifyAptInspectionReceipt, retainAptAuxiliaries, type AptAuxiliaryCustody } from "./apt-auxiliary.ts";
 import type { CommandInput } from "../cli/catalog.ts";
@@ -80,7 +81,7 @@ function manifest(value: unknown, profile: AptInstallProfile): { root: string; e
   const plan = byPath.get("apt-plan.json"); requireState(plan && !plan.directory && plan.mode === 0o600 && plan.size! > 0 && plan.size! <= 65536);
   const accepted = new Set([...fixedDirectories.keys(), ...fixedFiles.keys(), "apt-plan.json"]);
   let selected = 0;
-  for (const [name, artifact] of Object.entries(profile.artifacts)) {
+  for (const [name, artifact] of Object.entries(aptPackageArtifacts(profile))) {
     const directory = byPath.get(name); if (!directory) continue;
     requireState(directory.directory && directory.mode === 0o700 && !directory.auxiliary); accepted.add(name); selected++;
     const files = entries.filter((entry) => dirname(entry.path) === name);
@@ -88,7 +89,7 @@ function manifest(value: unknown, profile: AptInstallProfile): { root: string; e
     // Native APT may publish public downloads as 0644 inside the owned 0700
     // package directory. Only these authenticated source files admit that mode.
     requireState(!source.directory && source.path.endsWith(".deb") && source.size === artifact.size && source.sha256 === artifact.sha256);
-    const copyPath = "archives/" + source.path.slice(name.length + 1); const copy = byPath.get(copyPath);
+    const copyPath = "archives/" + aptCacheArchiveFilename(artifact); const copy = byPath.get(copyPath);
     requireState(copy && !copy.directory && copy.mode === 0o600 && copy.size === artifact.size && copy.sha256 === artifact.sha256);
     accepted.add(source.path); accepted.add(copyPath);
   }
@@ -152,15 +153,15 @@ export async function reconcileApt(host: SetupHost, identity: HostIdentity, prof
     const record = preflight.value;
     keys(record, "formatVersion,operationId,action,method,machine,user,bootId,checksum,target,authority,artifacts");
     const checksum = hash(JSON.stringify(profile));
-    requireState(record.formatVersion === 2 && typeof record.operationId === "string" && uuid.test(record.operationId) && record.action === "install" && record.method === profile.method && record.machine === identity.machineId && record.user === process.getuid!() && typeof record.bootId === "string" && uuid.test(record.bootId) && record.bootId !== identity.bootId && record.checksum === checksum && record.target === `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`);
+    requireState(record.formatVersion === 2 && typeof record.operationId === "string" && uuid.test(record.operationId) && record.action === "install" && record.method === profile.method && record.machine === identity.machineId && record.user === process.getuid!() && typeof record.bootId === "string" && uuid.test(record.bootId) && record.bootId !== identity.bootId && record.checksum === checksum && record.target === aptPlanTarget(profile, checksum));
     manifest(record.artifacts, profile);
-    historicalAuthority(record.authority, profile, identity, checksum, `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`);
+    historicalAuthority(record.authority, profile, identity, checksum, aptPlanTarget(profile, checksum));
     await preflight.unchanged();
     await withSetupLock(directory, async () => {
       const pending = preflight;
       await pending.unchanged();
       const record = pending.value; keys(record, "formatVersion,operationId,action,method,machine,user,bootId,checksum,target,authority,artifacts");
-      const checksum = hash(JSON.stringify(profile)); const target = `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`;
+      const checksum = hash(JSON.stringify(profile)); const target = aptPlanTarget(profile, checksum);
       requireState(record.formatVersion === 2 && typeof record.operationId === "string" && uuid.test(record.operationId) && record.action === "install" && record.method === profile.method && record.machine === identity.machineId && record.user === process.getuid!() && typeof record.bootId === "string" && uuid.test(record.bootId) && record.bootId !== identity.bootId && record.checksum === checksum && record.target === target);
       const leases = historicalAuthority(record.authority, profile, identity, checksum, target);
       const grants = await readGrants(host);
@@ -173,8 +174,8 @@ export async function reconcileApt(host: SetupHost, identity: HostIdentity, prof
         requireState(remaining() > 0 && await host.aptPackageLocks?.(remaining()) === "clear");
         const result = await host.run(aptHealthArgs, remaining(), { outputLimitBytes: 2097152 });
         requireState(result.status === "completed" && result.exitCode === 0 && !result.terminationUnconfirmed);
-        const inventory = healthyDpkgSnapshot(result.stdout);
-        requireState(inventory && Object.entries(profile.packages).every(([name, version]) => inventory.get(name)?.version === version && inventory.get(name)?.status === "installed"));
+        const inventory = canonicalAptSnapshot(profile.distroDependencies, healthyDpkgSnapshot(result.stdout));
+        requireState(inventory && Object.entries(aptPackageVersions(profile)).every(([name, version]) => inventory.get(name)?.version === version && inventory.get(name)?.status === "installed"));
         return result.stdout;
       };
       const before = await currentHealth();

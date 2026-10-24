@@ -20,7 +20,26 @@
     "historicalSixProfileMaintainerScriptsSha256": "57a1b1785a8df71ff784b89a7afc0b86e24e4005eb7ca06b84fac73bef7d465b",
     "cachedVerificationEvidenceSha256": "89770863773d5a7213b7b6f1d0cc34038aa2e3838c02b70f5eb00649905f101e",
     "offlineVerifierSourceSha256": "c7d03d2a542f43c76d4f165aee3ee679f33a9172c65ac303165d891f3ffd20c9",
-    "nativeExecutionVerified": false
+    "nativeExecutionVerified": false,
+    "debianDependencies": {
+      "repositoryFingerprint": "04B54C3CDCA79751B16BC6B5225629DF75B188BD",
+      "signingFingerprint": "B8E5F13176D2A7A75220028078DBA3BC47EF2265",
+      "inReleaseSha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+      "packagesIndexSha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+      "maintainerScriptsSha256": "c8d9621167b75774c7fa17e07ad845afadaa405b3a38388195383f7314728f17",
+      "effects": "nftables-configuration-helper-state-systemd-reload-and-ldconfig",
+      "observedDate": "2026-10-23",
+      "method": "Debian archive key binding, signed Trixie InRelease, exact Packages.xz rows and actual payload SHA256 with bounded offline control and effect audit",
+      "keyUrl": "https://ftp-master.debian.org/keys/archive-key-13.asc",
+      "keySha256": "6f1d277429dd7ffedcc6f8688a7ad9a458859b1139ffa026d1eeaadcbffb0da7",
+      "releaseDate": "2026-09-12",
+      "releaseValidUntil": null,
+      "scope": "trixie-amd64 libjansson4, libnftables1 and nftables",
+      "maintainerScriptsDigestEncoding": "UTF-8 sorted compact JSON controls-and-effects ledger; no trailing newline",
+      "maintainerScriptsBytes": 5854,
+      "nativeExecutionVerified": false,
+      "limitations": "Supplied signed snapshot has no Valid-Until; no archive freshness or global later-revocation absence claim."
+    }
   },
   "profile": {
     "method": "docker-official-apt",
@@ -35,6 +54,40 @@
       "containerd.io": "2.4.2-2~debian.13~trixie",
       "docker-buildx-plugin": "0.38.0-1~debian.13~trixie",
       "docker-compose-plugin": "5.6.0-1~debian.13~trixie"
+    },
+    "distroDependencies": {
+      "repositoryFingerprint": "04B54C3CDCA79751B16BC6B5225629DF75B188BD",
+      "signingFingerprint": "B8E5F13176D2A7A75220028078DBA3BC47EF2265",
+      "inReleaseSha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+      "packagesIndexSha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+      "maintainerScriptsSha256": "c8d9621167b75774c7fa17e07ad845afadaa405b3a38388195383f7314728f17",
+      "effects": "nftables-configuration-helper-state-systemd-reload-and-ldconfig",
+      "artifacts": {
+        "libjansson4": {
+          "name": "libjansson4",
+          "version": "2.14-2+b3",
+          "architecture": "amd64",
+          "url": "https://deb.debian.org/debian/pool/main/j/jansson/libjansson4_2.14-2+b3_amd64.deb",
+          "sha256": "60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e",
+          "size": 39792
+        },
+        "libnftables1": {
+          "name": "libnftables1",
+          "version": "1.1.3-1",
+          "architecture": "amd64",
+          "url": "https://deb.debian.org/debian/pool/main/n/nftables/libnftables1_1.1.3-1_amd64.deb",
+          "sha256": "c7cbee3dce8452ae5c3c4269f6f52e96b896d36a46ea3c490e0e11e8ff359896",
+          "size": 332448
+        },
+        "nftables": {
+          "name": "nftables",
+          "version": "1.1.3-1",
+          "architecture": "amd64",
+          "url": "https://deb.debian.org/debian/pool/main/n/nftables/nftables_1.1.3-1_amd64.deb",
+          "sha256": "2ddfa61baaf3a76e2c499db9e521ba6affb226f85af0b6fef739f346ac5f0c39",
+          "size": 75864
+        }
+      }
     }
   },
   "artifacts": [
@@ -82,6 +135,33 @@
       "size": 8080280,
       "depends": null,
       "preDepends": null
+    },
+    {
+      "name": "libjansson4",
+      "version": "2.14-2+b3",
+      "url": "https://deb.debian.org/debian/pool/main/j/jansson/libjansson4_2.14-2+b3_amd64.deb",
+      "sha256": "60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e",
+      "size": 39792,
+      "depends": "libc6 (>= 2.38)",
+      "preDepends": null
+    },
+    {
+      "name": "libnftables1",
+      "version": "1.1.3-1",
+      "url": "https://deb.debian.org/debian/pool/main/n/nftables/libnftables1_1.1.3-1_amd64.deb",
+      "sha256": "c7cbee3dce8452ae5c3c4269f6f52e96b896d36a46ea3c490e0e11e8ff359896",
+      "size": 332448,
+      "depends": "libc6 (>= 2.38), libgmp10 (>= 2:6.3.0+dfsg), libjansson4 (>= 2.14), libmnl0 (>= 1.0.3-4~), libnftnl11 (>= 1.2.9), libxtables12 (>= 1.6.0+snapshot20161117)",
+      "preDepends": null
+    },
+    {
+      "name": "nftables",
+      "version": "1.1.3-1",
+      "url": "https://deb.debian.org/debian/pool/main/n/nftables/nftables_1.1.3-1_amd64.deb",
+      "sha256": "2ddfa61baaf3a76e2c499db9e521ba6affb226f85af0b6fef739f346ac5f0c39",
+      "size": 75864,
+      "depends": "libnftables1 (= 1.1.3-1), libc6 (>= 2.34), libedit2 (>= 3.1-20130611-0)",
+      "preDepends": null
     }
   ],
   "controls": {
@@ -109,12 +189,28 @@
       "architecture": "amd64",
       "controlTarCompressedSha256": "1bf9f7fb09d5788f599d1c26b9dbe42b709aa2ade72b3459b4a5b27bcc59d67b",
       "controlTarSha256": "718f3c52eab5e4e956612076dc1a47b81871d926a87051443c74cf9cc67084a4"
+    },
+    "libjansson4": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "7c3d21f1119b567b20bc8f4e20a861c476685d2b0c461967fe5aaf7a0a43965e",
+      "controlTarSha256": "889a86dfbbd054fc4b88a7d46b9768e004d2c14050b14d2de8a0b6b54d21c14a"
+    },
+    "libnftables1": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "bb1f1f64d3786561e6b4dd8b9faf4a8390d5d42810813d37f38e1e63a9040fad",
+      "controlTarSha256": "8f861206dda22ff42e053b6da77ea6d7c2cb4330fef361c2c293e3d0bcd3246f"
+    },
+    "nftables": {
+      "architecture": "amd64",
+      "controlTarCompressedSha256": "32efaafeb9346c4e9c0d58a2b2be7fdba18fd1368e64ff34459cc6cc340365a0",
+      "controlTarSha256": "ddfbcdbb86526d10cbeef26e743b2a01b7b9f8ff30475edc209fc99fb2fe4f49"
     }
   },
   "limits": [
     "Legacy verified:true means source-owned internal catalog admission only; it is not ordinary release qualification.",
-    "All five payloads, control fields and scoped maintainer scripts are authenticated; no package or maintainer script was executed by the cached artifact audit.",
-    "Fresh guest dependency closure, native package-manager behavior and complete runtime evidence remain pending.",
+    "All five Docker artifacts and three Debian dependencies have authenticated payloads and bounded offline control/effect audits; no package or maintainer script was executed by those audits.",
+    "Fresh nftables installation may write configuration/helper state, reload systemd and invoke ldconfig. Prior nftables configuration/service/helper state is refused; service/firewall preservation still needs native verification.",
+    "The five-package native attempt refused its missing nftables dependency before installation. Expanded dependency closure, native package-manager behavior and runtime remain pending.",
     "Ordinary production installation/readiness records are unchanged; no Debian row is admitted."
   ]
 }

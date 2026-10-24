@@ -19,13 +19,14 @@ test("the fixed Debian13 builder emits only authenticated Trixie internal policy
     expect(built.exit, built.stderr).toBe(0);
     const report = JSON.parse(built.stdout);
     expect(report).toMatchObject({ catalogId: "debian-13-amd64-docker-2026-10-19", internalArtifact: true, artifactAuthentication: "authenticated", installationEvidence: "pending", runtimeSupport: "unverified" });
+    expect(report.artifacts.map((item: { name: string }) => item.name).sort()).toEqual(["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin", "libjansson4", "libnftables1", "nftables"]);
     const internal = join(root, "internal"); const ordinary = join(root, "ordinary"); await mkdir(internal); await mkdir(ordinary);
     for (const [filename, destination] of [["fleur-internal-native-candidate.tgz", internal], ["fleur-ordinary.tgz", ordinary]]) {
       const extracted = await command(["/usr/bin/tar", "-xf", "-", "-C", destination!], root, environment, Bun.gunzipSync(await readFile(join(output, filename!))));
       expect(extracted.exit, extracted.stderr).toBe(0);
     }
     const catalogBytes = await readFile(join(internal, "package/internal-native-candidate-catalog.json"));
-    expect(Bun.CryptoHasher.hash("sha256", catalogBytes, "hex")).toBe("4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1");
+    expect(Bun.CryptoHasher.hash("sha256", catalogBytes, "hex")).toBe("032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d");
     expect(report.authentication).toMatchObject({ maintainerScriptsSha256: "a9a9c699e6a73a41e15d12ecfe8d2ac29d70753ce3ca1308589bcccf32631097", maintainerScriptsScope: "trixie-amd64 five packages", nativeExecutionVerified: false });
     const compiled = await command([process.execPath, "-e", `import {candidateProfiles} from ${JSON.stringify(join(internal, "package/bin/native-candidate-catalog.ts"))};console.log(JSON.stringify(candidateProfiles));`], root, environment);
     expect(compiled.exit, compiled.stderr).toBe(0);
@@ -34,6 +35,17 @@ test("the fixed Debian13 builder emits only authenticated Trixie internal policy
     expect(profiles[0]).toMatchObject({ distribution: "debian", release: "13", architecture: "x64", installationEvidence: "pending", runtimeSupport: "unverified" });
     expect(profiles[0].packages).toEqual({ "docker-ce": "5:29.9.1-1~debian.13~trixie", "docker-ce-cli": "5:29.9.1-1~debian.13~trixie", "containerd.io": "2.4.2-2~debian.13~trixie", "docker-buildx-plugin": "0.38.0-1~debian.13~trixie", "docker-compose-plugin": "5.6.0-1~debian.13~trixie" });
     expect(profiles[0].artifacts["docker-ce"]).toMatchObject({ architecture: "amd64", size: 24553192, sha256: "b33133205350e2765df0cc382f5a3ee44c2cfd4cdc3dc6ba32eca40839ac3574" });
+    expect(Object.keys(profiles[0].artifacts)).toHaveLength(5);
+    expect(profiles[0].distroDependencies).toMatchObject({ repositoryFingerprint: "04B54C3CDCA79751B16BC6B5225629DF75B188BD", signingFingerprint: "B8E5F13176D2A7A75220028078DBA3BC47EF2265", maintainerScriptsSha256: "c8d9621167b75774c7fa17e07ad845afadaa405b3a38388195383f7314728f17", effects: "nftables-configuration-helper-state-systemd-reload-and-ldconfig" });
+    expect(Object.keys(profiles[0].distroDependencies.artifacts).sort()).toEqual(["libjansson4", "libnftables1", "nftables"]);
+    for (const artifact of Object.values(profiles[0].distroDependencies.artifacts) as { name: string; sha256: string; size: number; version: string; url: string; architecture: string }[]) {
+      expect(artifact.architecture).toBe("amd64");
+      const { name, sha256, size, version, url } = artifact;
+      expect(report.artifacts.find((item: { name: string }) => item.name === name)).toMatchObject({ name, sha256, size, version, url });
+    }
+    const frozen = await command([process.execPath, "-e", `import {candidateProfiles} from ${JSON.stringify(join(internal, "package/bin/native-candidate-catalog.ts"))};const p=candidateProfiles[0];console.log(JSON.stringify([candidateProfiles,p,p.packages,p.artifacts,...Object.values(p.artifacts),p.distroDependencies,p.distroDependencies.artifacts,...Object.values(p.distroDependencies.artifacts)].every(Object.isFrozen)));`], root, environment);
+    expect(frozen.exit, frozen.stderr).toBe(0);
+    expect(JSON.parse(frozen.stdout)).toBe(true);
     expect(await readFile(join(ordinary, "package/src/setup/verified-apt-profiles.json"))).toEqual(await readFile(join(repository, "src/setup/verified-apt-profiles.json")));
     const doctor = await command([process.execPath, join(internal, "package/bin/fleur.ts"), "doctor", "--json"], root, environment);
     expect(doctor.exit).toBe(4);

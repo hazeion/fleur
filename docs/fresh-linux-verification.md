@@ -300,6 +300,12 @@ Protected custody, initial setup, and fresh-login resume must agree on the origi
 distribution, release and architecture. Crossed Debian/Ubuntu catalogs fail before
 new authority. The original four-field binding and protected OS digest remain
 unchanged. Internal Doctor rounds retain exit 4 and release state unverified even
-when their component checks pass. This preparation supplies no Debian boot,
-installation or runtime qualification; actual repeated execution and independent
-report review remain required.
+when their component checks pass. The initial Debian boot refused the missing
+nftables dependency before installation, as recorded in the
+[artifact evidence](setup-artifact-evidence.md#debian-13-x64-native-dependency-refusal).
+The expanded internal candidate declares the exact three Debian dependencies under
+separate archive authority. Its verifier observes a disconnected nf_tables canary
+and nftables.service across installation, fresh login and runtime, then removes
+only the owned rule and chain. This is narrow canary and service evidence, not a
+comparison of Docker's authorized firewall changes. Expanded installation and
+runtime qualification still require repeated execution and independent report review.

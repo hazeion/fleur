@@ -563,6 +563,7 @@ def resume_guest(nonce, expected_digest, owned_binding=None):
         if checkpoint_fd is not None:
             os.close(checkpoint_fd)
         os.close(directory)
+    debian_dependency_preservation("freshLogin", owned_binding)
     REPORT["freshLoginSnapshot"] = fresh_snapshot
     REPORT["accessResume"] = {"checkpointSha256": expected_digest, "sessionGroups": current["sessionGroups"]}
     REPORT["ordinaryUserSetupAfterResume"] = command_json("setup")
@@ -718,7 +719,7 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
 INTERNAL_CATALOGS = {
     'ubuntu-24.04-amd64-docker-2026-10-19': ('540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58', 'ubuntu', '24.04', 'x64'),
     'ubuntu-26.04-amd64-docker-2026-10-19': ('e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a', 'ubuntu', '26.04', 'x64'),
-    'debian-13-amd64-docker-2026-10-19': ('4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1', 'debian', '13', 'x64'),
+    'debian-13-amd64-docker-2026-10-19': ('032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d', 'debian', '13', 'x64'),
 }
 
 
@@ -975,6 +976,148 @@ def installation_packages():
     return [name + '=' + version for name, version in expected.items()]
 
 
+# Fixture-only root actions. This source is never a product installer capability.
+DEBIAN_CANARY_ROOT = r"""import importlib.util,json,math,os,re,selectors,shlex,signal,stat,subprocess,sys,time
+request=json.loads(sys.argv[1]);binding=request['binding'];phase=request['phase'];end=request['deadline']
+if (set(request)!={'binding','phase','deadline'} or set(binding)!={'nonce','bootId','uid','manifestSha256'} or phase not in ('before','afterInstall','freshLogin','afterRuntime','cleanup')
+ or os.getuid()!=0 or os.geteuid()!=0 or type(end) not in (int,float) or not math.isfinite(end) or not time.monotonic()<end<=time.monotonic()+30):raise RuntimeError('Fixed owned canary invocation required')
+producer='/usr/local/lib/fleur-owned-guest.py'
+for path in ('/','/usr','/usr/local','/usr/local/lib',producer):
+ info=os.lstat(path)
+ if info.st_uid!=0 or info.st_mode&0o022 or stat.S_ISLNK(info.st_mode):raise RuntimeError('Unsafe protected canary validator')
+spec=importlib.util.spec_from_file_location('fleur_canary_custody',producer);module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+def custody():
+ context=module.validate(binding['nonce'],deadline=end,ordinary_uid=binding['uid'])
+ if (context.boot_id,context.uid,context.manifest_sha256)!=(binding['bootId'],binding['uid'],binding['manifestSha256']) or context.os_release[:2]!=('debian','13'):raise RuntimeError('Original Debian canary custody changed')
+ return context
+custody()
+if re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}',binding['nonce']) is None:raise RuntimeError('Canonical nonce required')
+chain='FL'+binding['nonce'].replace('-','')[:20];comment='fleur-'+binding['nonce'];tool='/usr/sbin/iptables-nft'
+def command(args,allowed=(0,)):
+ custody();remaining=end-time.monotonic()
+ if remaining<=0:raise TimeoutError('Canary deadline expired')
+ child=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
+ selector=None
+ try:
+  output={child.stdout:bytearray(),child.stderr:bytearray()}
+  selector=selectors.DefaultSelector()
+  for stream in output:selector.register(stream,selectors.EVENT_READ)
+  while selector.get_map():
+   if time.monotonic()>=end:raise TimeoutError('Owned canary command deadline expired')
+   for key,_ in selector.select(min(0.1,max(0,end-time.monotonic()))):
+    part=os.read(key.fileobj.fileno(),8192)
+    if not part:selector.unregister(key.fileobj);continue
+    bound=1048576 if key.fileobj is child.stdout else 65536
+    if len(output[key.fileobj])+len(part)>bound:raise RuntimeError('Owned canary command output exceeded its bound')
+    output[key.fileobj].extend(part)
+  while os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None:
+   if time.monotonic()>=end:raise TimeoutError('Owned canary command deadline expired')
+   time.sleep(0.01)
+  if time.monotonic()>=end:raise TimeoutError('Owned canary command deadline expired')
+ finally:
+  # The unreaped leader reserves this PGID until signaling is finished.
+  try:
+   try:os.killpg(child.pid,signal.SIGKILL)
+   except (ProcessLookupError,PermissionError):pass
+   child.wait(timeout=5)
+   retirement=time.monotonic()+5
+   while True:
+    try:os.killpg(child.pid,0)
+    except ProcessLookupError:break
+    except PermissionError:pass
+    if time.monotonic()>=retirement:raise RuntimeError('Owned canary command retirement unconfirmed')
+    time.sleep(0.02)
+  finally:
+   try:
+    if selector is not None:selector.close()
+   finally:
+    try:child.stdout.close()
+    finally:child.stderr.close()
+ if child.returncode not in allowed:raise RuntimeError('Owned canary observation failed')
+ return bytes(output[child.stdout]).decode('utf-8')
+for directory in ('/usr','/usr/sbin','/usr/bin'):
+ info=os.stat(directory)
+ if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:raise RuntimeError('Unsafe firewall tool directory')
+selected=os.path.realpath(tool);info=os.stat(selected)
+if selected!='/usr/sbin/xtables-nft-multi' or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:raise RuntimeError('Unexpected firewall tool backend')
+if command(['/usr/bin/dpkg-query','--root=/','--admindir=/var/lib/dpkg','--search','--',tool]).strip()!='iptables: '+tool:raise RuntimeError('Firewall tool ownership unavailable')
+if command(['/usr/bin/dpkg','--root=/','--admindir=/var/lib/dpkg','--verify','iptables'])!='':raise RuntimeError('Firewall tool package integrity differs')
+version=command([tool,'--version']).strip()
+if re.fullmatch(r'iptables v[0-9]+\.[0-9]+\.[0-9]+ \(nf_tables\)',version) is None:raise RuntimeError('nf_tables backend required')
+properties=['LoadState','ActiveState','SubState','UnitFileState','ExecMainPID','ExecMainStartTimestampMonotonic','ActiveEnterTimestampMonotonic','InactiveExitTimestampMonotonic']
+raw=command(['/usr/bin/systemctl','show','nftables.service','--property='+','.join(properties)],(0,1,4));service={}
+for line in raw.splitlines():
+ key,separator,value=line.partition('=')
+ if not separator or key not in properties or key in service:raise RuntimeError('Ambiguous nftables service observation')
+ service[key]=value
+if set(service)!=set(properties):raise RuntimeError('Incomplete nftables service observation')
+expected={'LoadState':'not-found' if phase=='before' else 'loaded','ActiveState':'inactive','SubState':'dead','UnitFileState':'' if phase=='before' else 'disabled','ExecMainPID':'0','ExecMainStartTimestampMonotonic':'0','ActiveEnterTimestampMonotonic':'0','InactiveExitTimestampMonotonic':'0'}
+if service!=expected:raise RuntimeError('nftables service executed or its state changed')
+def detached():
+ lines=command([tool,'--wait','2','-t','filter','-S']).splitlines()
+ for line in lines:
+  tokens=shlex.split(line)
+  if any(tokens[i] in ('-j','-g','--jump','--goto') and tokens[i+1]==chain for i in range(len(tokens)-1)):raise RuntimeError('Owned canary acquired a reference')
+ return lines
+if phase=='before':
+ if any(shlex.split(line)[:2]==['-N',chain] for line in detached()):raise RuntimeError('Owned canary collision')
+ command([tool,'--wait','2','-t','filter','-N',chain])
+ command([tool,'--wait','2','-t','filter','-A',chain,'-m','comment','--comment',comment,'-j','RETURN'])
+detached();canary=command([tool,'--wait','2','-t','filter','-S',chain])
+if [shlex.split(line) for line in canary.splitlines()]!=[['-N',chain],['-A',chain,'-m','comment','--comment',comment,'-j','RETURN']]:raise RuntimeError('Original owned canary changed')
+if phase=='cleanup':
+ command([tool,'--wait','2','-t','filter','-D',chain,'-m','comment','--comment',comment,'-j','RETURN'])
+ command([tool,'--wait','2','-t','filter','-X',chain])
+ if any(shlex.split(line)[:2]==['-N',chain] for line in detached()):raise RuntimeError('Owned canary cleanup unconfirmed')
+custody();print(json.dumps({'binding':binding,'phase':phase,'backend':'nf_tables','tool':tool,'selectedTool':selected,'toolVersion':version,'chain':chain,'canary':canary,'service':service,'cleanup':phase=='cleanup'}))
+"""
+
+
+def debian_dependency_preservation(phase, owned_binding):
+    if REPORT.get('executionArtifact', {}).get('catalogId') != 'debian-13-amd64-docker-2026-10-19':
+        return
+    if type(owned_binding) is not OwnedGuestBinding:
+        raise RuntimeError('Debian dependency canary requires the original owned guest')
+    verify_owned_binding(owned_binding)
+    if phase not in ('before', 'afterInstall', 'freshLogin', 'afterRuntime', 'cleanup'):
+        raise RuntimeError('Fixed canary phase required')
+    prior = {'before':[], 'afterInstall':['before'], 'freshLogin':['before','afterInstall'], 'afterRuntime':['before','afterInstall','freshLogin'], 'cleanup':['before','afterInstall','freshLogin','afterRuntime']}[phase]
+    existing = REPORT.get('debianDependencyPreservation', {}).get('observations', {})
+    if list(existing) != prior or REPORT.get('debianDependencyPreservation', {}).get('cleanup') is True:
+        raise RuntimeError('Owned canary phase sequence differs')
+    deadline = time.monotonic() + budget_seconds(30)
+    request = {'binding': owned_binding._asdict(), 'phase': phase, 'deadline': deadline}
+    _, text, _ = run(['/usr/bin/sudo', '--non-interactive', '--', '/usr/bin/python3', '-I', '-c', DEBIAN_CANARY_ROOT, json.dumps(request)], timeout=30, absolute_deadline=deadline)
+    if len(text.encode()) > 16384:
+        raise RuntimeError('Canary report exceeded its bound')
+    frame = json.loads(text)
+    chain = 'FL' + owned_binding.nonce.replace('-', '')[:20]
+    if (type(frame) is not dict or set(frame) != {'binding','phase','backend','tool','selectedTool','toolVersion','chain','canary','service','cleanup'}
+            or frame['binding'] != owned_binding._asdict() or frame['phase'] != phase or frame['backend'] != 'nf_tables'
+            or frame['tool'] != '/usr/sbin/iptables-nft' or frame['selectedTool'] != '/usr/sbin/xtables-nft-multi'
+            or type(frame['toolVersion']) is not str or re.fullmatch(r'iptables v[0-9]+\.[0-9]+\.[0-9]+ \(nf_tables\)', frame['toolVersion']) is None
+            or frame['chain'] != chain or type(frame['canary']) is not str or type(frame['service']) is not dict or frame['cleanup'] is not (phase == 'cleanup')):
+        raise RuntimeError('Original canary result binding differs')
+    expected_canary = [['-N',chain],['-A',chain,'-m','comment','--comment','fleur-'+owned_binding.nonce,'-j','RETURN']]
+    import shlex
+    if [shlex.split(line) for line in frame['canary'].splitlines()] != expected_canary:
+        raise RuntimeError('Owned detached canary differs')
+    expected_service = {'LoadState':'not-found' if phase == 'before' else 'loaded','ActiveState':'inactive','SubState':'dead','UnitFileState':'' if phase == 'before' else 'disabled','ExecMainPID':'0','ExecMainStartTimestampMonotonic':'0','ActiveEnterTimestampMonotonic':'0','InactiveExitTimestampMonotonic':'0'}
+    if frame['service'] != expected_service:
+        raise RuntimeError('nftables service execution or state differs')
+    evidence = REPORT.setdefault('debianDependencyPreservation', {'scope':'owned-disconnected-canary-and-nftables-service-only','backend':'nf_tables','cleanup':False,'observations':{}})
+    observations = evidence['observations']
+    prior = {'before':[], 'afterInstall':['before'], 'freshLogin':['before','afterInstall'], 'afterRuntime':['before','afterInstall','freshLogin'], 'cleanup':['before','afterInstall','freshLogin','afterRuntime']}[phase]
+    if list(observations) != prior:
+        raise RuntimeError('Owned canary phase sequence differs')
+    if phase != 'before' and any(frame[key] != observations['before'][key] for key in ('binding','backend','tool','selectedTool','toolVersion','chain','canary')):
+        raise RuntimeError('Owned canary changed across setup')
+    if phase == 'cleanup':
+        evidence['cleanup'] = True
+    else:
+        observations[phase] = frame
+
+
 def main():
     global GUEST_DEADLINE, RECORDED_HELPERS
     GUEST_DEADLINE = time.monotonic() + 900
@@ -1012,6 +1155,7 @@ def main():
     REPORT["baseline"] = baseline
     if any(re.match(r"(?:docker-ce|docker-ce-cli|containerd\.io|docker-buildx-plugin|docker-compose-plugin)\t", line) for line in baseline["packages"].splitlines()):
         raise RuntimeError("Guest already contains Docker packages; fresh-install proof refused")
+    debian_dependency_preservation("before", owned_binding)
     REPORT["doctorBefore"] = command_json("doctor")
     REPORT["noninteractiveSetup"] = command_json("setup")
     if REPORT["noninteractiveSetup"]["exitCode"] != 3 or snapshot() != baseline:
@@ -1021,6 +1165,7 @@ def main():
         raise RuntimeError("Denied setup altered baseline or did not preserve authority boundary")
     REPORT["authorizedFixtureSetup"] = setup_pty("once")
     REPORT["afterSetup"] = snapshot()
+    debian_dependency_preservation("afterInstall", owned_binding)
     packages = ordinary_packages if ordinary_packages is not None else installation_packages()
     simulation = run(["apt-get", "--simulate", "--no-install-recommends", "--no-remove", "--no-upgrade", "install"] + packages, allowed=(0, 100))
     REPORT["actualDependencySimulation"] = {"exitCode": simulation[0], "stdout": simulation[1], "stderr": simulation[2]}
@@ -1302,6 +1447,8 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         if code != 0 or REPORT["restrictionProbe"]["result"].get("cleanup_complete") is not True or REPORT["restrictionProbe"]["result"].get("bounded_probe_passed") is not True:
             REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Inspect restrictionProbe for the observed exit status and bounded result."}
             return
+        debian_dependency_preservation("afterRuntime", owned_binding)
+        debian_dependency_preservation("cleanup", owned_binding)
         REPORT["installationEvidence"] = "verified-full-system-guest"
         REPORT["ok"] = True
     finally:

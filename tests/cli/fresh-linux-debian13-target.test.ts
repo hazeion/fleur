@@ -20,7 +20,7 @@ test("the guest consumes the complete original Debian13 binding before package a
     expect(report.guest.osReleaseEvidence).toEqual({ source: "validated-owned-manifest", ...state.rootPolicyFrame.osRelease });
     expect(state.rootPolicyFrame.osRelease.id).toBe("debian");
     expect(state.rootPolicyFrame.osRelease.versionId).toBe("13");
-    expect(report.executionArtifact).toEqual({ kind: "internal-candidate", catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1" });
+    expect(report.executionArtifact).toEqual({ kind: "internal-candidate", catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d" });
     expect(report.installationEvidence).toBe("pending");
     expect(report.runtimeSupport).toBe("unverified");
     expect(state.installed).toBe(false);
@@ -85,6 +85,9 @@ test("unchanged Debian13 internal authority survives the actual guest fresh-logi
     expect(state.freshSession).toBe(true);
     expect(state.enrollmentPrompts).toHaveLength(1);
     expect(state.installPrompts).toHaveLength(7);
+    expect(Object.keys(first.debianDependencyPreservation.observations)).toEqual(["before", "afterInstall"]);
+    expect(Object.keys(report.debianDependencyPreservation.observations)).toEqual(["before", "afterInstall", "freshLogin", "afterRuntime"]);
+    expect(report.debianDependencyPreservation).toMatchObject({ backend: "nf_tables", cleanup: true, scope: "owned-disconnected-canary-and-nftables-service-only" });
     expect(state.staleReprobes).toBe(2);
     // This is the guest protocol result under simulated external commands, not native installation evidence.
     expect(report).toMatchObject({ ok: true, installationEvidence: "verified-full-system-guest", runtimeSupport: "unverified", humanConsentProof: false, sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: { bounded_probe_passed: true, cleanup_complete: true, v1_gate_passed: false } } });

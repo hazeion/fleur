@@ -49,6 +49,7 @@ debian_cases = {
     'owned24-resume-trixie': (('ubuntu', '24.04'), 'native-candidate-ubuntu24-amd64.json'),
     'owned26-resume-trixie': (('ubuntu', '26.04'), 'native-candidate-ubuntu26-amd64.json'),
 }
+debian_cases.update({'owned13-canary-'+fault:(('debian','13'),'native-candidate-debian13-amd64.json') for fault in ('binding','backend','canary','service','phase','cleanup')})
 debian_resume = {
     'owned13-resume-noble': 'native-candidate-ubuntu24-amd64.json',
     'owned13-resume-resolute': 'native-candidate-ubuntu26-amd64.json',
@@ -87,6 +88,9 @@ if scenario in debian_cases:
     catalog_file = source.parent/debian_cases[scenario][1]
 catalog_bytes = catalog_file.read_bytes()
 catalog = json.loads(catalog_bytes)
+package_state = json.loads(state_path.read_text())
+package_state['packageNames'] = [item['name'] for item in catalog['artifacts']]
+state_path.write_text(json.dumps(package_state))
 metadata = {key: catalog[key] for key in ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')}
 metadata.update(internalArtifact=True, catalogSha256=hashlib.sha256(catalog_bytes).hexdigest(),
     legacyProfileAdmission={'verified':True, 'meaning':'internal-catalog-admission-only'},
@@ -161,7 +165,7 @@ TOOL = r'''import json,os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']);p=root/'protocol-state.json';s=json.loads(p.read_text());name=pathlib.Path(sys.argv[0]).name;args=sys.argv[1:];uid=s['uid'];package_checksum='a'*64;enrollment_checksum='b'*64
 
 def save():p.write_text(json.dumps(s))
-def ready_protocol():return s['scenario'].startswith('ordinary-admitted') or s['scenario']=='owned13-fresh-resume' and s.get('freshSession',False)
+def ready_protocol():return s['scenario'].startswith('ordinary-admitted') or s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup') and s.get('freshSession',False)
 def envelope(command,data,code,error):
  print(json.dumps({'formatVersion':1,'command':command,'ok':False,'truncated':False,'data':data,'error':{'code':error}}));save();sys.exit(code)
 def admitted(command):
@@ -172,7 +176,7 @@ def admitted(command):
  data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
  if s['scenario'].startswith('ordinary-admitted26'):
   evidence='5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07';data['components']['release']={'state':'verified','profile':'ubuntu-26.04-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
- if s['scenario']=='owned13-fresh-resume':
+ if s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup'):
   data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
  if command=='doctor' and s['scenario']=='ordinary-admitted-release-refused':
   data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
@@ -243,6 +247,23 @@ if name=='bun':
   if s['scenario']=='denied-enrollment-outcome':print('Enrollment authority was refused');sys.exit(3)
   s['enrolled']=True;save();print('Enrollment complete. Start a new login.');sys.exit(3)
  print('Start a new login; membership was not repeated');sys.exit(3)
+if name=='sudo':
+ if args[:5]!=['--non-interactive','--','/usr/bin/python3','-I','-c'] or len(args)!=7:raise RuntimeError('Only fixed owned canary invocation is modeled')
+ request=json.loads(args[-1]);phase=request['phase'];binding=request['binding']
+ if binding!={key:s['rootPolicyFrame'][key] for key in ('nonce','bootId','uid','manifestSha256')}:raise RuntimeError('Changed canary custody')
+ chain='FL'+binding['nonce'].replace('-','')[:20]
+ service={'LoadState':'not-found' if phase=='before' else 'loaded','ActiveState':'inactive','SubState':'dead','UnitFileState':'' if phase=='before' else 'disabled','ExecMainPID':'0','ExecMainStartTimestampMonotonic':'0','ActiveEnterTimestampMonotonic':'0','InactiveExitTimestampMonotonic':'0'}
+ canary='-N '+chain+'\n-A '+chain+' -m comment --comment fleur-'+binding['nonce']+' -j RETURN\n'
+ s.setdefault('canaryPhases',[]).append(phase);save()
+ frame={'binding':binding,'phase':phase,'backend':'nf_tables','tool':'/usr/sbin/iptables-nft','selectedTool':'/usr/sbin/xtables-nft-multi','toolVersion':'iptables v1.8.11 (nf_tables)','chain':chain,'canary':canary,'service':service,'cleanup':phase=='cleanup'}
+ if phase=='afterInstall':
+  if s['scenario']=='owned13-canary-binding':frame['binding']={**binding,'bootId':'0'*36}
+  if s['scenario']=='owned13-canary-backend':frame['backend']='legacy';frame['toolVersion']='iptables v1.8.11 (legacy)'
+  if s['scenario']=='owned13-canary-canary':frame['canary']=canary.replace('RETURN','ACCEPT')
+  if s['scenario']=='owned13-canary-service':frame['service']['ExecMainStartTimestampMonotonic']='42'
+  if s['scenario']=='owned13-canary-phase':frame['phase']='freshLogin'
+ if phase=='cleanup' and s['scenario']=='owned13-canary-cleanup':frame['cleanup']=False
+ print(json.dumps(frame));sys.exit(0)
 if name=='uname' and s['scenario'] in ('command-orphan','command-orphan-timeout'):
  import time
  pid=os.fork()
@@ -261,7 +282,7 @@ if name=='dpkg-query':
  if '--show' not in args:raise RuntimeError('Unexpected package mutation/query')
  print('base-files\tfixture\tii ')
  if s['installed']:
-  for package in ['docker-ce','docker-ce-cli','containerd.io','docker-buildx-plugin','docker-compose-plugin']:print(package+'\tfixture-version\tii ')
+  for package in s['packageNames']:print(package+'\tfixture-version\tii ')
  sys.exit(0)
 if name=='systemctl':
  if not args or args[0]!='show':raise RuntimeError('No direct service mutation in fixture')
@@ -317,7 +338,7 @@ if name=='apt-get':
  print('0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.');sys.exit(0)
 s['unexpected'].append({'tool':name,'args':args});save();raise RuntimeError('Unknown fixture command')
 '''
-for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "id", "getent", "apt-get", "stat", "docker", "python3"]:
+for name in ["bun", "uname", "systemd-detect-virt", "dpkg-query", "systemctl", "id", "getent", "apt-get", "stat", "docker", "python3", "sudo"]:
     target = lab / name if name == "bun" else tools / name
     target.write_text("#!" + sys.executable + " -S\n" + TOOL)
     target.chmod(0o700)
@@ -577,7 +598,7 @@ os.environ.update(HOME=str(root), FIXTURE_ROOT=str(root), PATH=str(tools) + ":/u
 sys.argv = [str(source), nonce, *binding_arguments]
 with patch("time.monotonic", side_effect=lambda: original_monotonic() + clock_advance + (61 if scenario == "command-orphan-timeout" and (root / "orphan-heartbeat").exists() else 0)), patch.object(os, "stat", side_effect=apt_stat), patch.object(Path, "rglob", rglob), patch.object(os, "scandir", side_effect=scandir), patch.object(Path, "lstat", lstat), patch.object(Path, "open", path_open), patch.object(os, "open", side_effect=descriptor_open), patch.object(os, "fsync", side_effect=fsync), patch.object(Path, "read_text", read_text), patch.object(Path, "glob", local_glob), patch.object(os, "getuid", return_value=uid), patch("glob.glob", side_effect=lambda pattern: [] if pattern.startswith("/etc/apt/") else original_glob_glob(pattern)), patch("subprocess.Popen", side_effect=popen):
     try:
-        if scenario == 'owned13-fresh-resume' or scenario in debian_resume or scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
+        if scenario in ('owned13-fresh-resume','owned13-canary-cleanup') or scenario in debian_resume or scenario.startswith(("resume-doctor-data-", "resume-smoke-data-")) or scenario in ("fresh-resume", "resume-catalog-change", "owned26-resume-noble", "owned24-resume-resolute", "resume-stale-session", "resume-wrong-digest", "resume-replay", "resume-checkpoint-change", "resume-reordered-groups", "resume-boot-change", "resume-artifact-change", "resume-state-symlink", "resume-state-hardlink", "resume-state-oversize", "resume-deadline-expired", "resume-socket-change", "resume-lost-group", "resume-marker-mutation", "resume-smoke-install", "resume-smoke-access", "resume-smoke-image", "resume-human-groups"):
             first_output = io.StringIO()
             with contextlib.redirect_stdout(first_output):
                 try:

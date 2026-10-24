@@ -36,7 +36,7 @@ test("Debian13 verification observation binds its exact image and internal catal
   const result = await observe(["--observe", "--fixture", "debian13-amd64"]);
   expect(result.exit).toBe(4);
   expect(result.report.error.code).toBe("INFRASTRUCTURE_UNAVAILABLE");
-  expect(result.report).toMatchObject({ fixture: { id: "debian13-amd64", catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1", os: { id: "debian", versionId: "13" }, virtualSize: 3221225472, image: { sha256: "87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02", size: 342818816 } }, executed: false, installationEvidence: "pending", runtimeSupport: "unverified" });
+  expect(result.report).toMatchObject({ fixture: { id: "debian13-amd64", catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d", os: { id: "debian", versionId: "13" }, virtualSize: 3221225472, image: { sha256: "87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02", size: 342818816 } }, executed: false, installationEvidence: "pending", runtimeSupport: "unverified" });
 });
 
 test("Debian13 refuses ordinary qualification before reading artifacts or launching tools", async () => {

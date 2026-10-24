@@ -181,8 +181,12 @@ receipts or changed evidence remain blocked.
 Doctor runs again after reconciliation; service, access and image authority
 requirements remain independent. Same-boot uncertainty, legacy records, partial
 packages, contention, nonempty auxiliary directories and unexplained artifact
-changes require manual recovery. Successful native interrupted-install/reboot
-qualification for the inspection path remains pending.
+changes require manual recovery. Two native Ubuntu 26 x64 observations qualified the assisted inspection path
+for completed installation effects with a missing parent receipt after a verified
+reboot. Both preserved the unknown original outcome and required a separate
+once-only inspection grant. Other interruption windows and platforms remain
+unqualified; this does not establish automatic recovery. See the exact inputs and
+report hashes in [setup artifact evidence](setup-artifact-evidence.md#repeated-ubuntu-26-assisted-apt-recovery).
 
 ### Frozen APT payload gate
 

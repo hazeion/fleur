@@ -26,7 +26,13 @@ export interface HostCommandResult {
   /** The direct child was killed; privileged descendants may still be live. */
   readonly terminationUnconfirmed?: boolean;
 }
-export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number; readonly cleanEnvironment?: true }
+export interface HostCommandContext {
+  readonly cwd?: string;
+  readonly outputLimitBytes?: number;
+  readonly cleanEnvironment?: true;
+  /** Private exclusively created artifact sink; never a CLI or application input. */
+  readonly artifactOutput?: { readonly descriptor: number; readonly maxBytes: number };
+}
 export interface SetupHost {
   readonly aptAuxiliaries?: (directory: string, manifest: AptAuxiliaryManifest, remaining: () => number) => Promise<AptAuxiliaryCustody>;
   /** Passive host package lock observation; missing evidence blocks reconciliation. */

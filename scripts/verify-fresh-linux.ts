@@ -14,7 +14,7 @@ import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding, copyOwnedG
 const fixtures = {
   "ubuntu24-amd64": { id: "ubuntu24-amd64", os: { id: "ubuntu", versionId: "24.04" }, virtualSize: 3758096384, catalogId: "ubuntu-24.04-amd64-docker-2026-10-19", catalogSha256: "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58", image: { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 } },
   "ubuntu26-amd64": { id: "ubuntu26-amd64", os: { id: "ubuntu", versionId: "26.04" }, virtualSize: 3758096384, catalogId: "ubuntu-26.04-amd64-docker-2026-10-19", catalogSha256: "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a", image: { sha256: "5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5", size: 859090944 } },
-  "debian13-amd64": { id: "debian13-amd64", os: { id: "debian", versionId: "13" }, virtualSize: 3221225472, catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1", image: { sha256: "87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02", size: 342818816 } },
+  "debian13-amd64": { id: "debian13-amd64", os: { id: "debian", versionId: "13" }, virtualSize: 3221225472, catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d", image: { sha256: "87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02", size: 342818816 } },
 } as const;
 let selectedFixture: typeof fixtures[keyof typeof fixtures] = fixtures["ubuntu24-amd64"];
 let imagePin: { readonly sha256: string; readonly size: number } = selectedFixture.image;

@@ -2,6 +2,7 @@ import { verifiedInstallProfiles } from "./verified-install-profiles.ts";
 import type { ArchInstallProfile } from "./native-arch.ts";
 import { inspectAptPackageState } from "./native-state.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
+import type { AptDistroDependencies } from "./apt-dependencies.ts";
 
 export type AptPackageName = "docker-ce" | "docker-ce-cli" | "containerd.io" | "docker-buildx-plugin" | "docker-compose-plugin";
 export interface AptPackageArtifact {
@@ -23,6 +24,7 @@ export interface AptInstallProfile {
   readonly repositoryFingerprint: string;
   readonly packages: Readonly<Record<AptPackageName, string>>;
   readonly artifacts: Readonly<Record<AptPackageName, AptPackageArtifact>>;
+  readonly distroDependencies?: AptDistroDependencies;
 }
 export interface DesktopInstallProfile {
   readonly method: "docker-desktop-official-dmg";

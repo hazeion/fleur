@@ -48,6 +48,7 @@ interface PayloadOptions {
   readonly afterPlan?: boolean;
   readonly missingLocalDependency?: boolean;
   readonly apt283Wire?: boolean;
+  readonly epochlessSource?: boolean;
   readonly uncertainResolution?: boolean;
   readonly uriFailure?: "origin" | "scheme" | "path" | "encoded-slash" | "double-escape" | "size-zero" | "size-wrong" | "sha" | "hash-missing" | "multiple" | "nonzero" | "missing-command";
   readonly producerPolicy?: boolean;
@@ -61,7 +62,7 @@ interface PayloadOptions {
   readonly durability?: "create" | "remove" | "stage";
 }
 async function payloadScenario(tamper: boolean, substituteAtHook = false, options: PayloadOptions = {}) {
-  const selectedPackages = options.apt283Wire ? { ...packages, "docker-ce": "5:1~fixture+1" } : packages;
+  const selectedPackages = options.apt283Wire || options.epochlessSource ? { ...packages, "docker-ce": "5:1~fixture+1" } : packages;
   const selectedProfile = { ...profile, packages: selectedPackages, artifacts: aptFixtureArtifacts(selectedPackages) };
   const directory = await mkdtemp("/tmp/fleur-apt-payload-");
   let privilegedInstalls = 0;
@@ -419,6 +420,23 @@ test("after a verified reboot setup reconciles exact configured packages without
   expect(result.retry?.exitCode).toBe(5); // Same-boot uncertainty remains blocked.
   expect(result.resumed?.exitCode).toBe(4); // Fake Docker remains unavailable; package reconciliation is not readiness.
   expect(result.resumed?.result.data).toMatchObject({ recovery: { state: "reconciled", historicalOutcome: "unknown", artifacts: "retained" } });
+  expect(result.privilegedInstalls).toBe(1);
+  expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
+  expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);
+  expect(result.preservation!.prompts).toBe(0);
+  expect(result.preservation!.calls.some((args) => ["sudo", "apt-get", "dpkg-deb"].includes(args[0]!))).toBe(false);
+  expect(result.entries).not.toContain("apt-transaction-pending.json");
+  expect(result.entries).toContain(`apt-reconciled-${result.pending.operationId}.json`);
+});
+test("legacy five-package reboot recovery retains an epochless source and its epoch-bearing cache identity", async () => {
+  const result = await payloadScenario(false, false, { epochlessSource: true, uncertain: "timeout", inspectRecovery: true, reboot: true });
+  expect(result.outcome.exitCode).toBe(5);
+  expect(result.retry?.exitCode).toBe(5);
+  expect(result.resumed?.exitCode).toBe(4);
+  expect(result.resumed?.result.data).toMatchObject({ recovery: { state: "reconciled", historicalOutcome: "unknown", artifacts: "retained" } });
+  const paths = result.pending.artifacts.entries.map((entry: { path: string }) => entry.path);
+  expect(paths).toContain("docker-ce/docker-ce_1~fixture+1_amd64.deb");
+  expect(paths).toContain("archives/docker-ce_5%3a1~fixture+1_amd64.deb");
   expect(result.privilegedInstalls).toBe(1);
   expect(result.preservation!.artifactsAfter).toEqual(result.preservation!.artifactsBefore);
   expect(result.preservation!.grantsAfter).toBe(result.preservation!.grantsBefore);

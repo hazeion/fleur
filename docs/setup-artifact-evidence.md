@@ -666,10 +666,84 @@ Audit report SHA256:
 Independent read-only review accepted the signature, index, payload and control
 checks. No package was extracted or executed.
 
-The separate [Trixie internal catalog](../scripts/native-candidate-debian13-amd64.json)
-has SHA256 `4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1`.
+The initial five-package Trixie internal catalog had SHA256
+`4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1`.
 Its legacy verified field means internal artifact admission only. Installation
 remains pending and runtime support unverified. The builder and guest consumer
 bind this exact catalog to Debian 13 x64; ordinary production profiles stay
 unchanged. Dependency-environment readiness, native package-manager behavior,
 installation and runtime evidence remain separate requirements.
+
+
+## Debian 13 x64 native dependency refusal
+
+Source `91be1c4200b3950661b5e7564aeb4d9e792eca8b` booted the pinned Debian 13
+x64 cloud image under HVF with native host CPU execution. Protected Debian OS and
+boot custody, pinned SSH and Bun 1.4.3 preparation passed. The observed kernel was
+`6.12.113+deb13-cloud-amd64`.
+
+The five frozen Docker packages could not satisfy the actual dependency plan:
+Docker CE required `nftables`, which was absent and unavailable within the scoped
+Docker repository. The simulation returned 100. Public setup returned
+`PREREQUISITE_UNAVAILABLE` before package installation; package inventory,
+services and groups remained unchanged. Repository configuration did occur under
+its separate grant. No dependency was preinstalled or resolved outside the exact
+allowed set.
+
+The outer observation completed in 46.65 seconds without timeout. Raw report
+SHA256 is `f8d4e15399b90283393891ef67047bb09bd5850a4d9916e7359179ff8ffbc745`.
+Independent specification and standards reviews verified source and artifact
+pairing, unchanged package inventory and complete VM, credential, scratch and
+overlay disposal. The outer child was reaped with no live inherited group
+members. This is failed prerequisite evidence: installation remains pending, and
+fresh-login readiness, runtime, recovery and ordinary Debian admission remain
+unqualified.
+
+That source passed all applicable CI: 1,099 CLI tests, zero failures and 11,353
+assertions across 59 files; native prerequisite verification; and compatibility
+verification. CI success does not promote this failed native attempt.
+
+
+## Debian 13 x64 declared dependency candidate
+
+The expanded [Trixie internal catalog](../scripts/native-candidate-debian13-amd64.json)
+has SHA256 `032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d`.
+It retains the five Docker artifacts and separately declares these Debian packages:
+
+| Package | Exact version | Bytes | SHA256 |
+| --- | --- | ---: | --- |
+| libjansson4 | 2.14-2+b3 | 39,792 | `60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e` |
+| libnftables1 | 1.1.3-1 | 332,448 | `c7cbee3dce8452ae5c3c4269f6f52e96b896d36a46ea3c490e0e11e8ff359896` |
+| nftables | 1.1.3-1 | 75,864 | `2ddfa61baaf3a76e2c499db9e521ba6affb226f85af0b6fef739f346ac5f0c39` |
+
+The [official Debian archive key](https://ftp-master.debian.org/keys.html)
+has primary fingerprint `04B54C3CDCA79751B16BC6B5225629DF75B188BD` and signing subkey
+`B8E5F13176D2A7A75220028078DBA3BC47EF2265`. Independent offline review checked the key
+binding, signed Trixie InRelease with SHA256
+`0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675`, and authenticated
+amd64 Packages.xz with SHA256
+`7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498`.
+The release snapshot is dated September 12, 2026 and has no Valid-Until field.
+This establishes the retained snapshot's signatures, without claiming archive
+freshness or absence of a later revocation outside the supplied key material.
+
+Actual payload hashes, package/control fields and maintainer effects were inspected
+with bounded in-memory archive parsing, without extraction or execution. The
+5,854-byte controls-and-effects ledger has SHA256
+`c8d9621167b75774c7fa17e07ad845afadaa405b3a38388195383f7314728f17`.
+Fresh nftables installation writes configuration/helper state and reloads systemd;
+the libraries activate ldconfig. Existing helper state could enable or unmask a
+unit, and the packaged firewall configuration contains `flush ruleset`. Setup
+therefore refuses prior nftables configuration/unit/helper state when nftables is
+absent and repeats that observation before installation. No product command applies
+that firewall configuration or starts the nftables service.
+
+The native verifier adds a separate owned-fixture canary under original protected
+Debian custody. It requires authenticated iptables-nft with the nf_tables backend,
+creates one detached nonce chain and RETURN rule, and compares only that canary
+after installation, fresh login and runtime. It also requires nftables.service to
+remain inactive and disabled after installation, with zero execution timestamps
+and PID. Cleanup removes only the exact owned rule and chain; uncertain failures
+retain them for full owned VM disposal. These checks cannot establish universal
+firewall preservation. Their actual repeated native execution remains pending,
+as do installation, runtime, recovery and ordinary Debian admission.

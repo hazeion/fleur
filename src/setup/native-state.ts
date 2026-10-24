@@ -1,5 +1,6 @@
 import type { SetupHost } from "./commands.ts";
 import type { AptInstallProfile } from "./native.ts";
+import { aptPackageArtifacts, aptPackageVersions, canonicalAptPackageName, validDistroDependencies } from "./apt-dependencies.ts";
 
 export interface AptPackageState {
   readonly state: "compatible" | "conflict" | "unavailable";
@@ -8,6 +9,7 @@ export interface AptPackageState {
 }
 
 export function validAptProfile(profile: AptInstallProfile): boolean {
+  if (!validDistroDependencies(profile)) return false;
   const names = ["docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"];
   if (!profile.artifacts || typeof profile.artifacts !== "object" || Array.isArray(profile.artifacts) || Object.keys(profile.artifacts).length !== names.length) return false;
   const architecture = profile.architecture === "x64" ? "amd64" : "arm64";
@@ -25,23 +27,25 @@ export function validAptProfile(profile: AptInstallProfile): boolean {
         && typeof artifact.url === "string" && artifact.url.startsWith(`https://download.docker.com/linux/${profile.distribution}/dists/${suite}/pool/stable/${architecture}/`)
         && /^[A-Za-z0-9._~+%:-]+\.deb$/.test(artifact.url.slice(`https://download.docker.com/linux/${profile.distribution}/dists/${suite}/pool/stable/${architecture}/`.length))
         && Number.isSafeInteger(artifact.size) && artifact.size > 0 && artifact.size <= 268435456;
-    }) && Object.values(profile.artifacts).reduce((sum, artifact) => sum + artifact.size, 0) <= 1073741824;
+    }) && Object.values(aptPackageArtifacts(profile)).reduce((sum, artifact) => sum + artifact.size, 0) <= 1073741824;
 }
 export async function inspectAptPackageState(profile: AptInstallProfile, host: SetupHost, remaining: () => number): Promise<AptPackageState> {
   const refused = (state: "conflict" | "unavailable"): AptPackageState => ({ state, present: [], missing: [] });
   if (!validAptProfile(profile)) return refused("conflict");
   const timeout = remaining();
   if (timeout <= 0) return refused("unavailable");
-  const names = Object.keys(profile.packages).sort();
+  const packages = aptPackageVersions(profile);
+  const names = Object.keys(packages).sort();
   const result = await host.run(["dpkg-query", "--root=/", "--admindir=/var/lib/dpkg", "--show", "--showformat=${binary:Package}\t${Version}\t${db:Status-Status}\t${db:Status-Eflag}\\n", ...names], timeout);
   if (result.status !== "completed" || (result.exitCode !== 0 && result.exitCode !== 1)) return refused("unavailable");
   const present = new Set<string>();
   const lines = result.stdout === "" ? [] : result.stdout.replace(/\n$/, "").split("\n");
   for (const line of lines) {
     const fields = line.split("\t");
-    const [name, version, status, errorFlag] = fields;
-    if (fields.length !== 4 || !name || !Object.hasOwn(profile.packages, name) || present.has(name)
-      || profile.packages[name as keyof typeof profile.packages] !== version || status !== "installed" || errorFlag !== "ok") return refused("conflict");
+    const [binary, version, status, errorFlag] = fields;
+    const name = binary ? canonicalAptPackageName(profile.distroDependencies, binary) : null;
+    if (fields.length !== 4 || !name || !Object.hasOwn(packages, name) || present.has(name)
+      || packages[name] !== version || status !== "installed" || errorFlag !== "ok") return refused("conflict");
     present.add(name);
   }
   if (result.exitCode === 0 && present.size !== names.length) return refused("conflict");

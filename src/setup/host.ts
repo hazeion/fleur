@@ -1,6 +1,7 @@
 import { observeAptLocks } from "./apt-locks.ts";
 import { aptHealthArgs } from "./apt-health.ts";
 import { readFile } from "node:fs/promises";
+import { fstatSync } from "node:fs";
 import { machine, release } from "node:os";
 import type { HostCommandResult, HostCommandContext, HostIdentity, SetupHost } from "./commands.ts";
 
@@ -61,14 +62,27 @@ async function run(args: readonly string[], timeoutMs: number, context?: HostCom
   if (timeoutMs <= 0) return { status: "timeout", stdout: "", stderr: "" };
   const outputLimit = context?.outputLimitBytes ?? 65536;
   if (!Number.isSafeInteger(outputLimit) || outputLimit <= 0 || outputLimit > 2097152 || (context?.outputLimitBytes !== undefined && JSON.stringify(args) !== JSON.stringify(aptHealthArgs))) return { status: "completed", exitCode: 126, stdout: "", stderr: "Unsupported internal output budget." };
+  const artifactOutput = context?.artifactOutput;
+  if (artifactOutput) {
+    try {
+      const expected = ["curl", "--disable", "--fail", "--proto", "=https", "--tlsv1.2", "--max-redirs", "0", "--max-filesize", String(artifactOutput.maxBytes), "--output", "-"];
+      if (Object.keys(artifactOutput).sort().join(",") !== "descriptor,maxBytes" || !Number.isSafeInteger(artifactOutput.descriptor) || artifactOutput.descriptor < 3
+          || !Number.isSafeInteger(artifactOutput.maxBytes) || artifactOutput.maxBytes <= 0 || artifactOutput.maxBytes > 268435456 || context?.outputLimitBytes !== undefined
+          || args.length !== expected.length + 1 || JSON.stringify(args.slice(0, -1)) !== JSON.stringify(expected)
+          || !/^https:\/\/deb\.debian\.org\/debian\/pool\/main\/(?:j\/jansson|n\/nftables)\/(?:libjansson4|libnftables1|nftables)_[0-9][A-Za-z0-9.+~_-]{0,127}_amd64\.deb$/.test(args.at(-1)!)) throw new Error("Unsupported artifact output invocation");
+      const info = fstatSync(artifactOutput.descriptor);
+      if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || info.size !== 0) throw new Error("Unsafe artifact output descriptor");
+    } catch { return { status: "completed", exitCode: 126, stdout: "", stderr: "Unsupported internal artifact output." }; }
+  }
   let child: ReturnType<typeof Bun.spawn>;
   const passiveStat = process.platform === "linux" && args.length === 5 && args[0] === "/usr/bin/stat" && args[1] === "--dereference" && args[2] === "--format=%d|%i|%F" && args[3] === "--" && args[4]!.startsWith("/");
   const environment = context?.cleanEnvironment ? { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LC_ALL: "C", LANG: "C" } : { ...process.env, ...(passiveStat ? { LC_ALL: "C", LANG: "C" } : {}) };
-  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: context?.cwd, env: args.includes("--host") ? { ...environment, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : environment }); }
+  try { child = Bun.spawn([...args], { stdin: "ignore", stdout: artifactOutput?.descriptor ?? "pipe", stderr: "pipe", cwd: context?.cwd, env: args.includes("--host") ? { ...environment, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : environment }); }
   catch (error) { return { status: (error as { code?: string }).code === "ENOENT" ? "missing" : "completed", exitCode: 126, stdout: "", stderr: "Executable could not be started." }; }
-  const stdout = child.stdout as ReadableStream<Uint8Array>;
   const stderr = child.stderr as ReadableStream<Uint8Array>;
-  const readers = [stdout.getReader(), stderr.getReader()];
+  const stdoutReader = artifactOutput ? undefined : (child.stdout as ReadableStream<Uint8Array>).getReader();
+  const stderrReader = stderr.getReader();
+  const readers = stdoutReader ? [stdoutReader, stderrReader] : [stderrReader];
   let truncated = false;
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout>;
@@ -86,7 +100,7 @@ async function run(args: readonly string[], timeoutMs: number, context?: HostCom
     } catch { /* Cancellation at the operation deadline is expected. */ }
     return Buffer.concat(chunks).toString("utf8");
   }
-  const output = Promise.all(readers.map(collect));
+  const output = Promise.all([stdoutReader ? collect(stdoutReader, 0) : Promise.resolve(""), collect(stderrReader, 1)]);
   const finished = Promise.all([output, child.exited]);
   const expiry = new Promise<null>((resolve) => { timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); for (const reader of readers) void reader.cancel().catch(() => {}); resolve(null); }, timeoutMs); });
   const result = await Promise.race([finished, expiry]);

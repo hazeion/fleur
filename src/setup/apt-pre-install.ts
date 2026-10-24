@@ -1,4 +1,5 @@
 import { aptHealthArgs, healthyDpkgSnapshot } from "./apt-health.ts";
+import { canonicalAptPackageName, canonicalAptSnapshot, validDistroDependencies, type AptDistroDependencies } from "./apt-dependencies.ts";
 /** Standard APT protocol-v2 guard; frontend serialization, not a backend-lock claim. */
 import { constants, write } from "node:fs";
 import { open } from "node:fs/promises";
@@ -9,7 +10,8 @@ let stage: GuardStage = "invocation";
 type ActionRefusal = "malformed-action" | "unknown-package" | "existing-version" | "direction" | "target-version" | "configure-before-install" | "duplicate-configure" | "archive-path-mismatch" | "duplicate-install" | "missing-install";
 let reason: ActionRefusal | undefined;
 let pathEquivalence: "canonical-path-equal" | "different-path" | undefined;
-const packageNames = ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"];
+const dockerPackageNames = ["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"];
+const dependencyNames = ["libjansson4", "libnftables1", "nftables"];
 async function boundedFile(path: string, limit: number) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -45,7 +47,11 @@ async function guard(): Promise<boolean> {
   const value: unknown = JSON.parse(loaded.bytes.toString("utf8"));
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const plan = value as Record<string, unknown>;
-  if (Object.keys(plan).sort().join(",") !== "formatVersion,packages,present,user" || plan.formatVersion !== 1 || !Number.isSafeInteger(plan.user) || BigInt(plan.user as number) !== loaded.info.uid || !Array.isArray(plan.packages) || !plan.packages.length || plan.packages.length > 5 || plan.present === null || typeof plan.present !== "object" || Array.isArray(plan.present)) return false;
+  const expanded = Object.hasOwn(plan, "distroDependencies");
+  const packageNames = expanded ? [...dockerPackageNames, ...dependencyNames] : dockerPackageNames;
+  if (Object.keys(plan).sort().join(",") !== (expanded ? "distroDependencies,formatVersion,packages,present,user" : "formatVersion,packages,present,user") || plan.formatVersion !== 1 || !Number.isSafeInteger(plan.user) || BigInt(plan.user as number) !== loaded.info.uid || !Array.isArray(plan.packages) || !plan.packages.length || plan.packages.length > packageNames.length || plan.present === null || typeof plan.present !== "object" || Array.isArray(plan.present)) return false;
+  const dependencies = plan.distroDependencies as AptDistroDependencies | undefined;
+  if (expanded && !validDistroDependencies({ distribution: "debian", release: "13", architecture: "x64", distroDependencies: dependencies })) return false;
   const present = plan.present as Record<string, unknown>;
   const packages = new Map<string, Record<string, unknown>>();
   for (const item of plan.packages) {
@@ -54,7 +60,14 @@ async function guard(): Promise<boolean> {
     if (Object.keys(artifact).sort().join(",") !== "architecture,dev,ino,name,path,sha256,size,version" || typeof artifact.name !== "string" || !packageNames.includes(artifact.name) || packages.has(artifact.name) || Object.hasOwn(present, artifact.name) || typeof artifact.version !== "string" || !/^[0-9][A-Za-z0-9.+:~_-]{0,127}$/.test(artifact.version) || (typeof artifact.architecture !== "string" || !["amd64", "arm64"].includes(artifact.architecture)) || typeof artifact.path !== "string" || !isAbsolute(artifact.path) || resolve(artifact.path) !== artifact.path || !artifact.path.startsWith(dirname(path) + sep) || typeof artifact.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(artifact.sha256) || !Number.isSafeInteger(artifact.size) || (artifact.size as number) <= 0 || (artifact.size as number) > 268435456 || typeof artifact.dev !== "string" || !/^[0-9]+$/.test(artifact.dev) || typeof artifact.ino !== "string" || !/^[0-9]+$/.test(artifact.ino)) return false;
     packages.set(artifact.name, artifact);
   }
-  if (Object.keys(present).some((name) => !packageNames.includes(name) || typeof present[name] !== "string") || packages.size + Object.keys(present).length !== 5) return false;
+  if (Object.keys(present).some((name) => !packageNames.includes(name) || typeof present[name] !== "string") || packages.size + Object.keys(present).length !== packageNames.length) return false;
+  if (expanded) {
+    if ([...packages.values()].some((artifact) => artifact.architecture !== "amd64")) return false;
+    for (const [name, declared] of Object.entries(dependencies!.artifacts)) {
+      const artifact = packages.get(name);
+      if (artifact ? artifact.version !== declared.version || artifact.architecture !== declared.architecture || artifact.sha256 !== declared.sha256 || artifact.size !== declared.size : present[name] !== declared.version) return false;
+    }
+  }
   stage = "protocol-input";
   const lines = (await input()).replace(/\n$/, "").split("\n");
   if (lines.shift() !== "VERSION 2") return false;
@@ -73,7 +86,8 @@ async function guard(): Promise<boolean> {
   for (const line of lines) {
     const action = /^(\S+) (\S+) ([<=>]) (\S+) (.+)$/.exec(line);
     if (!action) { reason = "malformed-action"; return false; }
-    const [, name, oldVersion, direction, newVersion, operation] = action;
+    const [, binary, oldVersion, direction, newVersion, operation] = action;
+    const name = canonicalAptPackageName(dependencies, binary!);
     const artifact = packages.get(name!);
     if (!artifact || oldVersion !== "-" || direction !== "<" || newVersion !== artifact.version) {
       reason = !artifact ? "unknown-package" : oldVersion !== "-" ? "existing-version" : direction !== "<" ? "direction" : "target-version";
@@ -91,7 +105,7 @@ async function guard(): Promise<boolean> {
   // Protocol v2 omits global ConfigurePending: independently reject every preexisting
   // incomplete package, trigger state or reinstreq instead of silently repairing it.
   stage = "package-inventory";
-  const snapshot = healthyDpkgSnapshot(await inventory());
+  const snapshot = canonicalAptSnapshot(dependencies, healthyDpkgSnapshot(await inventory()));
   if (!snapshot) return false;
   stage = "package-state";
   const retained = new Set<string>();

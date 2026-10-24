@@ -19,7 +19,7 @@ description: Requirements-based Fleur test-first development.
 Agree observable behavior, acceptance criteria and public test boundaries before implementation. Follow red then green: demonstrate the intended failing behavior, implement the smallest correction, and verify it. Do not weaken assertions or skip failures.
 Use Bun tests, positive/negative compiler fixtures, real uniquely owned disposable PostgreSQL for database behavior and browser verification for key flows. Never use development data as test data. Keep application agents within the fixed approved imports and dependencies; do not install packages or author stylesheets.
 Use bun run types for Microsoft TypeScript 7.0.2 and bun run lint for oxlint 1.87.0 plus the independent ESLint 10.12.0/typescript-eslint 8.71.2/TypeScript 6.0.3 analyzer. Run bun run test after adding the first requirements-based test; do not add a fabricated passing test to an empty suite. These package scripts do not imply later Fleur runtime or verification commands exist.
-Repeat timing and network-sensitive checks. Substantial changes need an independent reviewer. Report checks actually executed and remaining limitations. The creation slice does not yet supply application runtime or lifecycle/verification commands.
+Repeat timing and network-sensitive checks. Substantial changes need an independent reviewer. Report checks actually executed and remaining limitations. The CLI still does not expose application lifecycle or verification commands.
 `;
 
 export const offlineGuidance = `# Fleur ${releaseVersion} project guidance

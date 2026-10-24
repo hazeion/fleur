@@ -25,7 +25,7 @@
     "types": "bun ./node_modules/typescript/bin/tsc --noEmit && bun ./node_modules/typescript/bin/tsc --noEmit -p tests/runtime/tsconfig.json",
     "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli tests/ci tests/runtime scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli tests/ci tests/runtime scripts",
     "build:reference": "bun ./node_modules/typescript/bin/tsc -p tsconfig.declarations.json && bun scripts/verify-read-reference.ts",
-    "prepack": "bun run build:reference"
+    "prepack": "bun ./node_modules/typescript/bin/tsc -p tsconfig.declarations.json"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",

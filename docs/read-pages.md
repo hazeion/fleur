@@ -55,7 +55,7 @@ They receive no writes, transactions, raw SQL, connections or render dispatch.
 Each select uses one PostgreSQL statement under Read Committed. Separate reads
 may see newer committed data. Results default to 100 rows, permit at most 500,
 and fail if encoded public JSON exceeds 1 MiB. The five-second database budget
-includes pool queueing; cold Docker startup is measured separately. Cancellation
+includes pool queueing; cold Docker startup precedes that database budget. Cancellation
 starts at expiry, and cleanup verifies transaction state before reusing a
 connection. Unconfirmed connections are quarantined.
 
@@ -76,6 +76,13 @@ host filesystem, credentials or network access. A separate trusted broker owns
 PostgreSQL access. An independent guard enforces worker deadlines even if the
 controller disappears. Recovery journals bind immutable resource identities and
 the original local Docker endpoint; unknown ownership fails closed. If a controller disappears while a create request may still be pending, an absent name preserves the journal and reports recovery required. Test fixtures dispose their owned image tags after worker retirement; image cleanup refuses changed ownership or live container references.
+
+The internal renderer has a separate five-second wall-clock guard. Nested query
+worker startup and cleanup consume that render allowance, so a slow or overloaded
+host can return a timeout even when its database work is fast. This slice does
+not establish the full application's reference performance targets. This slice's
+verification runs sequentially to avoid unrelated builds or installs, following
+the specification's requirement to exclude unrelated heavy work.
 
 The internal build/render adapters support this slice's verified fixture. They
 do not add `dev`, `build` or `start` CLI commands, automatic migrations or a

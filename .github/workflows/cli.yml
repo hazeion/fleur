@@ -50,6 +50,7 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun install --cwd lint --frozen-lockfile --ignore-scripts
       - run: bun test tests/cli
+      - run: bun run build:reference
       - run: bun run types
       - run: bun run lint
       - name: Fresh generated project tooling, first isolated run

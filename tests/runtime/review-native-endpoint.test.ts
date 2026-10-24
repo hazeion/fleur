@@ -59,7 +59,7 @@ test("image preparation binds every Docker operation to one local endpoint", () 
 
 test("worker launch ignores changed ambient Docker context and uses the image endpoint", () => {
   const result = isolated(`
-    mock.module("./src/runtime/native/lease.ts", () => ({ NativeLease: { create: async () => ({ bindWorker: async () => {}, cleanup: async () => {} }) } }));
+    mock.module("./src/runtime/native/lease.ts", () => ({ NativeLease: { create: async () => ({ beginCreation: async () => {}, bindWorker: async () => {}, cleanup: async () => {} }) } }));
     Bun.spawn = (args, options) => {
       observe(args, options);
       const value = new TextEncoder().encode(JSON.stringify({ kind: "ready", worker: { id: "c".repeat(64), pid: 123, boot: "11111111-1111-1111-1111-111111111111" } }));
@@ -108,7 +108,7 @@ test("worker close retries lease cleanup after a transient control refusal", () 
   const result = isolated(`
     let attempts = 0;
     mock.module("./src/runtime/native/lease.ts", () => ({ NativeLease: { create: async () => ({
-      bindWorker: async () => {}, cleanup: async () => { if (++attempts === 1) throw new Error("CONTROL_UNCONFIRMED"); },
+      beginCreation: async () => {}, bindWorker: async () => {}, cleanup: async () => { if (++attempts === 1) throw new Error("CONTROL_UNCONFIRMED"); },
     }) } }));
     Bun.spawn = (args, options) => {
       observe(args, options);

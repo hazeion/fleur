@@ -8,11 +8,30 @@ import { selectedEndpoint, type NativeImages } from "./endpoint";
 import { nativeCommand } from "./command";
 
 /** Explicit build-time acquisition; serving never installs packages or builds images. */
-export async function prepareNativeImages(application: string): Promise<NativeImages> {
+export async function prepareNativeImages(application: string): Promise<NativeImages & { dispose(): Promise<void> }> {
   const endpoint = await selectedEndpoint();
   const command = (args: string[]) => nativeCommand([args[0]!, "--host", endpoint, ...args.slice(1)], args[1] === "build" ? 300_000 : 5000);
   const directory = await mkdtemp(join(tmpdir(), "fleur-read-build-"));
-  const tag = `fleur-read-build-${randomUUID()}`;
+  const owner = randomUUID(), tag = `fleur-read-build-${owner}`;
+  const expected = new Map<string, string>();
+  let disposed = false;
+  const dispose = async () => {
+    if (disposed) return;
+    for (const role of ["worker", "controller"]) {
+      const reference = tag+"-"+role;
+      const lookup = () => command(["docker", "image", "ls", "--quiet", "--no-trunc", "--filter", `reference=${reference}`]);
+      const found = await lookup();
+      if (!found) continue;
+      if (!/^sha256:[a-f0-9]{64}$/.test(found)) throw new Error("IMAGE_OWNERSHIP_UNCONFIRMED");
+      const metadata = JSON.parse(await command(["docker", "image", "inspect", reference, "--format", "{{json .}}"]));
+      if (metadata.Id !== found || (expected.has(role) && expected.get(role) !== found)
+        || metadata.Config?.Labels?.["dev.fleur.read-image-owner"] !== owner || !metadata.RepoTags?.includes(reference+":latest")) throw new Error("IMAGE_OWNERSHIP_UNCONFIRMED");
+      if (await command(["docker", "ps", "--all", "--quiet", "--filter", `ancestor=${found}`])) throw new Error("IMAGE_IN_USE");
+      await command(["docker", "image", "rm", reference]);
+      if (await lookup()) throw new Error("IMAGE_CLEANUP_UNCONFIRMED");
+    }
+    disposed = true;
+  };
   try {
     await cp(fileURLToPath(new URL("./", import.meta.url)), join(directory, "native"), { recursive: true, filter: source => !source.includes("__pycache__") });
     const build = await Bun.build({ entrypoints: [fileURLToPath(new URL("bootstrap.ts", import.meta.url))], target: "bun", minify: false });
@@ -31,6 +50,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends python3 dock
 RUN echo '${compilerHash}  /usr/bin/${compiler}' | sha256sum --check
 COPY native/ /controller/
 RUN /usr/bin/${compiler} -shared -fPIC -O2 -std=c11 -Wall -Wextra -Werror -pthread /controller/transport.c -o /controller/filter.so
+LABEL dev.fleur.read-image-owner=${owner}
 ENTRYPOINT ["/usr/bin/python3", "-I", "-u", "/controller/controller.py"]
 FROM oven/bun@sha256:${base} AS worker
 WORKDIR /probe
@@ -38,12 +58,17 @@ COPY --from=controller /controller/filter.so ./
 COPY bootstrap.js application.js ./
 ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 BUN_JSC_useConcurrentJIT=0 BUN_JSC_useConcurrentGC=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
+LABEL dev.fleur.read-image-owner=${owner}
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 `);
     await command(["docker", "build", "--quiet", "--target", "controller", "-t", tag+"-controller", directory]);
     await command(["docker", "build", "--quiet", "--target", "worker", "-t", tag+"-worker", directory]);
     const controller = await command(["docker", "image", "inspect", tag+"-controller", "--format", "{{.Id}}"]);
     const worker = await command(["docker", "image", "inspect", tag+"-worker", "--format", "{{.Id}}"]);
-    return { worker, controller, endpoint };
+    expected.set("controller", controller); expected.set("worker", worker);
+    return { worker, controller, endpoint, dispose };
+  } catch (error) {
+    try { await dispose(); } catch (cleanup) { throw new AggregateError([error, cleanup], "Image preparation and cleanup failed"); }
+    throw error;
   } finally { await rm(directory, { recursive: true, force: true }); }
 }

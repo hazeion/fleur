@@ -80,6 +80,12 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Real atomic filesystem placement with simulated Desktop host commands
         run: bun test tests/cli/setup-desktop.test.ts
+      - name: Explicit macOS browser smoke prerequisites
+        if: ${{ matrix.architecture == 'x86_64' }}
+        run: bun ./node_modules/@playwright/test/cli.js install chromium
+      - name: Server HTML preservation and island interaction on Intel macOS
+        if: ${{ matrix.architecture == 'x86_64' }}
+        run: bun test tests/runtime/browser-smoke.test.ts
 
   read-runtime:
     needs: scope

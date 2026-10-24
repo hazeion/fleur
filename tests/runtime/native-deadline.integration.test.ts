@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { prepareNativeImages } from "../../src/runtime/native/build";
@@ -8,6 +8,7 @@ let images: Awaited<ReturnType<typeof prepareNativeImages>>;
 beforeAll(async () => {
   images = await prepareNativeImages(`module.exports.run = async (request) => { if (request.spin) for (;;) {} return {kind:'complete', value:'healthy'}; };`);
 }, 300_000);
+afterAll(async () => { await images?.dispose(); });
 for (let repeat = 1; repeat <= 2; repeat++) test(`native deadline physically retires a busy worker without affecting its neighbor, repeat ${repeat}`, async () => {
   const busy = await startWorker(images), healthy = await startWorker(images);
   try {

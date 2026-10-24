@@ -39,7 +39,7 @@ handleQuery(listExercises, async ({ db }) => db.select(exercises, {
 island example. `registerPage` infers route parameters; `readQuery` is available
 only inside the server render. `defineIsland` validates props during server
 rendering and again before hydration. Direct navigation produces server HTML;
-the browser attaches interaction only to exported, validated islands. `Link` and
+the browser attaches interaction only to exported, validated island boundaries. Nested islands remain in their outer island's component tree, validate their own props, and hydrate once with that parent. `Link` and
 `navigate` validate and encode route parameters. Invalid routes return safe
 errors without internal exception text.
 
@@ -75,7 +75,7 @@ after native restrictions cover every worker thread. The worker receives no
 host filesystem, credentials or network access. A separate trusted broker owns
 PostgreSQL access. An independent guard enforces worker deadlines even if the
 controller disappears. Recovery journals bind immutable resource identities and
-the original local Docker endpoint; unknown ownership fails closed.
+the original local Docker endpoint; unknown ownership fails closed. If a controller disappears while a create request may still be pending, an absent name preserves the journal and reports recovery required. Test fixtures dispose their owned image tags after worker retirement; image cleanup refuses changed ownership or live container references.
 
 The internal build/render adapters support this slice's verified fixture. They
 do not add `dev`, `build` or `start` CLI commands, automatic migrations or a

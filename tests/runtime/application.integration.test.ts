@@ -9,7 +9,7 @@ import { ownedPostgres } from "./owned-postgres";
 test("restricted registration, query and page workers render the disposable PostgreSQL exercise data", async () => {
   const project = await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url)));
   const images = await prepareNativeImages(await compileWorker(project));
-  const fixture = await ownedPostgres();
+  const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
   let app: ReadApplication | undefined;
   try {
     await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
@@ -28,5 +28,5 @@ test("restricted registration, query and page workers render the disposable Post
     await expect(app.query("exercise.window", { locale: "fr", cursor: first.cursor })).rejects.toThrow("REQUEST_DENIED");
     await expect(app.render("/exercises/not-a-uuid")).rejects.toThrow("ROUTE_INVALID");
     await expect(app.query("exercise.list", { sql: "select *" })).rejects.toThrow("INPUT_INVALID");
-  } finally { await app?.close(); await fixture.cleanup(); }
+  } finally { await app?.close(); await fixture.cleanup(); await images.dispose(); }
 }, 300_000);

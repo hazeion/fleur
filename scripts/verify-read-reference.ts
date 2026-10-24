@@ -1,9 +1,9 @@
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname;
-const directory = join(root, "dist", "reference-check");
-await mkdir(directory, { recursive: true });
+await mkdir(join(root, "dist"), { recursive: true });
+const directory = await mkdtemp(join(root, "dist", "reference-check-"));
 try {
   const fixture = (await readFile(join(root, "tests/runtime/contracts.types.ts"), "utf8")).replaceAll("../../src/", "../reference/");
   await writeFile(join(directory, "contracts.ts"), fixture);

@@ -7,9 +7,9 @@ test("top-level application evaluation occurs only after native authority is rem
     const denied = Bun.file('/etc/passwd').text().then(() => false, () => true);
     module.exports.run = async () => ({kind: 'complete', value: {denied: await denied, secret: process.env.FLEUR_PRIVATE_DATABASE_URL ?? null}});
   `);
-  const worker = await startWorker(images);
+  const worker = await startWorker(images).catch(async error => { await images.dispose(); throw error; });
   try {
     const result = await worker.run({ mode: "test" }, () => { throw new Error("Unexpected exchange"); });
     expect(result).toEqual({ kind: "complete", value: { denied: true, secret: null } });
-  } finally { await worker.close(); }
+  } finally { await worker.close(); await images.dispose(); }
 }, 300_000);

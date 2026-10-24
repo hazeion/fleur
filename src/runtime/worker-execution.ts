@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { renderToStringAsync } from "preact-render-to-string";
-import { matchPage } from "../routing";
+import { selectPage } from "./routes";
 import type { ReadDb } from "../database";
 import { validatePublicValue } from "../schema";
 import { pages, queries, queryNames, pageNames, withExecution, type SafeLog } from "./registrations";
@@ -21,27 +21,24 @@ export async function executeQuery(name: string, input: unknown, db: ReadDb, log
 }
 /** No host filesystem, database connection, or arbitrary dispatcher is supplied. */
 export async function executePage(pathname: string, read: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
-  const candidates = [...pages.values()].sort((a, b) => (a.contract.path.match(/:/g)?.length ?? 0) - (b.contract.path.match(/:/g)?.length ?? 0));
-  for (const page of candidates) {
-    let params: unknown;
-    try { params = matchPage(page.contract, pathname); } catch { throw new Error("ROUTE_INVALID"); }
-    if (params === null) continue;
-    const descriptors: IslandDescriptor[] = [];
-    return withExecution({ kind: "render", read }, async () => withIslandRenderer((island, value) => {
-      const registered = islands.get(island), id = islandNames.get(island);
-      if (!registered || !id) throw new Error("Unregistered island");
-      const props = freezeValue(registered.validate(value));
-      const key = `island-${descriptors.length}`;
-      descriptors.push(Object.freeze({ key, id, props }));
-      return h("div", { "data-fleur-island": key }, registered.render(props));
-    }, async () => {
-      const node = await page.component(params);
-      const html = await renderToStringAsync(node as Parameters<typeof renderToStringAsync>[0]);
-      validatePublicValue(descriptors);
-      return { html, islands: Object.freeze(descriptors) };
-    }));
-  }
-  throw new Error("ROUTE_NOT_FOUND");
+  const selected = selectPage([...pages.keys()], pathname);
+  if (!selected) throw new Error("ROUTE_NOT_FOUND");
+  const page = pages.get(selected.page)!;
+  const params = selected.params;
+  const descriptors: IslandDescriptor[] = [];
+  return withExecution({ kind: "render", read }, async () => withIslandRenderer((island, value) => {
+    const registered = islands.get(island), id = islandNames.get(island);
+    if (!registered || !id) throw new Error("Unregistered island");
+    const props = freezeValue(registered.validate(value));
+    const key = `island-${descriptors.length}`;
+    descriptors.push(Object.freeze({ key, id, props }));
+    return h("div", { "data-fleur-island": key }, registered.render(props));
+  }, async () => {
+    const node = await page.component(params);
+    const html = await renderToStringAsync(node as Parameters<typeof renderToStringAsync>[0]);
+    validatePublicValue(descriptors);
+    return { html, islands: Object.freeze(descriptors) };
+  }));
 }
 export function nameExports(exports: Readonly<Record<string, unknown>>): void {
   const used = new Set<string>();

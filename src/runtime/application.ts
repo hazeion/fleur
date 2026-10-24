@@ -4,7 +4,7 @@ import { ReadBroker } from "./database/broker";
 import { startWorker } from "./native/host";
 import { restoreManifest, type Registry } from "./manifest-wire";
 import { dispatchRead } from "./read-wire";
-import { matchPage } from "../routing";
+import { selectPage } from "./routes";
 import { validatePublicValue } from "../schema";
 import type { ReadDb } from "../database";
 import type { PageResult } from "./worker-execution";
@@ -88,7 +88,7 @@ export class ReadApplication {
   async render(path: string): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.
     try {
-      if (![...this.registry.pages.values()].some(page => matchPage(page, path) !== null)) throw new Error("ROUTE_NOT_FOUND");
+      if (!selectPage([...this.registry.pages.values()], path)) throw new Error("ROUTE_NOT_FOUND");
     } catch (error) { throw new Error(error instanceof Error && error.message === "ROUTE_NOT_FOUND" ? error.message : "ROUTE_INVALID"); }
     const worker = await startWorker(this.#images);
     try {

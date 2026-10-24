@@ -19,7 +19,7 @@ test("direct browser navigation preserves server HTML and hydrates only validate
   expect(source).not.toContain("database/broker");
   expect(source).toContain("Counter.tsx");
   const images = await prepareNativeImages(await compileWorker(project));
-  const fixture = await ownedPostgres();
+  const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
   let app: ReadApplication | undefined;
   let server: ReturnType<typeof serveReadApplication> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -64,5 +64,5 @@ test("direct browser navigation preserves server HTML and hydrates only validate
     await rejected.getByRole("button", { name: "Squat: 0" }).click();
     await browserExpect(rejected.getByRole("button", { name: "Squat: 0" })).toBeVisible();
     await rejected.close();
-  } finally { await browser?.close(); await server?.stop(true); await app?.close(); await fixture.cleanup(); }
+  } finally { await browser?.close(); await server?.stop(true); await app?.close(); await fixture.cleanup(); await images.dispose(); }
 }, 300_000);

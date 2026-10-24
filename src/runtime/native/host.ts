@@ -47,6 +47,7 @@ export async function startWorker(images: NativeImages) {
   validateEndpoint(images.endpoint);
   const owner = randomUUID(), name = `fleur-read-controller-${owner}`;
   const lease = await NativeLease.create(owner, images);
+  await lease.beginCreation("worker");
   const child = Bun.spawn(["docker", "--host", images.endpoint, "run", "--interactive", "--name", name, "--label", `dev.fleur.read-controller-owner=${owner}`,
     "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=512m", "--pids-limit=64", "--pull=never",
     "--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock", images.controller, images.worker, images.controller, owner],
@@ -92,6 +93,7 @@ export async function startWorker(images: NativeImages) {
     async run(request: unknown, exchange: (request: unknown) => Promise<unknown> | unknown, budgetMs = 5000): Promise<unknown> {
       if (used || closed) throw new Error("REQUEST_DENIED");
       used = true;
+      await lease.beginCreation("guard");
       child.stdin.write(framed({ budgetMs, command: request }));
       await child.stdin.flush();
       const guard = record(await reader.read());

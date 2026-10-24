@@ -64,3 +64,26 @@ test("native lease stops creation authority before inspecting children and remov
   expect(result.events.indexOf("remove:worker")).toBeLessThan(result.events.indexOf("remove:guard"));
   expect(result.events.indexOf("remove:guard")).toBeLessThan(result.events.indexOf("remove:controller"));
 });
+
+test("an unobserved daemon create retains its journal across recovery instead of treating absence as retirement", () => {
+  const child = Bun.spawnSync([process.execPath, "-e", `
+    import { mock } from "bun:test";
+    import { readFile, rm } from "node:fs/promises";
+    import { join } from "node:path";
+    mock.module("./src/setup/host.ts", () => ({ productionHost: () => ({ run: async () => ({ status: "completed", exitCode: 0, stdout: "", stderr: "" }) }) }));
+    const { NativeLease } = await import("./src/runtime/native/lease.ts");
+    const lease = await NativeLease.create("00000000-0000-0000-0000-000000000000", { worker: "sha256:"+"a".repeat(64), controller: "sha256:"+"b".repeat(64), endpoint: "unix:///var/run/docker.sock" });
+    try {
+      await lease.beginCreation("worker");
+      const journal = join(lease.recoveryDirectory, "lease.json");
+      const before = await readFile(journal, "utf8");
+      const recovered = await NativeLease.recover(lease.recoveryDirectory);
+      let code;
+      try { await recovered.cleanup(); } catch (error) { code = error.message; }
+      console.log(JSON.stringify({ code, unchanged: before === await readFile(journal, "utf8") }));
+    } finally { await rm(lease.recoveryDirectory, { recursive: true, force: true }); }
+  `], { cwd: new URL("../..", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
+  expect(child.stderr.toString()).toBe("");
+  expect(child.exitCode).toBe(0);
+  expect(JSON.parse(child.stdout.toString())).toEqual({ code: "RECOVERY_REQUIRED", unchanged: true });
+});

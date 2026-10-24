@@ -42,6 +42,12 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000,
   try {
     const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!, (bytes) => { transport.stdoutBytes = bytes; }), bounded(child.stderr!, (bytes) => { transport.stderrBytes = bytes; }), finished]), child.signalFailed]);
     if (code === 75) return result("pending");
+    const closedLoopback = `Connection closed by 127.0.0.1 port ${target.port}\r\n`;
+    // A completed empty connection close supplies no boot result. Poll only
+    // within the original boot budget; semantic readiness remains mandatory.
+    if (code === 255 && stdout === "" && child.signal === null && !child.terminationRequested
+        && !transport.deadlineFired && !signal?.aborted && performance.now() < started + transport.timeoutMs
+        && (stderr === closedLoopback || stderr === closedLoopback.replaceAll("\r\n", "\n"))) return result("pending");
     const preAuthenticationReset = `kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port ${target.port}\r\n`;
     if (code === 255 && stdout === "" && (stderr === preAuthenticationReset || stderr === preAuthenticationReset.replaceAll("\r\n", "\n"))) return result("pending");
     if (code === 255 && /(?:connect to host 127\.0\.0\.1 port [0-9]+: Connection (?:refused|timed out)|Connection timed out during banner exchange)/.test(stderr)) return result("pending");

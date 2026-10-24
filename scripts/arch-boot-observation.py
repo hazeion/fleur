@@ -192,7 +192,7 @@ def main():
         observe('runtime-packages',['/usr/bin/pacman','--query','--',*PACKAGES],known_packages)
         observe('database-check',['/usr/bin/pacman','--database','--check','--quiet'])
         for key,expected in [('RootDir',('/\n',)),('DBPath',('/var/lib/pacman/\n',)),('GPGDir',('/etc/pacman.d/gnupg/\n',)),
-                             ('HookDir',('/etc/pacman.d/hooks/\n',)),('LocalFileSigLevel',('Optional\n','Optional TrustedOnly\n'))]:
+                             ('HookDir',('/etc/pacman.d/hooks/\n',)),('LocalFileSigLevel',('PackageOptional\nPackageTrustedOnly\n','PackageRequired\nPackageTrustedOnly\n'))]:
             observe('pacman-conf-'+key,['/usr/bin/pacman-conf',key],expected=expected)
         def storage(code,out,error):
             if code!=0 or error:

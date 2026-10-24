@@ -338,3 +338,27 @@ test("an initial observation still uses the available partial attempt budget", a
     }
   } finally { await fixture.close(); }
 }, 10000);
+
+test("an exact empty loopback close can precede genuine boot without extending the operation deadline", async () => {
+  const ready = JSON.stringify({ status: "done", extended_status: "done", errors: [], recoverable_errors: {} }) + "\nFLEUR_OWNED_GUEST_NONCE=" + nonce + "\n";
+  const fixture = await readinessFixture(`if(calls===1){process.stderr.write('Connection closed by 127.0.0.1 port 2222\\r\\n');process.exit(255)}process.stdout.write(${JSON.stringify(ready)});`);
+  try {
+    const result = await fixture.run(5000);
+    expect(result.exit).toBe(0);
+    expect(result.observed).toMatchObject({ ok: true, state: "ready", lastBootObservation: { cloudInitComplete: true, nonceMatched: true, transport: { exitCode: 0, signal: null, deadlineFired: false, cleanupConfirmed: true } } });
+    expect(await Bun.file(join(fixture.root, "calls")).text()).toBe("2");
+    expect(result.elapsedMs).toBeLessThan(5000);
+  } finally { await fixture.close(); }
+}, 8000);
+
+test("permanent exact loopback closes time out without becoming semantic boot readiness", async () => {
+  const fixture = await readinessFixture("process.stderr.write('Connection closed by 127.0.0.1 port 2222\\r\\n');process.exit(255);");
+  try {
+    const result = await fixture.run(1800);
+    expect(result.exit).toBe(0);
+    expect(result.observed).toMatchObject({ ok: false, state: "failed", error: { code: "BOOT_TIMEOUT" } });
+    expect(result.observed.lastBootObservation.cloudInitComplete).not.toBe(true);
+    expect(result.observed.lastBootObservation.nonceMatched).not.toBe(true);
+    expect(result.elapsedMs).toBeLessThan(5000);
+  } finally { await fixture.close(); }
+}, 8000);

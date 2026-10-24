@@ -693,6 +693,8 @@ def main():
     root = None
     services = []
     interrupted = False
+    package_after = None
+    before = None
     def cancel(_number, _frame):
         nonlocal interrupted
         if not interrupted:
@@ -844,12 +846,6 @@ def main():
         report['serviceStderr'] = service.error.read_text()[-16384:]
         if report['service']['exitCode'] != 0 or report['service']['cancelled'] or report['service']['terminal'].get('result') != 'success' or not (accepted_arch_observation if arch_observation else accepted_recovery_guest if recovery else accepted_guest)(report['guestVerifier'], os.environ['GITHUB_SHA']):
             raise RuntimeError('Native guest qualification failed')
-        final_packages = package_snapshot()
-        final_docker = docker_snapshot()
-        report['hostFinalPreservation'] = {'packageSnapshot':final_packages,'dockerSnapshot':final_docker,
-            'packagesUnchanged':final_packages == package_after,'dockerUnchanged':final_docker == before}
-        if final_packages != package_after or final_docker != before:
-            raise RuntimeError('Host package or Docker state changed during guest execution')
         report['ok'] = True
     except BaseException as error:
         report['error'] = {'type': type(error).__name__, 'message': str(error), **({'diagnostic': error.diagnostic} if hasattr(error, 'diagnostic') else {})}
@@ -857,6 +853,26 @@ def main():
         complete = retire_services(services)
         report['interrupted'] = interrupted
         report['allServiceCgroupsAbsent'] = complete
+        if package_after is not None and before is not None:
+            # A failed guest report still requires a final observation after all
+            # services have retired. Never substitute the pre-guest snapshot.
+            report['hostFinalPreservation'] = {'collected':False,'servicesRetired':complete}
+            if complete:
+                try:
+                    final_packages = package_snapshot()
+                    final_docker = docker_snapshot()
+                    report['hostFinalPreservation'].update(collected=True,packageSnapshot=final_packages,
+                        dockerSnapshot=final_docker,packagesUnchanged=final_packages == package_after,
+                        dockerUnchanged=final_docker == before)
+                    if final_packages != package_after or final_docker != before:
+                        report['ok'] = False
+                        report.setdefault('error',{'type':'RuntimeError','message':'Host package or Docker state changed during guest execution'})
+                except BaseException as error:
+                    report['ok'] = False
+                    report['hostFinalPreservation']['errorType'] = type(error).__name__
+                    report.setdefault('error',{'type':'RuntimeError','message':'Final host preservation is unconfirmed'})
+            else:
+                report['ok'] = False
         if root and complete:
             import shutil
             try:

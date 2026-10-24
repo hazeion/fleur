@@ -35,6 +35,28 @@ async function command(args: string[], budget = 30000) {
     return { stdout, stderr, exitCode };
   } finally { if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; }
 }
+/** Fixed pattern names only: console text can contain bootstrap secrets. */
+export function summarizeArchBootSerial(outputs: readonly string[]) {
+  const patterns = [
+    ["kernel-start", /Linux version [0-9]/],
+    ["cloud-init-start", /Cloud-init v[. ].* running '/],
+    ["cloud-init-finished", /Cloud-init v[. ].* finished at /],
+    ["ssh-start", /Started .*Open(?:BSD )?SSH|Started .*SSH server|Starting .*Open(?:BSD )?SSH/],
+    ["ssh-stop", /Stopped .*Open(?:BSD )?SSH|Stopped .*SSH server/],
+    ["systemd-failure", /\[\s*FAILED\s*\]|Failed to start /],
+    ["kernel-panic", /Kernel panic - not syncing/],
+    ["python-traceback", /Traceback \(most recent call last\)/],
+    ["cloud-init-warning", /cloud-init.*(?:WARNING|ERROR|failed)/],
+  ] as const;
+  return outputs.map((output) => {
+    const matches: { line: number; pattern: string }[] = []; let total = 0;
+    for (const [index, raw] of output.split("\n").entries()) {
+      const line = raw.split(String.fromCharCode(27)).map((part, index) => index === 0 ? part : part.replace(/^\[[0-9;]*m/, "")).join("");
+      for (const [name, pattern] of patterns) if (pattern.test(line)) { total++; if (matches.length < 256) matches.push({ line: index + 1, pattern: name }); }
+    }
+    return { decodedUtf8Sha256: hash(output), decodedUtf8Bytes: Buffer.byteLength(output), patternMatches: matches, truncatedPatterns: total > matches.length };
+  });
+}
 /** Retain a completed failed guest report before rejecting the observation. */
 export async function collectArchObservation(options: { sshOptions: string[]; port: number; sourceSha256: string; binding: { nonce: string; bootId: string; uid: number; manifestSha256: string }; deadline: number; signal: AbortSignal }, result: Record<string, unknown>) {
   const binding = copyOwnedGuestBinding(options.binding, options.binding.nonce);
@@ -147,7 +169,7 @@ if (import.meta.main) {
     let descriptorUncertain = false;
     let reaped = !vm;
     if (vm) {
-      try { if (vm.exitCode === null) vm.kill("SIGTERM"); await Promise.race([vm.exited, new Promise((done) => setTimeout(done, 3000))]); if (vm.exitCode === null) vm.kill("SIGKILL"); await vm.exited; reaped = true; report.serialSha256 = (await serial)?.map(hash); }
+      try { if (vm.exitCode === null) vm.kill("SIGTERM"); await Promise.race([vm.exited, new Promise((done) => setTimeout(done, 3000))]); if (vm.exitCode === null) vm.kill("SIGKILL"); await vm.exited; reaped = true; report.serialSummary = summarizeArchBootSerial(await serial ?? []); }
       catch { report.ok = false; }
     }
     try { await overlayHandle?.close(); } catch { descriptorUncertain = true; report.ok = false; }

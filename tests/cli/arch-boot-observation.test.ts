@@ -14,3 +14,13 @@ test("Arch observer refuses a local host before interpreting an image", async ()
   expect(error).toBe(""); expect(code).toBe(4);
   expect(JSON.parse(out)).toMatchObject({ scope: "source-owned-arch-kvm-boot-observation", ok: false, executed: false, installationVerified: false, nativeQualification: false, runtimeAdmission: false });
 });
+
+test("Arch console diagnostics retain fixed boot pattern facts without publishing arbitrary text or bootstrap secrets", async () => {
+  const { summarizeArchBootSerial } = await import("../../scripts/observe-arch-boot.ts");
+  const secret = "PRIVATE-BOOTSTRAP-KEY-CONTENT";
+  const text = `Linux version 6.17.1\n${secret}\n[FAILED] Failed to start secret-service-${secret}\n-----BEGIN OPENSSH PRIVATE KEY-----\n${secret}\n-----END OPENSSH PRIVATE KEY-----\n`;
+  const records = summarizeArchBootSerial([text]);
+  expect(records).toEqual([{ decodedUtf8Sha256: Bun.CryptoHasher.hash("sha256", text, "hex"), decodedUtf8Bytes: Buffer.byteLength(text), patternMatches: [{ line: 1, pattern: "kernel-start" }, { line: 3, pattern: "systemd-failure" }], truncatedPatterns: false }]);
+  expect(JSON.stringify(records)).not.toContain(secret);
+  expect(JSON.stringify(records)).not.toContain("PRIVATE KEY");
+});

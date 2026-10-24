@@ -1339,3 +1339,37 @@ This lane always declares installation, native qualification, runtime admission,
 human consent and native CPU-performance proof false. A successful observation
 would supply measured preparation inputs. It cannot admit an Arch installer
 profile or replace fresh-installation and runtime qualification repeats.
+
+At `6842bbf0efffbc3f329cb5d65bb6c2e29b4cfbc7`, full
+[CLI](https://github.com/hazeion/fleur/actions/runs/40096304681),
+[native prerequisite](https://github.com/hazeion/fleur/actions/runs/40096304682)
+and [compatibility](https://github.com/hazeion/fleur/actions/runs/40096304654)
+workflows passed. CLI recorded 1,300 tests and 12,431 assertions, types, full lint
+and two isolated generated-project checks. Both existing-install prerequisite
+reports and all four runtime/VFS reports passed independent review with original
+enforcement, repeats, deadlines and disposal intact. The prerequisite reports
+constitute existing-install readiness, not fresh installation.
+
+The [first guarded Arch observation](https://github.com/hazeion/fleur/actions/runs/40096309335)
+failed after authenticated image/header/QEMU structure checks and actual VM
+creation. Report SHA256 is
+`5854bd350c091288a9dcc1471c91a31b06d7981eada2abe2e3487c61790a50b5`. Its final boot observation retained an empty SSH exit 255 with the
+exact owned-loopback connection-closed diagnostic, normal process exit and
+confirmed transport cleanup. Boot readiness, root custody and Arch installation
+were not established. The historical close cause remains unknown. Full
+VM/overlay/credentials/scratch/service/cgroup disposal passed. Exact host-tool
+additions and unrelated-package/default-Docker preservation were measured through
+preparation; the failed path did not collect a final after-guest host snapshot.
+
+The correction treats only that exact empty, normally completed, unexpired
+closed-loopback response as pending. Different ports/addresses, output, extra
+authentication/host-key diagnostics, other exits/signals, cancellation, expired
+attempts and uncertain cleanup remain failures. A later clean cloud-init result,
+exact nonce and root custody are still mandatory within the original 180-second
+boot limit. Permanent closes time out. Intended-red exact-message regressions
+preceded the correction. Final host observations now run after service retirement
+on failed guests too, retaining the primary failure and refusing changed or
+unconfirmed host state. Console diagnostics expose only fixed pattern names,
+line indices and hashes, preserving bootstrap secrets and making no causal or
+readiness claim. A fresh corrected observation and current-source checks remain
+required.

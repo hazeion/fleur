@@ -80,10 +80,11 @@ export async function observeInterruptionInitial(target: SessionTarget, signal?:
     } finally { await cleanup(); }
   }
   const observe = async (): Promise<SessionObservation> => {
+    let initialGuest: Record<string, unknown> | undefined;
     try {
       if (!ownedBinding || !originalOs || target.recordedHelpers !== true) throw new Error("Original full owned binding and recorded input mode required.");
       const observed = await ssh(`python3 -I lab/fleur-interrupted-guest.py ${target.nonce}${ownedArguments}${recordedArguments} --qualification-source ${target.qualificationSourceSha256}`);
-      const guest = observed.guest;
+      const guest = observed.guest; initialGuest = guest;
       checkRecordedInputs(guest, true);
       checkOriginalOs(guest, ownedBinding, originalOs);
       const interrupted = guest.interruption as Record<string, unknown> | undefined;
@@ -94,7 +95,7 @@ export async function observeInterruptionInitial(target: SessionTarget, signal?:
           || interrupted?.kind !== "subreaper-supervised-completed-effects-missing-parent-receipt" || interrupted.historicalOutcome !== "unknown" || interrupted.subreaperDescendantsRetired !== true || cli?.stopped !== true || cli.reapedAfterSigkill !== true
           || conformance?.ok !== true || conformance.runtimeAdmission !== false || conformance.humanConsentProof !== false || typeof checkpoint !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint)) throw new Error("Initial native interruption did not establish its completed-effects checkpoint.");
       return { formatVersion: 1, scope: "interrupted-linux-initial-observation", ok: true, guest };
-    } catch (error) { return failure("SESSION_FAILED", error instanceof Error ? error.message : "Native interruption observation failed."); }
+    } catch (error) { return { ...failure("SESSION_FAILED", error instanceof Error ? error.message : "Native interruption observation failed."), ...(initialGuest ? { initialGuest } : {}) }; }
   };
   const observed = await observe();
   try { await resumeRelay.close(); }

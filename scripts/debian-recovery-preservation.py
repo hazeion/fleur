@@ -27,7 +27,8 @@ def absent(path):
 def configuration_entry(path,helper=False):
  custody()
  if absent(path):return None
- body,identities=module.protected_read(path,1048576,None if helper else 0o644,deadline=end)
+ exact_mode=None if helper else (0o755 if path=='/etc/nftables.conf' else 0o644)
+ body,identities=module.protected_read(path,1048576,exact_mode,deadline=end)
  identity=identities[-1][1]
  dev,ino,mode,uid,gid,nlink,size,mtime,ctime=identity
  if len(body)!=size:raise RuntimeError('Configuration byte count changed')

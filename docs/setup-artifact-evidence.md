@@ -1147,3 +1147,26 @@ source commit and actual ordinary archive hash. Every guest continuation
 reauthenticates those inputs against the host-held record digest. Mocked contract,
 bridge, source and deadline tests are verifier evidence only. Native recovery
 qualification still requires executed reports and independent review.
+
+The first recovery attempt at `496f86f19a54d17b3feb6864b82845d08da93d75`
+failed during the initial session in
+[run 40089712304](https://github.com/hazeion/fleur/actions/runs/40089712304).
+Report SHA256 is
+`cc8f4687b8e93bb70aff286cfbd36dd273b8dadb0464f74b24a6f9c9e0b53b2b`.
+VM, credentials, overlay, inner/outer scratch, service cgroup and unit disposal
+were confirmed. The initial transport discarded the guest's failed report and
+retained only a generic checkpoint error, so that attempt does not establish its
+underlying guest failure. The transport now preserves the exact bounded parsed
+report under `initialGuest` while keeping failure and refusing a successful
+checkpoint; its external SSH regression failed first and then passed.
+
+A separate descriptor-bound audit rechecked the exact authenticated nftables
+payload SHA256 above and found a verifier assumption inconsistent with its tar
+metadata: `/etc/nftables.conf` is root-owned regular mode `0755` (243 bytes),
+while `/usr/lib/systemd/system/nftables.service` is mode `0644` (458 bytes).
+The recovery reader and validator now require those exact path-specific modes.
+They refuse swapped modes and retain all ownership, link, byte, identity,
+configuration-preservation and service-nonexecution checks. Independent tests
+execute the generated root reader and prove both exact mode requests. This is a
+confirmed verifier correction, without claiming it caused the earlier native
+failure whose guest diagnosis was lost. Fresh native recovery remains pending.

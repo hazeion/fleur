@@ -38,7 +38,7 @@ def file_entry(inode):
 
 
 def configuration(installed):
-    return {'files': {'/etc/nftables.conf': file_entry(100) if installed else None,
+    return {'files': {'/etc/nftables.conf': {**file_entry(100), 'mode': 0o755} if installed else None,
                       UNIT: file_entry(101) if installed else None},
             'helperFiles': [], 'unit': {'FragmentPath': UNIT if installed else '', 'DropInPaths': '', 'Transient': 'no'}}
 
@@ -167,6 +167,19 @@ class TwoBootPreservationRequirements(unittest.TestCase):
             with self.subTest(unit_field=field):
                 self.reject(lambda o,n,r,k=field,v=value: r['current']['observations']['beforeReconciliation']['configuration']['unit'].update({k:v}))
         self.reject(lambda o,n,r: r['current']['observations']['afterInspection']['configuration'].update(extra=True))
+
+    def test_configuration_modes_match_each_exact_authenticated_debian_artifact_path(self):
+        old,new,report=preservation_fixture()
+        # Pinned nftables 1.1.3-1 data.tar stores its executable configuration
+        # as0755 and the service as0644. Neither mode is an interchangeable option.
+        self.assertIsNone(contract.validate_two_boot_preservation(old,new,report))
+        for path,wrong_mode in [('/etc/nftables.conf',0o644),(UNIT,0o755)]:
+            def change_all(o,n,r):
+                for side in ('original','current'):
+                    for phase,item in r[side]['observations'].items():
+                        if side!='original' or phase!='beforeInstall':
+                            item['configuration']['files'][path]['mode']=wrong_mode
+            with self.subTest(path=path,wrong_mode=wrong_mode):self.reject(change_all)
 
     def test_consistently_unsafe_file_metadata_is_not_mistaken_for_preservation(self):
         def change_all(report, field, value):

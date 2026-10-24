@@ -95,7 +95,25 @@ class BridgeRequirements(unittest.TestCase):
                 self.assertIn(original_command, generated)
                 detached = source[source.index('def detached():'):source.index("custody();print(json.dumps(")]
                 self.assertIn(detached, generated)
-                self.assertIn("module.protected_read(path,1048576,None if helper else 0o644,deadline=end)", generated)
+
+    def test_generated_configuration_reader_demands_exact_mode_for_each_pinned_path(self):
+        import hashlib
+        import stat
+        for stage in ('original','current'):
+            tree=ast.parse(bridge.root_source(self.guest,stage))
+            reader=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='configuration_entry')
+            for path,expected in [('/etc/nftables.conf',0o755),('/usr/lib/systemd/system/nftables.service',0o644)]:
+                calls=[]
+                def protected_read(actual,maximum,exact_mode,*,deadline):
+                    calls.append((actual,maximum,exact_mode,deadline))
+                    return b'abc',((actual,(2049,100,stat.S_IFREG|expected,0,0,1,3,10,10)),)
+                namespace={'custody':lambda:None,'absent':lambda p:False,'module':SimpleNamespace(protected_read=protected_read),
+                           'end':1234,'stat':stat,'hashlib':hashlib}
+                exec(compile(ast.Module(body=[reader],type_ignores=[]),'<generated-root-reader>','exec'),namespace)
+                result=namespace['configuration_entry'](path)
+                with self.subTest(stage=stage,path=path):
+                    self.assertEqual(calls,[(path,1048576,expected,1234)])
+                    self.assertEqual(result['mode'],expected)
 
     def test_unknown_stage_or_changed_literal_shape_refuses_generation(self):
         for stage in ('', 'renewed', None):

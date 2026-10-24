@@ -71,7 +71,7 @@ def _decimal(value):
     return type(value) is str and re.fullmatch(r'(0|[1-9][0-9]{0,22})', value) is not None
 
 
-def _file_entry(value, helper=False):
+def _file_entry(value, helper=False, exact_mode=0o644):
     _require(_closed(value, ('kind', 'uid', 'gid', 'mode', 'nlink', 'dev', 'ino', 'size', 'mtimeNs', 'ctimeNs', 'sha256')),
              'Closed recovery configuration metadata required')
     _require(value['kind'] == 'file', 'Unexpected configuration entry type')
@@ -82,7 +82,7 @@ def _file_entry(value, helper=False):
         _require((0 <= value['mode'] <= 0o777 and value['mode'] & 0o022 == 0),
                  'Unsafe systemd helper entry mode')
     else:
-        _require(value['mode'] == 0o644, 'Exact installed configuration mode required')
+        _require(value['mode'] == exact_mode, 'Exact installed configuration mode required')
     _require((0 if helper else 1) <= value['size'] <= 1048576 and _hex(value['sha256'], 64), 'Bounded configuration bytes required')
     for field in ('dev', 'ino', 'mtimeNs', 'ctimeNs'):
         _require(_decimal(value[field]), 'Canonical configuration identity required')
@@ -92,9 +92,9 @@ def _file_entry(value, helper=False):
 def _configuration(value, installed):
     _require(_closed(value, ('files', 'helperFiles', 'unit')) and _closed(value['files'], (CONFIGURATION_PATH, UNIT_PATH)),
              'Closed fixed configuration scope required')
-    for entry in value['files'].values():
+    for path, entry in value['files'].items():
         if installed:
-            _file_entry(entry)
+            _file_entry(entry, exact_mode=0o755 if path == CONFIGURATION_PATH else 0o644)
         else:
             _require(entry is None, 'Original fresh configuration must be absent')
     expected_unit = {'FragmentPath': UNIT_PATH if installed else '', 'DropInPaths': '', 'Transient': 'no'}

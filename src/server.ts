@@ -1,13 +1,13 @@
 import type { VNode } from "preact";
-import { defineQuery, type Query, validatePublicValue } from "./schema";
+import { defineQuery, defineMutation, type Mutation, type Query, validatePublicValue } from "./schema";
 import { definePage, type Page } from "./routing";
-import type { ReadDb } from "./database";
-import { currentExecution, pages, queries, queryNames, type SafeLog } from "./runtime/registrations";
+import type { ReadDb, WriteDb } from "./database";
+import { currentExecution, pages, queries, queryNames, mutations, mutationNames, type SafeLog } from "./runtime/registrations";
 
 export type { SafeLog };
 export function handleQuery<I, O>(contract: Query<I, O>, handler: (context: { input: NoInfer<I>; db: ReadDb; log: SafeLog }) => Promise<NoInfer<O>>): void {
   defineQuery({ ...(contract.name === undefined ? {} : { name: contract.name }), input: contract.input, output: contract.output });
-  if (contract.kind !== "query" || typeof handler !== "function" || queries.has(contract) || (contract.name && [...queries.keys()].some(query => query.name === contract.name))) throw new Error("Duplicate or invalid query");
+  if (contract.kind !== "query" || typeof handler !== "function" || queries.has(contract) || (contract.name && [...queries.keys(), ...mutations.keys()].some(query => query.name === contract.name))) throw new Error("Duplicate or invalid query");
   queries.set(contract, Object.freeze({ contract, handler: async (context: { input: unknown; db: ReadDb; log: SafeLog }) => {
     const input = contract.input.parse(context.input);
     const output = await handler({ ...context, input });
@@ -46,3 +46,13 @@ export function inputError(fields: Record<string, string>): PublicOperationError
   return new PublicOperationError("INPUT_INVALID", fields);
 }
 export function publicError(code: DeclaredErrorCode, details?: unknown): PublicOperationError { return new PublicOperationError(code, details); }
+
+export function handleMutation<I, O>(contract: Mutation<I, O>, handler: (context: { input: NoInfer<I>; db: WriteDb; log: SafeLog }) => Promise<NoInfer<O>>): void {
+  defineMutation({ ...(contract.name === undefined ? {} : { name: contract.name }), input: contract.input, output: contract.output });
+  if (contract.kind !== "mutation" || typeof handler !== "function" || mutations.has(contract) || (contract.name && [...mutations.keys(), ...queries.keys()].some(operation => operation.name === contract.name))) throw new Error("Duplicate or invalid mutation");
+  mutations.set(contract, Object.freeze({ contract, handler: async (context: { input: unknown; db: WriteDb; log: SafeLog }) => {
+    const input = contract.input.parse(context.input);
+    return contract.output.parse(await handler({ ...context, input }));
+  } }));
+  if (contract.name) mutationNames.set(contract, contract.name);
+}

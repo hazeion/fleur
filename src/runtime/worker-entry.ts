@@ -1,7 +1,7 @@
 import { validatePublicValue } from "../schema";
-import { executePage, executeQuery } from "./worker-execution";
+import { executePage, executeQuery, executeMutation } from "./worker-execution";
 import { workerManifest } from "./worker-manifest";
-import { workerReadDb } from "./read-wire";
+import { workerReadDb, workerWriteDb } from "./read-wire";
 import { PublicOperationError, type DeclaredErrorCode } from "../server";
 
 function record(value: unknown): Record<string, unknown> {
@@ -30,13 +30,15 @@ export function makeRunner(exports: Readonly<Record<string, unknown>>) {
       if (command.mode === "register") value = manifest;
       else {
         exchange("registry", manifest);
-        if (command.mode === "query" && typeof command.operation === "string") {
+        if ((command.mode === "query" || command.mode === "mutation") && typeof command.operation === "string") {
           let logs = 0;
           const log = (level: string, message: string) => {
             if (typeof message !== "string" || message.length > 1024 || ++logs > 50) throw new Error("QUERY_LIMIT");
             exchange("log", { level, message });
           };
-          value = await executeQuery(command.operation, command.input, workerReadDb(request => exchange("read", request)), { info: message => log("info", message), warn: message => log("warn", message) });
+          value = command.mode === "mutation"
+            ? await executeMutation(command.operation, command.input, workerWriteDb(request => exchange("write", request)), { info: message => log("info", message), warn: message => log("warn", message) })
+            : await executeQuery(command.operation, command.input, workerReadDb(request => exchange("read", request)), { info: message => log("info", message), warn: message => log("warn", message) });
         } else if (command.mode === "render" && typeof command.path === "string") {
           value = await executePage(command.path, async (name, input) => exchange("query", { name, input }));
         } else throw new Error("REQUEST_DENIED");

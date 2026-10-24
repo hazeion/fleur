@@ -5,7 +5,10 @@ export interface ColumnDefinition {
   readonly check: Schema;
   readonly nullable: boolean;
   readonly generated: boolean;
+  readonly managed?: true;
   readonly primary: boolean;
+  readonly unique?: true;
+  readonly caseFold?: true;
   readonly max?: number;
   readonly precision?: number;
   readonly scale?: number;

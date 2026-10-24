@@ -89,3 +89,41 @@ function relationAndCursorContract(db: ReadDb) {
   db.select(child, { fields: ["id"], cursor });
 }
 void relationAndCursorContract;
+
+import { defineMutation } from "../../src/schema";
+import { handleMutation } from "../../src/server";
+import { useMutation } from "../../src/client";
+import type { WriteDb } from "../../src/database";
+const saveContract = defineMutation({ input: schema.object({ name: schema.string() }), output: schema.boolean() });
+handleMutation(saveContract, async ({ input }) => input.name.length > 0);
+// @ts-expect-error Handler output is inferred from the contract.
+handleMutation(saveContract, async () => "wrong");
+function mutationTypes(db: WriteDb) {
+  const mutation = useMutation(saveContract);
+  mutation.run({ name: "Squat" });
+  // @ts-expect-error Client input is inferred.
+  mutation.run({ name: 1 });
+  const generated = defineTable("generated", { columns: { id: column.uuid().generated().primaryKey(), name: column.string() } });
+  const defaulted = defineTable("defaulted", { columns: { id: column.uuid().generated().primaryKey(), name: column.string().default("Initial"), changed: column.timestamp().defaultNow() } });
+  db.updateVersioned(defaulted, { id, expectedVersion: 1, set: { name: "Edited", changed: schema.timestamp().parse("2026-10-24T12:34:56Z") }, returning: ["name", "changed"] });
+  // @ts-expect-error Defaulted columns retain their value types on update.
+  db.updateVersioned(defaulted, { id, expectedVersion: 1, set: { name: 4 }, returning: ["name"] });
+  const managedOnly = defineTable("managed_only", { columns: { id: column.uuid().generated().primaryKey() } });
+  // @ts-expect-error A table containing only managed fields still rejects assignments.
+  db.updateVersioned(managedOnly, { id, expectedVersion: 1, set: { id }, returning: ["id"] });
+  // @ts-expect-error Generated branding survives fluent declaration order.
+  db.insert(generated, { values: { id, name: "Forbidden" }, returning: ["id"] });
+  // @ts-expect-error Managed version cannot be assigned.
+  db.updateVersioned(exercises, { id, expectedVersion: 1, set: { version: 3 }, returning: ["id"] });
+  // @ts-expect-error Expected version is mandatory.
+  db.deleteVersioned(exercises, { id });
+  // @ts-expect-error Versioned tables cannot use unversioned writes.
+  db.update(exercises, { id, set: { name: "Wrong" }, returning: ["id"] });
+  const unversioned = defineTable("unversioned", { versioned: false, columns: { id: column.uuid().primaryKey(), name: column.string() } });
+  // @ts-expect-error Unversioned tables cannot use versioned writes.
+  db.updateVersioned(unversioned, { id, expectedVersion: 1, set: { name: "Wrong" }, returning: ["id"] });
+  // @ts-expect-error Primary keys cannot be changed.
+  db.update(unversioned, { id, set: { id }, returning: ["id"] });
+  db.update(unversioned, { id, set: { name: "Allowed" }, returning: ["id"] });
+}
+void mutationTypes;

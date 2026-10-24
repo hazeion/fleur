@@ -3,11 +3,12 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { startOwnedControl, type ControlResult } from "./control-process";
 import { CleanupLease } from "./cleanup";
-import type { ColumnReference, Filter, Join, JoinedOptions, JoinedProjection, ReadDb, Row, SelectOptions, Selected, Table } from "../../database";
+import type { WriteDb, ColumnReference, Filter, Join, JoinedOptions, JoinedProjection, ReadDb, Row, SelectOptions, Selected, Table } from "../../database";
 import { validatePublicValue } from "../../schema";
 import { PublicOperationError } from "../../server";
 import { references, tableDefinitions } from "../declarations";
 
+import { writeHelpers } from "./writes";
 import { compileRead, type QueryIdentity } from "./selection";
 
 const resultLimit = 1024 * 1024;
@@ -45,7 +46,16 @@ export class ReadBroker {
     if (names.includes(undefined) || new Set(names).size !== names.length) throw new Error("Invalid table registry");
   }
   async read<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }): Promise<T> {
+    return this.#transaction(trustedDispatch, identity, false);
+  }
+  async mutate<T>(trustedDispatch: (db: WriteDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }): Promise<T> {
+    return this.#transaction((db, remaining) => trustedDispatch(db as WriteDb, remaining), identity, true);
+  }
+  async #transaction<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity, writable: boolean): Promise<T> {
     const started = performance.now();
+    let commitAttempted = false, committed = false;
+    let fault: unknown;
+    let outstanding = 0;
     const abort = new AbortController();
     let expire: () => void = () => {};
     const expired = new Promise<never>((_resolve, reject) => { expire = () => { abort.abort(); reject(new Error("QUERY_TIMEOUT")); }; });
@@ -82,9 +92,9 @@ export class ReadBroker {
       const backendIdentity = await execute("SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()");
       if (!Array.isArray(backendIdentity) || backendIdentity.length !== 1 || !Number.isSafeInteger(backendIdentity[0]?.pid) || typeof backendIdentity[0]?.started !== "string") throw new Error("INTERNAL_FAILURE");
       backend = { pid: backendIdentity[0].pid as number, started: backendIdentity[0].started as string };
-      await execute("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY");
+      await execute(writable ? "BEGIN ISOLATION LEVEL READ COMMITTED" : "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY");
       await execute("SELECT set_config('statement_timeout', $1, true)", [String(Math.max(1, Math.floor(5000 - (performance.now() - started))))]);
-      const db: ReadDb = Object.freeze({
+      let db: ReadDb = Object.freeze({
         cursorJoined: <const P extends Readonly<Record<string, ColumnReference>>, const J extends readonly Join[]>(options: Omit<JoinedOptions<P, J>, "cursor" | "limit"> & { readonly after: JoinedProjection<P, J> }) => {
           check();
           const { after, ...selection } = options;
@@ -117,11 +127,43 @@ export class ReadBroker {
         publicResult(result);
         return result as Selected<Row<Target>, F>[];
       } });
+      if (writable) {
+        const helpers = { ...db, ...writeHelpers(execute, this.#tables) };
+        db = Object.freeze(Object.fromEntries(Object.entries(helpers).map(([key, method]) => [key, (...args: unknown[]) => {
+          check();
+          if (fault) throw fault;
+          try {
+            const result: unknown = Reflect.apply(method, helpers, args);
+            if (result instanceof Promise) {
+              outstanding++;
+              const guarded = result.then(value => { publicResult(value); return value; }).catch(error => { fault = error; throw error; }).finally(() => { outstanding--; });
+              void guarded.catch(() => {});
+              return guarded;
+            }
+            publicResult(result);
+            return result;
+          } catch (error) { fault = error; throw error; }
+        }]))) as unknown as ReadDb;
+      }
       const result = await Promise.race([trustedDispatch(db, () => { check(); return Math.max(1, Math.floor(5000 - (performance.now() - started))); }), expired]);
       check();
       publicResult(result);
+      if (writable) {
+        if (fault) throw fault;
+        if (outstanding || active) throw new Error("REQUEST_DENIED");
+        check();
+        commitAttempted = true;
+        await execute("COMMIT");
+        committed = true;
+      }
       return result;
-    } catch (error) {
+    } catch (caught) {
+      const error = writable && fault ? fault : caught;
+      // PostgreSQL's integrity rejection acknowledges that COMMIT failed.
+      // Transport loss or a deadline without that acknowledgement stays unknown.
+      if (writable && error instanceof SQL.PostgresError && error.errno?.startsWith("23")) throw new PublicOperationError("CONSTRAINT_CONFLICT");
+      if (commitAttempted && !committed) throw new Error("OUTCOME_UNKNOWN");
+      if (writable && error instanceof SQL.PostgresError && error.errno === "22003") throw new PublicOperationError("CONSTRAINT_CONFLICT");
       if (abort.signal.aborted || performance.now() - started >= 5000
         || (error instanceof SQL.PostgresError && (error.errno === "57014" || error.code === "ERR_POSTGRES_CONNECTION_TIMEOUT"))) throw new Error("QUERY_TIMEOUT");
       if (error instanceof PublicOperationError) throw error;
@@ -150,7 +192,7 @@ export class ReadBroker {
           // An unverified connection must never return to circulation. Closing
           // this reserved handle discards its socket; the driver's onClose
           // releases only its slot, so healthy reads and pool shutdown can finish.
-          else await borrowed.close({ timeout: 0 });
+          else { try { await borrowed.close({ timeout: 0 }); } catch { /* Preserve the established primary outcome; never release an uncertain handle. */ } }
         } finally { clearTimeout(cleanupTimer); }
       }
     }

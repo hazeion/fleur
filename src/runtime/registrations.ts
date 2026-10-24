@@ -1,17 +1,21 @@
 import type { ComponentChild } from "preact";
 import type { Page } from "../routing";
-import type { Query, Schema } from "../schema";
-import type { ReadDb } from "../database";
+import type { Query, Mutation, Schema } from "../schema";
+import type { ReadDb, WriteDb } from "../database";
 
 export interface SafeLog { info(message: string): void; warn(message: string): void; }
 export interface QueryRegistration { contract: Query; handler(context: { input: unknown; db: ReadDb; log: SafeLog }): Promise<unknown>; }
 export interface PageRegistration { contract: Page; component(params: unknown): Promise<ComponentChild>; }
+export interface MutationRegistration { contract: Mutation; handler(context: { input: unknown; db: WriteDb; log: SafeLog }): Promise<unknown>; }
+export const mutations = new Map<Mutation, MutationRegistration>();
+export const mutationNames = new Map<Mutation, string>();
 export const queries = new Map<Query, QueryRegistration>();
 export const pages = new Map<Page, PageRegistration>();
 export const queryNames = new Map<Query, string>();
 export const pageNames = new Map<Page, string>();
 export const exportedSchemas = new Map<string, Schema>();
 export type Execution =
+  | { kind: "mutation"; db: WriteDb; log: SafeLog }
   | { kind: "query"; db: ReadDb; log: SafeLog }
   | { kind: "render"; read(name: string, input: unknown): Promise<unknown> };
 let execution: Execution | undefined;

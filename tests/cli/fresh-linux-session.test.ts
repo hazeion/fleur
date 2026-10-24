@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { Subprocess } from "bun";
+type SessionFixtureChild = Subprocess<"ignore", "pipe", "pipe">;
 const script = resolve(import.meta.dir, "../../scripts/observe-fresh-linux-session.ts");
 const nonce = "12345678-1234-1234-1234-123456789abc";
 
@@ -10,6 +12,56 @@ function reapFixtureGroup(pid: number | undefined): void {
   try { process.kill(-pid, "SIGKILL"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 }
+
+async function waitForFixturePid(root: string): Promise<number> {
+  const stop = performance.now() + 3000;
+  while (performance.now() < stop) {
+    let receipt = "";
+    try { receipt = await readFile(join(root, "ssh-pid"), "utf8"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (performance.now() >= stop) break;
+    if (/^[1-9][0-9]*\n$/.test(receipt)) {
+      const pid = Number(receipt);
+      if (Number.isSafeInteger(pid) && pid > 1) return pid;
+      throw new Error("Fixture published an unsafe SSH PID");
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error("Fixture did not publish a complete SSH PID within its original startup budget");
+}
+
+async function retireSessionFixture(child: SessionFixtureChild | undefined, pid: number | undefined): Promise<void> {
+  try {
+    if (child && child.exitCode === null) {
+      child.kill("SIGTERM");
+      await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    }
+  } finally { reapFixtureGroup(pid); }
+}
+
+test("missing PID publication still cancels and retires the actual session and SSH fixture", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-session-missing-pid-"));
+  let child: SessionFixtureChild | undefined;
+  let actualPid: number | undefined;
+  try {
+    const tools = join(root, "tools"); await mkdir(tools);
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';const root=process.env.FIXTURE_ROOT;process.on('SIGTERM',()=>{});writeFileSync(root+'/actual-pid',String(process.pid)+'\\n');writeFileSync(root+'/ssh-pid','');setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+    await expect(waitForFixturePid(root)).rejects.toThrow("did not publish a complete SSH PID");
+    actualPid = Number(await readFile(join(root, "actual-pid"), "utf8"));
+    expect(Number.isSafeInteger(actualPid) && actualPid > 1).toBe(true);
+    await retireSessionFixture(child, undefined);
+    expect(child.exitCode).not.toBeNull();
+    expect(() => process.kill(actualPid!, 0)).toThrow();
+  } finally {
+    if (child && child.exitCode === null) {
+      child.kill("SIGTERM");
+      await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    }
+    reapFixtureGroup(actualPid);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15000);
 
 // Production command boundary baseline before adding a second-login transition.
 // This fixture only supplies SSH protocol results; it claims no image/native proof.
@@ -81,13 +133,12 @@ test("a successful SSH leader with a surviving owned child cannot authorize a fr
 test("cancelling the session command reaps its owned SSH group and returns incomplete evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-session-cancel-"));
   let sshPid: number | undefined;
+  let child: SessionFixtureChild | undefined;
   try {
     const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid));setInterval(()=>{},1000);\n`, { mode: 0o700 });
-    const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
-    const stop = performance.now() + 3000;
-    while (!await Bun.file(join(root, "ssh-pid")).exists() && performance.now() < stop) await Bun.sleep(10);
-    sshPid = Number(await readFile(join(root, "ssh-pid"), "utf8"));
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid)+'\\n');setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+    sshPid = await waitForFixturePid(root);
     expect(sshPid).toBeGreaterThan(0);
     child.kill("SIGTERM");
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -95,7 +146,7 @@ test("cancelling the session command reaps its owned SSH group and returns incom
     expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: "SESSION_FAILED" } });
     expect(() => process.kill(sshPid!, 0)).toThrow();
   } finally {
-    reapFixtureGroup(sshPid);
+    await retireSessionFixture(child, sshPid);
     await rm(root, { recursive: true, force: true });
   }
 }, 15000);
@@ -209,7 +260,7 @@ test("an SSH session that never starts cannot consume the full guest workflow bu
   let sshPid: number | undefined;
   try {
     const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid));setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nawait Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid)+'\\n');setInterval(()=>{},1000);\n`, { mode: 0o700 });
     const started = performance.now();
     const child = Bun.spawn([process.execPath, script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -247,15 +298,14 @@ for (const frame of ["cross-nonce", "duplicate", "malformed", "marker-only"] as 
 test("an owned signal failure stays an incomplete receipt while finally retries and confirms cleanup", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-session-signal-failure-"));
   let sshPid: number | undefined;
+  let child: SessionFixtureChild | undefined;
   try {
     const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.on('SIGTERM',()=>{});await Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid));setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nprocess.on('SIGTERM',()=>{});await Bun.write(process.env.FIXTURE_ROOT+'/ssh-pid',String(process.pid)+'\\n');setInterval(()=>{},1000);\n`, { mode: 0o700 });
     // External OS signaling boundary; no real ownership/permission is changed.
     await writeFile(join(root, "signal.ts"), `import {existsSync,readFileSync,writeFileSync} from 'node:fs';const root=process.env.FIXTURE_ROOT;const original=process.kill.bind(process);let injected=false;process.kill=((pid,signal)=>{if(!injected&&signal==='SIGKILL'&&existsSync(root+'/ssh-pid')&&pid===-Number(readFileSync(root+'/ssh-pid','utf8'))){injected=true;writeFileSync(root+'/signal-fault',JSON.stringify({pid,signal}));throw Object.assign(new Error('Owned fixture EPERM'),{code:'EPERM'});}return original(pid,signal);});\n`);
-    const child = Bun.spawn([process.execPath, "--preload", join(root, "signal.ts"), script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
-    const stop = performance.now() + 3000;
-    while (!await Bun.file(join(root, "ssh-pid")).exists() && performance.now() < stop) await Bun.sleep(10);
-    sshPid = Number(await readFile(join(root, "ssh-pid"), "utf8"));
+    child = Bun.spawn([process.execPath, "--preload", join(root, "signal.ts"), script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+    sshPid = await waitForFixturePid(root);
     child.kill("SIGTERM");
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(await Bun.file(join(root, "signal-fault")).json()).toEqual({ pid: -sshPid, signal: "SIGKILL" });
@@ -263,23 +313,23 @@ test("an owned signal failure stays an incomplete receipt while finally retries 
     expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: "SESSION_FAILED", message: expect.stringContaining("EPERM") } });
     expect(() => process.kill(sshPid!, 0)).toThrow();
   } finally {
-    reapFixtureGroup(sshPid);
+    await retireSessionFixture(child, sshPid);
     await rm(root, { recursive: true, force: true });
   }
 }, 15000);
 
-test("session cancellation sends real TERM before escalating to KILL for its ignoring owned SSH group", async () => {
+for (const publication of ["ordinary", "empty-before-pid"] as const) {
+test(`session cancellation sends real TERM before escalating to KILL for its ignoring owned SSH group: ${publication}`, async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-session-term-kill-"));
   let sshPid: number | undefined;
+  let child: SessionFixtureChild | undefined;
   try {
     const tools = join(root, "tools"); await mkdir(tools);
-    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';const root=process.env.FIXTURE_ROOT;process.on('SIGTERM',()=>appendFileSync(root+'/term-received','TERM\\n'));await Bun.write(root+'/ssh-pid',String(process.pid));setInterval(()=>{},1000);\n`, { mode: 0o700 });
+    await writeFile(join(tools, "ssh"), `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';const root=process.env.FIXTURE_ROOT;process.on('SIGTERM',()=>appendFileSync(root+'/term-received','TERM\\n'));${publication === "empty-before-pid" ? "await Bun.write(root+'/ssh-pid','');await Bun.sleep(100);" : ""}await Bun.write(root+'/ssh-pid',String(process.pid)+'\\n');setInterval(()=>{},1000);\n`, { mode: 0o700 });
     // Observe real OS delivery to this exact owned group; never replace its result.
     await writeFile(join(root, "signals.ts"), `import {existsSync,readFileSync,appendFileSync} from 'node:fs';const root=process.env.FIXTURE_ROOT;const original=process.kill.bind(process);process.kill=((pid,signal)=>{const result=original(pid,signal);if((signal==='SIGTERM'||signal==='SIGKILL')&&existsSync(root+'/ssh-pid')&&pid===-Number(readFileSync(root+'/ssh-pid','utf8')))appendFileSync(root+'/signals',JSON.stringify({pid,signal})+'\\n');return result;});\n`);
-    const child = Bun.spawn([process.execPath, "--preload", join(root, "signals.ts"), script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
-    const stop = performance.now() + 3000;
-    while (!await Bun.file(join(root, "ssh-pid")).exists() && performance.now() < stop) await Bun.sleep(10);
-    sshPid = Number(await readFile(join(root, "ssh-pid"), "utf8"));
+    child = Bun.spawn([process.execPath, "--preload", join(root, "signals.ts"), script, "--port", "2222", "--identity", join(root, "client"), "--known-hosts", join(root, "known_hosts"), "--nonce", nonce], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 12000, env: { PATH: tools + ":/usr/bin:/bin", FIXTURE_ROOT: root, HOME: root } });
+    sshPid = await waitForFixturePid(root);
     child.kill("SIGTERM");
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     const delivered = (await readFile(join(root, "signals"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { pid: number; signal: string });
@@ -288,5 +338,6 @@ test("session cancellation sends real TERM before escalating to KILL for its ign
     expect(exit, stderr + stdout).toBe(4);
     expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: "SESSION_FAILED" } });
     expect(() => process.kill(sshPid!, 0)).toThrow();
-  } finally { reapFixtureGroup(sshPid); await rm(root, { recursive: true, force: true }); }
+  } finally { await retireSessionFixture(child, sshPid); await rm(root, { recursive: true, force: true }); }
 }, 15000);
+}

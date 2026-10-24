@@ -43,6 +43,14 @@ def native_intel_identity(system,machine,cpu):return system=='Darwin' and machin
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
 
 
+def matches_image(value,identity):
+    try:
+        return (value['Id']==identity.manifest_image_id and value['Architecture']=='amd64' and value['Os']=='linux'
+            and value['Config']==identity.configuration['config'] and value['RootFS']=={'Type':'layers','Layers':identity.configuration['rootfs']['diff_ids']}
+            and value['Descriptor']=={'digest':identity.manifest_image_id,'mediaType':'application/vnd.oci.image.manifest.v1+json','size':identity.manifest_bytes})
+    except (KeyError,TypeError,AttributeError):return False
+
+
 def role_profile(value, *, cid,name,image,nonce,binding,mode,program=None,control_environment=(),base_environment=()):
     try:
         guardian=mode=='--guardian';role='guardian' if guardian else 'loss-manager' if program is not None else 'manager'
@@ -230,7 +238,7 @@ def observe(mode,images_directory):
         if result.returncode==1 and result.stdout in (b'',b'\n') and result.stderr in tuple(x.encode() for x in ('Error: No such object: '+target+'\n','error: no such object: '+target+'\n','Error response from daemon: No such '+kind+': '+target+'\n')):return None
         raise RuntimeError('INSPECTION_OUTCOME_UNKNOWN')
     def inventory(cleanup=False):
-        container_ids=sorted(docker(['ps','--all','--quiet','--no-trunc'],cleanup).splitlines());image_ids=sorted(set(docker(['image','ls','--quiet','--no-trunc'],cleanup).splitlines()))
+        container_ids=sorted(docker(['ps','--all','--quiet','--no-trunc'],cleanup).splitlines());image_ids=sorted(set(docker(['image','ls','--all','--quiet','--no-trunc'],cleanup).splitlines()))
         containers={};images={}
         for cid in container_ids:
             value=inspect(cid,cleanup=cleanup)
@@ -317,39 +325,43 @@ def observe(mode,images_directory):
             relative='experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
         report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
-        oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={}
-        for name,image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
+        oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={};image_identities={}
+        for name,config_image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
             fd=held.verify(name)
-            with os.fdopen(os.dup(fd),'rb') as stream:configs[name]=oci.validate_archive(stream,image,work_end)
+            with os.fdopen(os.dup(fd),'rb') as stream:identity=oci.validate_archive(stream,config_image,work_end)
+            configs[name]=identity.configuration;image_identities[name]=identity
+            image=identity.manifest_image_id
             held.verify(name)
+            report.setdefault('imageIdentityMappings',{})[name]={'producerConfigImageId':identity.config_image_id,'nativeManifestImageId':identity.manifest_image_id,'archiveSha256':held.pins[name]['sha256']}
+            if inspect(config_image,'image') is not None:raise RuntimeError('UNEXPECTED_CONFIG_IMAGE_ALIAS')
             existing=inspect(image,'image')
             if existing is None:
-                imported.append(image);persist(name+'.planned.json',{'imageId':image,'archiveSha256':held.pins[name]['sha256']})
+                imported.append(image);persist(name+'.planned.json',{'imageId':image,'configImageId':config_image,'archiveSha256':held.pins[name]['sha256']})
                 load=Channel(['docker','--host',endpoint,'image','load'],environment=environment,input_fd=fd);channels.append(load)
                 stdout,stderr=load.drain(min(work_end,time.monotonic()+120));load.close(work_end);channels.remove(load)
                 held.verify(name)
                 report.setdefault('imageLoadReceipts',[]).append({'imageId':image,'exitCode':load.child.returncode,'stdout':stdout.decode('utf-8',errors='replace'),'stderr':stderr.decode('utf-8',errors='replace')})
                 if load.child.returncode or stderr or stdout.decode()!='Loaded image ID: '+image+'\n':raise RuntimeError('IMAGE_LOAD_UNCONFIRMED')
             actual=inspect(image,'image')
-            if actual is None or actual['Id']!=image or actual.get('Architecture')!='amd64' or actual.get('Os')!='linux' or actual.get('Config')!=configs[name]['config']:raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
-        image=origin['controllerImageId'];base_env=configs['controller-image.tar']['config']['Env']
+            if not matches_image(actual,identity):raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
+        image=image_identities['controller-image.tar'].manifest_image_id;runtime_image=image_identities['runtime-image.tar'].manifest_image_id;base_env=configs['controller-image.tar']['config']['Env']
         binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
         if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         guardian,guardian_channel,guardian_ready=start_role('guardian',binding,image,base_env)
-        binding={**binding,'guardianId':guardian['cid'],'preparedImage':{key:prep[key] for key in ('imageId','architecture','baseImage','helperSha256','abuseSha256','runtimeSources')}}
+        binding={**binding,'guardianId':guardian['cid'],'preparedImage':{'imageId':runtime_image,**{key:prep[key] for key in ('architecture','baseImage','helperSha256','abuseSha256','runtimeSources')}}}
         report['nonce']=nonce;report['bootId']=boot
         if mode=='--guardian-loss':
             from configuration import SAFE_ENVIRONMENT
             tag='fleur-runtime-probe-'+str(time.time_ns());row={'name':tag+'-run','owner':tag,'control':True}
             if inspect(row['name']) is not None:raise RuntimeError('FRESH_CONTROL_NAME_UNAVAILABLE')
-            workers.append(row);persist('control-worker-planned.json',{'worker':row,'imageId':prep['imageId'],'nonce':nonce})
+            workers.append(row);persist('control-worker-planned.json',{'worker':row,'imageId':runtime_image,'nonce':nonce})
             args=['create','--name',row['name'],'--label','fleur.compatibility.runtime-owner='+tag,'--pull','never','--platform','linux/amd64','--entrypoint','bun','--user','65534:65534','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp=unconfined','--cpus','1','--memory','536870912','--memory-swap','536870912','--pids-limit','64','--ulimit','core=0']
             for key,value in SAFE_ENVIRONMENT.items():args+=['--env',key+'='+value]
-            cid=docker(args+[prep['imageId'],'-e',CONTROL_PROGRAM]).strip()
+            cid=docker(args+[runtime_image,'-e',CONTROL_PROGRAM]).strip()
             current=inspect(cid)
-            if not control_worker_profile(current,row,prep['imageId']):raise RuntimeError('CONTROL_WORKER_PROFILE_CHANGED')
+            if not control_worker_profile(current,row,runtime_image):raise RuntimeError('CONTROL_WORKER_PROFILE_CHANGED')
             docker(['start',cid]);current=inspect(cid)
-            if not control_worker_profile(current,row,prep['imageId']) or current['State']['Running'] is not True or current['State']['Pid']<=1:raise RuntimeError('LIVE_CONTROL_WORKER_UNPROVEN')
+            if not control_worker_profile(current,row,runtime_image) or current['State']['Running'] is not True or current['State']['Pid']<=1:raise RuntimeError('LIVE_CONTROL_WORKER_UNPROVEN')
             pid=current['State']['Pid'];controls=('FLEUR_CONTROL_WORKER='+cid,'FLEUR_CONTROL_PID='+str(pid))
             manager,manager_channel,manager_ready=start_role('loss-manager',binding,image,base_env,program=LOSS_PROGRAM,controls=controls)
             armed=manager_channel.frame(min(work_end,time.monotonic()+10))
@@ -363,7 +375,7 @@ def observe(mode,images_directory):
             while time.monotonic()<until:
                 guard=inspect(guardian['cid']);current=inspect(cid)
                 if not role_profile(guard,**guardian) or guard['State']['Running'] is not True:raise RuntimeError('GUARDIAN_LOST_WITH_MANAGER')
-                if not control_worker_profile(current,row,prep['imageId']):raise RuntimeError('CONTROL_WORKER_CUSTODY_CHANGED')
+                if not control_worker_profile(current,row,runtime_image):raise RuntimeError('CONTROL_WORKER_CUSTODY_CHANGED')
                 if current['State']['Running'] is False and current['State']['Pid']==0:
                     journals=artifacts.canonical_json(docker(['exec',guardian['cid'],'/usr/bin/python3','-I','-c',journal_program()]))
                     if journals.get(cid) and journals[cid][-1].get('kind')=='retired':break
@@ -375,9 +387,9 @@ def observe(mode,images_directory):
         manager,manager_channel,manager_ready=start_role('manager',binding,image,base_env)
         frame=manager_channel.frame(work_end)
         if mode=='--qualify':
-            if type(frame) is not dict or set(frame)!={'kind','nonce','bootId','daemonId','imageId','workers'} or frame['kind']!='ownership' or frame['nonce']!=nonce or frame['bootId']!=boot or frame['daemonId']!=daemon or frame['imageId']!=prep['imageId'] or type(frame['workers']) is not list or len(frame['workers'])!=13:raise RuntimeError('OWNERSHIP_FRAME_INVALID')
+            if type(frame) is not dict or set(frame)!={'kind','nonce','bootId','daemonId','imageId','workers'} or frame['kind']!='ownership' or frame['nonce']!=nonce or frame['bootId']!=boot or frame['daemonId']!=daemon or frame['imageId']!=runtime_image or type(frame['workers']) is not list or len(frame['workers'])!=13:raise RuntimeError('OWNERSHIP_FRAME_INVALID')
             rows=frame['workers'];tag=rows[0].get('owner')
-            if rows!=entry.worker_ledger(tag,prep['imageId']):raise RuntimeError('OWNERSHIP_LEDGER_CHANGED')
+            if rows!=entry.worker_ledger(tag,runtime_image):raise RuntimeError('OWNERSHIP_LEDGER_CHANGED')
             for row in rows:
                 if inspect(row['name']) is not None:raise RuntimeError('FRESH_WORKER_NAME_UNAVAILABLE')
             workers.extend(rows);persist('workers.json',frame);manager_channel.acknowledge(nonce,'ownership')
@@ -387,7 +399,7 @@ def observe(mode,images_directory):
                 if set(frame)!={'kind','nonce','containerId','pid','deadlineVmMonotonic'} or frame['nonce']!=nonce or type(frame['containerId']) is not str or not re.fullmatch(SHA,frame['containerId']) or frame['containerId'] in guard_bindings or type(frame['pid']) is not int or not 1<frame['pid']<2**31 or type(frame['deadlineVmMonotonic']) not in (int,float) or not math.isfinite(frame['deadlineVmMonotonic']):raise RuntimeError('GUARD_BINDING_INVALID')
                 current=inspect(frame['containerId'])
                 row=next((row for row in workers if current is not None and current['Name']=='/'+row['name']),None)
-                if row is None or not re.search('-busy-[01]$',row['name']) or not entry.worker_profile(current,row['name'],prep['imageId'],row['owner']) or current['State']['Running'] is not True or current['State']['Pid']!=frame['pid']:raise RuntimeError('LIVE_GUARD_WORKER_UNPROVEN')
+                if row is None or not re.search('-busy-[01]$',row['name']) or not entry.worker_profile(current,row['name'],runtime_image,row['owner']) or current['State']['Running'] is not True or current['State']['Pid']!=frame['pid']:raise RuntimeError('LIVE_GUARD_WORKER_UNPROVEN')
                 guard_bindings[frame['containerId']]=frame;persist('guard-'+frame['containerId']+'.json',frame);manager_channel.acknowledge(nonce,'guard-'+frame['containerId'])
                 frame=manager_channel.frame(work_end)
         report['controller']=frame
@@ -432,7 +444,7 @@ def observe(mode,images_directory):
             try:
                 value=inspect(row['name'],cleanup=True)
                 if value is not None:
-                    if not (control_worker_profile(value,row,prep['imageId']) if row.get('control') else entry.worker_profile(value,row['name'],prep['imageId'],row['owner'])):raise RuntimeError('WORKER_CLEANUP_OWNERSHIP_UNPROVEN')
+                    if not (control_worker_profile(value,row,runtime_image) if row.get('control') else entry.worker_profile(value,row['name'],runtime_image,row['owner'])):raise RuntimeError('WORKER_CLEANUP_OWNERSHIP_UNPROVEN')
                     docker(['rm','--force',value['Id']],True)
                     if inspect(value['Id'],cleanup=True) is not None:raise RuntimeError('WORKER_REMOVAL_UNCONFIRMED')
                 receipt['absent']=True
@@ -451,7 +463,8 @@ def observe(mode,images_directory):
             try:
                 actual=inspect(image,'image',True)
                 if actual is not None:
-                    if actual['Id']!=image or actual.get('RepoTags') not in (None,[]):raise RuntimeError('IMPORTED_IMAGE_CUSTODY_CHANGED')
+                    mapped=next(value for value in image_identities.values() if value.manifest_image_id==image)
+                    if not matches_image(actual,mapped) or actual.get('RepoTags') not in (None,[]) or actual.get('RepoDigests') not in (None,[]):raise RuntimeError('IMPORTED_IMAGE_CUSTODY_CHANGED')
                     docker(['image','rm',image],True,timeout=15)
                     if inspect(image,'image',True) is not None:raise RuntimeError('IMPORTED_IMAGE_REMOVAL_UNCONFIRMED')
                 receipt['absent']=True

@@ -56,7 +56,11 @@ images/controllers are absent and original inventories preserved.
 The source-owned `image-origin.json` catalog authenticates the producer run, ZIP,
 origin and every artifact. The native observer retains private descriptors,
 validates one untagged amd64 OCI image per archive, loads through those same
-descriptors, and rechecks the bytes after the load clients retire. Operator source
+descriptors, and rechecks the bytes after the load clients retire. The immutable
+identity chain retains the producer config digest separately from the native OCI
+manifest execution digest and verifies the native descriptor, config and layer
+diff IDs. Image inventories include untagged objects; cleanup uses the exact
+validated native manifest identity. Operator source
 is bound separately from the producer payload commit.
 
 Native execution proceeds through capabilities, a manager-loss control and full

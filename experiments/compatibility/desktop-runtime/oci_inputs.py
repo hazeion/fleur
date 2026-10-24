@@ -4,6 +4,13 @@ import json
 import re
 import tarfile
 import time
+from typing import NamedTuple
+
+class ImageIdentity(NamedTuple):
+    config_image_id: str
+    manifest_image_id: str
+    manifest_bytes: int
+    configuration: dict
 
 BLOB=r'blobs/sha256/[a-f0-9]{64}'
 MANIFEST='application/vnd.oci.image.manifest.v1+json'
@@ -67,6 +74,6 @@ def validate_archive(stream,image_id,deadline):
         config=document(config_path)
         if config.get('architecture')!='amd64' or config.get('os')!='linux' or config.get('rootfs')!={'type':'layers','diff_ids':['sha256:'+x.rsplit('/',1)[1] for x in saved['Layers']]}:raise ValueError('native image or layer diff binding')
         if type(config.get('config')) is not dict or config['config'].get('Volumes') not in (None,{}):raise ValueError('image declares volumes')
-        budget();return config
+        budget();return ImageIdentity(image_id,index['manifests'][0]['digest'],index['manifests'][0]['size'],config)
     except (KeyError,TypeError,AttributeError,tarfile.TarError) as error:raise ValueError('OCI archive invalid') from error
     finally:stream.seek(0)

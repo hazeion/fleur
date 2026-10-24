@@ -36,7 +36,7 @@ class FinalizationIntegrity(unittest.TestCase):
         guardian={'cid':'guardian','name':'guardian'};retired=[]
         def inspect(*args,**kwargs):return {'Id':'worker'}
         result,_=self.execute(workers=[{'name':'worker','owner':'owned'}],owned=[guardian],guardian=guardian,
-            inspect=inspect,entry=SimpleNamespace(worker_profile=lambda *args:False),prep={'imageId':'image'},
+            inspect=inspect,entry=SimpleNamespace(worker_profile=lambda *args:False),runtime_image='image',
             retire_role=lambda value:retired.append(value))
         self.assertEqual(retired,[])
         self.assertFalse(result['report']['ok'])

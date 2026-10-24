@@ -32,7 +32,7 @@ class ManagerLossCleanupOrdering(unittest.TestCase):
         environment={'report':{'ok':False,'cleanup':[]},'workers':[{'name':'worker','owner':'tag'}],
             'owned':[guardian,manager],'guardian':guardian,'manager':manager,'workers_retired':True,
             'channels':[],'imported':[],'held':None,'original':None,'ledger_dir':None,'end':time.monotonic()+600,
-            'prep':{'imageId':'image'},'inspect':inspect,'docker':docker,'retire_role':retire,
+            'runtime_image':'image','inspect':inspect,'docker':docker,'retire_role':retire,
             'entry':SimpleNamespace(worker_profile=lambda *args:True),'role_profile':lambda *args,**kwargs:True,'time':time}
         exec(compile(program,'<actual-outer-finalization>','exec'),environment)
         self.assertFalse(state['managerRunning'])

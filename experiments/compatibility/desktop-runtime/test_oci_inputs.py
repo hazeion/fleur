@@ -25,7 +25,14 @@ class ImageArchiveTests(unittest.TestCase):
                 info=tarfile.TarInfo(name);info.size=len(body);archive.addfile(info,io.BytesIO(body))
         output.seek(0);return output,'sha256:'+cid
     def test_one_native_untagged_image_is_bound_to_config_and_layers(self):
-        stream,cid=self.archive();self.assertEqual(oci.validate_archive(stream,cid,time.monotonic()+5)['config']['Env'],['PATH=/usr/bin'])
+        stream,cid=self.archive();self.assertEqual(oci.validate_archive(stream,cid,time.monotonic()+5).configuration['config']['Env'],['PATH=/usr/bin'])
+    def test_manifest_execution_identity_is_bound_separately_from_config_digest(self):
+        stream,cid=self.archive();identity=oci.validate_archive(stream,cid,time.monotonic()+5)
+        stream.seek(0)
+        with tarfile.open(fileobj=stream) as archive:root=json.load(archive.extractfile('index.json'))['manifests'][0]['digest']
+        self.assertEqual(identity.config_image_id,cid)
+        self.assertEqual(identity.manifest_image_id,root)
+        self.assertNotEqual(identity.config_image_id,identity.manifest_image_id)
     def test_tags_extra_images_corrupt_layers_and_traversal_refuse(self):
         def tagged(m):
             value=json.loads(m['manifest.json']);value[0]['RepoTags']=['foreign:latest'];m['manifest.json']=json.dumps(value).encode()

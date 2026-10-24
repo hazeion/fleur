@@ -1481,3 +1481,24 @@ legacy forms and rejection of extra output/errors, unknown outcomes and uncertai
 transport. All eleven Desktop preflight tests passed with 132 assertions. A new
 clean-source native attempt remains required; no native result was fabricated
 from fixture success.
+
+The second clean-source control attempt at
+`b6a643bd668a58198a418022ac896e960875bf8d` created both owned containers, then
+refused the manager profile before starting it. Report SHA256
+`e2dcd7a0f176d33f6e83adbf43ff6dacc268275f3ac09634b5266ccb41467608`
+retains the failure and incomplete initial cleanup. Independent inspection bound
+the stopped manager's full ID, nonce, image, committed program and resource/
+namespace profile. Its only profile difference was `label=disable` alongside the
+requested no-new-privileges and unconfined seccomp options. Upstream Moby's
+[host-PID security-option generation](https://github.com/moby/moby/blob/b711d21792db6db488de976eb3c4a653c92c3bc3/daemon/create.go#L299-L311)
+explains this mechanism; that upstream source is not an identity claim about the
+exact Desktop binary.
+
+An intended-red regression preceded exact manager-only recognition of this
+three-option set. Worker label disabling, duplicate options, missing mandatory
+options and unknown extras still refuse. Twelve preflight tests passed with 139
+assertions, with types and full lint. Separately authorized cleanup freshly
+verified the stopped manager's complete ownership/program/profile and never-
+started state, removed only its full ID without force, confirmed absence and
+restored all four original inventory identities. The original failed receipt is
+unchanged. Neither this correction nor cleanup is full runtime qualification.

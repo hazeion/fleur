@@ -46,7 +46,9 @@ export function acceptDesktopControlContainer(value: unknown, expected: DesktopC
     && host.PidMode === (manager ? "host" : "") && host.CgroupnsMode === (manager ? "host" : "private")
     && same(capabilities(host.CapDrop), ["ALL"]) && (manager ? same(capabilities(host.CapAdd), ["KILL", "SYS_PTRACE"]) : empty(host.CapAdd))
     && host.Memory === (manager ? 268435456 : 536870912) && host.MemorySwap === host.Memory && host.NanoCpus === 1000000000 && host.PidsLimit === 64
-    && same(security, manager ? ["no-new-privileges", "seccomp=unconfined"] : ["no-new-privileges"])
+    && (manager
+      ? same(security, ["no-new-privileges", "seccomp=unconfined"]) || same(security, ["label=disable", "no-new-privileges", "seccomp=unconfined"])
+      : same(security, ["no-new-privileges"]))
     && typeof value.State.Running === "boolean" && Number.isSafeInteger(value.State.Pid) && (value.State.Pid as number) >= 0 && (value.State.Pid as number) < 2 ** 31;
 }
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }

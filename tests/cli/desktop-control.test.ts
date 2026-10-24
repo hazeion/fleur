@@ -66,3 +66,18 @@ for (const kind of ["manager", "worker"] as const) {
     ]) expect(acceptDesktopControlContainer(changed, expected)).toBe(false);
   });
 }
+
+test("Desktop host-PID manager recognizes the exact observed SELinux disable option only", () => {
+  const { expected, value } = owned("manager");
+  const withSecurity = (SecurityOpt: string[]) => ({ ...value, HostConfig: { ...value.HostConfig, SecurityOpt } });
+  expect(acceptDesktopControlContainer(withSecurity(["no-new-privileges:true", "seccomp=unconfined", "label=disable"]), expected)).toBe(true);
+  for (const options of [
+    ["no-new-privileges:true", "seccomp=unconfined", "label=disable", "label=disable"],
+    ["no-new-privileges:true", "seccomp=unconfined", "label=disable", "apparmor=unconfined"],
+    ["no-new-privileges:true", "seccomp=unconfined", "label=unknown"],
+    ["seccomp=unconfined", "label=disable"],
+    ["no-new-privileges:true", "label=disable"],
+  ]) expect(acceptDesktopControlContainer(withSecurity(options), expected)).toBe(false);
+  const worker = owned("worker");
+  expect(acceptDesktopControlContainer({ ...worker.value, HostConfig: { ...worker.value.HostConfig, SecurityOpt: ["no-new-privileges:true", "label=disable"] } }, worker.expected)).toBe(false);
+});

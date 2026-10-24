@@ -159,8 +159,11 @@ export class ReadBroker {
       return result;
     } catch (caught) {
       const error = writable && fault ? fault : caught;
+      // PostgreSQL's integrity rejection acknowledges that COMMIT failed.
+      // Transport loss or a deadline without that acknowledgement stays unknown.
+      if (writable && error instanceof SQL.PostgresError && error.errno?.startsWith("23")) throw new PublicOperationError("CONSTRAINT_CONFLICT");
       if (commitAttempted && !committed) throw new Error("OUTCOME_UNKNOWN");
-      if (writable && error instanceof SQL.PostgresError && ["23502", "23503", "23505", "23514", "22003"].includes(error.errno ?? "")) throw new PublicOperationError("CONSTRAINT_CONFLICT");
+      if (writable && error instanceof SQL.PostgresError && error.errno === "22003") throw new PublicOperationError("CONSTRAINT_CONFLICT");
       if (abort.signal.aborted || performance.now() - started >= 5000
         || (error instanceof SQL.PostgresError && (error.errno === "57014" || error.code === "ERR_POSTGRES_CONNECTION_TIMEOUT"))) throw new Error("QUERY_TIMEOUT");
       if (error instanceof PublicOperationError) throw error;

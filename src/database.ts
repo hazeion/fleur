@@ -197,7 +197,7 @@ export interface ReadDb {
 
 export type PrimaryKey<T extends Table> = { [K in keyof T[typeof tableType]["columns"]]: T[typeof tableType]["columns"][K] extends ColumnReference<infer Value, boolean, true> ? Value : never }[keyof T[typeof tableType]["columns"]];
 type PrimaryKeys<C extends ColumnShape> = { [K in keyof C]: C[K] extends ColumnReference<unknown, boolean, true> ? K : never }[keyof C];
-export type WriteValues<T extends Table> = Partial<Omit<Row<T>, DefaultKeys<T[typeof tableType]["columns"]> | PrimaryKeys<T[typeof tableType]["columns"]> | "version">>;
+export type WriteValues<T extends Table> = { [K in keyof Row<T>]?: K extends ManagedKeys<T[typeof tableType]["columns"]> | PrimaryKeys<T[typeof tableType]["columns"]> | "version" ? never : Row<T>[K] };
 export interface WriteDb extends ReadDb {
   insert<T extends Table, const F extends readonly (keyof Row<T>)[]>(table: T, options: { values: Insert<NoInfer<T>>; returning: F }): Promise<Selected<Row<T>, F>>;
   updateVersioned<T extends Table<ColumnShape, true>, const F extends readonly (keyof Row<T>)[]>(table: T, options: { id: PrimaryKey<NoInfer<T>>; expectedVersion: number; set: WriteValues<NoInfer<T>>; returning: F }): Promise<Selected<Row<T>, F>>;

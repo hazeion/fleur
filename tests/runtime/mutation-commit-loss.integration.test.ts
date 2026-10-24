@@ -10,13 +10,14 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`lost PostgreSQL COMMIT acknowl
   let broker: ReadBroker | undefined;
   let commits = 0;
   const target = new URL(fixture.url);
+  const databasePort = Number(target.port);
   const proxy = createServer(client => {
-    const upstream = connect({ host: target.hostname, port: Number(target.port) });
+    const upstream = connect({ host: target.hostname, port: databasePort });
     sockets.add(client); sockets.add(upstream);
     let commit = false;
-    client.on("data", data => { if (String(data).includes("COMMIT")) commit = true; upstream.write(data); });
+    client.on("data", data => { if (String(data).includes("COMMIT\0")) commit = true; upstream.write(data); });
     upstream.on("data", data => {
-      if (commit && String(data).includes("COMMIT")) {
+      if (commit && String(data).includes("COMMIT\0")) {
         commits++;
         client.destroy(); upstream.destroy();
       } else client.write(data);

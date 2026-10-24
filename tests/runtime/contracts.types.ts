@@ -104,6 +104,13 @@ function mutationTypes(db: WriteDb) {
   // @ts-expect-error Client input is inferred.
   mutation.run({ name: 1 });
   const generated = defineTable("generated", { columns: { id: column.uuid().generated().primaryKey(), name: column.string() } });
+  const defaulted = defineTable("defaulted", { columns: { id: column.uuid().generated().primaryKey(), name: column.string().default("Initial"), changed: column.timestamp().defaultNow() } });
+  db.updateVersioned(defaulted, { id, expectedVersion: 1, set: { name: "Edited", changed: schema.timestamp().parse("2026-10-24T12:34:56Z") }, returning: ["name", "changed"] });
+  // @ts-expect-error Defaulted columns retain their value types on update.
+  db.updateVersioned(defaulted, { id, expectedVersion: 1, set: { name: 4 }, returning: ["name"] });
+  const managedOnly = defineTable("managed_only", { columns: { id: column.uuid().generated().primaryKey() } });
+  // @ts-expect-error A table containing only managed fields still rejects assignments.
+  db.updateVersioned(managedOnly, { id, expectedVersion: 1, set: { id }, returning: ["id"] });
   // @ts-expect-error Generated branding survives fluent declaration order.
   db.insert(generated, { values: { id, name: "Forbidden" }, returning: ["id"] });
   // @ts-expect-error Managed version cannot be assigned.

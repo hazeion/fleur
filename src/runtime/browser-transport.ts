@@ -1,3 +1,4 @@
+import { restrictBrowserRealms } from "./browser-realms";
 import { installMutationTransport } from "./mutation-client";
 // This entry evaluates before any admitted application module.
 const send = globalThis.fetch.bind(globalThis);
@@ -9,3 +10,5 @@ for (const name of ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Work
 Object.defineProperty(navigator, "sendBeacon", { value: denied, writable: false, configurable: false });
 
 Object.defineProperty(Navigator.prototype, "sendBeacon", { value: denied, writable: false, configurable: false });
+
+restrictBrowserRealms();

@@ -54,6 +54,10 @@ export async function admitProject(directory: string): Promise<AdmittedProject> 
       if (Array.isArray(value)) { value.forEach(inspect); return; }
       const node = value as Record<string, unknown>;
       if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(String(node.type)) && node.source !== null && node.source !== undefined) imports.push(literal(node.source));
+      if (node.type === "JSXOpeningElement") {
+        const name = node.name as Record<string, unknown> | undefined;
+        if (name?.type === "JSXIdentifier" && ["iframe", "frame", "frameset", "object", "embed", "script", "portal", "fencedframe"].includes(String(name.name).toLowerCase())) return denied();
+      }
       if (node.type === "TSImportEqualsDeclaration") return denied();
       if (node.type === "TSImportType") imports.push(literal(node.source));
       if (node.type === "CallExpression" || node.type === "NewExpression") {

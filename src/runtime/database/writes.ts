@@ -36,7 +36,7 @@ export function writeHelpers(execute: Execute, tables: ReadonlySet<Table>): Writ
     for (const [key, reference] of Object.entries(spec.columns)) {
       const field = definition(reference);
       if (Object.hasOwn(values, key)) {
-        if ((insert ? field.managed : field.generated || field.primary)) return deny();
+        if ((insert ? field.managed : field.managed || field.primary)) return deny();
         field.check.parse(values[key]);
       } else if (insert && !field.generated) return deny();
     }

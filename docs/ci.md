@@ -1,5 +1,13 @@
 # CI scope and verification
 
+The [approved platform amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944)
+requires Intel macOS, Ubuntu 24.04/26.04 amd64 and Debian 13 amd64 qualification.
+Apple Silicon, other ARM64 targets and Arch are deferred and do not block #24 or
+v1 release qualification. Keep existing GitHub ARM jobs, useful Arch/ARM fixtures,
+historical evidence and all required summary checks. Limited component results
+do not imply complete deferred-platform support. This scope change does not
+alter assertions, isolation, cleanup, repeats or deadlines for required targets.
+
 CI cost savings must preserve the evidence required for acceptance. Every workflow
 runs a small Linux scope job with CI policy tests, followed by a verification
 summary. Workflows are never omitted through path filters or skip-CI messages.

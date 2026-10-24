@@ -1431,3 +1431,33 @@ requirements remain unchanged. The socket-shaped positive control failed on the
 old completeness check before correction; all 33 Arch Python methods then
 passed. This corrects a parser assumption, not the interpretation of the retained
 unparsed historical socket report. A fresh observation must establish its result.
+
+
+## Approved required platform scope amendment
+
+The [October 24 user-approved amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944)
+requires native Intel macOS, Ubuntu 24.04/26.04 amd64 and Debian 13 amd64. Apple
+Silicon, other ARM64 targets and Arch full native qualification are deferred and
+no longer block #24 or v1 release. This supersedes earlier statements that those
+unavailable platforms must be qualified for closure. Historical reports retain
+their actual source, outcome and scope; no deferred result is converted into a
+pass. Existing GitHub ARM jobs and useful Arch/ARM fixtures remain coverage.
+Required-target assertions, isolation, authority separation, resource enforcement,
+preservation, recovery, repeats, deadlines and disposal remain unchanged.
+
+The admitted Intel placement method and two ordinary-package private-placement
+receipts remain valid method evidence. The remaining Intel acceptance gap is
+runtime isolation and readiness admission for the exact running Desktop tuple.
+Replacing a usable installation or resetting the host/legal state is not an
+additional prerequisite. Existing smoke observations alone remain insufficient.
+
+A new capability preflight is designed to inspect an owned trusted worker using
+a separate source-bound Linux-VM manager, the preexisting pinned Bun image,
+Linux pidfds and a VM monotonic clock. Its manager has only the declared trusted
+inspection/signal capabilities and host PID/cgroup namespaces, with no network,
+mounts or Docker socket. Worker authority remains separate. It performs no image
+acquisition, installation or global Desktop configuration. The fixed 90-second
+aggregate limit reserves 20 seconds for owned-container removal and preservation
+checks. This preflight cannot admit a runtime profile or replace any original
+restriction, resource, physical-deadline, lifecycle or disposal check. Native
+execution and complete Desktop runtime qualification remain pending.

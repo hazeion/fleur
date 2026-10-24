@@ -55,6 +55,12 @@ jobs:
         run: |
           python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture '${{ matrix.architecture }}' --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-native-bun" > "$RUNNER_TEMP/fleur-native-platform.json"
           echo "$RUNNER_TEMP/fleur-native-bun" >> "$GITHUB_PATH"
+      - name: Read-only native runner package and service inventory
+        timeout-minutes: 2
+        env:
+          FLEUR_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          FLEUR_OBSERVATION_RUNNER: ${{ matrix.runner }}
+        run: bun scripts/observe-native-runner.ts --observe > "$RUNNER_TEMP/fleur-native-runner-inventory.json"
       - name: Observe fixed KVM device without creating a VM
         timeout-minutes: 1
         run: |
@@ -77,6 +83,7 @@ jobs:
           name: native-setup-${{ matrix.architecture }}
           path: |
             ${{ runner.temp }}/fleur-native-platform.json
+            ${{ runner.temp }}/fleur-native-runner-inventory.json
             ${{ runner.temp }}/fleur-native-setup.json
             ${{ runner.temp }}/fleur-virtualization-user.json
             ${{ runner.temp }}/fleur-virtualization-root.json

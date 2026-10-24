@@ -801,3 +801,34 @@ A second attempt refused before VM creation because required historical host-too
 attestation files were unavailable. It did not repeat installation or establish a
 second native pass. Repeated installation and interrupted recovery remain open;
 no missing attestation check was removed, and no release profile was promoted.
+
+## Native macOS placement repeats after the package-state fix
+
+Source `86849ab70392b3c2585e987ab54ea058005754b0` completed two actual native
+Intel macOS 15.7.7 placement runs with Docker Desktop 4.96.1 build 244132.
+The authenticated official image SHA256 was
+`3d35634cf3dd0373d37d986de10eb744950d3822124615e774335f7be2a1d27a`.
+Both runs used the existing public explicit 600-second setup option and the same
+reviewed private fixture plan; elapsed times were 230.245 and 182.102 seconds.
+Receipt SHA256 values are respectively:
+
+- `df1f8f9403cb9d93abd5bee2a84804af9101ecef1635f4b1b8a1e6149de57be0`
+- `9d93ece1bd181d4a20f4d88e764f223beefffd124f1c9513e51359e440df4363`
+
+Each fixture simulated only missing CLI discovery and supplied two scoped once
+responses for acquisition and placement. The signed image download, mount,
+notarization/signature checks, staged copy, publication identity and normal detach
+were real native operations. All 14 native commands completed and their process
+groups retired; source cleanup completed, with no timeout or cancellation. Both
+receipts passed independent review. Placement used a fresh private Applications
+destination and retained its installed app. Existing Docker.app metadata and
+recorded core-file snapshots matched exactly before and after each run.
+
+Public setup correctly stopped at `HUMAN_ACTION_REQUIRED` after placement. These
+runs establish fresh private placement and cleanup; they do not establish human
+consent, helper installation, legal acceptance, launching the new app, a fresh
+host-wide Docker Desktop installation or release admission. A separate native
+existing-installation verification at the same source passed two Doctor/runtime
+smoke rounds and preserved and removed its owned sentinel. That readiness proof
+used the already running Docker Desktop installation, without acquisition or
+installation, and remains separate from the placement receipts.

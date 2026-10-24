@@ -5,7 +5,7 @@ test("manual native KVM input and disposal gates reject altered or incomplete ev
   const child = Bun.spawn(["python3", "-I", resolve(import.meta.dir, "../../scripts/test_qualify_debian_kvm.py")], { stdout: "pipe", stderr: "pipe", timeout: 10000 });
   const [out, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ out, error, code }).toMatchObject({ out: "", code: 0 });
-  expect(error).toContain("Ran 11 tests");
+  expect(error).toContain("Ran 20 tests");
 });
 
 test("manual native KVM qualification refuses a local host before privileged commands", async () => {

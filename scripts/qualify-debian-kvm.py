@@ -244,6 +244,31 @@ def service_state(unit):
     return value
 
 
+def binding_failure(current, fields):
+    """Fixed metadata only; never include command, environment or caller text."""
+    enums = {'LoadState': {'loaded', 'not-found', 'masked', 'error', 'bad-setting', 'merged', 'stub'},
+             'ActiveState': {'active', 'reloading', 'inactive', 'failed', 'activating', 'deactivating', 'maintenance', 'refreshing'},
+             'SubState': {'dead', 'start-pre', 'start', 'start-post', 'running', 'exited', 'reload', 'reload-signal', 'reload-notify', 'stop', 'stop-watchdog', 'stop-sigterm', 'stop-sigkill', 'stop-post', 'final-watchdog', 'final-sigterm', 'final-sigkill', 'failed', 'auto-restart', 'auto-restart-queued', 'cleaning'},
+             'KillMode': {'control-group', 'mixed', 'process', 'none'}, 'Delegate': {'yes', 'no'},
+             'Result': {'success', 'resources', 'timeout', 'exit-code', 'signal', 'core-dump', 'watchdog', 'start-limit-hit', 'oom-kill', 'exec-condition', 'protocol', 'assert', 'dependency', 'skip'}}
+    observed = {}
+    for name in SERVICE_FIELDS:
+        value = current.get(name)
+        if name in enums:
+            observed[name] = value if isinstance(value, str) and value in enums[name] else 'invalid'
+        elif name in ('MainPID', 'User', 'Group', 'ExecMainCode', 'ExecMainStatus'):
+            observed[name] = int(value) if isinstance(value, str) and re.fullmatch(r'[0-9]{1,10}', value) else 'invalid'
+        elif name == 'InvocationID':
+            observed[name] = hashlib.sha256(value.encode()).hexdigest() if isinstance(value, str) and re.fullmatch('[a-f0-9]{32}', value) else 'invalid'
+        elif name == 'ControlGroup':
+            observed[name] = 'present' if isinstance(value, str) and re.fullmatch(r'/system.slice/fleur-debian-ci-[a-f0-9]{32}\.service', value) else 'invalid'
+        else:
+            observed[name] = value if isinstance(value, str) and re.fullmatch(r'[0-9]{1,8}(?:min|s)(?: [0-9]{1,8}s)?', value) else 'invalid'
+    failure = RuntimeError('Service binding differs from fixed containment contract')
+    failure.diagnostic = {'stage': 'service-start', 'mismatchedFields': fields, 'observed': observed}
+    return failure
+
+
 class Service:
     """Nonce service and retained initial cgroup identity; no process-name cleanup."""
     def __init__(self, root, uid, gid, command, environment, budget=1500):
@@ -260,6 +285,7 @@ class Service:
         self.cancelled = False
         self.stopRequested = False
         self.stopCommands = 0
+        self.waited = False
 
     def launch(self, release=True):
         if service_state(self.unit).get('LoadState') != 'not-found' or self.group.exists():
@@ -281,32 +307,50 @@ class Service:
         self.err = self.error.open('xb', buffering=0)
         self.child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         deadline = time.monotonic() + 20
+        current = {}
         while time.monotonic() < deadline:
             current = service_state(self.unit)
             if current.get('MainPID', '0') != '0':
-                if (current.get('LoadState') != 'loaded' or current.get('ActiveState') != 'active'
-                        or current.get('User') != str(self.uid) or current.get('Group') != str(self.gid)
-                        or current.get('KillMode') != 'control-group' or current.get('Delegate') != 'no'
-                        or current.get('RuntimeMaxUSec') != str(self.budget // 60) + 'min' and current.get('RuntimeMaxUSec') != str(self.budget) + 's'
-                        or current.get('TimeoutStopUSec') != '45s'
-                        or current.get('ControlGroup') != '/system.slice/' + self.unit
-                        or not re.fullmatch('[a-f0-9]{32}', current.get('InvocationID', ''))):
-                    raise RuntimeError('Service binding differs from fixed containment contract')
+                expected = {'LoadState': 'loaded', 'User': str(self.uid), 'Group': str(self.gid),
+                            'KillMode': 'control-group', 'Delegate': 'no', 'TimeoutStopUSec': '45s',
+                            'ControlGroup': '/system.slice/' + self.unit}
+                mismatches = [name for name, value in expected.items() if current.get(name) != value]
+                durations = {str(self.budget) + 's'}
+                if self.budget % 60 == 0:
+                    durations.add(str(self.budget // 60) + 'min')
+                if current.get('RuntimeMaxUSec') not in durations:
+                    mismatches.append('RuntimeMaxUSec')
+                if not re.fullmatch('[a-f0-9]{32}', current.get('InvocationID', '')):
+                    mismatches.append('InvocationID')
+                if not re.fullmatch('[1-9][0-9]{0,9}', current.get('MainPID', '')):
+                    mismatches.append('MainPID')
+                if self.bound:
+                    mismatches.extend(name for name in ('InvocationID', 'MainPID') if current.get(name) != self.bound[name])
+                if mismatches:
+                    raise binding_failure(current, mismatches)
                 group_stat = self.group.lstat()
                 if not stat.S_ISDIR(group_stat.st_mode) or group_stat.st_uid != 0 or self.group.is_symlink():
                     raise RuntimeError('Service cgroup is not root managed')
                 pid = int(current['MainPID'])
                 if Path('/proc', str(pid), 'cgroup').read_text().strip() != '0::/system.slice/' + self.unit:
                     raise RuntimeError('Initial child is outside bound cgroup')
-                self.bound = current
-                if release:
-                    with self.gate.open('xb'):
-                        pass
-                return
+                # Retain cleanup authority during Type=exec startup, but do not
+                # release execution until that same invocation is fully active.
+                if self.bound is None:
+                    self.bound = current
+                if current.get('ActiveState') == 'active':
+                    if self.cancelled:
+                        raise binding_failure(current, ['cancelled'])
+                    if release:
+                        with self.gate.open('xb'):
+                            pass
+                    return
+                if current.get('ActiveState') != 'activating':
+                    raise binding_failure(current, ['ActiveState'])
             if self.child.poll() is not None:
                 break
             time.sleep(.05)
-        raise RuntimeError('Service start could not be bound')
+        raise binding_failure(current, ['startupDeadline'])
 
     def stop(self):
         self.stopRequested = True
@@ -347,6 +391,7 @@ class Service:
         terminal = json.loads(self.terminal.read_text(), object_pairs_hook=unique_object)
         if terminal.get('invocationId') != self.bound['InvocationID'] or terminal.get('cgroup') != '0::/system.slice/' + self.unit or terminal.get('uid') != self.uid:
             raise RuntimeError('Terminal receipt differs from initial service binding')
+        self.waited = True
         return {'terminal': terminal, 'exitCode': code, 'cancelled': self.cancelled, 'stopRequested': self.stopRequested, 'stopCommands': self.stopCommands, 'invocationId': self.bound['InvocationID'] if self.bound else None,
                 'controlGroup': '/system.slice/' + self.unit, 'cgroupAbsent': True, 'unitCollected': True}
 
@@ -359,6 +404,21 @@ def gated_child():
             os.execv(sys.argv[3], sys.argv[3:])
         time.sleep(.02)
     raise SystemExit(4)
+
+
+def retire_services(services):
+    complete = True
+    for service in services:
+        if service.child and not service.waited:
+            try:
+                if service.child.poll() is None:
+                    service.stop()
+                service.wait()
+            except BaseException:
+                complete = False
+        if service.group.exists():
+            complete = False
+    return complete
 
 
 def main():
@@ -514,16 +574,7 @@ def main():
     except BaseException as error:
         report['error'] = {'type': type(error).__name__, 'message': str(error), **({'diagnostic': error.diagnostic} if hasattr(error, 'diagnostic') else {})}
     finally:
-        complete = True
-        for service in services:
-            if service.child and service.child.poll() is None:
-                try:
-                    service.stop()
-                    service.wait()
-                except BaseException:
-                    complete = False
-            if service.group.exists():
-                complete = False
+        complete = retire_services(services)
         report['interrupted'] = interrupted
         report['allServiceCgroupsAbsent'] = complete
         if root and complete:

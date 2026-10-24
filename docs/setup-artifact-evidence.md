@@ -928,6 +928,32 @@ process continuity across restarts. It does not admit a readiness profile. The
 first native Debian report omitted these fields, so they must be measured in a new
 native run before using them as release evidence.
 
+The [hosted attempt at source `ee0c26d`](https://github.com/hazeion/fleur/actions/runs/40082201706)
+passed all four containment controls and ordinary-user KVM access, then installed
+the exact 18-package test-tool closure. Other packages and host Docker state were
+unchanged. It refused the final verifier service's startup binding before opening
+the execution gate. The report omitted the mismatched field, so the cause remains
+unclassified. Owned service disposal and scratch removal were unconfirmed; this
+is failed evidence. Report SHA256:
+`aeab8a130c45be3f85a4f7615b0da776b6cd8a7a78c408302866df790c3e10c0`.
+
+Startup regressions independently exposed two verifier defects: a valid
+`Type=exec` process could be rejected while still activating, and a two-second
+budget incorrectly accepted `0min`. Startup now retains cleanup-only authority
+after the exact immutable identity and root-managed cgroup checks pass, waits
+within the original 20-second startup deadline for that same invocation and PID
+to become active, and opens the gate only then. Changed identity, invalid controls,
+cancellation and a persistent activating state still refuse. Duration forms must
+represent the exact budget. Binding failures now include bounded field-level
+diagnostics; this does not establish the earlier hosted failure's cause. Every
+unwaited launched client receives terminal/disposal verification even if it has
+already exited. Unknown service custody remains refused.
+The original predicates fail the startup, exact-duration and exited-client
+regressions for the intended reasons. Independent review passed all 20 Python
+contracts. The affected Bun wrapper and catalog tests passed six tests with
+49 assertions; strict types, both linters and the Bun production build passed.
+These local results do not replace a new native attempt.
+
 ## Recurrent ARM cleanup diagnostic
 
 Source `9b3076554f13b8a608991a6e420d10e29c657c86` passed all 1,237 CLI tests
@@ -937,14 +963,26 @@ removal again failed within the original cleanup budget. The failed report SHA25
 is `edf72ff1b40101edcee9592cb5b9f30f92f1f1b8032856db5f30145127ab1cbc`.
 No fresh Debian attempt ran after this required CI failure.
 
-The next diagnostic adds bounded numeric progress inside the existing
+Source `ee0c26d` adds bounded numeric progress inside the existing
 descriptor-anchored removal. It records normal/fallback attempt, data/exec inode,
 phase, elapsed time, successful unlink/rmdir counts and syscall durations. It does
 not walk the tree before deletion, publish filenames or exception text, change the
 removal algorithm, raise the 15-second cap or alter cleanup acceptance. Journal
 failure does not interrupt physical deletion; malformed diagnostics are marked
-separately. Actual ARM measurements remain pending, and the recurrence is not
-treated as a passing result or explained by an unmeasured performance claim.
+separately. The recurrence remains failed evidence and is not explained by an
+unmeasured performance claim.
+
+The instrumented ARM job at source `ee0c26d0fe2f919eafbb097d9462a08bf8a361d7`
+[passed the original probe and cleanup checks](https://github.com/hazeion/fleur/actions/runs/40081644190/job/120836289200).
+Its counterfactual report SHA256 is
+`61314fb3b17b85b16789d41618dc2dd94c64d720948ee76d55d14a7bea27fa90`.
+The data tree required 90,759 successful unlinks and 11,995 directory removals,
+finishing in 4.293 seconds. Unlink calls accounted for 3.548 seconds and directory
+removal for 0.152 seconds; the longest observed operation took 0.163 seconds.
+The exec tree also completed, both roots were physically absent, the owned
+process was reaped and the default daemon remained unchanged. The journal was
+complete and valid. These measurements describe this successful run; they do not
+establish why either earlier run exceeded its budget or justify a deadline change.
 
 ## Retained Arch cloud-image authentication
 

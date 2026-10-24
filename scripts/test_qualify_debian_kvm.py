@@ -12,6 +12,155 @@ spec.loader.exec_module(module)
 
 
 class InputContract(unittest.TestCase):
+    def launch_fixture(self, directory, budget=60):
+        from types import SimpleNamespace
+        service = module.Service(Path(directory), 1001, 108, [], {}, budget)
+        service.group = SimpleNamespace(exists=lambda: False, lstat=lambda: SimpleNamespace(st_mode=0o40755, st_uid=0), is_symlink=lambda: False)
+        current = {'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'running',
+                   'MainPID': '123', 'User': '1001', 'Group': '108', 'KillMode': 'control-group',
+                   'Delegate': 'no', 'RuntimeMaxUSec': str(budget)+'s', 'TimeoutStopUSec': '45s',
+                   'ControlGroup': '/system.slice/'+service.unit, 'InvocationID': 'a'*32}
+        return service, current
+
+    def launch_with(self, service, observations, cgroup=None):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        def observe(unit):
+            self.assertFalse(service.gate.exists(), 'Startup observation must precede execution release')
+            return next(observations)
+        try:
+            with patch.object(module, 'service_state', side_effect=observe), patch.object(module.subprocess, 'Popen', return_value=SimpleNamespace(poll=lambda: None)), patch.object(Path, 'read_text', return_value=cgroup if cgroup is not None else '0::/system.slice/'+service.unit), patch.object(module.time, 'sleep'):
+                service.launch()
+        finally:
+            for name in ('out', 'err'):
+                stream = getattr(service, name, None)
+                if stream: stream.close()
+
+    def test_startup_waits_for_active_before_releasing_exact_bound_invocation(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            service, active = self.launch_fixture(directory)
+            starting = {**active, 'ActiveState': 'activating', 'SubState': 'start'}
+            self.launch_with(service, iter([{'LoadState':'not-found'}, starting, active]))
+            self.assertTrue(service.gate.exists())
+            self.assertEqual(service.bound['InvocationID'], active['InvocationID'])
+
+    def test_two_second_budget_never_accepts_zero_minutes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            service, active = self.launch_fixture(directory, 2)
+            with self.assertRaises(RuntimeError):
+                self.launch_with(service, iter([{'LoadState':'not-found'}, {**active, 'RuntimeMaxUSec':'0min'}]))
+            self.assertFalse(service.gate.exists())
+            self.assertIsNone(service.bound)
+
+    def test_provisional_start_cannot_change_invocation_or_pid(self):
+        import tempfile
+        for field, value in [('InvocationID','b'*32), ('MainPID','124')]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                service, active = self.launch_fixture(directory)
+                with self.assertRaises(RuntimeError):
+                    self.launch_with(service, iter([{'LoadState':'not-found'}, {**active, 'ActiveState':'activating'}, {**active, field:value}]))
+                self.assertFalse(service.gate.exists())
+                self.assertEqual(service.bound['InvocationID'], 'a'*32)
+
+    def test_each_immutable_startup_contract_refuses_before_binding_or_release(self):
+        import tempfile
+        changes = {'LoadState':'masked', 'User':'0', 'Group':'0', 'KillMode':'process',
+                   'Delegate':'yes', 'TimeoutStopUSec':'46s', 'ControlGroup':'/unrelated',
+                   'RuntimeMaxUSec':'61s', 'InvocationID':'bad', 'MainPID':'-1'}
+        for field, value in changes.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                service, active = self.launch_fixture(directory)
+                with self.assertRaises(RuntimeError) as caught:
+                    self.launch_with(service, iter([{'LoadState':'not-found'}, {**active, field:value}]))
+                self.assertFalse(service.gate.exists())
+                self.assertIsNone(service.bound)
+                self.assertIn(field, caught.exception.diagnostic['mismatchedFields'])
+
+    def test_persistent_startup_retains_cleanup_only_identity_at_original_deadline(self):
+        import io
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            service, active = self.launch_fixture(directory)
+            starting = {**active, 'ActiveState':'activating'}
+            with patch.object(module.time, 'monotonic', side_effect=[0, 0, 21]), self.assertRaises(RuntimeError) as caught:
+                self.launch_with(service, iter([{'LoadState':'not-found'}, starting]))
+            self.assertEqual(caught.exception.diagnostic['mismatchedFields'], ['startupDeadline'])
+            self.assertFalse(service.gate.exists())
+            self.assertEqual(service.bound['InvocationID'], 'a'*32)
+            service.out, service.err = io.BytesIO(), io.BytesIO()
+            receipt = {'invocationId':'a'*32, 'cgroup':'0::/system.slice/'+service.unit, 'uid':1001}
+            service.terminal.write_text(json.dumps(receipt))
+            with patch.object(module, 'service_state', return_value=starting), patch.object(module, 'run') as command:
+                service.stop()
+                self.assertEqual(command.call_args.args[0][-1], service.unit)
+            with patch.object(module, 'bounded_capture', return_value=(0,b'',b'',False,False)), patch.object(module, 'service_state', return_value={'LoadState':'not-found'}), patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=0o100644, st_uid=1001, st_nlink=1, st_size=100)):
+                result = service.wait()
+            self.assertTrue(result['cancelled'])
+            self.assertTrue(result['cgroupAbsent'])
+            self.assertTrue(service.waited)
+            self.assertFalse(service.gate.exists())
+
+    def test_startup_diagnostics_never_publish_private_or_unbounded_values(self):
+        diagnostic = module.binding_failure({'User':'private/path', 'InvocationID':'a'*32,
+                                             'ExecStart':'private-command', 'SubState':'private/path'*100}, ['User']).diagnostic
+        self.assertNotIn('private', json.dumps(diagnostic))
+        self.assertNotIn('ExecStart', diagnostic['observed'])
+        self.assertEqual(diagnostic['observed']['InvocationID'], hashlib.sha256(('a'*32).encode()).hexdigest())
+        all_private = {name:'private-secret' for name in module.SERVICE_FIELDS}
+        self.assertNotIn('private', json.dumps(module.binding_failure(all_private, ['User']).diagnostic))
+
+    def test_exited_client_still_requires_terminal_receipt_and_cgroup_disposal(self):
+        import io
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        for missing, live in ((False,False), (True,False), (False,True)):
+            with self.subTest(missing=missing, live=live), tempfile.TemporaryDirectory() as directory:
+                service, active = self.launch_fixture(directory)
+                service.bound = active
+                service.child = SimpleNamespace(poll=lambda: 0)
+                service.group.exists = lambda: live
+                service.out, service.err = io.BytesIO(), io.BytesIO()
+                if not missing:
+                    service.terminal.write_text(json.dumps({'invocationId':'a'*32, 'cgroup':'0::/system.slice/'+service.unit, 'uid':1001}))
+                original_stat = Path.lstat
+                def receipt_stat(path):
+                    if not missing and path == service.terminal:
+                        return SimpleNamespace(st_mode=0o100644, st_uid=1001, st_nlink=1, st_size=100)
+                    return original_stat(path)
+                with patch.object(module, 'bounded_capture', return_value=(0,b'',b'',False,False)) as capture, patch.object(module, 'service_state', return_value={'LoadState':'not-found'}), patch.object(Path, 'lstat', new=receipt_stat), patch.object(module.time, 'monotonic', side_effect=[0,11]), patch.object(service, 'stop') as stop:
+                    self.assertEqual(module.retire_services([service]), not missing and not live)
+                    capture.assert_called_once()
+                    stop.assert_not_called()
+                self.assertEqual(service.waited, not missing and not live)
+
+    def test_pid_outside_exact_root_managed_cgroup_never_acquires_cleanup_authority(self):
+        import tempfile
+        from types import SimpleNamespace
+        for wrong_owner in (False, True):
+            with self.subTest(wrong_owner=wrong_owner), tempfile.TemporaryDirectory() as directory:
+                service, active = self.launch_fixture(directory)
+                if wrong_owner:
+                    service.group.lstat = lambda: SimpleNamespace(st_mode=0o40755, st_uid=1001)
+                with self.assertRaises(RuntimeError):
+                    self.launch_with(service, iter([{'LoadState':'not-found'}, active]), cgroup='0::/unrelated')
+                self.assertFalse(service.gate.exists())
+                self.assertIsNone(service.bound)
+
+    def test_cancelled_start_cannot_release_even_a_fully_active_service(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            service, active = self.launch_fixture(directory)
+            service.cancelled = True
+            with self.assertRaises(RuntimeError):
+                self.launch_with(service, iter([{'LoadState':'not-found'}, active]))
+            self.assertFalse(service.gate.exists())
+            self.assertEqual(service.bound['InvocationID'], 'a'*32)
+
     def setUp(self):
         self.data = {'filter.so': b'filter', 'abuse': b'abuse'}
         self.pins = {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()} for name, data in self.data.items()}

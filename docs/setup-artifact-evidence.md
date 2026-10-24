@@ -2,15 +2,15 @@
 
 Initial artifact audit: 2026-10-19, for issue [#24](https://github.com/hazeion/fleur/issues/24). That read-only audit executed no installer, package payload or application and established no native readiness. Later sections record separate native execution at exact source revisions; their scope and release admission remain explicit.
 
-## Evidence scope
+## Initial artifact-audit scope
 
-| Layer | Observed result | Remaining proof |
+| Layer | Observed result | Proof absent from initial audit |
 |---|---|---|
 | Docker apt | Six signed repository indexes and all 30 exact payload SHA256/size values verified | Native package-manager execution, dependency closure, fresh setup, ordinary-user smoke and exact runtime compatibility |
 | Arch packages | Four payload hashes/signatures and 5/5 master certifications per signer verified | Native pacman trust enforcement, complete consistent distro snapshot and fresh setup |
 | Desktop disk images | Both exact hashes, strict image signatures and Gatekeeper notarization passed | Full application signature assessment, fresh installation, real agreement action and native daemon/runtime readiness |
 
-The ordinary [native prerequisite workflow](../.github/workflows/native-setup.yml) jobs check existing Docker on native Ubuntu 24.04 amd64/arm64. Its explicit manual x64 KVM lane separately attempts fresh Debian qualification; an existing-runner pass does not establish fresh installation. The sections below retain actual guest and private Intel Desktop results. Other promised native targets remain open.
+The ordinary [native prerequisite workflow](../.github/workflows/native-setup.yml) jobs check existing Docker on native Ubuntu 24.04 amd64/arm64. Its explicit manual x64 KVM lane separately attempts fresh Debian qualification; an existing-runner pass does not establish fresh installation. The sections below retain actual guest and private Intel Desktop results. The final sections record completion for the approved required targets; historical observations keep their original scope and outcome.
 
 ## Docker official apt provenance
 
@@ -1549,3 +1549,83 @@ path and verify source, VM, cgroup, daemon and guardian refusals precede root
 launch, and that failed root launch never publishes success. All 71 Desktop
 host contract tests, 12 CI policy tests, types and full lint passed. Rebuilt
 authenticated inputs and actual native runtime qualification are still required.
+
+
+## Completed Intel Desktop runtime and readiness qualification
+
+At operator source `1906201264e5d15728d2cd36d98564ebd0d5aeb1`, two full
+native Intel macOS/Desktop Linuxkit runtime attempts passed independent review.
+The prepared images came from successful GitHub run
+[40116545670](https://github.com/hazeion/fleur/actions/runs/40116545670), source
+`9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881`, artifact `12570070243`.
+The complete archive SHA256 is
+`a7f60b852917166ad5badca3aa316302df47d93b73229fbd0759d3d1ebec9153`.
+Preparation authenticated both OCI configuration/manifest identities, all 92
+payload source hashes, the executed compiler and helper pair, and producer
+cleanup. Preparation alone established no runtime admission.
+
+The accepted full reports have SHA256
+`e2ea84799371eac2c6253cd2335bd47f51adabf77a1ddda07c057b2aac1d1807`
+and `c1bb6596ebc2a1a09b06455161d7446fce6df1706e8f00527852ff8b7a50d610`.
+They used distinct nonces and workers on the same existing VM boot, with the same
+source, images, compiler and helpers. These are repeated native executions, not
+fresh-VM or installation claims. Each attempt verified all 31 pinned runtime source files. The original acceptance
+checks, negative controls, retained GC checks, descriptor restrictions, event-replacement
+refusal and actual CPU/memory/PID enforcement passed. Each full attempt retained
+two ordinary and two idle lifecycle repeats, 11-second broker pauses and the
+original 30-second physical deadlines with a 250 ms lateness bound. Physical exit
+lateness was 44/18/18/13 ms and 71/56/35/20 ms. Healthy completion used the original
+startup-bound Docker wait proof. The trusted controller ran Ubuntu userspace
+against the actual Desktop Linuxkit kernel.
+
+Each full attempt also ran a fresh manager-loss control. The unchanged root guard
+and journals bound actual worker IDs, PIDs, VM boot and original VM deadlines.
+All 13 workers, both controllers and both imported manifest images were removed;
+the control's separate resources were also removed. Original context, daemon,
+recorded container state/configuration and complete image inventories were preserved.
+The aggregate independent review SHA256 is
+`17b2fe0503493c0273806e482ed7c008c595861c646850b458880344e49b2787`.
+
+An intervening attempt, report SHA256
+`ee0583ba449fd3c5da6a9fec7a4fd80dc0b70006ae93ec88874267213046522d`,
+passed runtime assertions but failed original-container preservation. It remains
+failed and does not count toward either repeat. Native Docker API records showed
+an unrelated container's delete/recreate/archive/start sequence outside the
+verifier's fixed operations. The reviewed sanitized diagnosis has SHA256
+`91c1ae0add36578db4fe1d9753818e86b654982375cc8c23edebbc274302a4b9`.
+No human or process caller was identified, no unrelated workload was reset, and
+no preservation field, deadline, cleanup gate or assertion was weakened.
+
+The unchanged packed preadmission verifier recorded the actual native readiness
+tuple and two expected Doctor exit-4 refusals with smoke/sentinel cleanup and
+preservation. Its report SHA256 is
+`b2b1565746e8a1a56785db75594f38dc1f942dc28609a1e151a1c8bb10c63571`.
+This readiness evidence and the repeated isolation evidence authorize only the
+compiled `darwin-15.7.7-x64-desktop-4.96.1` row: Bun 1.4.3, CLI 29.9.2/a82e528,
+Desktop 4.96.1 build 244132, Engine 29.9.2/0367cbe, Linuxkit 7.0.14-linuxkit,
+rootful cgroupfs/v2, builtin seccomp and cgroup namespaces, containerd
+v2.4.2/b7a25261e029d68978bbf290df0a62fc819b3c51,
+runc 1.5.2/v1.5.2-0-g29dd3dc2, Compose 5.6.0 and the exact amd64 Bun image.
+Unknown tuples and translated execution still refuse.
+
+At source `2d3e6fcb9a0aa0d8f4527bad4ea0afabe0a7349a`, the ordinary packed
+CLI then passed Doctor/ready setup in each of two rounds. All four commands
+returned success with the exact compiled profile and evidence, confirmed smoke
+cleanup, and preservation of context, inventory, daemon/server, the unrelated
+sentinel and all setup-grant fields. The sentinel was removed with confirmed
+cleanup. The report SHA256 is
+`69648daf59ad333e1e1dddfdb4de75997f79964203104dcb8454dc670e51a89d`;
+independent review SHA256 is
+`41be94cae31f6cc947bbe01148d0078e6f16dd6eda54914da20edeba7c5aa01f`.
+This existing-installation verifier acquires no image, installs nothing and
+establishes no human-consent proof. Installation-method qualification remains
+separate, as recorded above.
+
+Requirements-based regressions first produced nine intended failures, then all
+97 focused tests passed with 428 assertions, alongside types and full lint.
+The verifier now rejects unconfirmed retirement, unexpected ready-setup action
+results, changed grants and unsafe grant-store reads. Unknown existing tuples
+and ordinary disposable Linux CI retain their original two-Doctor behavior.
+Existing admitted tuples in personal-host mode additionally verify ready setup
+in each round. None of these fixture results substitutes for the actual native
+reports above.

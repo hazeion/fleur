@@ -32,6 +32,21 @@ class FinalizationIntegrity(unittest.TestCase):
         self.assertFalse(result['report']['ok'])
         self.assertIn('elapsedMs',result['report'])
 
+    def test_preservation_observation_error_is_distinct_from_an_actual_snapshot_difference(self):
+        import importlib.util
+        path=Path(__file__).resolve().parents[3]/'scripts/observe-desktop-runtime.py'
+        spec=importlib.util.spec_from_file_location('review_final_error_categories',path)
+        outer=importlib.util.module_from_spec(spec);spec.loader.exec_module(outer)
+        def unavailable(cleanup):raise RuntimeError('inventory deadline')
+        unknown,_=self.execute(inventory=unavailable,error_category=outer.error_category)
+        self.assertFalse(unknown['report']['ok'])
+        self.assertFalse(unknown['report']['originalPreserved'])
+        self.assertEqual(unknown['report']['preservationObservationError'],'HOST_INVENTORY_DEADLINE')
+        different,_=self.execute(inventory=lambda cleanup:{'changed':True},error_category=outer.error_category)
+        self.assertFalse(different['report']['ok'])
+        self.assertFalse(different['report']['originalPreserved'])
+        self.assertNotIn('preservationObservationError',different['report'])
+
     def test_unconfirmed_worker_retirement_preserves_guardian_and_rejects_success(self):
         guardian={'cid':'guardian','name':'guardian'};retired=[]
         def inspect(*args,**kwargs):return {'Id':'worker'}

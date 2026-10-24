@@ -43,6 +43,13 @@ def native_intel_identity(system,machine,cpu):return system=='Darwin' and machin
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
 
 
+def error_category(error):
+    known={'inventory deadline':'HOST_INVENTORY_DEADLINE','inventory exit':'HOST_INVENTORY_EXIT','inventory size':'HOST_INVENTORY_OUTPUT_BOUND','inventory schema':'HOST_INVENTORY_SCHEMA','inventory identity':'HOST_INVENTORY_IDENTITY','inventory owned state':'HOST_INVENTORY_OWNED_STATE','leader absent':'HOST_RETAINED_LEADER_ABSENT','leader group':'HOST_RETAINED_LEADER_GROUP','waitid child differs':'HOST_WAITID_CHILD_CHANGED','waitid ABI response':'HOST_WAITID_ABI_RESPONSE'}
+    message=str(error)
+    if type(error) is RuntimeError and message in known:return known[message]
+    return message if type(error) is RuntimeError and re.fullmatch('[A-Z_]{1,80}',message) else 'DESKTOP_OBSERVATION_FAILED'
+
+
 def matches_image(value,identity):
     try:
         return (value['Id']==identity.manifest_image_id and value['Architecture']=='amd64' and value['Os']=='linux'
@@ -218,7 +225,7 @@ def ready_frame(value,binding,raw,cid,pid,role):
 
 def observe(mode,images_directory):
     report={'formatVersion':1,'scope':'native-intel-desktop-runtime-qualification','mode':mode,'ok':False,'runtimeAdmission':False,'nativeQualification':False,'installationVerified':False,'cleanup':[]}
-    end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None
+    end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None;phase='native-identity'
     environment={key:value for key,value in os.environ.items() if key not in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','DOCKER_API_VERSION')}
     def raw(args,cleanup=False,timeout=6,extra_environment=None):
         budget=min(timeout,(end if cleanup else work_end)-time.monotonic())
@@ -296,6 +303,7 @@ def observe(mode,images_directory):
         if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or not native_intel_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype'])):raise RuntimeError('EXPLICIT_NATIVE_INTEL_MAC_REQUIRED')
         commit=command(['git','rev-parse','HEAD']).strip()
         if not re.fullmatch('[a-f0-9]{40}',commit) or command(['git','diff','--exit-code','HEAD']):raise RuntimeError('CLEAN_COMMITTED_SOURCE_REQUIRED')
+        phase='operator-source'
         operator_files=['scripts/observe-desktop-runtime.py',*['experiments/compatibility/desktop-runtime/'+name for name in ('artifact_inputs.py','oci_inputs.py','entry.py','processes.py','image-origin.json')]]
         operator_hashes={}
         for relative in operator_files:
@@ -303,6 +311,7 @@ def observe(mode,images_directory):
             if sha(command(['git','show',commit+':'+relative],timeout=8))!=sha(body):raise RuntimeError('OPERATOR_SOURCE_BYTES_CHANGED')
             operator_hashes[relative]=sha(body)
         report['operatorSource']={'commit':commit,'files':operator_hashes}
+        phase='fresh-control-preflight'
         preflight=raw([str(Path.home()/'.bun/bin/bun'),'scripts/observe-desktop-control.ts','--run'],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
         # Explicitly pass the preflight flag only to this fixed command.
         if preflight.returncode:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
@@ -312,21 +321,26 @@ def observe(mode,images_directory):
         context=command(['docker','context','show']).strip();resolved=artifacts.canonical_json(command(['docker','context','inspect',context,'--format','{{json .Endpoints.docker}}']))
         endpoint=os.environ.get('DOCKER_HOST') if os.environ.get('DOCKER_HOST') and not os.environ.get('DOCKER_CONTEXT') else resolved['Host']
         if not re.fullmatch(r'unix:///[A-Za-z0-9/_.-]{1,4000}',endpoint) or sha(endpoint)!=proof['endpointSha256']:raise RuntimeError('LOCAL_ENDPOINT_CHANGED')
+        phase='original-inventory'
         original=inventory();report['original']={key:sha(value) for key,value in original.items()}
         version=artifacts.canonical_json(docker(['version','--format','{{json .Server}}']))
         if version!=proof['server']:raise RuntimeError('EXACT_DESKTOP_TUPLE_CHANGED')
         daemon=artifacts.canonical_json(docker(['info','--format','{{json .ID}}']));boot=proof['probe']['bootId'];nonce=str(uuid.uuid4())
         catalog=artifacts.canonical_json((DIRECTORY/'image-origin.json').read_bytes())
+        phase='source-artifact-custody'
         held=artifacts.open_artifacts(images_directory,catalog,absolute_deadline=work_end)
         source=held.read_json('source-manifest.json');prep=held.read_json('runtime-preparation.json')
         origin=catalog['origin']
         if source.get('sourceCommit')!=origin['sourceCommit'] or prep.get('sourceCommit')!=origin['sourceCommit'] or prep.get('scope')!='prepared-native-runtime-image' or prep.get('runtimeAdmission') is not False or prep.get('nativeQualification') is not False or prep.get('preparationReport',{}).get('cleanup_complete') is not True:raise RuntimeError('PREPARATION_PROVENANCE_CHANGED')
+        phase='payload-source-closure'
         for name,digest in source['sources'].items():
             relative='experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
         report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
+        phase='archive-validation'
         oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={};image_identities={}
         for name,config_image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
+            phase='archive-validation'
             fd=held.verify(name)
             with os.fdopen(os.dup(fd),'rb') as stream:identity=oci.validate_archive(stream,config_image,work_end)
             configs[name]=identity.configuration;image_identities[name]=identity
@@ -337,6 +351,7 @@ def observe(mode,images_directory):
             existing=inspect(image,'image')
             if existing is None:
                 imported.append(image);persist(name+'.planned.json',{'imageId':image,'configImageId':config_image,'archiveSha256':held.pins[name]['sha256']})
+                phase='image-load'
                 load=Channel(['docker','--host',endpoint,'image','load'],environment=environment,input_fd=fd);channels.append(load)
                 stdout,stderr=load.drain(min(work_end,time.monotonic()+120));load.close(work_end);channels.remove(load)
                 held.verify(name)
@@ -347,6 +362,7 @@ def observe(mode,images_directory):
         image=image_identities['controller-image.tar'].manifest_image_id;runtime_image=image_identities['runtime-image.tar'].manifest_image_id;base_env=configs['controller-image.tar']['config']['Env']
         binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
         if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
+        phase='guardian-start'
         guardian,guardian_channel,guardian_ready=start_role('guardian',binding,image,base_env)
         binding={**binding,'guardianId':guardian['cid'],'preparedImage':{'imageId':runtime_image,**{key:prep[key] for key in ('architecture','baseImage','helperSha256','abuseSha256','runtimeSources')}}}
         report['nonce']=nonce;report['bootId']=boot
@@ -384,8 +400,9 @@ def observe(mode,images_directory):
             if not valid_journals(journals,nonce,boot,control_cid=cid,expected_bindings=bound):raise RuntimeError('MANAGER_LOSS_GUARDIAN_PROOF_FAILED')
             report.update(ok=True,managerLossVerified=True,guardianJournals=journals,controlBinding=bound)
             return report
+        phase='manager-start'
         manager,manager_channel,manager_ready=start_role('manager',binding,image,base_env)
-        frame=manager_channel.frame(work_end)
+        frame=manager_channel.frame(work_end);report.setdefault('controllerFrames',[]).append(frame)
         if mode=='--qualify':
             if type(frame) is not dict or set(frame)!={'kind','nonce','bootId','daemonId','imageId','workers'} or frame['kind']!='ownership' or frame['nonce']!=nonce or frame['bootId']!=boot or frame['daemonId']!=daemon or frame['imageId']!=runtime_image or type(frame['workers']) is not list or len(frame['workers'])!=13:raise RuntimeError('OWNERSHIP_FRAME_INVALID')
             rows=frame['workers'];tag=rows[0].get('owner')
@@ -394,14 +411,14 @@ def observe(mode,images_directory):
                 if inspect(row['name']) is not None:raise RuntimeError('FRESH_WORKER_NAME_UNAVAILABLE')
             workers.extend(rows);persist('workers.json',frame);manager_channel.acknowledge(nonce,'ownership')
             guard_bindings={}
-            frame=manager_channel.frame(work_end)
+            frame=manager_channel.frame(work_end);report['controllerFrames'].append(frame)
             while frame.get('kind')=='guard-binding':
-                if set(frame)!={'kind','nonce','containerId','pid','deadlineVmMonotonic'} or frame['nonce']!=nonce or type(frame['containerId']) is not str or not re.fullmatch(SHA,frame['containerId']) or frame['containerId'] in guard_bindings or type(frame['pid']) is not int or not 1<frame['pid']<2**31 or type(frame['deadlineVmMonotonic']) not in (int,float) or not math.isfinite(frame['deadlineVmMonotonic']):raise RuntimeError('GUARD_BINDING_INVALID')
+                if len(guard_bindings)>=4 or set(frame)!={'kind','nonce','containerId','pid','deadlineVmMonotonic'} or frame['nonce']!=nonce or type(frame['containerId']) is not str or not re.fullmatch(SHA,frame['containerId']) or frame['containerId'] in guard_bindings or type(frame['pid']) is not int or not 1<frame['pid']<2**31 or type(frame['deadlineVmMonotonic']) not in (int,float) or not math.isfinite(frame['deadlineVmMonotonic']):raise RuntimeError('GUARD_BINDING_INVALID')
                 current=inspect(frame['containerId'])
                 row=next((row for row in workers if current is not None and current['Name']=='/'+row['name']),None)
                 if row is None or not re.search('-busy-[01]$',row['name']) or not entry.worker_profile(current,row['name'],runtime_image,row['owner']) or current['State']['Running'] is not True or current['State']['Pid']!=frame['pid']:raise RuntimeError('LIVE_GUARD_WORKER_UNPROVEN')
                 guard_bindings[frame['containerId']]=frame;persist('guard-'+frame['containerId']+'.json',frame);manager_channel.acknowledge(nonce,'guard-'+frame['containerId'])
-                frame=manager_channel.frame(work_end)
+                frame=manager_channel.frame(work_end);report['controllerFrames'].append(frame)
         report['controller']=frame
         extra,errors=manager_channel.drain(work_end);manager_channel.close(work_end);channels.remove(manager_channel)
         if extra or errors or manager_channel.child.returncode or frame.get('kind')!='result' or frame.get('ok') is not True or frame.get('nonce')!=nonce or frame.get('bootId')!=boot or frame.get('sourceCommit')!=origin['sourceCommit'] or frame.get('sources')!=source['sources'] or frame.get('managerId')!=manager['cid'] or frame.get('managerPid')!=manager_ready['managerPid']:raise RuntimeError('CONTROLLER_RESULT_UNPROVEN')
@@ -417,7 +434,7 @@ def observe(mode,images_directory):
             if not valid_journals(journals,nonce,boot,expected,expected_bindings=guard_bindings):raise RuntimeError('INDEPENDENT_GUARD_JOURNALS_UNPROVEN')
         report['ok']=True
     except Exception as error:
-        report['ok']=False;report['error']=str(error) if type(error) is RuntimeError and re.fullmatch('[A-Z_]{1,80}',str(error)) else 'DESKTOP_OBSERVATION_FAILED'
+        report['ok']=False;report['error']=error_category(error);report['failurePhase']=phase
         report['failureType']=type(error).__name__
     finally:
         # Stop the sole creation authority before independently sweeping workers.
@@ -474,7 +491,7 @@ def observe(mode,images_directory):
             except Exception:report['ok']=False;report['artifactDescriptorRetirementUnconfirmed']=True
         if original is not None:
             try:report['originalPreserved']=inventory(True)==original
-            except Exception:report['originalPreserved']=False
+            except Exception as error:report['originalPreserved']=False;report['preservationObservationError']=error_category(error)
             if report['originalPreserved'] is not True:report['ok']=False
         if ledger_dir is not None:
             try:ledger_dir.cleanup()

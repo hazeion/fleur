@@ -1,16 +1,16 @@
 # Prerequisite installer artifact evidence
 
-Evidence date: 2026-10-19. This records read-only authentication of upstream installer artifacts for issue [#24](https://github.com/hazeion/fleur/issues/24). It does **not** establish fresh installation, ordinary-user daemon readiness or Fleur runtime support for these versions. No installer, package payload or application was executed in this verification.
+Initial artifact audit: 2026-10-19, for issue [#24](https://github.com/hazeion/fleur/issues/24). That read-only audit executed no installer, package payload or application and established no native readiness. Later sections record separate native execution at exact source revisions; their scope and release admission remain explicit.
 
-## Evidence scope
+## Initial artifact-audit scope
 
-| Layer | Observed result | Remaining proof |
+| Layer | Observed result | Proof absent from initial audit |
 |---|---|---|
 | Docker apt | Six signed repository indexes and all 30 exact payload SHA256/size values verified | Native package-manager execution, dependency closure, fresh setup, ordinary-user smoke and exact runtime compatibility |
 | Arch packages | Four payload hashes/signatures and 5/5 master certifications per signer verified | Native pacman trust enforcement, complete consistent distro snapshot and fresh setup |
 | Desktop disk images | Both exact hashes, strict image signatures and Gatekeeper notarization passed | Full application signature assessment, fresh installation, real agreement action and native daemon/runtime readiness |
 
-The [native prerequisite workflow](../.github/workflows/native-setup.yml) currently checks existing Docker on native Ubuntu 24.04 amd64/arm64. It must not be described as fresh installation proof. A separate owned fresh-VM lane and native Desktop hosts are still required.
+The ordinary [native prerequisite workflow](../.github/workflows/native-setup.yml) jobs check existing Docker on native Ubuntu 24.04 amd64/arm64. Its explicit manual x64 KVM lane separately attempts fresh Debian qualification; an existing-runner pass does not establish fresh installation. The sections below retain actual guest and private Intel Desktop results. The final sections record completion for the approved required targets; historical observations keep their original scope and outcome.
 
 ## Docker official apt provenance
 
@@ -204,9 +204,71 @@ Both doctor results honestly retained exit 4 and release state unverified. This 
 
 Repeating the existing-only verifier against ordinary-catalog candidate `37513637b2c6b7e264edfcc36cd02181fc859c1d` produced report `1b5e9ee287d063a0e4d5f48fa325d87280755f0a90ac863eb4b49ad66586d21e`. Both packed rounds again completed smoke cleanup and retained unverified release state. The verifier acquired no image, preserved the stopped sentinel and restored the original container inventory and context. Its wrapper completed in 13.78 seconds without timeout. This confirms that the Ubuntu candidate does not qualify the observed Desktop tuple.
 
+## Existing-runner daemon observations
+
+The native setup verifier records an allowlist of daemon identity, kernel,
+architecture, cgroup driver/version, security options and resource capabilities
+from its own run. It checks version, kernel and architecture against that run's
+server build response and rechecks daemon identity and server builds after each
+packed smoke round. Info command and parse failures use fixed diagnostics rather
+than copying raw daemon output. Proxy settings and labels are excluded.
+
+These observations support reviewing exact runner tuples. They do not qualify
+installation, interrupt recovery or a release profile by themselves, and new
+metadata cannot fill fields missing from an older report.
+
 ## Release gate
 
 Authenticated artifacts may support a reviewed source-owned candidate installation plan. They must not silently promote an OS/architecture tuple to supported. Record artifact authenticity, installer execution and runtime support as distinct states. Exact source-owned plans must include authenticated dependency closure and all bundled side-effect authority; normal commands cannot accept public profile/verification overrides. Native evidence must include actual packed CLI setup, ordinary-user local daemon and Compose readiness, repeated owned smoke and cleanup, existing-tool preservation, interruption/reprobe behavior, and Fleur restriction compatibility for the exact tuple. Missing evidence remains explicitly open.
+
+## Ubuntu 24.04 Azure runner readiness, 2026-10-23
+
+The existing GitHub ARM64 and x64 runners completed native readiness observations
+and the full bounded runtime probe at source `31e5680304dec5af6963232a665caa606f8f9c58`.
+GitHub tested merge `a85405dc483607ffa36b66d89f21dcd96592516c`; its tree equals that
+source tree. The [native workflow](https://github.com/hazeion/fleur/actions/runs/40026921944)
+passed both platforms. The [compatibility run](https://github.com/hazeion/fleur/actions/runs/40026921954)
+completed both runtime jobs successfully before a later test-fixture fix
+superseded the aggregate run. A cancelled aggregate is not a passing workflow.
+
+Both tuples use Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bun 1.4.3,
+CLI `28.0.4/b8034c0`, Engine `28.0.4/6430e49`, containerd
+`v2.4.1/f2551031d7276a770f65f98c9b52e57e7dad07e8`, runc
+`1.5.2/v1.5.2-0-g29dd3dc2`, and Compose 2.38.2. Native reports record systemd
+cgroup v2, rootful operation, `name=apparmor`, `name=cgroupns`, builtin seccomp,
+and all required resource capability flags. Each preserved its context and
+inventory across two packed smoke rounds and retired its unchanged sentinel.
+Those historical Doctor rounds returned exit 4 with unverified release state.
+
+| Architecture | Native readiness report SHA256 | Runtime report SHA256 |
+|---|---|---|
+| ARM64 | `15db2e603e2cdfccd8549aa78bcc7a1bf53a22f962012449297460608d0332e9` | `17e7c7a80b9bff706368f2d19ac52538a20bee6725abaf902ab97220d33c7c48` |
+| x64 | `2c29e92c1eba819c44f33361b8ac5ba319ae9343dc9cba4e64973b304774c7fd` | `a3f687541d7438b370b8c2dcbf74d2cf8c2b7a248f385257b68d31c72eba9402` |
+
+Independent review accepted both source-bound runtime reports using the strict
+restriction, thread and resource oracles, measured GC, idle and worker lifecycle
+evidence, host control, retirement and cleanup. Physical exit lateness was
+71/61/29/37 ms on ARM64 and 43/15/32/32 ms on x64, below the original 250 ms limit.
+Four negative report mutations per architecture were rejected. The metadata and
+runtime jobs establish matching tuples across separate hosts, not one shared
+daemon instance.
+
+The compiled readiness catalog maps these exact observations to separate ARM64
+and x64 entries. Ordinary Doctor/setup fixture tests require their own evidence
+references and reject neighboring kernel, client, containerd and rootless values.
+The [follow-up native workflow](https://github.com/hazeion/fleur/actions/runs/40029022728)
+passed at source `908443e1152c1c0b7044098bf67cd3af51470c8a`. Its tested merge
+`f366cdaff1f90bdf5b3851defe3c3a575f55944d` has the same tree. Both native
+architectures returned verified Doctor readiness twice, preserved the correlated
+daemon/build and sentinel, and confirmed owned smoke and sentinel cleanup.
+Independent review accepted ARM64 report
+`4f68d3904a38e2fecdf17c2504aebbcc0c8c4a07ab9c1855e5c0ecc41f24dc12`
+and x64 report
+`90697e649879f4c081dec6daba85f6e94224d42497723820968b31331727b743`.
+The original evidence hashes remain the catalog references; these follow-up
+reports confirm ordinary Doctor behavior after catalog admission.
+No Docker installation, package upgrade, interrupted-setup recovery, human
+consent or broader platform qualification follows from these runner reports.
 
 
 ## Owned guest boot custody stage
@@ -320,3 +382,1250 @@ Both source outcomes returned `HUMAN_ACTION_REQUIRED`, exit 3, after completed p
 The first attempt's JSON telemetry rounded epoch nanoseconds through JavaScript numbers. Its native held-descriptor checks were exact before serialization; its accepted readback used exact safely represented identity fields, documented timestamp representation equivalence and fresh full core hashes. Historical raw nanoseconds cannot be recovered from that receipt. The repeated verifier changed only snapshot identity serialization to eight canonical decimal strings and an explicit encoding marker. Its strict consumer required all eight fields to match native identities exactly, with full held-descriptor core hashes and stable named-file checks. Independent review reran that read-only consumer successfully. No floating-point fallback or whole-application atomic-freeze claim was used for the repeat.
 
 The earlier explicit 180-second attempt remains failed: receipt `86250f963d27e9babcb5bbebfcb49a42c1f54ed4bb7ee7f704d00b3c36365c4c`. Its separate normal cleanup did not promote it to success. The 600-second attempts are distinct public-input cases. No global application placement, launch, privileged-helper configuration, legal acceptance, Desktop runtime/release qualification or ARM verification follows from these private placements. Those remaining issue #24 requirements stay open.
+
+
+## Ubuntu 26.04 x64 installation and runtime evidence
+
+Source `ad3869c6d34e01bebd16a248adeb8c3e53d53d8a` completed two fresh owned
+Ubuntu 26.04.1 x64 VM attempts using native Intel HVF execution, Bun 1.4.3, the
+frozen Resolute internal candidate and the authenticated recorded helper pair.
+The original tracked guest, builder and full restriction probe ran unchanged.
+The attempts took 260.72 and 291.63 seconds. Report SHA256 values:
+
+- `f25ad02baf4e5e3d3678da93ce526eead4809504955ba1d9f2cc7cd182da29ac`
+- `5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07`
+
+Each completed exact five-package installation, separately authorized Docker
+membership enrollment, stale-login refusal, genuine fresh-login recovery, two
+ordinary-user smoke rounds, unrelated-state preservation and the complete
+restriction/resource/GC/idle/deadline probe. All eight physical exits met the
+unchanged 250 ms bound: 61, 62, 31, 66 ms in the first attempt and 39, 32, 78,
+64 ms in the second. Both disposed of the owned VM, credentials, scratch and
+overlay; independent review confirmed the exact scratch names were absent.
+
+The second attempt separately collected bounded read-only metadata after all
+original gates. Its 390 ms guest observation and 1,605 ms retired SSH transport
+preserved original custody before/after and matched that same run's runtime
+control builds. The observed tuple is kernel 7.0.0-38-generic; Docker client
+29.9.1/dfc520d and Engine 29.9.1/b26fb77; containerd
+v2.4.2/b7a25261e029d68978bbf290df0a62fc819b3c51; runc
+1.5.2/v1.5.2-0-g29dd3dc2; and Compose 5.6.0. Docker reported overlayfs, systemd
+cgroup v2, rootful mode, all recorded resource capability flags and exactly
+`name=apparmor,profile=default`, `name=seccomp,profile=builtin`, `name=cgroupns`.
+The image remained the existing digest-pinned amd64 Bun image.
+
+Independent origin/custody/authority/disposal review and runtime/control review
+accepted both actual reports. The latter ran the pinned pure restriction,
+thread and resource oracles and rejected six altered runtime records per
+attempt plus four altered metadata records. Metadata's fresh allowance did not
+extend historical verification deadlines. It proves tuple consistency rather
+than an atomic guarantee against concurrent root administration.
+
+The internal Doctor results correctly retained exit 4 and release-unverified
+status; fixture PTY replies remain `humanConsentProof:false`. Source catalog
+entries now reference the second report for exact installer/readiness evidence.
+Ordinary packed verification of those entries is recorded below. No other kernel,
+architecture, Debian/Arch/Desktop target, real human consent, global performance
+gate or complete issue #24 acceptance is inferred.
+
+The earlier source `0a83622d132ce782f1a3748b6656116a33a6479d` attempt remained a
+failure before enrollment: its report SHA256 is
+`e0b5dc27178e2238f9d9c525febd7305f5cbab1033ebffd181c7362bf49efb35`.
+It installed the exact packages but rejected Ubuntu 26's sudo alternative as an
+unexpected file layout. Its outer observer also reported cleanup uncertainty;
+inner VM disposal did not repair that receipt. Bounded read-only diagnostics
+identified the rejected predicate and provider provenance before the reviewed
+sudo-rs fix. The failed history remains separate from these later successes.
+
+Two ordinary attempts at source `ddfae43fd853acf3f3f36067138a4f10edd8a5ba`
+also remain failed. Report
+`42125b58b8d3f10edbaaafc3f689e902d0840ea7934e1e18b402cb52399808eb`
+stopped on an unrecognized SSH boot connection close before setup. Report
+`4bc4243ea9a7bab027bb6df93245fefd3a06bdd19caa874d7d8beaf722a43c81`
+reached host terminal validation, which still required Ubuntu 24's ordinary
+profile. The rejected final guest report was not retained; no completed ordinary
+proof can be reconstructed from that attempt. Both disposed of their owned VM
+and artifacts, with independent cleanup review. The corrected host profile check
+was verified through the separate executions below; cleanup and later code
+changes do not promote either failed report.
+
+
+### Ordinary Ubuntu 26.04 packed verification
+
+Source `bb4f145a89b9c09b0e139cf19a215c8579006367` completed two fresh owned
+Ubuntu 26.04 x64 VM attempts with the source-built ordinary `fleur` package,
+Bun 1.4.3, the same frozen Resolute package set and authenticated recorded
+helpers. Native Intel HVF execution used CPU-host mode without fallback. The
+attempts took 287.47 and 256.17 seconds. Report SHA256 values:
+
+- `540482926dd0a1e5c32a9a78f4d44c97da289f77f380597f3e6d1d6e3271977a`
+- `37721c49c7658bd6ce427b1e5cf04ba78e7048727147f6baf440a0d891a2170d`
+
+Each independently installed all five exact packages, exercised the separate
+installation-side-effect, enrollment and image authority boundaries, refused two
+stale-login probes and resumed through a genuine fresh login. Both Doctor rounds
+and both ready setup reprobes returned exit 0 with the exact Ubuntu 26 profile
+and its existing reviewed evidence references. Smoke cleanup succeeded; package,
+service, repository, unrelated-container, context and grant preservation checks
+passed. Original root-attested OS and custody remained anchored across both
+connections and the runtime control proof.
+
+Each full restriction probe passed without changing its GC, idle, syscall,
+thread, CPU, memory, PID or lifecycle assertions. All eight physical exits met
+the original 250 ms bound: 31, 32, 30 and 81 ms in the first attempt; 59, 74, 68
+and 46 ms in the repeat. The four lifecycles per run retained 30-second deadlines
+and their original 10-second retirement bounds. Ordinary-user daemon metadata
+matched the exact kernel, component builds, cgroup mode and security options
+recorded above. All six probe resources were removed, the unrelated sentinel
+was cleaned up, and each owned VM, credentials, scratch and overlay were disposed
+of. Independent review confirmed exact scratch absence and outer process reaping.
+
+Separate source/origin/custody/authority/disposal and runtime/control reviews
+accepted both reports. All 23 verification-source hashes, 57 candidate provenance
+entries and 83 restriction Git blob identities matched the frozen source. Pure
+final-source restriction, thread and resource oracles passed; six altered runtime
+records and five altered ordinary-readiness records were rejected for each run.
+The private host wrapper returned diagnostic exit 4 only after these gates; the
+actual ordinary Doctor/setup calls returned 0. Global/performance qualification
+and real-human-consent flags remain false.
+
+The final source passed 974 CLI/CI tests with zero failures, types, both linters
+and the CLI build before native execution. These observations qualify only the
+recorded Ubuntu 26.04 x64 tuple. Fresh-login handoff is not proof of interrupted
+privileged-transaction recovery. Other platform installation/runtime paths and
+interrupted-setup recovery remain open under issue #24.
+
+## Ubuntu 26 interrupted APT transaction and reboot refusal
+
+At source `cc34888a2917a324da0a3dd42e5ceabaa7ac69b1`, a disposable native
+Ubuntu 26.04 x64 guest exercised the real, exact local-archive installation.
+Report SHA256:
+`8764020054451f34ad535a54892a6bdc45408127f873049c5551649c0d9f3b1e`.
+The bounded outer observation completed in 107.89 seconds. This is interruption,
+reboot and preservation evidence; successful recovery remains unqualified.
+
+Five guest process-control conformance cases passed, including descendants born
+after the parent was stopped, rapid exit, a live nested subreaper, a surviving
+child and refusal before launch when the supervisor was not idle. The real
+installation child remained live across the CLI stop. The owned CLI was killed
+and reaped separately; adopted descendants retired. The original privileged
+command's terminal outcome remains unknown. Exact configured Docker package
+additions, all baseline package rows and ordinary session groups were preserved.
+
+Doctor and setup returned `RECOVERY_REQUIRED`, exit 5, on the original boot.
+A real kernel reboot retained the same owned VM, held overlay inode, continuous
+QMP connection and pinned SSH key. The original machine identity and OS matched;
+explicit protected transition evidence bound distinct original/current boots and
+manifests. Package inventory remained exact and healthy across reboot.
+
+After reboot, setup again returned 5. The retained `archives/partial` and
+`local-lists/auxfiles` directory inodes were observed owned by UID 42. This report does not authenticate the account mapping
+or the actor that changed ownership. The former remained mode 0700 and unreadable to the ordinary user; its
+contents are unknown. The resolver requires original ownership and exact
+contents, so this observation cannot qualify successful reconciliation. No
+ownership restoration, package replay, grant restoration or administrator repair
+was performed. The original artifacts and grants remained preserved.
+
+Independent review verified the source/archive bindings, actual observations and
+complete VM, credential, scratch and overlay disposal, plus outer child/group
+retirement. The private resume observer reported a generic handoff error while
+retaining the specific manual-recovery result; that diagnostic routing also needs
+correction. Automated disposable-guest consent fixtures supply no human or legal
+consent proof. Other platform installation/runtime paths and issue #24 remain
+open.
+
+## Native read-only APT inspector conformance
+
+One owned Ubuntu 26.04 x64 VM observation at source
+`e9400db90868eb90221ed2883ad38c9ffc10ccd9` exercised the production inspector
+against nine separate retained-directory fixtures. Report SHA256:
+`cf1ee53f6bdd9820a81b0daeb1ac2e8a1d7648e0ec827529bfd9e18aafc96209`.
+Independent review verified source provenance, original installation preservation,
+reboot custody and complete VM, credential, scratch and overlay disposal.
+
+The actual root inspector confirmed the empty fixture and refused nonempty,
+account-digest, parent-start and descriptor cases. The production custody factory
+refused replaced-inode and symlink cases before privileged execution. A
+completed native inspection whose completion was withheld from the caller retained
+all five parent descriptors. A private negative control removing only that
+uncertainty guard reproduced descriptor loss after the actual root read retired.
+These were owned disposable fixtures; they did not inspect or repair the original
+installation stage and do not prove human consent.
+
+The same run interrupted the real package installation, preserved its five healthy
+package additions, and rebooted with a separately validated current custody
+binding. Setup then safely returned recovery-required before requesting inspection
+authority. The five original downloaded package files were mode `0644`, whereas
+cache copies and controls were `0600`. The recovery writer recorded these exact
+modes, but its reader required every file to be `0600`. This run therefore remains
+incomplete recovery evidence. It does not qualify assisted recovery or repeated
+post-recovery Doctor, setup and runtime behavior.
+
+The subsequent reader correction admits `0600` or `0644` only for authenticated
+source package files inside their original owned `0700` directories. Cache
+archives, lock, plan and configuration files remain `0600`; every current file must
+still match its recorded mode exactly. A public setup regression reproduced the
+native refusal before the correction and then reached the separately scoped
+inspection plan. Native end-to-end recovery still requires a new observation.
+
+## Repeated Ubuntu 26 assisted APT recovery
+
+Two fresh owned Ubuntu 26.04 x64 VM attempts at source
+`88f182f20dc371c398b670ea40353fd94702b1cd` completed the interrupted-installation
+recovery path with separately scoped read-only inspection. Both used the ordinary
+packed CLI, Bun 1.4.3, native Intel HVF execution with CPU-host mode, the existing
+pinned image and the authenticated recorded helper pair. Assertions, deadlines,
+repeat counts and disposal requirements were unchanged.
+
+| Attempt | Report SHA256 | Outer observation |
+| --- | --- | --- |
+| First | `7e58375037fb22416973d54ec72fe03b82a97e4419a49c529b9e4b19ab729827` | 359.74 seconds |
+| Second | `21163f4abea61773876a45c44803f17e928a84449d84cbdbb4ffebf5bda2b13e` | 359.08 seconds |
+
+Each attempt observed a real installation child live across its owned CLI parent's
+stop, then reaped that parent after SIGKILL. The original transaction's terminal
+outcome remained unknown. All five exact package additions were fully configured,
+with the baseline package rows and groups preserved. Same-boot Doctor and setup
+refused recovery and retained the original fence and grants.
+
+A real reboot established a different kernel boot ID while retaining the same
+owned VM, held overlay inode, continuous QMP connection and pinned SSH identity.
+Protected original and renewed custody bindings were independently checked. After
+reboot, noninteractive setup returned exit 3 with the exact read-only inspection
+plan and no new grant. One automated disposable-fixture reply supplied a separate
+once inspection grant. Its receipt bound the original fence and profile, current
+boot, fixed inspector source, authenticated executable, live CLI parent, protected
+account database and five retained directory descriptors. The inspector confirmed
+that both original auxiliary directories were empty. Their ownership and modes
+were preserved; no administrator repair or historical grant replay occurred.
+
+The durable receipt retained the unknown historical outcome. Original artifacts
+and all six historical grant records remained unchanged, with exactly one new
+consumed inspection grant. Setup retired the pending marker only after repeated
+current-state checks. Docker access enrollment, fresh login and image acquisition
+remained separate subsequent actions. Both Doctor rounds and both ready setup
+reprobes returned exit 0 with smoke cleanup, snapshot preservation and unchanged
+grants. Strict runtime, thread, resource and control checks also passed. Separate
+specification and standards reviews accepted both actual reports, including source
+provenance, custody, inspection authority, preservation and disposal. The four
+physical-exit latenesses were 37/33/34/31 ms and 79/61/31/37 ms respectively, all
+within the unchanged 250 ms limit.
+
+Both guests, credentials, scratch directories and overlays were disposed, and the
+outer children and inherited groups retired without timeout. Source files remained
+unchanged throughout execution. This qualifies the tested completed-effects case
+with a missing parent receipt and separately authorized inspection. It does not
+establish automatic recovery, real human consent, other interruption windows,
+other platform installations, global release admission or native performance.
+The source candidate also passed all three CI workflows, including 1,064 CLI tests
+with zero failures, types, full lint and the production build.
+
+## Debian 13 x64 retained image input
+
+A bounded artifact-only acquisition retained the immutable official
+[Debian 13 genericcloud image](https://cloud.debian.org/images/cloud/trixie/20261017-2634/debian-13-genericcloud-amd64-20261017-2634.qcow2).
+The [Debian cloud publication guidance](https://cloud.debian.org/images/cloud/)
+specifies TLS image and checksum downloads for current per-distribution images;
+this observation claims neither OpenPGP verification nor DNSSEC validation.
+The authenticated HTTPS redirect selected the same image path at
+`gemmei.ftp.acc.umu.se`. The original official checksum response matched its
+previously recorded SHA256.
+
+| Input property | Observed value |
+| --- | --- |
+| Image bytes | 342,818,816 |
+| SHA512 from official checksum set | `ec584ccabfef7120b4c4f7482adf0e615894d9292cedec446b64194b951ebe5dd97c336b5dcbae458333764b0edd516334506017f33c4f2020ef8d38b569ffe3` |
+| SHA256 from retained-descriptor readback | `87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02` |
+| Format / virtual size | QCOW2 / 3,221,225,472 bytes |
+
+The worker completed and was reaped in 21.09 seconds under its original 120-second
+work bound. Independent readback verified the digest and unchanged device/inode,
+owner, private mode, size and timestamps. The previously audited, checksum-pinned
+`qemu-img` reported no backing chain, external data, encryption or internal
+snapshots and zero check errors. Independent review accepted this retained input.
+No VM was booted and no Debian installation, runtime support or catalog admission
+follows from these artifact checks.
+
+The first Debian verification preparation admits only the explicit Debian 13 x64
+seed and protected custody tuple alongside the existing Ubuntu targets. Original
+OS bytes, boot and ordinary-user identity remain bound; crossed distributions,
+releases, architectures and unknown fixture choices refuse before guest work.
+This changes neither the Ubuntu default nor ordinary Debian admission. Catalog,
+guest verification, boot, installation and runtime qualification remain pending.
+
+
+## Debian 13 x64 internal catalog inputs
+
+An offline audit reverified the cached official Docker key and RSA signing subkey,
+Trixie InRelease, its authenticated amd64 Packages index, all five complete package
+hashes/sizes, and actual control identity/dependency fields. The scoped maintainer
+script ledger is 9,058 bytes with SHA256
+`a9a9c699e6a73a41e15d12ecfe8d2ac29d70753ce3ca1308589bcccf32631097`.
+Audit report SHA256:
+`89770863773d5a7213b7b6f1d0cc34038aa2e3838c02b70f5eb00649905f101e`.
+Independent read-only review accepted the signature, index, payload and control
+checks. No package was extracted or executed.
+
+The initial five-package Trixie internal catalog had SHA256
+`4dd2d26f6feb18768ac8cde10302006806f4f9a91c2bde59d8f96cb4744ce8f1`.
+Its legacy verified field means internal artifact admission only. Installation
+remains pending and runtime support unverified. The builder and guest consumer
+bind this exact catalog to Debian 13 x64; ordinary production profiles stay
+unchanged. Dependency-environment readiness, native package-manager behavior,
+installation and runtime evidence remain separate requirements.
+
+
+## Debian 13 x64 native dependency refusal
+
+Source `91be1c4200b3950661b5e7564aeb4d9e792eca8b` booted the pinned Debian 13
+x64 cloud image under HVF with native host CPU execution. Protected Debian OS and
+boot custody, pinned SSH and Bun 1.4.3 preparation passed. The observed kernel was
+`6.12.113+deb13-cloud-amd64`.
+
+The five frozen Docker packages could not satisfy the actual dependency plan:
+Docker CE required `nftables`, which was absent and unavailable within the scoped
+Docker repository. The simulation returned 100. Public setup returned
+`PREREQUISITE_UNAVAILABLE` before package installation; package inventory,
+services and groups remained unchanged. Repository configuration did occur under
+its separate grant. No dependency was preinstalled or resolved outside the exact
+allowed set.
+
+The outer observation completed in 46.65 seconds without timeout. Raw report
+SHA256 is `f8d4e15399b90283393891ef67047bb09bd5850a4d9916e7359179ff8ffbc745`.
+Independent specification and standards reviews verified source and artifact
+pairing, unchanged package inventory and complete VM, credential, scratch and
+overlay disposal. The outer child was reaped with no live inherited group
+members. This is failed prerequisite evidence: installation remains pending, and
+fresh-login readiness, runtime, recovery and ordinary Debian admission remain
+unqualified.
+
+That source passed all applicable CI: 1,099 CLI tests, zero failures and 11,353
+assertions across 59 files; native prerequisite verification; and compatibility
+verification. CI success does not promote this failed native attempt.
+
+
+## Debian 13 x64 declared dependency candidate
+
+The expanded [Trixie internal catalog](../scripts/native-candidate-debian13-amd64.json)
+has SHA256 `032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d`.
+It retains the five Docker artifacts and separately declares these Debian packages:
+
+| Package | Exact version | Bytes | SHA256 |
+| --- | --- | ---: | --- |
+| libjansson4 | 2.14-2+b3 | 39,792 | `60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e` |
+| libnftables1 | 1.1.3-1 | 332,448 | `c7cbee3dce8452ae5c3c4269f6f52e96b896d36a46ea3c490e0e11e8ff359896` |
+| nftables | 1.1.3-1 | 75,864 | `2ddfa61baaf3a76e2c499db9e521ba6affb226f85af0b6fef739f346ac5f0c39` |
+
+The [official Debian archive key](https://ftp-master.debian.org/keys.html)
+has primary fingerprint `04B54C3CDCA79751B16BC6B5225629DF75B188BD` and signing subkey
+`B8E5F13176D2A7A75220028078DBA3BC47EF2265`. Independent offline review checked the key
+binding, signed Trixie InRelease with SHA256
+`0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675`, and authenticated
+amd64 Packages.xz with SHA256
+`7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498`.
+The release snapshot is dated September 12, 2026 and has no Valid-Until field.
+This establishes the retained snapshot's signatures, without claiming archive
+freshness or absence of a later revocation outside the supplied key material.
+
+Actual payload hashes, package/control fields and maintainer effects were inspected
+with bounded in-memory archive parsing, without extraction or execution. The
+5,854-byte controls-and-effects ledger has SHA256
+`c8d9621167b75774c7fa17e07ad845afadaa405b3a38388195383f7314728f17`.
+Fresh nftables installation writes configuration/helper state and reloads systemd;
+the libraries activate ldconfig. Existing helper state could enable or unmask a
+unit, and the packaged firewall configuration contains `flush ruleset`. Setup
+therefore refuses prior nftables configuration/unit/helper state when nftables is
+absent and repeats that observation before installation. No product command applies
+that firewall configuration or starts the nftables service.
+
+The native verifier adds a separate owned-fixture canary under original protected
+Debian custody. It requires authenticated iptables-nft with the nf_tables backend,
+creates one detached nonce chain and RETURN rule, and compares only that canary
+after installation, fresh login and runtime. It also requires nftables.service to
+remain inactive and disabled after installation, with zero execution timestamps
+and PID. Cleanup removes only the exact owned rule and chain; uncertain failures
+retain them for full owned VM disposal. These checks cannot establish universal
+firewall preservation. Their actual repeated native execution remains pending,
+as do installation, runtime, recovery and ordinary Debian admission.
+
+## Debian 13 absent-package state diagnosis
+
+A fresh disposable boot at source `77b0e1a4a8111dd966ea9e435c8fb47e88362cd1`
+reproduced the package-state input behind the expanded candidate's early refusal.
+The exact eight-name `dpkg-query` returned exit 1, seven unknown-name diagnostics,
+and this row for the referenced but absent nftables package:
+
+```text
+nftables<TAB><TAB>not-installed<TAB>ok
+```
+
+Raw observation report SHA256:
+`10cd0103dc71f908994bc0f319b6777edf8b02fbf0540a95c9ccf33f2e75f87b`.
+
+The baseline contained no installed nftables package. This empty-version record
+is distinct from retained configuration or a partial installation. The named
+inventory parser and privileged archive guard had both rejected it. Setup now
+classifies only an empty-version, error-free `not-installed` record as missing.
+Canonical duplicate identities, foreign architecture qualifiers, retained versions,
+configuration, incomplete states and uncertain query completion remain refused.
+The existing nftables configuration, service and helper-state checks still apply.
+
+This observation ran only the read-only inventory query. It requested no setup
+authority and installed no packages. Protected guest custody and bounded execution
+were retained, and VM, scratch and credential disposal completed. It establishes
+the diagnosis only; repeated actual installation, runtime and recovery qualification
+remain separate requirements. Requirements-based regressions first reproduced the
+planning refusal, then the archive-hook refusal, before their respective fixes.
+
+## Debian 13 x64 package-state fix and first installation proof
+
+Source `5ebce058035cb8d2793dea50ce248c5579d2f56b` passed one fresh native HVF
+internal-candidate run after the absent-package fix. The raw report SHA256 is
+`9e98f7235725d66533bb77576ca01c6d100ea0e3ff862986c1063eeb6556983d`.
+The pinned Debian image booted kernel `6.12.113+deb13-cloud-amd64` with Bun 1.4.3.
+Actual installation added exactly the five Docker packages and three declared
+Debian dependencies. Noninteractive and denied authority preserved the baseline;
+installation, repository, service and access actions retained separate scope.
+Authority responses came from the owned fixture; no human-consent proof is claimed.
+Fresh-login handoff, two Doctor/setup observation rounds and the full bounded
+runtime probe passed. The internal candidate continues to report release support
+unverified; this is not ordinary Debian catalog admission.
+
+The owned nf_tables canary matched before installation, after installation, after
+fresh login and after runtime verification. After installation, nftables.service
+stayed inactive, dead and disabled with zero execution timestamps. Canary cleanup and VM, overlay,
+scratch and credential disposal completed. Independent review verified the exact
+source/catalog pairing, eight-package delta, runtime controls and disposal.
+
+A second attempt refused before VM creation because required historical host-tool
+attestation files were unavailable. It did not repeat installation or establish a
+second native pass. Repeated installation and interrupted recovery remain open;
+no missing attestation check was removed, and no release profile was promoted.
+
+## Native macOS placement repeats after the package-state fix
+
+Source `86849ab70392b3c2585e987ab54ea058005754b0` completed two actual native
+Intel macOS 15.7.7 placement runs with Docker Desktop 4.96.1 build 244132.
+The authenticated official image SHA256 was
+`3d35634cf3dd0373d37d986de10eb744950d3822124615e774335f7be2a1d27a`.
+Both runs used the existing public explicit 600-second setup option and the same
+reviewed private fixture plan; elapsed times were 230.245 and 182.102 seconds.
+Receipt SHA256 values are respectively:
+
+- `df1f8f9403cb9d93abd5bee2a84804af9101ecef1635f4b1b8a1e6149de57be0`
+- `9d93ece1bd181d4a20f4d88e764f223beefffd124f1c9513e51359e440df4363`
+
+Each fixture simulated only missing CLI discovery and supplied two scoped once
+responses for acquisition and placement. The signed image download, mount,
+notarization/signature checks, staged copy, publication identity and normal detach
+were real native operations. All 14 native commands completed and their process
+groups retired; source cleanup completed, with no timeout or cancellation. Both
+receipts passed independent review. Placement used a fresh private Applications
+destination and retained its installed app. Existing Docker.app metadata and
+recorded core-file snapshots matched exactly before and after each run.
+
+Public setup correctly stopped at `HUMAN_ACTION_REQUIRED` after placement. These
+runs establish fresh private placement and cleanup; they do not establish human
+consent, helper installation, legal acceptance, launching the new app, a fresh
+host-wide Docker Desktop installation or release admission. A separate native
+existing-installation verification at the same source passed two Doctor/runtime
+smoke rounds and preserved and removed its owned sentinel. That readiness proof
+used the already running Docker Desktop installation, without acquisition or
+installation, and remains separate from the placement receipts.
+
+
+## Exact Intel Desktop installation-method admission
+
+The fixed packaged `verified-desktop-profiles.json` record binds native Intel
+macOS 15.7.7 to the official Docker Desktop 4.96.1 build 244132 artifact, the
+successful authentication report and the two reviewed placement receipts at
+source `86849ab70392b3c2585e987ab54ea058005754b0` above. The loader validates exact
+schemas, artifact/host consistency and distinct repeat hashes, then freezes the
+records. This source-owned installation authority is separate from the existing
+APT catalog; no CLI, project or environment profile override is introduced.
+
+Here `nativeEvidence: verified` means the placement method was observed natively.
+The record explicitly sets `runtimeReadinessAdmission: false`. Agreement, startup,
+helpers and configuration remain separate human actions; successful placement
+still returns resumable `HUMAN_ACTION_REQUIRED`. Other macOS and architecture rows
+remain unverified. Requirements-based red/green tests show the ordinary default
+catalog now exposes separate acquisition/placement authority for this exact tuple,
+with no grant creation or OS mutation on JSON invocation. Malformed or inconsistent
+catalogs fail closed.
+
+## Ordinary packaged Intel Desktop placement repeats
+
+Source `9d74daa7bfbf0fdd863e68361628e2d3d3fde47e` completed two fresh native
+private placements through the ordinary `fleur` package and its default compiled
+catalog. The archive SHA256 was
+`4b9c43eca03839d1c1a178506d9cb25eb11a5770e4cf20a290ad1aa1a2c5ac9b`;
+all 66 packaged files matched their committed source bytes. No profile or
+readiness override was supplied. The fixed reviewed plan SHA256 was
+`e93163ff57b15ed0f9280b883be06810f7b8b24a4f588195603cada16675f049`.
+Receipt SHA256 values, in order, are:
+
+- `683a6188dc3894a95aa886a1c0d4c59d61d47433df1d89d7d8ac129f704ddd01`
+- `9303f682d4c26566ee613e5c3cd468b89431f37ff431a5895b892e91c3f407ba`
+
+Both runs passed independent review. They finished in 181.104 and 188.066 seconds
+within the original explicit 600-second budget. All 14 native commands completed,
+with verified process retirement, signed staged/published app identity, normal
+image detach and empty installer scratch. Separate once grants were consumed and
+revoked. Existing Docker.app metadata and recorded core-file identities and hashes
+were unchanged across both runs. Each private destination retained its installed
+app. Public setup returned the expected resumable `HUMAN_ACTION_REQUIRED` after
+completed installation and cleanup.
+
+This verifies ordinary-package routing for the exact Intel placement method.
+The fixture simulated missing CLI discovery and supplied scoped authority
+responses. It does not establish human consent, helper installation, legal
+acceptance, launch of the newly placed app or runtime-readiness admission.
+
+## ARM VFS cleanup failure and targeted retry
+
+At source `9d74daa7bfbf0fdd863e68361628e2d3d3fde47e`, the first
+[ARM VFS attempt](https://github.com/hazeion/fleur/actions/runs/40078009667/attempts/1)
+passed runtime controls but failed physical data-root removal within the existing
+cleanup budget. Its report SHA256 is
+`806d0eb8838543626de562f67179aa05d5af24fbbb990a1ca3d1170da58e5150`.
+Task, shim, daemon and owned-mount checks had completed; cleanup did not report
+completed root removal. Independent review found no faulty assertion or safely
+removable duplicate work. This attempt remains failed evidence.
+
+One unchanged-source, failed-job-only retry passed the original full probe and
+all cleanup checks. Its report SHA256 is
+`a1b5fd5baa672aa87b8c85f99d4edb12150abd8ed82151ed78c3a6f4316c6354`.
+The owned process was reaped, socket and pidfile removed, both roots removed and
+the default daemon unchanged. No deadline or assertion changed. The current
+candidate's CLI, native prerequisite and compatibility workflow summaries passed.
+
+## Hosted Debian containment collection race
+
+The first guarded hosted attempt at source `e7f1ad1` refused a direct run-as-group
+query before preparation or VM creation. Source `9d74daa` instead proved root KVM
+API access and passed its normal managed-service containment case, but then
+[refused during its stop self-test](https://github.com/hazeion/fleur/actions/runs/40079319762).
+The exact transient unit had been collected between its state query and the stop
+command. No package preparation or VM creation ran; all owned service cgroups
+were absent and scratch removal completed.
+The refusal report SHA256 is
+`e082eb2a086363e1688fd882e361bb49d9f1ff95ce43eb408af05e89784eb014`.
+
+A regression reproduces the state-query/stop race. A stop result indicating an
+unloaded unit is accepted only after a new valid not-found observation and absence
+of the retained exact cgroup. Other status codes, live groups, changed invocation
+and unavailable metadata still refuse. Cancellation remains latched, and terminal
+receipt binding and final disposal checks remain required. This is a verifier
+control fix, not Debian installation or release-admission evidence.
+
+The next exact Debian internal-candidate verifier also records sanitized daemon
+capabilities, security options and component builds before and after the unchanged
+repeat/runtime gate. Each capture validates and hashes the daemon identity around
+the bounded info/version queries; incoherent versions or architecture, unknown
+security options and changed observations refuse. Private daemon metadata and raw
+identity are not published. This records identity and tuple stability, not daemon
+process continuity across restarts. It does not admit a readiness profile. The
+first native Debian report omitted these fields, so they must be measured in a new
+native run before using them as release evidence.
+
+The [hosted attempt at source `ee0c26d`](https://github.com/hazeion/fleur/actions/runs/40082201706)
+passed all four containment controls and ordinary-user KVM access, then installed
+the exact 18-package test-tool closure. Other packages and host Docker state were
+unchanged. It refused the final verifier service's startup binding before opening
+the execution gate. The report omitted the mismatched field, so the cause remains
+unclassified. Owned service disposal and scratch removal were unconfirmed; this
+is failed evidence. Report SHA256:
+`aeab8a130c45be3f85a4f7615b0da776b6cd8a7a78c408302866df790c3e10c0`.
+
+Startup regressions independently exposed two verifier defects: a valid
+`Type=exec` process could be rejected while still activating, and a two-second
+budget incorrectly accepted `0min`. Startup now retains cleanup-only authority
+after the exact immutable identity and root-managed cgroup checks pass, waits
+within the original 20-second startup deadline for that same invocation and PID
+to become active, and opens the gate only then. Changed identity, invalid controls,
+cancellation and a persistent activating state still refuse. Duration forms must
+represent the exact budget. Binding failures now include bounded field-level
+diagnostics; this does not establish the earlier hosted failure's cause. Every
+unwaited launched client receives terminal/disposal verification even if it has
+already exited. Unknown service custody remains refused.
+The original predicates fail the startup, exact-duration and exited-client
+regressions for the intended reasons. Independent review passed all 20 Python
+contracts. The affected Bun wrapper and catalog tests passed six tests with
+49 assertions; strict types, both linters and the Bun production build passed.
+These local results do not replace a new native attempt.
+
+## Hosted Debian installation and image-bound repeat
+
+Source `bc2a1668b7e60d5dd66b8f01065a436f3241876b` passed all three full PR
+workflow summaries. CLI passed 1,241 tests with 12,051 assertions, types, lint and
+generated-project checks. Both native runtime probes and VFS physical-cleanup
+checks passed. Its [first hosted Debian KVM qualification](https://github.com/hazeion/fleur/actions/runs/40083092762/attempts/1)
+also passed independent review. Report SHA256:
+`828b1ab3680131cae853e2766188b17da6b87896de7f92f776caf6bce25a46b8`.
+The exact eight-package installation, fresh-login handoff, two Doctor smoke rounds,
+full runtime restrictions, owned firewall preservation and complete VM, overlay,
+credentials, scratch and service-cgroup disposal passed. Doctor still returned
+the expected release-unverified result for this internal candidate.
+
+The report now records the actual stable Debian 13 x64 daemon tuple: Docker
+29.9.1, kernel `6.12.113+deb13-cloud-amd64`, systemd cgroup driver/version 2,
+rootful operation and the default AppArmor, seccomp and cgroup namespace options.
+This supplies the fields missing from the earlier report, without admitting an
+ordinary profile or claiming daemon process continuity.
+
+The [x64-only fresh repeat](https://github.com/hazeion/fleur/actions/runs/40083092762/attempts/2)
+refused a changed runner image before package preparation or VM creation; owned
+services and scratch were disposed. Refusal report SHA256:
+`1494b6754972fcb8d9f1ae0bdf9967ad7be7a173086644d1991a121c17ac719a`.
+Its collector recorded image `20261023.334.3`. Independent review compared both
+read-only inventories: identical collector source, healthy 1,211-package state
+hash, kernel, Docker baseline and exact 18-package install/configure simulation.
+No upgrades or removals were proposed. Inventory SHA256 values are
+`6c8d4c41067035bc8fb8b3fb4d78d950866c8ccfc4394211292cb56aeb223c38`
+and `59c91a9ef5576f8622a6e35294645dc9b9c5908cb8b7f188d1071dc468034f9c`.
+The test-tool manifest now records those exact two reviewed images and their
+inventory bindings. Unknown images remain refused, and live package-plan,
+baseline, actual-delta, Docker-preservation and disposal checks remain required.
+The refused attempt is not a repeat qualification pass.
+
+## Recurrent ARM cleanup diagnostic
+
+Source `9b3076554f13b8a608991a6e420d10e29c657c86` passed all 1,237 CLI tests
+with 11,999 assertions, types, lint, generated-project verification and native
+readiness. Its ARM VFS runtime probe exited successfully, but physical root
+removal again failed within the original cleanup budget. The failed report SHA256
+is `edf72ff1b40101edcee9592cb5b9f30f92f1f1b8032856db5f30145127ab1cbc`.
+No fresh Debian attempt ran after this required CI failure.
+
+Source `ee0c26d` adds bounded numeric progress inside the existing
+descriptor-anchored removal. It records normal/fallback attempt, data/exec inode,
+phase, elapsed time, successful unlink/rmdir counts and syscall durations. It does
+not walk the tree before deletion, publish filenames or exception text, change the
+removal algorithm, raise the 15-second cap or alter cleanup acceptance. Journal
+failure does not interrupt physical deletion; malformed diagnostics are marked
+separately. The recurrence remains failed evidence and is not explained by an
+unmeasured performance claim.
+
+The instrumented ARM job at source `ee0c26d0fe2f919eafbb097d9462a08bf8a361d7`
+[passed the original probe and cleanup checks](https://github.com/hazeion/fleur/actions/runs/40081644190/job/120836289200).
+Its counterfactual report SHA256 is
+`61314fb3b17b85b16789d41618dc2dd94c64d720948ee76d55d14a7bea27fa90`.
+The data tree required 90,759 successful unlinks and 11,995 directory removals,
+finishing in 4.293 seconds. Unlink calls accounted for 3.548 seconds and directory
+removal for 0.152 seconds; the longest observed operation took 0.163 seconds.
+The exec tree also completed, both roots were physically absent, the owned
+process was reaped and the default daemon remained unchanged. The journal was
+complete and valid. These measurements describe this successful run; they do not
+establish why either earlier run exceeded its budget or justify a deadline change.
+
+## Retained Arch cloud-image authentication
+
+A fresh independent review authenticated the retained official
+[October 1 cloud image](https://geo.mirror.pkgbuild.com/images/v20261001.604814/)
+against the current [Arch image publisher key](https://github.com/archlinux/arch-boxes#releases).
+The 578,080,256-byte image SHA256 is
+`360f0fa49db6813bdc8e35bed230a2dc2ae3567b7b5ab74719c0a706e4e34e87`.
+The review verified the primary self-signature, signing-subkey binding and embedded
+cross-signature, key flags and validity dates, and both checksum/image detached
+signatures. The signing subkey expires May 28, 2027. Current publisher README bytes
+matched the retained key source. The held image identity, size, permissions and
+hash were stable during verification.
+
+Independent review helper SHA256:
+`982feabfd40ce012c76acccbcb1961d3aef917763663714270c00102e9560f85`.
+Report SHA256:
+`26e1dd7c99d320c53881580bbdf6e52ab92d26a0524316754df6efa7ed97d8f3`.
+The historical parser source is missing and its attestation was not recreated.
+This is fresh input-authentication evidence, without a claim of global revocation
+absence. No image structure check was rerun, no VM or installer executed, and no
+native Arch support was admitted. Launch still requires reviewed source-owned
+custody and structure checks under an available attested toolchain.
+
+## Debian candidate repeats and ordinary catalog admission
+
+Source `300cdaf30e1ea4786b096786e458f698984fe038` passed all three full PR
+workflow summaries, including both native runtime and VFS cleanup platforms.
+Its [first fresh Debian KVM run](https://github.com/hazeion/fleur/actions/runs/40084282519/attempts/1)
+and [x64-only fresh repeat](https://github.com/hazeion/fleur/actions/runs/40084282519/attempts/2)
+both passed independent review. Report SHA256 values:
+
+- First: `6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e`.
+- Repeat: `5900a5954f240b9c3a85b1cfdb8636eba812b497b6a5e4a1e4c6b625e377c543`.
+
+Each fresh VM installed exactly the five Docker packages and three Debian
+libraries/helpers, preserved every original package and the disconnected owned
+firewall canary, retained an inactive, disabled nftables service with no execution,
+completed genuine fresh-login enrollment and two smoke rounds, and passed the
+full original bounded runtime restrictions. VM, credentials, overlay, scratch and
+service-cgroup disposal completed. The stable measured daemon tuple matched
+across both attempts; nonce and daemon identity differed between fresh VMs.
+
+The ordinary catalog now maps only this exact Debian 13 x64 package closure and
+measured readiness tuple to the first report. The complete canonical installation
+profile SHA256 is
+`588ab6035cc9ff24d0591cd10a0fe3c066f092f7bdf297610907ce4835289983`.
+The ordinary guest verifier requires the complete closure, original Debian OS,
+matching source-owned evidence, repeated Doctor/setup success with grants and
+state preserved, and all existing canary, restriction and disposal checks.
+Duplicate metadata fields, altered payloads/dependencies and crossed OS/evidence
+bindings are refused before installation authority. The fixed hosted wrapper now
+selects the actual ordinary packed archive and checks its package/hash identity.
+These changes prepare the next native ordinary run; no ordinary-package or
+Debian interrupted-recovery success is claimed yet. ARM installation, Apple
+Silicon and native Arch qualifications remain separate outstanding requirements.
+
+The full local macOS test run also exposed a stale packed-executable oracle: it
+expected manual setup on every non-Ubuntu host, despite the already admitted
+Intel Desktop method. Actual setup correctly refused to replace the existing
+Docker application. The corrected test gathers host facts before setup, matches
+only exact packed catalogs, and requires the specific platform, unknown-package,
+missing-identity, existing-application or separate-authority result. It never
+chooses an expectation from setup's response or accepts multiple exit codes.
+Existing application entry identity/metadata and empty grants are checked.
+Independent verification passed all eight packed tests with 85 assertions. This
+corrects test logic; no product setup refusal changed.
+
+Before ordinary native dispatch, a final producer/consumer review caught a report
+nesting mismatch in the outer wrapper: archive kind/hash are top-level, while
+package name and compiled catalog evidence belong to the guest execution record.
+The original synthetic wrapper proof had invented a top-level package name.
+A test using the actual report shape failed before the fix. The wrapper now checks
+the guest kind, package and catalog alongside the independent outer archive hash;
+wrong guest kind/package/catalog still refuse. All 21 wrapper contracts passed.
+The waiting dispatch was stopped before VM creation, and superseded PR workflows
+were cancelled. Those cancelled workflows are not passing candidate evidence.
+
+## Debian 13 x64 ordinary fresh qualification
+
+The actual ordinary package at source
+`5f5e13e768117f33160e5fef6eabfabb309c682d` passed two independent fresh KVM
+runs in [manual run 40086384817](https://github.com/hazeion/fleur/actions/runs/40086384817),
+attempts 1 and 2. Both used ordinary archive SHA256
+`c0fe9b56d930db163acb102435c77100ac13084c426ed6d7e26da1922f211c4e`.
+Independent review accepted these report hashes:
+
+- First: `2210599daca9df88b3f4f794445dfe389d19d8623d24be5e9e6d6f33052eed50`.
+- Repeat: `2b5c1dd9fc1c22db5b6af1a801e18848029e8323278c448df260a243e2a2cdb6`.
+
+Each installed the exact eight-package closure, preserved original packages and
+account groups until separate enrollment, refused both stale sessions, completed
+a genuine fresh login and separate smoke-image acquisition, and passed two
+Doctor rounds and two ready setup reprobes with snapshots/grants preserved.
+All four firewall canary observations and explicit cleanup passed. The nftables
+service stayed inactive, disabled and unexecuted. Full original runtime,
+restriction, sentinel and disposal requirements passed. Physical pause observations
+were 59/66/53/67 ms and 31/68/30/28 ms, below the unchanged 250 ms limit.
+
+All three applicable CI workflows passed at that source, including 1,267 CLI
+tests and 12,150 assertions, types, full lint, generated-project checks, both
+native architectures, both macOS fixture architectures and all compatibility
+jobs. This qualifies Debian x64 fresh ordinary installation only. It does not
+establish Debian interrupted recovery or the remaining native platform matrix.
+
+## Debian interrupted-recovery verifier preparation
+
+The fixed recovery lane uses the ordinary Debian package and recorded helper
+pair on the existing hosted x64 KVM runner. It exercises completed installation
+effects with a missing parent receipt, preserves the historical outcome as
+unknown, performs a real reboot of the same held VM/overlay, and requires
+separate read-only inspection authority before fresh-login and runtime checks.
+The original host aggregate deadline remains 900 seconds across these phases.
+The authenticated same-boot access checkpoint retains its original guest
+deadline; a later SSH connection cannot reset it.
+
+Four-column package observations retain real dpkg status and error flags before
+installation and after interruption/reboot. Exactly the eight declared effects
+may differ. Persistent nftables configuration, unit/helper state and service
+nonexecution are compared across the reboot. Kernel firewall canaries have
+separate boot-bound ledgers: the first chain must be explicitly removed before
+reboot, and a newly owned chain is created before reconciliation. No continuity
+of volatile kernel rules across a reboot is claimed. Failed observations remain
+failures even when full owned VM disposal succeeds.
+
+The source record binds the exact seven staged qualification files, tracked
+source commit and actual ordinary archive hash. Every guest continuation
+reauthenticates those inputs against the host-held record digest. Mocked contract,
+bridge, source and deadline tests are verifier evidence only. Native recovery
+qualification still requires executed reports and independent review.
+
+The first recovery attempt at `496f86f19a54d17b3feb6864b82845d08da93d75`
+failed during the initial session in
+[run 40089712304](https://github.com/hazeion/fleur/actions/runs/40089712304).
+Report SHA256 is
+`cc8f4687b8e93bb70aff286cfbd36dd273b8dadb0464f74b24a6f9c9e0b53b2b`.
+VM, credentials, overlay, inner/outer scratch, service cgroup and unit disposal
+were confirmed. The initial transport discarded the guest's failed report and
+retained only a generic checkpoint error, so that attempt does not establish its
+underlying guest failure. The transport now preserves the exact bounded parsed
+report under `initialGuest` while keeping failure and refusing a successful
+checkpoint; its external SSH regression failed first and then passed.
+
+A separate descriptor-bound audit rechecked the exact authenticated nftables
+payload SHA256 above and found a verifier assumption inconsistent with its tar
+metadata: `/etc/nftables.conf` is root-owned regular mode `0755` (243 bytes),
+while `/usr/lib/systemd/system/nftables.service` is mode `0644` (458 bytes).
+The recovery reader and validator now require those exact path-specific modes.
+They refuse swapped modes and retain all ownership, link, byte, identity,
+configuration-preservation and service-nonexecution checks. Independent tests
+execute the generated root reader and prove both exact mode requests. This is a
+confirmed verifier correction, without claiming it caused the earlier native
+failure whose guest diagnosis was lost. Fresh native recovery remains pending.
+
+The next candidate, `eca5b04e5ec3b718c9572db96faa62167a06806f`, passed
+all three applicable CI workflows, including 1,270 CLI tests and 12,175
+assertions, types, full lint and all four independently reviewed runtime reports.
+Its native recovery attempt in
+[run 40090657614](https://github.com/hazeion/fleur/actions/runs/40090657614)
+failed after reboot. Report SHA256 is
+`eb758b47a03774982853d82742a1e4b53d6e238e2dab28fd8a2f8b16d4259709`.
+The initial interruption, exact eight package effects, original canary cleanup,
+same-VM reboot custody and persistent configuration preservation passed.
+Doctor correctly required recovery. Setup then refused reconciliation before
+offering inspection authority, retaining the pending transaction and grants.
+Full VM, overlay, credential, scratch, service cgroup and unit disposal passed.
+These are partial observations, not accepted recovery qualification.
+
+Read-only diagnostic observations now record the actual packaged host's lock
+verdict, fixed lock-file metadata, bounded kernel lock inventory, package health
+and service provenance around reconciliation. Both custody checks and all
+observations share one 20-second deadline within the original aggregate budget.
+They neither repair host state nor change any acceptance decision. Independent
+protocol tests and direct reconciliation tests exercise unknown/busy lock refusal,
+native-shaped retained packages and separate inspection authority. The native
+cause remains unconfirmed until a new executed report identifies the refusal.
+
+Candidate `3a6f88fe5b6143ec3f252213f1d797a4383027b1` passed all three
+applicable workflows, including 1,275 CLI tests and 12,227 assertions. Independent
+review accepted both prerequisite reports and all four runtime reports with the
+original enforcement, repeats, deadlines and disposal gates. Runtime review
+summary SHA256 is
+`47be5c50b24fba30f93eebdc5d9ea410352e470195cda2ae67fdedc92661ebc1`.
+Its [native diagnostic run](https://github.com/hazeion/fleur/actions/runs/40091959632)
+again refused reconciliation after the completed interruption and real reboot.
+Report SHA256 is
+`d43d64ccc0212d4196531621857e01aecd47fb08a577cdbd1208ee35a1de741b`.
+
+Both observations identify the same blocker: `/var/cache/apt/archives/lock`
+returns `ENOENT`, so the observer returns `unknown`. The other three lock files
+are protected root-owned regular single-link files. Kernel lock records parse
+and name unrelated inodes. All eight package versions and the full 330-row
+healthy inventory match, and service provenance passes. No administrator
+restoration was performed; recovery remains unqualified.
+
+The lock observer now permits only that fixed archive lock to be absent. It
+requires an existing root-owned, non-writable directory ancestor chain, stable
+identities before/after the bounded kernel observation, and repeated exact
+`ENOENT` for the lock. Other missing locks, permission errors, unsafe paths,
+identity changes, malformed kernel records and actual contention still refuse.
+It never creates, acquires, removes or repairs a lock. The focused regression
+first reproduced `unknown` for the native-shaped absent lock before the fix.
+Fresh execution of the corrected product is still required.
+
+Independent review confirmed the native blocking gate, original interruption
+ledger, real reboot custody, configuration preservation and complete disposal.
+Seventeen focused lock/reconciliation tests passed with 156 assertions,
+including an actual reconciler regression demonstrated red against the original
+observer. An additional focused APT payload/recovery run passed 191 tests with
+5,744 assertions. These local results do not establish later native recovery
+predicates or replace the required fresh repeat.
+
+All three applicable workflows passed at correction
+`7347cad25565f493cc12541c247a0c8b204534bf`, including 1,288 CLI tests and
+12,341 assertions. Independent review accepted both prerequisite and all four
+runtime reports. The [fresh recovery attempt](https://github.com/hazeion/fleur/actions/runs/40092857273)
+still refused after interruption/reboot, with the lock verdict remaining
+`unknown`. Report SHA256 is
+`3a7c2dfe563a225b6691bb7ec70966165fcb1e49560c29a04ac03268914fb7d0`.
+The three existing locks are root-owned mode `0640`, healthy package state and
+service provenance pass, and complete disposal passed. The report did not
+include ancestor metadata needed to identify which new custody condition
+refused. Read-only observations now include all five fixed ancestors and actual
+directory type. No further product policy is changed before those facts are
+measured. Recovery remains unqualified.
+
+The nine-path [diagnostic run](https://github.com/hazeion/fleur/actions/runs/40093201571)
+at `f9fd4e4d89d50a8c1de730e0260ddc07ac8cdd8a` establishes that the fixed
+archive directory `/var/cache/apt/archives` itself is absent. Both observations
+return `ENOENT` for it and its lock. `/`, `/var`, `/var/cache` and
+`/var/cache/apt` are root-owned actual mode `0755` directories with unchanged
+identities. Report SHA256 is
+`8b59c72cdd0dbefe032b59730a2f2a0bcf45db2636871a789adb34624b26cd90`.
+The first correction's requirement for an existing archive directory therefore
+still refused the measured minimal-host layout. Superseded diagnostic PR runs
+were cancelled and are not passing evidence.
+
+The observer now permits only that final archive directory to share the lock's
+exact observed absence, anchored by the four existing protected ancestors.
+Both absences and every existing identity are checked again after the kernel
+observation. Higher missing ancestors, all permission/traversal errors, unsafe
+directories, appearance/disappearance races, contention and malformed kernel
+evidence still refuse. It creates neither path. Independent intended-red tests
+reproduced this second condition before the correction; the actual reconciler
+tests retain separate inspection authority and refusal before health checks for
+busy locks with both native-shaped absent layouts. Fresh native execution and
+all applicable final-candidate checks remain required.
+
+## Debian 13 x64 ordinary assisted-recovery qualification
+
+At `7b5be60c1132ea9e758a64cd88c470798adc90b6`, all applicable
+[CLI](https://github.com/hazeion/fleur/actions/runs/40093562546),
+[native prerequisite](https://github.com/hazeion/fleur/actions/runs/40093562540)
+and [compatibility](https://github.com/hazeion/fleur/actions/runs/40093562522)
+workflows passed. CLI recorded 1,293 tests and 12,401 assertions, plus types,
+full lint and two isolated generated-project checks. Independent review accepted
+both prerequisite and all four runtime reports with the original enforcement,
+repeats, deadlines and disposal requirements intact.
+
+The [first fresh recovery run](https://github.com/hazeion/fleur/actions/runs/40093570538/attempts/1)
+and [targeted fresh x64 repeat](https://github.com/hazeion/fleur/actions/runs/40093570538/attempts/2)
+both passed full independent review. They executed the same ordinary archive
+SHA256 `23530dce2b1678cb8864fbccfaa4bbbca357b36c221b117b5ae12db12504dfe0`.
+Report SHA256 values are:
+
+- First: `708068b560e3a4c5584f61f19a15e8ebcd36993be05fcb43af3d1789dd5b9fdd`.
+- Repeat: `0dcdb3ead5c0327d874a92380266d9b2ff9d2cc9fbd4840bfa3987e0099bfad8`.
+
+Each preserved all original packages and sources, installed exactly eight
+declared effects, retained the same-boot fence, and completed a real reboot under
+continuous VM/QMP/overlay/SSH custody. Both boot-bound firewall/configuration
+ledgers passed. Historical grants and retained artifacts stayed unchanged;
+separate once read-only inspection authority was consumed and revoked. Genuine
+fresh login, separate smoke-image acquisition, two Doctor rounds and two ready
+setup reprobes passed with state/grants preserved. Full original runtime and
+VM/overlay/credential/scratch/service/cgroup disposal checks passed. Physical
+pause observations were 42/27/34/29 ms and 28/78/35/45 ms, below 250 ms.
+
+The repeat used distinct VM nonces, all boot/manifest identities, service
+invocations, operations and inspection grants. Artifact 12559983657 was bound by
+its published ZIP digest and creation time to the actual repeated x64 job. A
+name-based download returned the first report and was explicitly excluded.
+Carried-forward ARM/scope jobs were not counted as new executions.
+
+This qualifies separately scoped read-only assisted recovery for the measured
+Debian x64 ordinary package. The historical interrupted transaction outcome
+remains unknown; automatic recovery and human consent are not claimed. It does
+not complete ARM fresh installation, Apple Silicon or Arch qualification.
+
+## Fixed Arch boot observation contract
+
+The manual native workflow has a false-default read-only Arch x64 KVM selector.
+It uses the fixed official cloud image `v20261001.604814`, 578,080,256 bytes,
+SHA256 `360f0fa49db6813bdc8e35bed230a2dc2ae3567b7b5ab74719c0a706e4e34e87`.
+The retained independent image-origin review is bound by report SHA256
+`26e1dd7c99d320c53881580bbdf6e52ab92d26a0524316754df6efa7ed97d8f3`
+and review-helper SHA256
+`982feabfd40ce012c76acccbcb1961d3aef917763663714270c00102e9560f85`.
+This does not recreate the missing historical parser attestation or establish
+current global revocation absence. A fresh full-byte authentication and exact
+header precheck precede QEMU interpretation; protected hosted tools then perform
+read-only image information and structure checks.
+
+The observation preserves the image's original 2 GiB virtual disk, disables
+cloud-init partition/filesystem growth, and performs no package installation,
+service execution or firewall mutation in the guest. The raw root OS record
+retains literal `VERSION_ID` absence as `versionId: null`, with
+`buildId: rolling`. Existing Ubuntu and Debian manifest records remain unchanged.
+
+Nineteen fixed queries collect package, backend, configuration-policy, storage,
+service and ownership facts. Configuration contents, mirrors, environment and
+keys are not published. Failed package queries are retained as failed facts;
+only complete exact C-locale not-found rows establish package absence. Each
+query retains its actual outcome and process retirement under custody checks.
+The original 180-second initial boot and 900-second aggregate limits remain.
+Live KVM, continuously held VM/QMP/overlay/SSH identities, tracked source hashes,
+all observations and complete guest/host disposal remain acceptance gates.
+
+This lane always declares installation, native qualification, runtime admission,
+human consent and native CPU-performance proof false. A successful observation
+would supply measured preparation inputs. It cannot admit an Arch installer
+profile or replace fresh-installation and runtime qualification repeats.
+
+At `6842bbf0efffbc3f329cb5d65bb6c2e29b4cfbc7`, full
+[CLI](https://github.com/hazeion/fleur/actions/runs/40096304681),
+[native prerequisite](https://github.com/hazeion/fleur/actions/runs/40096304682)
+and [compatibility](https://github.com/hazeion/fleur/actions/runs/40096304654)
+workflows passed. CLI recorded 1,300 tests and 12,431 assertions, types, full lint
+and two isolated generated-project checks. Both existing-install prerequisite
+reports and all four runtime/VFS reports passed independent review with original
+enforcement, repeats, deadlines and disposal intact. The prerequisite reports
+constitute existing-install readiness, not fresh installation.
+
+The [first guarded Arch observation](https://github.com/hazeion/fleur/actions/runs/40096309335)
+failed after authenticated image/header/QEMU structure checks and actual VM
+creation. Report SHA256 is
+`5854bd350c091288a9dcc1471c91a31b06d7981eada2abe2e3487c61790a50b5`. Its final boot observation retained an empty SSH exit 255 with the
+exact owned-loopback connection-closed diagnostic, normal process exit and
+confirmed transport cleanup. Boot readiness, root custody and Arch installation
+were not established. The historical close cause remains unknown. Full
+VM/overlay/credentials/scratch/service/cgroup disposal passed. Exact host-tool
+additions and unrelated-package/default-Docker preservation were measured through
+preparation; the failed path did not collect a final after-guest host snapshot.
+
+The correction treats only that exact empty, normally completed, unexpired
+closed-loopback response as pending. Different ports/addresses, output, extra
+authentication/host-key diagnostics, other exits/signals, cancellation, expired
+attempts and uncertain cleanup remain failures. A later clean cloud-init result,
+exact nonce and root custody are still mandatory within the original 180-second
+boot limit. Permanent closes time out. Intended-red exact-message regressions
+preceded the correction. Final host observations now run after service retirement
+on failed guests too, retaining the primary failure and refusing changed or
+unconfirmed host state. Console diagnostics expose only fixed pattern names,
+line indices and hashes, preserving bootstrap secrets and making no causal or
+readiness claim. A fresh corrected observation and current-source checks remain
+required.
+
+
+## Corrected Arch observation and package-query integrity
+
+At `b6ae8ddf087b5b49ef1bfd1e30896612531187e7`, all applicable
+[CLI](https://github.com/hazeion/fleur/actions/runs/40097000183),
+[native prerequisite](https://github.com/hazeion/fleur/actions/runs/40097000176)
+and [compatibility](https://github.com/hazeion/fleur/actions/runs/40097000205)
+workflows passed. CLI recorded 1,317 tests and 12,501 assertions, types, full
+lint and two isolated generated-project checks. Independent review accepted both
+prerequisite reports and all four runtime reports against committed source. x64
+VFS used the existing bounded forced-reap/fallback retirement: 19,412 remaining
+files and 2,510 directories were removed in 2.535349 seconds after partial normal
+deletion. ARM VFS retired normally. Both met the original cleanup contract;
+no deadline or enforcement gate changed.
+
+The [corrected read-only Arch observation](https://github.com/hazeion/fleur/actions/runs/40097012115)
+passed independent review. Its report SHA256 is
+`563873d374b59c31bf4ca386133fd6cf0e5367624827431fd033a400d007d2e7`.
+It authenticated all fourteen committed sources, the complete pinned image and
+protected QEMU tools, clean cloud-init/exact nonce, raw Arch identity and
+continuous KVM/VM/QMP/overlay/SSH custody. All nineteen queries completed and
+retired. Guest and outer disposal passed; final host observations after service
+retirement matched the prepared package inventory and original default Docker.
+
+The measured image has 184 packages, no installed runtime quartet, and Pacman
+7.1.0/libalpm 16.0.1. Its original 2 GiB disk has about 488 MB available. The
+installer's reviewed backend policy remains 7.1.0/16.0.0, so this observation
+cannot admit installation. The socket-unit output remained unparsed and is not
+proof of absence. Installation, native qualification, runtime admission, human
+consent and performance flags all remain false.
+
+Review also found a real package-query defect: the Arch planner and transaction
+guard accepted exit 1 with empty or incomplete diagnostics as package absence.
+Regression tests demonstrated twelve intended failures against the previous
+source before correction. A shared bounded parser now requires the exact version
+of every present package and one complete C-locale not-found row for every
+missing package, with consistent exit status. Unknown, duplicate, conflicting,
+truncated, oversized or unconfirmed observations refuse. The external guard also
+requires the observed missing set to match the authorized plan. Existing once
+grants and retained private evidence remain unchanged on refusal.
+
+Fixture corrections supply native-format diagnostics and LF-terminated rows;
+existing assertions were preserved. Final targeted verification passed 71 tests
+and 333 assertions, types and full lint. Independent review passed 23 focused
+tests and 66 assertions; those tests overlap the final suite. This correction
+does not admit the unreviewed backend or replace fresh installation qualification.
+
+
+The next observation parser distinguishes the seven common unit properties from
+service-only `MainPID`, as documented by the
+[systemd unit interfaces](https://www.freedesktop.org/software/systemd/man/262/org.freedesktop.systemd1.html).
+Only the four fixed units are accepted; service PID, duplicate/missing-field and
+unknown-unit refusals remain. The fixed query vectors and all qualification
+requirements remain unchanged. The socket-shaped positive control failed on the
+old completeness check before correction; all 33 Arch Python methods then
+passed. This corrects a parser assumption, not the interpretation of the retained
+unparsed historical socket report. A fresh observation must establish its result.
+
+
+## Approved required platform scope amendment
+
+The [October 24 user-approved amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944)
+requires native Intel macOS, Ubuntu 24.04/26.04 amd64 and Debian 13 amd64. Apple
+Silicon, other ARM64 targets and Arch full native qualification are deferred and
+no longer block #24 or v1 release. This supersedes earlier statements that those
+unavailable platforms must be qualified for closure. Historical reports retain
+their actual source, outcome and scope; no deferred result is converted into a
+pass. Existing GitHub ARM jobs and useful Arch/ARM fixtures remain coverage.
+Required-target assertions, isolation, authority separation, resource enforcement,
+preservation, recovery, repeats, deadlines and disposal remain unchanged.
+
+The admitted Intel placement method and two ordinary-package private-placement
+receipts remain valid method evidence. The remaining Intel acceptance gap is
+runtime isolation and readiness admission for the exact running Desktop tuple.
+Replacing a usable installation or resetting the host/legal state is not an
+additional prerequisite. Existing smoke observations alone remain insufficient.
+
+A new capability preflight is designed to inspect an owned trusted worker using
+a separate source-bound Linux-VM manager, the preexisting pinned Bun image,
+Linux pidfds and a VM monotonic clock. Its manager has only the declared trusted
+inspection/signal capabilities and host PID/cgroup namespaces, with no network,
+mounts or Docker socket. Worker authority remains separate. It performs no image
+acquisition, installation or global Desktop configuration. The fixed 90-second
+aggregate limit reserves 20 seconds for owned-container removal and preservation
+checks. This preflight cannot admit a runtime profile or replace any original
+restriction, resource, physical-deadline, lifecycle or disposal check. Native
+execution and complete Desktop runtime qualification remain pending.
+
+
+The first clean-source Intel control preflight at
+`b26904cb4b97db7eca83bfcce1780c9c37aecbba` refused a missing-name inspect response
+before creating containers. Report SHA256
+`342b14403a012fa8cf8aea9ec945022f3d4c0707ca17f4fe2f38bb4516286a5c`
+retains this failed attempt, confirmed transport, no image acquisition and
+unchanged context/daemon/container/image inventories. It establishes no Linux-VM
+control capability. A separate read-only query observed the exact native
+Desktop 29.9.2 absence protocol: exit 1, one LF on stdout, and lowercase
+`error: no such object: <exact target>` followed by LF on stderr. The previous
+parser required empty stdout and different diagnostic capitalization.
+
+Intended-red tests and an independent actual-controller replay preceded the
+correction. The parser adds only that exact observed tuple for a validated owned
+name or full container ID, retaining confirmed completion, exact exit and target,
+legacy forms and rejection of extra output/errors, unknown outcomes and uncertain
+transport. All eleven Desktop preflight tests passed with 132 assertions. A new
+clean-source native attempt remains required; no native result was fabricated
+from fixture success.
+
+The second clean-source control attempt at
+`b6a643bd668a58198a418022ac896e960875bf8d` created both owned containers, then
+refused the manager profile before starting it. Report SHA256
+`e2dcd7a0f176d33f6e83adbf43ff6dacc268275f3ac09634b5266ccb41467608`
+retains the failure and incomplete initial cleanup. Independent inspection bound
+the stopped manager's full ID, nonce, image, committed program and resource/
+namespace profile. Its only profile difference was `label=disable` alongside the
+requested no-new-privileges and unconfined seccomp options. Upstream Moby's
+[host-PID security-option generation](https://github.com/moby/moby/blob/b711d21792db6db488de976eb3c4a653c92c3bc3/daemon/create.go#L299-L311)
+explains this mechanism; that upstream source is not an identity claim about the
+exact Desktop binary.
+
+An intended-red regression preceded exact manager-only recognition of this
+three-option set. Worker label disabling, duplicate options, missing mandatory
+options and unknown extras still refuse. Twelve preflight tests passed with 139
+assertions, with types and full lint. Separately authorized cleanup freshly
+verified the stopped manager's complete ownership/program/profile and never-
+started state, removed only its full ID without force, confirmed absence and
+restored all four original inventory identities. The original failed receipt is
+unchanged. Neither this correction nor cleanup is full runtime qualification.
+
+The clean-source control preflight at
+`97a4180b1214099769a6d8a4a78f46c2556b2d9f` passed independent review. Report
+SHA256 `83a155f488adfcb611f894ffffb54f22a6c5d8ab54bd1af05d096e62e0085ce0`
+binds all six committed source hashes, native Intel macOS 15.7.7, the exact
+Desktop 4.96.1/Engine 29.9.2/Linuxkit 7.0.14 tuple and preexisting pinned Bun image.
+It verified actual worker PID/start time/cgroup/nonce/private PID namespace,
+manager PID in the VM host PID namespace, VM boot identity and monotonic clock,
+and real pidfd open/fdinfo/signal-zero/quiet-poll/close. Both owned containers were
+removed with confirmed absence; original context, daemon, container and image
+inventories were preserved. Transport was confirmed, stderr empty, and elapsed
+6,372ms was within the fixed 90-second bound. All runtime/native/installation
+admission flags remain false. Signal-zero capability is not SIGKILL deadline,
+resource, isolation or full lifecycle evidence.
+
+## Desktop runtime controller diagnosis
+
+The subsequent Desktop runtime harness imports source-bound images prepared on
+a disposable GitHub amd64 runner. Preparation is separate from native runtime
+qualification. Both OCI configuration and manifest identities are authenticated;
+Desktop executes the manifest identity. Complete image inventories include
+untagged images. Earlier attempts that omitted those images cannot establish
+cleanup or original-inventory preservation. Their failed receipts remain failed;
+separate ownership-verified cleanup does not change their original outcome.
+
+The controller diagnostic at source
+`0c55919` identified a verification error after successful Docker socket access.
+The fixed `sudo` root-launch command exited zero with exact root-confirmation
+output, but emitted two isolation warnings: its container hostname was not
+resolvable, and its capability-limited process could not emit an audit message.
+The independent diagnostic review has SHA256
+`9644ac776f6618951c719bf826698a543b872e31cccc504b199471973a7ea562`.
+That instrumented observation always refuses qualification, including if its
+underlying capability checks succeed.
+
+Source `9e685b8` corrects only this root-launch verification policy. It requires
+an actual completed exit zero, exact root-confirmation bytes, and either empty
+stderr or exactly both measured warnings in their original order. The warning
+hostname must match the controller's validated cgroup container ID. The warnings
+are retained in the result. Wrong identities, partial or additional diagnostics,
+changed output, failed exits and signals refuse. Generic Docker-command stderr
+checks remain strict. No capability, network permission, worker assertion,
+resource limit or deadline changes. Independent tests execute the actual main
+path and verify source, VM, cgroup, daemon and guardian refusals precede root
+launch, and that failed root launch never publishes success. All 71 Desktop
+host contract tests, 12 CI policy tests, types and full lint passed. Rebuilt
+authenticated inputs and actual native runtime qualification are still required.
+
+
+## Completed Intel Desktop runtime and readiness qualification
+
+At operator source `1906201264e5d15728d2cd36d98564ebd0d5aeb1`, two full
+native Intel macOS/Desktop Linuxkit runtime attempts passed independent review.
+The prepared images came from successful GitHub run
+[40116545670](https://github.com/hazeion/fleur/actions/runs/40116545670), source
+`9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881`, artifact `12570070243`.
+The complete archive SHA256 is
+`a7f60b852917166ad5badca3aa316302df47d93b73229fbd0759d3d1ebec9153`.
+Preparation authenticated both OCI configuration/manifest identities, all 92
+payload source hashes, the executed compiler and helper pair, and producer
+cleanup. Preparation alone established no runtime admission.
+
+The accepted full reports have SHA256
+`e2ea84799371eac2c6253cd2335bd47f51adabf77a1ddda07c057b2aac1d1807`
+and `c1bb6596ebc2a1a09b06455161d7446fce6df1706e8f00527852ff8b7a50d610`.
+They used distinct nonces and workers on the same existing VM boot, with the same
+source, images, compiler and helpers. These are repeated native executions, not
+fresh-VM or installation claims. Each attempt verified all 31 pinned runtime source files. The original acceptance
+checks, negative controls, retained GC checks, descriptor restrictions, event-replacement
+refusal and actual CPU/memory/PID enforcement passed. Each full attempt retained
+two ordinary and two idle lifecycle repeats, 11-second broker pauses and the
+original 30-second physical deadlines with a 250 ms lateness bound. Physical exit
+lateness was 44/18/18/13 ms and 71/56/35/20 ms. Healthy completion used the original
+startup-bound Docker wait proof. The trusted controller ran Ubuntu userspace
+against the actual Desktop Linuxkit kernel.
+
+Each full attempt also ran a fresh manager-loss control. The unchanged root guard
+and journals bound actual worker IDs, PIDs, VM boot and original VM deadlines.
+All 13 workers, both controllers and both imported manifest images were removed;
+the control's separate resources were also removed. Original context, daemon,
+recorded container state/configuration and complete image inventories were preserved.
+The aggregate independent review SHA256 is
+`17b2fe0503493c0273806e482ed7c008c595861c646850b458880344e49b2787`.
+
+An intervening attempt, report SHA256
+`ee0583ba449fd3c5da6a9fec7a4fd80dc0b70006ae93ec88874267213046522d`,
+passed runtime assertions but failed original-container preservation. It remains
+failed and does not count toward either repeat. Native Docker API records showed
+an unrelated container's delete/recreate/archive/start sequence outside the
+verifier's fixed operations. The reviewed sanitized diagnosis has SHA256
+`91c1ae0add36578db4fe1d9753818e86b654982375cc8c23edebbc274302a4b9`.
+No human or process caller was identified, no unrelated workload was reset, and
+no preservation field, deadline, cleanup gate or assertion was weakened.
+
+The unchanged packed preadmission verifier recorded the actual native readiness
+tuple and two expected Doctor exit-4 refusals with smoke/sentinel cleanup and
+preservation. Its report SHA256 is
+`b2b1565746e8a1a56785db75594f38dc1f942dc28609a1e151a1c8bb10c63571`.
+This readiness evidence and the repeated isolation evidence authorize only the
+compiled `darwin-15.7.7-x64-desktop-4.96.1` row: Bun 1.4.3, CLI 29.9.2/a82e528,
+Desktop 4.96.1 build 244132, Engine 29.9.2/0367cbe, Linuxkit 7.0.14-linuxkit,
+rootful cgroupfs/v2, builtin seccomp and cgroup namespaces, containerd
+v2.4.2/b7a25261e029d68978bbf290df0a62fc819b3c51,
+runc 1.5.2/v1.5.2-0-g29dd3dc2, Compose 5.6.0 and the exact amd64 Bun image.
+Unknown tuples and translated execution still refuse.
+
+At source `2d3e6fcb9a0aa0d8f4527bad4ea0afabe0a7349a`, the ordinary packed
+CLI then passed Doctor/ready setup in each of two rounds. All four commands
+returned success with the exact compiled profile and evidence, confirmed smoke
+cleanup, and preservation of context, inventory, daemon/server, the unrelated
+sentinel and all setup-grant fields. The sentinel was removed with confirmed
+cleanup. The report SHA256 is
+`69648daf59ad333e1e1dddfdb4de75997f79964203104dcb8454dc670e51a89d`;
+independent review SHA256 is
+`41be94cae31f6cc947bbe01148d0078e6f16dd6eda54914da20edeba7c5aa01f`.
+This existing-installation verifier acquires no image, installs nothing and
+establishes no human-consent proof. Installation-method qualification remains
+separate, as recorded above.
+
+Requirements-based regressions first produced nine intended failures, then all
+97 focused tests passed with 428 assertions, alongside types and full lint.
+The verifier now rejects unconfirmed retirement, unexpected ready-setup action
+results, changed grants and unsafe grant-store reads. Unknown existing tuples
+and ordinary disposable Linux CI retain their original two-Doctor behavior.
+Existing admitted tuples in personal-host mode additionally verify ready setup
+in each round. None of these fixture results substitutes for the actual native
+reports above.

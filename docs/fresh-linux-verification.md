@@ -1,6 +1,6 @@
 # Fresh Ubuntu guest verification
 
-`scripts/verify-fresh-linux.ts` is an internal full-system verification command for one Ubuntu 24.04 amd64 candidate. It never admits a production installer profile. The ordinary catalog stays empty. Local tests cover refusal, transport and artifact boundaries. They do not establish successful QEMU, cloud-init, APT, Docker or runtime isolation execution.
+`scripts/verify-fresh-linux.ts` verifies an owned full-system Ubuntu 24.04, Ubuntu 26.04 or Debian 13 amd64 guest. Ubuntu targets offer fixed internal candidates and source-owned ordinary installation profiles. Debian currently permits only its fixed internal candidate. The default fixture remains Ubuntu 24.04. The ordinary catalog contains the two exact reviewed prerequisite tuples. Internal candidate verification does not add release admission. Local tests cover refusal, transport and artifact boundaries; actual guest execution and its evidence are recorded separately below.
 
 The command has two modes:
 
@@ -25,7 +25,7 @@ The Bun 1.4.3 Linux x64 ZIP uses the already pinned compatibility bootstrap hash
 
 The verifier builds the internal native candidate from the current source with `build-native-candidate.ts`. It refuses caller-supplied candidate archives or runtime profile overrides. It records the builder's archive and source-file identities. The existing runtime probe comes from a separately recorded exact Git commit and archive hash. Uncommitted experiment edits do not enter that archive.
 
-`observe-fresh-linux-boot.ts` performs one nonblocking observation through the same pinned loopback SSH transport. It first checks cloud-init's boot-finished marker without invoking cloud-init during busy startup. The marker alone cannot establish readiness: the command then requires a completed, non-degraded JSON status with no reported errors, and the exact guest nonce. Pending initialization and initial connection refusal remain retryable. The exact two-line pre-authentication connection-reset response (LF or CRLF) from the expected loopback port also remains pending, only with SSH exit 255 and empty stdout; mixed identity/authentication diagnostics, unexpected output and other endpoints remain fatal. Otherwise, host-key failures, malformed status, mismatched identity and other SSH failures remain errors. The parent retains its three-minute boot deadline, caps each SSH attempt at ten seconds or the remaining boot budget, and keeps the three-second connection limit. Tests execute the remote shell operation through disposable external SSH/cloud-init protocol fixtures, including pending-to-ready transitions and rejection cases.
+`observe-fresh-linux-boot.ts` performs one nonblocking observation through the same pinned loopback SSH transport. It first checks cloud-init's boot-finished marker without invoking cloud-init during busy startup. The marker alone cannot establish readiness: the command then requires a completed, non-degraded JSON status with no reported errors, and the exact guest nonce. Pending initialization and initial connection refusal remain retryable. The exact two-line pre-authentication connection-reset response (LF or CRLF) from the expected loopback port also remains pending, only with SSH exit 255 and empty stdout; mixed identity/authentication diagnostics, unexpected output and other endpoints remain fatal. Otherwise, host-key failures, malformed status, mismatched identity and other SSH failures remain errors. The parent retains its three-minute boot deadline, caps each SSH attempt at ten seconds or the remaining boot budget, and keeps the three-second connection limit. Synchronous relay setup consumes that same attempt budget. If setup returns after its deadline, the host requests cancellation immediately before yielding to relay readiness; otherwise its watchdog receives only the remaining time. This does not preempt a blocked OS call or extend the separate local cleanup deadline. Tests execute the remote shell operation through disposable external SSH/cloud-init protocol fixtures, including pending-to-ready transitions and rejection cases.
 
 Readiness deadline-boundary tests inject a monotonic clock only into the readiness loop to simulate elapsed scheduling time after completed observations. Their original total and per-attempt deadlines remain unchanged; actual SSH watchdogs, process retirement and cleanup use the real clock. The default verification path uses the real monotonic clock and still admits an initial observation bounded by the available partial budget. These controlled-clock tests do not establish native runtime or performance support.
 
@@ -73,7 +73,7 @@ A valid new login alone does not establish readiness. For example, an unavailabl
 }
 ```
 
-If ordinary-user readiness becomes available through supported setup, the verifier inspects the separate digest-image acquisition plan and answers exactly one matching image/endpoint/checksum prompt. Package installation or account-access prompts at that boundary are rejected without a reply. It then runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready, smoke cleanup to succeed, and the exact pending-release doctor envelope with exit 4. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
+If ordinary-user readiness becomes available through supported setup, the verifier inspects the separate digest-image acquisition plan and answers exactly one matching image/endpoint/checksum prompt. Package installation or account-access prompts at that boundary are rejected without a reply. It then runs doctor twice, preserves an unrelated stopped container and global context, and verifies owned cleanup. Each repeat requires CLI, daemon, Compose and smoke to be ready and smoke cleanup to succeed. Internal candidates retain the exact release-unverified Doctor envelope with exit 4. Ordinary packages require the admitted profile with Doctor exit 0, plus successful setup reprobes that preserve snapshots and grants. A failed smoke with successful cleanup cannot pass. It then executes the existing runtime probe with healthy-containerd and idle-stress options. No GC, retained-value, idle, resource, isolation or deadline assertion is removed. Missing compiler prerequisites or a failed probe remain explicit incomplete evidence.
 
 The host requests QMP powerdown, then terminates and reaps only its owned QEMU child if needed. Owned temporary disks, seed and keys are removed after termination. The JSON report carries guest diagnostics and bounded serial output. There is no CI job or automatic infrastructure provisioning in this change.
 
@@ -120,6 +120,25 @@ that the host timer fired or that any particular guest stage completed.
 
 The shared host-only Python helper retains the actual SSH leader unreaped after exit. A private descriptor carries its PID, exit tuple and bounded process inventory; TypeScript completes owned group signals before explicit release and reaping. The fixed /bin/ps inventory reads only PID, process-group and state columns, never command arguments. Its absolute executable availability is included in host capabilities, and both helper source hashes are included in verifier provenance. Local transport retirement has a separate bounded
 three-second cleanup period and reports uncertainty if retirement is unconfirmed.
+Darwin selects the complete retained process group, including its zombie leader
+and descendants without terminals; Linux retains the global query. Exit,
+cleanup inspection and final release each require a fresh inventory. The
+one-second query work deadline includes tool startup and selector setup; late
+OS returns are refused without a new allowance. Query retirement still has its
+original separate bound, protects partial setup failures, and requires a fresh
+WNOWAIT ownership observation before signaling or reaping the probe. Successful
+retirement also requires complete error-free control EOF and actual helper exit
+zero without a signal, within the original cleanup deadline. Physical group
+absence cannot replace the third release check or conceal a late helper error.
+
+If cancellation arrives before the relay sends an SSH start request, the
+observation remains failed with a null SSH exit. Local cleanup is confirmed only
+after that idle relay reaches complete control EOF and actually exits zero
+without a signal, within the same original cleanup deadline. Unexpected idle
+control output, a nonzero helper exit or late retirement keeps cleanup unconfirmed.
+Portable OS-command fixtures cover these failure contracts; controlled same-UID native
+comparison evidence does not qualify every UID, platform or runtime profile.
+
 The report separates work elapsed time from local cleanup elapsed time. A detected live local survivor invalidates preparation even after confirmed retirement; that refusal is distinct from an expired work timer. This does not establish cleanup of remote guest work. The owned VM teardown
 remains necessary. Success requires authenticated Bun output and completed
 candidate/restriction extraction in the expected order. These diagnostics do not
@@ -178,3 +197,115 @@ x64 tuple, with independent runtime, custody and disposal evidence review. See
 the [recorded-helper evidence](setup-artifact-evidence.md#recorded-helper-verification-on-the-existing-ubuntu-tuple).
 No new platform qualification or aggregate v1 compatibility claim follows from
 this input path.
+
+## Ubuntu 26 internal candidate
+
+`build-native-candidate.ts --out <new-owned-directory> --fixture ubuntu26-amd64`
+selects one fixed, authenticated Resolute catalog. The default remains
+`ubuntu24-amd64`; arbitrary catalog paths, hashes and profiles are refused. The
+internal archive carries the exact source catalog bytes under a fixed filename.
+Selecting this internal catalog does not change ordinary qualification records
+or create a Doctor 0 shortcut. The separately reviewed ordinary Ubuntu 26 row
+and its completed verification are recorded below.
+
+The root NoCloud producer accepts only the source-owned Ubuntu 24 or 26 amd64
+target. Its default target is Ubuntu 24. Before creating the manifest, it checks
+the actual OS, architecture, init and virtualization. The protected manifest
+binds the original OS ID, release and full release-file hash; retained custody
+also binds the file and protected ancestry identities. Reopening the original
+nonce, boot ID, ordinary UID and manifest SHA cannot authorize a changed OS.
+These four public binding fields and the strict root-control reply stay intact.
+The ordinary custody observation separately includes validated OS metadata.
+The guest reuses that protected observation for the target check instead of
+reading OS bytes again through another pathname. Its report identifies this
+evidence source; it does not claim a second raw OS observation. Legacy
+nonce-only Ubuntu 24 observations use a bounded regular-file snapshot that
+allows the standard OS-release alias and consumes the existing phase budget.
+
+Before setup authority or resumed account work, the guest authenticates catalog
+bytes against an independent source pin, compares the marker, artifacts and
+authentication record, and checks the original OS/architecture target. A marker
+cannot authorize its own replacement checksum. Missing or malformed OS metadata
+on a full binding is refused. The legacy nonce-only Ubuntu 24 fixture cannot
+select Ubuntu 26 or establish its full custody proof. The new catalog stat identities stay inside Python. Its new report fields
+contain only hashes and fixed strings.
+
+The historical Resolute catalog retains its pending installation and unverified
+runtime labels separately from artifact authentication. Its scoped five-package
+maintainer-script digest differs from the historical six-profile digest, and
+both scopes are explicit. Portable artifact and command-protocol tests do not
+prove native installation or runtime behavior. Two full native Ubuntu 26 runs
+and their independent evidence reviews are complete; source entries record their
+exact installation and runtime tuple. Ordinary packed verification passed twice
+at source `bb4f145a89b9c09b0e139cf19a215c8579006367`; the
+[artifact evidence](setup-artifact-evidence.md#ordinary-ubuntu-2604-packed-verification)
+records both reports and their scope.
+All existing setup grants, GC/idle, resource, isolation, physical deadline and
+owned disposal assertions remain required.
+
+### Exact Ubuntu 26.04 x64 verification
+
+The runner accepts a final `--fixture ubuntu26-amd64` option. It binds the fixed
+859,090,944-byte Ubuntu 26 image (SHA256
+`5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5`),
+the frozen Resolute catalog and the original protected Ubuntu 26 OS record.
+The default remains `ubuntu24-amd64`; arbitrary targets and profile paths are
+refused. Selecting a fixture grants no installation permission or admission.
+
+On an owned eligible Linux x64 verification host with existing tools, use the
+same command as Ubuntu 24 and append `--fixture ubuntu26-amd64`. Supply the exact
+Bun archive, image and `--recorded-helper-artifacts` pair. The Ubuntu 24 compiler
+DEB closure is refused for this target. `--candidate ordinary-source-owned`
+exercises the packed release and requires verified ordinary Doctor/setup results;
+`--candidate source-owned` retains the internal candidate's unverified labels.
+Both paths retain original host custody, installer/enrollment/image permission,
+fresh-login, repeated smoke, runtime restriction, resource, physical-deadline and
+disposal checks. Observation alone is not a successful execution.
+
+The host compares the root-attested OS with the fixed image fixture before guest
+work. It carries a separate copied OS record alongside the unchanged four-field
+custody binding and checks both against the initial and resumed guest reports.
+Ordinary terminal profile/evidence selection uses only that original OS record.
+Legacy sessions without an original OS record remain Ubuntu 24-only; an explicit
+Ubuntu 26 report cannot adopt that fallback.
+
+
+### Debian 13 x64 internal verification preparation
+
+The final `--fixture debian13-amd64` selector binds the authenticated Trixie catalog,
+342,818,816-byte image with SHA256
+`87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02`,
+and its measured 3,221,225,472-byte virtual size. The [artifact evidence](setup-artifact-evidence.md#debian-13-x64-retained-image-input)
+records its official TLS/checksum origin and structure checks. File size and
+virtual size are separate checks.
+
+On an eligible owned verification host with the existing tools and exact retained
+inputs, the internal command is:
+
+```sh
+FLEUR_OWNED_DISPOSABLE_HOST=yes bun scripts/verify-fresh-linux.ts \
+  --run --image "$FLEUR_DEBIAN13_IMAGE" --candidate source-owned \
+  --bun-archive "$FLEUR_BUN_ZIP" \
+  --recorded-helper-artifacts "$FLEUR_RECORDED_HELPERS" \
+  --fixture debian13-amd64
+```
+
+The Ubuntu compiler closure and ordinary Debian qualification are refused before
+artifact reads. The fixed recorded pair retains its own compiler/source provenance;
+it does not transfer Ubuntu kernel enforcement evidence. No dependency is silently
+preinstalled to make the guest succeed. Missing package dependencies, service
+provenance, enrollment or runtime requirements remain failures.
+
+Protected custody, initial setup, and fresh-login resume must agree on the original
+distribution, release and architecture. Crossed Debian/Ubuntu catalogs fail before
+new authority. The original four-field binding and protected OS digest remain
+unchanged. Internal Doctor rounds retain exit 4 and release state unverified even
+when their component checks pass. The initial Debian boot refused the missing
+nftables dependency before installation, as recorded in the
+[artifact evidence](setup-artifact-evidence.md#debian-13-x64-native-dependency-refusal).
+The expanded internal candidate declares the exact three Debian dependencies under
+separate archive authority. Its verifier observes a disconnected nf_tables canary
+and nftables.service across installation, fresh login and runtime, then removes
+only the owned rule and chain. This is narrow canary and service evidence, not a
+comparison of Docker's authorized firewall changes. Expanded installation and
+runtime qualification still require repeated execution and independent report review.

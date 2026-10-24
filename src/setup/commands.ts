@@ -1,3 +1,4 @@
+import type { AptAuxiliaryCustody, AptAuxiliaryManifest } from "./apt-auxiliary.ts";
 import { nativeReadinessProfiles, snapshotReadinessProfiles, type VerifiedReadinessProfile } from "./readiness.ts";
 import type { UnixSocketSnapshot } from "./unix-diag.ts";
 import { validateSetupArguments } from "./syntax.ts";
@@ -14,6 +15,8 @@ export interface HostIdentity {
   readonly release: string;
   readonly distribution?: string;
   readonly machineId?: string;
+  /** Kernel boot UUID observed by the trusted host; unavailable identity cannot authorize APT. */
+  readonly bootId?: string;
 }
 export interface HostCommandResult {
   readonly status: "completed" | "missing" | "timeout";
@@ -23,8 +26,17 @@ export interface HostCommandResult {
   /** The direct child was killed; privileged descendants may still be live. */
   readonly terminationUnconfirmed?: boolean;
 }
-export interface HostCommandContext { readonly cwd?: string; readonly outputLimitBytes?: number }
+export interface HostCommandContext {
+  readonly cwd?: string;
+  readonly outputLimitBytes?: number;
+  readonly cleanEnvironment?: true;
+  /** Private exclusively created artifact sink; never a CLI or application input. */
+  readonly artifactOutput?: { readonly descriptor: number; readonly maxBytes: number };
+}
 export interface SetupHost {
+  readonly aptAuxiliaries?: (directory: string, manifest: AptAuxiliaryManifest, remaining: () => number) => Promise<AptAuxiliaryCustody>;
+  /** Passive host package lock observation; missing evidence blocks reconciliation. */
+  readonly aptPackageLocks?: (timeoutMs: number) => Promise<"clear" | "busy" | "unknown">;
   /** Private passive Linux kernel observation; no application or caller-selected messages. */
   readonly unixSocketSnapshot?: (timeoutMs: number) => Promise<UnixSocketSnapshot>;
   readonly host: () => Promise<HostIdentity>;

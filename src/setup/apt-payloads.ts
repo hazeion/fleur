@@ -1,12 +1,26 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, opendir, readdir, rmdir, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import type { AptInstallProfile, AptPackageName } from "./native.ts";
+import { basename, dirname, join, relative } from "node:path";
+import type { AptInstallProfile } from "./native.ts";
+import { aptCacheArchiveFilename, aptPackageArtifacts } from "./apt-dependencies.ts";
 import type { HostCommandContext, HostCommandResult, SetupHost } from "./commands.ts";
+import { syncStateDirectory } from "./lock.ts";
 
 export class AptPayloadUnavailable extends Error {}
 export class AptPayloadRecovery extends Error {}
 interface Identity { readonly dev: bigint; readonly ino: bigint; readonly directory: boolean; readonly sha256?: string; readonly size?: number }
+export interface AptRetainedEntry {
+  readonly path: string;
+  readonly dev: string;
+  readonly ino: string;
+  readonly directory: boolean;
+  readonly uid: number;
+  readonly mode: number;
+  readonly auxiliary: boolean;
+  readonly size?: number;
+  readonly sha256?: string;
+}
+export interface AptRetainedArtifacts { readonly root: string; readonly entries: readonly AptRetainedEntry[] }
 /** Exact owned temporary entries; unknown or replaced content is retained, never recursively deleted. */
 export class AptPayloadStage {
   readonly paths: string[] = [];
@@ -116,12 +130,10 @@ export class AptPayloadStage {
     } finally { await heldLock.close(); }
     this.entries.set(lock, { ...this.entries.get(lock)!, size: 0, sha256: Bun.CryptoHasher.hash("sha256", new Uint8Array(), "hex") });
     this.cacheNodes.set(lock, { mode: 0o600n, auxiliary: false });
-    for (const [index, name] of (missing as readonly AptPackageName[]).entries()) {
-      const artifact = profile.artifacts[name]; const source = this.paths[index]!;
+    for (const [index, name] of missing.entries()) {
+      const artifact = aptPackageArtifacts(profile)[name]!; const source = this.paths[index]!;
       await this.verify(source, profile, name, remaining);
-      // APT QuoteString uses these escapes for the admitted ASCII package tuple.
-      const quote = (value: string) => value.replaceAll("_", "%5f").replaceAll(":", "%3a");
-      const path = join(archives, `${quote(name)}_${quote(artifact.version)}_${artifact.architecture}.deb`);
+      const path = join(archives, aptCacheArchiveFilename(artifact));
       await this.unchanged(archives);
       const input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
@@ -193,6 +205,25 @@ export class AptPayloadStage {
     if (((await lstat(this.root, { bigint: true })).mode & 0o7777n) !== 0o700n) throw new AptPayloadRecovery("Private archive stage mode changed");
     await this.verifyEntries(remaining);
   }
+  /** Persist exact identities before privileged execution; names alone never grant later ownership. */
+  async recoveryManifest(remaining: () => number, syncDirectory: (directory: string) => Promise<void> = syncStateDirectory): Promise<AptRetainedArtifacts> {
+    await this.verifyArchiveCache(remaining);
+    const entries: AptRetainedEntry[] = [];
+    for (const [path, identity] of [...this.entries].reverse()) {
+      if (remaining() <= 0) throw new AptPayloadRecovery("The artifact durability deadline expired");
+      await this.unchanged(path);
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (identity.directory ? constants.O_DIRECTORY : 0));
+      try {
+        const info = await file.stat({ bigint: true });
+        if (info.dev !== identity.dev || info.ino !== identity.ino || info.uid !== BigInt(process.getuid!()) || (identity.directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1n)) throw new AptPayloadRecovery("Artifact identity changed before recovery publication");
+        try { if (identity.directory) await syncDirectory(path); else await file.sync(); }
+        catch { throw new AptPayloadRecovery("Private artifact durability could not be confirmed"); }
+        entries.push({ path: relative(this.root, path) || ".", dev: String(info.dev), ino: String(info.ino), directory: identity.directory, uid: Number(info.uid), mode: Number(info.mode & 0o7777n), auxiliary: this.cacheNodes.get(path)?.auxiliary === true, ...(!identity.directory ? { size: identity.size!, sha256: identity.sha256! } : {}) });
+      } finally { await file.close(); }
+    }
+    await this.verifyArchiveCache(remaining);
+    return { root: basename(this.root), entries: entries.sort((left, right) => left.path.localeCompare(right.path)) };
+  }
   async finishArchiveCache(remaining: () => number, terminalInstall: boolean): Promise<void> {
     await this.unchanged(this.root);
     if (((await lstat(this.root, { bigint: true })).mode & 0o7777n) !== 0o700n) throw new AptPayloadRecovery("Private archive stage mode changed");
@@ -217,14 +248,51 @@ export class AptPayloadStage {
     } catch { return false; }
   }
   async acquire(host: SetupHost, profile: AptInstallProfile, missing: readonly string[], options: readonly string[], remaining: () => number, authorize: () => Promise<void>): Promise<void> {
-    const run = (args: readonly string[], context?: HostCommandContext) => remaining() > 0 ? host.run(args, remaining(), context) : Promise.resolve<HostCommandResult>({ status: "timeout", stdout: "", stderr: "" });
-    for (const name of missing as readonly AptPackageName[]) {
-      const artifact = profile.artifacts[name];
+    const run = async (args: readonly string[], context?: HostCommandContext): Promise<HostCommandResult> => {
+      if (remaining() <= 0) return { status: "timeout", stdout: "", stderr: "" };
+      try { return await host.run(args, remaining(), context); }
+      catch { throw new AptPayloadRecovery("The artifact invocation completion could not be observed"); }
+    };
+    for (const name of missing) {
+      const artifact = aptPackageArtifacts(profile)[name];
+      if (!artifact) throw new AptPayloadUnavailable("The package is outside its declared artifact closure");
       await this.unchanged(this.root);
       const directory = join(this.root, name);
       await mkdir(directory, { mode: 0o700 });
       await this.bind(directory, true);
-      const target = `${name}=${profile.packages[name]}`;
+      if (Object.hasOwn(profile.distroDependencies?.artifacts ?? {}, name)) {
+        const path = join(directory, basename(new URL(artifact.url).pathname));
+        await authorize();
+        await this.unchanged(directory);
+        let output: Awaited<ReturnType<typeof open>> | undefined;
+        let acquisitionError: unknown;
+        try {
+          output = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+          await this.bind(path, false);
+          const created = await output.stat({ bigint: true }); const claimed = this.entries.get(path)!;
+          if (!created.isFile() || created.uid !== BigInt(process.getuid!()) || created.nlink !== 1n || (created.mode & 0o7777n) !== 0o600n || created.size !== 0n || created.dev !== claimed.dev || created.ino !== claimed.ino) throw new AptPayloadRecovery("The exclusive dependency output claim changed");
+          const downloaded = await run(["curl", "--disable", "--fail", "--proto", "=https", "--tlsv1.2", "--max-redirs", "0", "--max-filesize", String(artifact.size), "--output", "-", artifact.url], { cwd: directory, cleanEnvironment: true, artifactOutput: { descriptor: output.fd, maxBytes: artifact.size } });
+          if (downloaded.status !== "completed" && downloaded.status !== "missing" || downloaded.terminationUnconfirmed) throw new AptPayloadRecovery("Dependency acquisition has no confirmed terminal result");
+          await this.unchanged(directory); await this.unchanged(path);
+          const entries = await readdir(directory);
+          if (entries.length !== 1 || entries[0] !== basename(path)) throw new AptPayloadRecovery("Dependency acquisition produced unknown private entries");
+          if (downloaded.status === "missing") {
+            this.entries.set(path, { ...claimed, size: 0, sha256: Bun.CryptoHasher.hash("sha256", new Uint8Array(), "hex") });
+            throw new AptPayloadUnavailable("The existing curl tool is required to acquire declared Debian dependencies; no tool was installed");
+          }
+          if (downloaded.exitCode !== 0) throw new AptPayloadUnavailable("The declared Debian dependency download did not complete");
+          await output.sync();
+        } catch (error) {
+          acquisitionError = error instanceof AptPayloadRecovery || error instanceof AptPayloadUnavailable ? error : new AptPayloadRecovery("The exclusive dependency output is unavailable or changed");
+        }
+        if (output) { try { await output.close(); } catch { acquisitionError = new AptPayloadRecovery("The dependency output descriptor could not be retired"); } }
+        if (acquisitionError) throw acquisitionError;
+        await this.verify(path, profile, name, remaining);
+        await this.verifyControl(host, path, artifact, remaining);
+        this.paths.push(path);
+        continue;
+      }
+      const target = `${name}=${artifact.version}`;
       const resolved = await run(["apt-get", ...options, "--print-uris", "download", target], { cwd: directory });
       if (resolved.status === "timeout" || resolved.terminationUnconfirmed) throw new AptPayloadRecovery("The artifact URI resolution has no confirmed terminal result");
       // APT 2.8 encodes +, ~ and percent in the repository path before printing its URI.
@@ -242,15 +310,23 @@ export class AptPayloadStage {
       await this.bind(path, false);
       if (downloaded.status !== "completed" || downloaded.exitCode !== 0 || downloaded.terminationUnconfirmed) throw new AptPayloadRecovery("The artifact acquisition has no confirmed terminal result");
       await this.verify(path, profile, name, remaining);
-      const metadata = await run(["dpkg-deb", "--field", path, "Package", "Version", "Architecture"]);
-      const fields = Object.fromEntries(metadata.stdout.trim().split("\n").map((line) => { const separator = line.indexOf(": "); return [line.slice(0, separator), line.slice(separator + 2)]; }));
-      if (metadata.status !== "completed" || metadata.exitCode !== 0 || metadata.stdout.trim().split("\n").length !== 3 || Object.keys(fields).length !== 3 || fields.Package !== name || fields.Version !== artifact.version || fields.Architecture !== artifact.architecture) throw new AptPayloadUnavailable("The verified archive control identity does not match its frozen package tuple");
+      await this.verifyControl(host, path, artifact, remaining);
       this.paths.push(path);
     }
   }
-  async verify(path: string, profile: AptInstallProfile, name: AptPackageName, remaining: () => number): Promise<void> {
+  private async verifyControl(host: SetupHost, path: string, artifact: ReturnType<typeof aptPackageArtifacts>[string], remaining: () => number): Promise<void> {
+    if (remaining() <= 0) throw new AptPayloadUnavailable("The artifact control deadline expired");
+    let metadata: HostCommandResult;
+    try { metadata = await host.run(["dpkg-deb", "--field", path, "Package", "Version", "Architecture"], remaining()); }
+    catch { throw new AptPayloadRecovery("The artifact control reader completion could not be observed"); }
+    if (metadata.status === "timeout" || metadata.terminationUnconfirmed) throw new AptPayloadRecovery("The artifact control reader has no confirmed terminal result");
+    const fields = Object.fromEntries(metadata.stdout.trim().split("\n").map((line) => { const separator = line.indexOf(": "); return [line.slice(0, separator), line.slice(separator + 2)]; }));
+    if (metadata.status !== "completed" || metadata.exitCode !== 0 || metadata.terminationUnconfirmed || metadata.stdout.trim().split("\n").length !== 3 || Object.keys(fields).length !== 3 || fields.Package !== artifact.name || fields.Version !== artifact.version || fields.Architecture !== artifact.architecture) throw new AptPayloadUnavailable("The verified archive control identity does not match its frozen package tuple");
+  }
+  async verify(path: string, profile: AptInstallProfile, name: string, remaining: () => number): Promise<void> {
     await this.unchanged(dirname(path)); await this.unchanged(path);
-    const artifact = profile.artifacts[name];
+    const artifact = aptPackageArtifacts(profile)[name];
+    if (!artifact) throw new AptPayloadUnavailable("The package is outside its declared artifact closure");
     const digest = await this.digest(path, artifact.size, remaining);
     const identity = this.entries.get(path)!;
     if (identity.sha256 !== undefined && identity.sha256 !== digest) throw new AptPayloadRecovery("A verified private archive was modified");

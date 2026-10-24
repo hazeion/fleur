@@ -151,3 +151,34 @@ test("malformed cloud-init output retains byte counts and exit evidence without 
     expect(observed.result.nonceMatched).not.toBe(true);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 15000);
+
+for (const newline of ["\r\n", "\n"]) {
+  test(`an exact empty owned-loopback close remains pending and cannot establish readiness ${JSON.stringify(newline)}`, async () => {
+    const { root, observe } = await fixture();
+    try {
+      await writeFile(join(root, "ssh-exit"), "255");
+      await writeFile(join(root, "ssh-stderr"), "Connection closed by 127.0.0.1 port 2222" + newline);
+      expect(await observe()).toMatchObject({ exit: 3, stderr: "", result: { ok: false, state: "pending", transport: { exitCode: 255, signal: null, deadlineFired: false, cleanupConfirmed: true } } });
+      expect(await Bun.file(join(root, "cloud-init-calls")).exists()).toBe(false);
+      await writeFile(join(root, "ssh-exit"), "0"); await writeFile(join(root, "finished"), "finished");
+      expect(await observe()).toMatchObject({ exit: 0, result: { ok: true, state: "ready", cloudInitComplete: true, nonceMatched: true } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+for (const scenario of ["other-port", "other-address", "host-key", "auth", "extra-diagnostic", "stdout", "other-exit"] as const) {
+  test(`a closed-loopback message cannot hide another transport failure: ${scenario}`, async () => {
+    const { root, observe } = await fixture();
+    try {
+      let error = "Connection closed by 127.0.0.1 port 2222\r\n";
+      if (scenario === "other-port") error = error.replace("2222", "2223");
+      if (scenario === "other-address") error = error.replace("127.0.0.1", "127.0.0.2");
+      if (scenario === "host-key") error = "Host key verification failed.\n" + error;
+      if (scenario === "auth") error += "fleur@127.0.0.1: Permission denied (publickey).\n";
+      if (scenario === "extra-diagnostic") error += "unknown failure\n";
+      if (scenario === "stdout") await writeFile(join(root, "ssh-stdout"), "partial guest data\n");
+      await writeFile(join(root, "ssh-exit"), scenario === "other-exit" ? "1" : "255"); await writeFile(join(root, "ssh-stderr"), error);
+      expect(await observe()).toMatchObject({ exit: 4, result: { state: "failed", ok: false, error: { code: "SSH_FAILED" } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}

@@ -8,10 +8,16 @@ import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
 import { observePreparation } from "./observe-fresh-linux-preparation.ts";
 import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
 import { observeOwnedGuestCustody } from "./observe-owned-guest-custody.ts";
-import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding } from "./owned-guest-seed.ts";
+import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding, copyOwnedGuestOsRelease } from "./owned-guest-seed.ts";
 
 // Internal verification only. Catalog admission requires separately reviewed source.
-const imagePin = { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 };
+const fixtures = {
+  "ubuntu24-amd64": { id: "ubuntu24-amd64", os: { id: "ubuntu", versionId: "24.04" }, virtualSize: 3758096384, catalogId: "ubuntu-24.04-amd64-docker-2026-10-19", catalogSha256: "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58", image: { sha256: "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94", size: 621284352 } },
+  "ubuntu26-amd64": { id: "ubuntu26-amd64", os: { id: "ubuntu", versionId: "26.04" }, virtualSize: 3758096384, catalogId: "ubuntu-26.04-amd64-docker-2026-10-19", catalogSha256: "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a", image: { sha256: "5645d0318ad21f643ebb1ac4567514620e9893380b07b0201fda163baa5b7eb5", size: 859090944 } },
+  "debian13-amd64": { id: "debian13-amd64", os: { id: "debian", versionId: "13" }, virtualSize: 3221225472, catalogId: "debian-13-amd64-docker-2026-10-19", catalogSha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d", image: { sha256: "87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02", size: 342818816 } },
+} as const;
+let selectedFixture: typeof fixtures[keyof typeof fixtures] = fixtures["ubuntu24-amd64"];
+let imagePin: { readonly sha256: string; readonly size: number } = selectedFixture.image;
 const bunPin = { sha256: "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18", entry: "bun-linux-x64/bun", maxBytes: 160 * 1024 * 1024 };
 const repository = resolve(import.meta.dir, "..");
 const report: Record<string, unknown> = { formatVersion: 1, ok: false, scope: "fresh-full-system-guest", runtimeSupport: "unverified", installationEvidence: "pending", executed: false, humanConsentProof: false, nativeCpuPerformanceProof: false };
@@ -51,7 +57,7 @@ async function command(args: string[], timeout = 30000, allowed: number[] = [0])
     return { stdout, stderr, exitCode };
   } finally { if (child.exitCode === null) { child.kill("SIGKILL"); await child.exited; } }
 }
-async function authenticate(path: string, pin: { sha256: string; size?: number; maxBytes?: number }, destination?: string): Promise<string> {
+export async function authenticate(path: string, pin: { sha256: string; size?: number; maxBytes?: number }, destination?: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = await file.stat();
@@ -184,7 +190,7 @@ export async function selectVerificationArtifact(directory: string, built: { can
   }
 }
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") return fail("TRANSPORT_FAILED", "Loopback port allocation failed.");
@@ -278,17 +284,17 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const base = join(scratch, "base.qcow2"); const runtime = join(scratch, "bun.zip");
   await authenticate(imagePath, imagePin, base); await authenticate(bunArchivePath, bunPin, runtime);
   const info = JSON.parse((await command(["qemu-img", "info", "--output=json", "-f", "qcow2", base])).stdout);
-  if (info.format !== "qcow2" || info["virtual-size"] !== 3758096384 || info["backing-filename"] || info["full-backing-filename"] || info["data-file"] || info.encrypted === true || info.snapshots?.length) fail("ARTIFACT_MISMATCH", "Unexpected cloud image backing chain, external data, encryption or snapshots.");
+  if (info.format !== "qcow2" || info["virtual-size"] !== selectedFixture.virtualSize || info["backing-filename"] || info["full-backing-filename"] || info["data-file"] || info.encrypted === true || info.snapshots?.length) fail("ARTIFACT_MISMATCH", "Unexpected cloud image backing chain, external data, encryption or snapshots.");
   report.image = { ...imagePin, format: info.format, virtualSize: info["virtual-size"], validation: JSON.parse((await command(["qemu-img", "check", "--output=json", "-f", "qcow2", base], 60000)).stdout) };
   const overlay = join(scratch, "overlay.qcow2");
   await command(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", base, overlay, "12G"]);
   const overlayInfo = JSON.parse((await command(["qemu-img", "info", "--output=json", "-f", "qcow2", overlay])).stdout);
   if (overlayInfo["full-backing-filename"] !== base || overlayInfo["backing-filename-format"] !== "qcow2") fail("ARTIFACT_MISMATCH", "Overlay backing identity differs.");
   const candidate = join(scratch, "candidate");
-  const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate], 120000)).stdout);
-  if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified") fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
+  const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate, "--fixture", selectedFixture.id], 120000)).stdout);
+  if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified" || built.catalogId !== selectedFixture.catalogId || built.catalogSha256 !== selectedFixture.catalogSha256) fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py", "experiments/compatibility/runtime-probe/helper_artifacts.py", "experiments/compatibility/runtime-probe/recorded-helper-origin.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/build-native-candidate.ts", "scripts/native-candidate-ubuntu24-amd64.json", "scripts/native-candidate-ubuntu26-amd64.json", "scripts/native-candidate-debian13-amd64.json", "scripts/verify-fresh-linux.ts", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py", "experiments/compatibility/runtime-probe/helper_artifacts.py", "experiments/compatibility/runtime-probe/recorded-helper-origin.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const selectedArtifact = await selectVerificationArtifact(candidate, built, selection, scratch);
   const archive = selectedArtifact.path;
   report.executionArtifact = { kind: selectedArtifact.kind, sha256: selectedArtifact.sha256,
@@ -306,7 +312,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
     users: [{ name: "fleur", groups: ["sudo"], sudo: "ALL=(ALL) NOPASSWD:ALL", shell: "/bin/bash", lock_passwd: true, ssh_authorized_keys: [(await readFile(clientKey + ".pub", "utf8")).trim()] }],
     ssh_pwauth: false, disable_root: true,
     ssh_keys: { ed25519_private: await readFile(hostKey, "utf8"), ed25519_public: (await readFile(hostKey + ".pub", "utf8")).trim() },
-    ...await ownedGuestSeed(nonce),
+    ...await ownedGuestSeed(nonce, selectedFixture.id),
     package_update: false, package_upgrade: false,
   });
   await writeFile(userdata, userdataText, { flag: "wx", mode: 0o600 });
@@ -344,6 +350,8 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
     } });
   report.ownedGuestCustody = custody;
   const ownedGuestBinding = copyOwnedGuestBinding({ nonce: custody.nonce, bootId: custody.bootId, uid: custody.uid, manifestSha256: custody.manifestSha256 }, nonce);
+  const ownedGuestOsRelease = copyOwnedGuestOsRelease(custody.osRelease);
+  if (ownedGuestOsRelease.id !== selectedFixture.os.id || ownedGuestOsRelease.versionId !== selectedFixture.os.versionId) fail("OWNED_GUEST_CUSTODY_UNVERIFIED", "Original protected OS differs from the selected fixed image fixture.");
   await ssh("mkdir -m 700 lab");
   const restrictionArchive = join(scratch, "runtime-probe.tar");
   const sourceCommit = (await command(["git", "-C", repository, "rev-parse", "HEAD"])).stdout.trim();
@@ -378,7 +386,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   process.once("SIGINT", cancelSession); process.once("SIGTERM", cancelSession);
   let sessions;
   try {
-    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding, ...(recordedBundle ? { recordedHelpers: true as const } : {}) }, sessionAbort.signal);
+    sessionOperation = observeGuestSessions({ port, identity: clientKey, knownHosts, nonce, ownedGuestBinding, ownedGuestOsRelease, ...(recordedBundle ? { recordedHelpers: true as const } : {}) }, sessionAbort.signal);
     sessions = await sessionOperation;
   } finally { process.removeListener("SIGINT", cancelSession); process.removeListener("SIGTERM", cancelSession); }
   report.sessions = sessions;
@@ -396,9 +404,19 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
 if (import.meta.main) {
 try {
   const args = process.argv.slice(2);
+  const fixtureIndex = args.indexOf("--fixture");
+  if (fixtureIndex !== -1) {
+    const choice = args[fixtureIndex + 1];
+    if (fixtureIndex !== args.length - 2 || !choice || !Object.hasOwn(fixtures, choice)) fail("ARGUMENT_INVALID", "The final --fixture option requires a fixed ubuntu24-amd64, ubuntu26-amd64 or debian13-amd64 target.");
+    selectedFixture = fixtures[choice as keyof typeof fixtures];
+    imagePin = selectedFixture.image;
+    args.splice(fixtureIndex, 2);
+  }
+  report.fixture = selectedFixture;
   if (args.length === 1 && args[0] === "--observe") { report.capabilities = capabilities(); fail("INFRASTRUCTURE_UNAVAILABLE", "Observation does not establish fresh guest execution or native readiness."); }
   if (process.env.FLEUR_OWNED_DISPOSABLE_HOST !== "yes") fail("OWNED_HOST_REQUIRED", "Explicit owned disposable host opt-in is required.");
-  if ((args.length !== 7 && args.length !== 9) || (args.length === 9 && args[7] !== "--compiler-debs" && args[7] !== "--recorded-helper-artifacts") || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate <source-owned|ordinary-source-owned> --bun-archive <exact-Bun-zip> [--compiler-debs <exact-payload-directory> | --recorded-helper-artifacts <fixed-pair-directory>].");
+  if ((args.length !== 7 && args.length !== 9) || (args.length === 9 && args[7] !== "--compiler-debs" && args[7] !== "--recorded-helper-artifacts") || args[0] !== "--run" || args[1] !== "--image" || args[3] !== "--candidate" || args[5] !== "--bun-archive") fail("ARGUMENT_INVALID", "Use --run --image <exact-image> --candidate <source-owned|ordinary-source-owned> --bun-archive <exact-Bun-zip> [--compiler-debs <exact-payload-directory> | --recorded-helper-artifacts <fixed-pair-directory>] [--fixture <ubuntu24-amd64|ubuntu26-amd64|debian13-amd64>].");
+  if (selectedFixture.id !== "ubuntu24-amd64" && args[7] !== "--recorded-helper-artifacts") fail("ARGUMENT_INVALID", "This target requires the recorded helper pair; the Ubuntu24 compiler closure is not admitted there.");
   accelerator();
   // A candidate archive supplied by a caller is never executed. Build from this source.
   if (args[4] !== "source-owned" && args[4] !== "ordinary-source-owned") {

@@ -34,7 +34,7 @@ The package includes this document, project creation guidance and prerequisite s
 | `MAINTENANCE_BUSY` | 5 | Wait for the current setup operation to finish. |
 | `RECOVERY_REQUIRED` | 5 | Inspect reported incomplete restoration or unsafe state before retrying. |
 
-Doctor and setup may return documented partial diagnostic data on failure, including component states, resumable plans and completed setup actions. A nonzero readiness result never claims a verified native release profile. Per-user grant inspection and revocation do not install or remove software.
+Doctor and setup may return documented partial diagnostic data on failure, including component states, resumable plans and completed setup actions. A nonzero readiness result never claims a verified native release profile. Per-user grant inspection and revocation do not install or remove software. Interrupted APT setup may propose a separately scoped once-only `recovery-inspect` action for a read-only privileged inspection of retained cache directories. JSON setup reports the plan without creating authority. See [setup recovery](setup.md) for its evidence, consent and preservation requirements.
 
 ## Bun compatibility
 

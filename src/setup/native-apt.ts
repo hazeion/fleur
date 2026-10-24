@@ -1,4 +1,6 @@
 import { setupLinuxAccess } from "./linux-access.ts";
+import { aptPackageArtifacts, aptPackageVersions, aptPlanTarget, canonicalAptPackageName, type AptDistroDependencies } from "./apt-dependencies.ts";
+import { freshNftablesState } from "./apt-dependency-state.ts";
 import { aptServicePolicy } from "./apt-service.ts";
 import { setupAptService } from "./apt-service.ts";
 import { aptHealthArgs, healthyDpkgSnapshot } from "./apt-health.ts";
@@ -13,16 +15,17 @@ import { failure, type CliOutcome } from "../cli/result.ts";
 import type { HostIdentity, SetupHost, HostCommandContext } from "./commands.ts";
 import { readGrants, stateDirectory, writeGrants, type Grant } from "./grants.ts";
 import { SetupBusy, withSetupLock, syncStateDirectory } from "./lock.ts";
-import { inspectAptPackageState, validAptProfile, type AptInstallProfile, type AptPackageName } from "./native.ts";
+import { inspectAptPackageState, validAptProfile, type AptInstallProfile } from "./native.ts";
 
 /** Reject every unrecognized simulation operation; prose is a small fail-closed grammar. */
-function exactSimulation(stdout: string, packages: Readonly<Record<string, string>>): boolean {
+function exactSimulation(stdout: string, packages: Readonly<Record<string, string>>, dependencies?: AptDistroDependencies): boolean {
   const installed = new Set<string>();
   const configured = new Set<string>();
   for (const line of stdout.split("\n").filter((value) => value.trim())) {
-    const operation = /^(Inst|Conf) ([a-z0-9.-]+) \(([^ ]+) [^\r\n]*\)$/.exec(line);
+    const operation = /^(Inst|Conf) ([a-z0-9.:-]+) \(([^ ]+) [^\r\n]*\)$/.exec(line);
     if (operation) {
-      const [, action, name, version] = operation;
+      const [, action, binary, version] = operation;
+      const name = canonicalAptPackageName(dependencies, binary!);
       if (!name || !Object.hasOwn(packages, name) || packages[name] !== version) return false;
       const seen = action === "Inst" ? installed : configured;
       if (seen.has(name)) return false;
@@ -32,27 +35,30 @@ function exactSimulation(stdout: string, packages: Readonly<Record<string, strin
     if (/^(?:Reading package lists|Building dependency tree|Reading state information)\.\.\.$/.test(line)) continue;
     if (/^The following (?:NEW packages will be installed|additional packages will be installed):$/.test(line)) continue;
     if (/^0 upgraded, [0-9]+ newly installed, 0 to remove and [0-9]+ not upgraded\.$/.test(line)) continue;
-    if (/^  [a-z0-9. -]+$/.test(line) && line.trim().split(/\s+/).every((name) => Object.hasOwn(packages, name))) continue;
+    if (/^  [a-z0-9.: -]+$/.test(line) && line.trim().split(/\s+/).every((binary) => { const name = canonicalAptPackageName(dependencies, binary); return name !== null && Object.hasOwn(packages, name); })) continue;
     return false;
   }
   return installed.size === Object.keys(packages).length;
 }
 
-export async function setupNativeApt(input: CommandInput, host: SetupHost, identity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
+export async function setupNativeApt(input: CommandInput, host: SetupHost, observedIdentity: HostIdentity, profile: AptInstallProfile, remaining: () => number, existingCli = false, endpoint?: string, daemonReady = false, daemonDenied = false): Promise<CliOutcome> {
+  const identity = Object.freeze({ ...observedIdentity });
   if (!validAptProfile(profile)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The compiled native installation profile is not verified.", actions: [] });
   if (!identity.machineId || !/^[a-f0-9]{64}$/.test(identity.machineId)) return failure("setup", 3, {
     code: "HUMAN_ACTION_REQUIRED",
     message: "Setup cannot bind human grants to a stable machine identity. No installation plan was authorized.",
     actions: [{ command: "fleur doctor", description: "Inspect host identity and complete the documented official setup manually if identity cannot be verified." }],
   }, { plan: { method: profile.method, verified: false, reason: "Stable machine identity is unavailable." }, grantsCreated: false, resumable: true });
+  if (!identity.bootId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(identity.bootId)) return failure("setup", 3, { code: "HUMAN_ACTION_REQUIRED", message: "Setup cannot verify the original kernel boot identity. No native package action was authorized.", actions: [{ command: "fleur doctor", description: "Inspect native prerequisites; restore kernel boot identity access before assisted installation." }] }, { grantsCreated: false, resumable: true });
   const requiredAuthorities = ["install", "configuration", "docker-access", "service-start", "service-enable"] as const;
   const checksum = Bun.CryptoHasher.hash("sha256", JSON.stringify(profile), "hex");
-  const target = `Docker ${profile.distribution} ${profile.release} ${profile.architecture} profile ${checksum}`;
+  const target = aptPlanTarget(profile, checksum);
   try {
     return await withSetupLock(stateDirectory(host), async () => {
       const actual = await inspectAptPackageState(profile, host, remaining);
       const diagnostic = { packageState: { state: actual.state, present: [...actual.present], missing: [...actual.missing] } };
       if (actual.state !== "compatible") return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Existing or indeterminate packages were preserved; native setup will not upgrade or repair them automatically.", actions: [] }, diagnostic);
+      if (await freshNftablesState(profile, actual.missing, host, remaining) !== "clear") return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Existing or uncertain nftables configuration, service or helper state was preserved; native setup will not apply or replace firewall configuration.", actions: [] }, diagnostic);
       if (existingCli && !actual.present.includes("docker-ce-cli")) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The existing Docker CLI is not accounted for by the exact configured package profile. It was preserved; native setup will not replace an unknown tool.", actions: [] }, { packageState: { state: "conflict", present: [...actual.present], missing: [...actual.missing] } });
       const pendingPath = join(stateDirectory(host), "apt-transaction-pending.json");
       try { await lstat(pendingPath); return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "An earlier privileged APT transaction has no confirmed terminal result; its private artifacts were preserved.", actions: [] }, { ...diagnostic, resumable: true }); }
@@ -75,19 +81,28 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         }
         if (!grant) return failure("setup", 3, { code: "AUTHORITY_REQUIRED", message: "Package installation can configure AppArmor, create the Docker access group, and start or enable services. Each side effect requires its own matching human grant before installation.", actions: [{ command: "fleur setup", description: "Inspect the separately scoped native installation permissions." }] }, { ...diagnostic, plan: { verified: true, requiredAuthorities, checksum, target }, resumable: true });
       }
-      const run = (args: readonly string[], context?: HostCommandContext) => remaining() > 0 ? host.run(args, remaining(), context) : Promise.resolve({ status: "timeout" as const, stdout: "", stderr: "" });
+      if (await freshNftablesState(profile, actual.missing, host, remaining) !== "clear") return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The nftables environment changed after consent. Existing state was preserved; inspect it before reproposing installation.", actions: [] }, { resumable: true });
+      const run = async (args: readonly string[], context?: HostCommandContext) => {
+        if (remaining() <= 0) return { status: "timeout" as const, stdout: "", stderr: "" };
+        try { return await host.run(args, remaining(), context); }
+        catch { throw new AptPayloadRecovery("The package invocation completion could not be observed"); }
+      };
       const suite = profile.distribution === "debian" ? "trixie" : profile.release === "24.04" ? "noble" : "resolute";
       const architecture = profile.architecture === "x64" ? "amd64" : "arm64";
       const expectedSource = `Types: deb\nURIs: https://download.docker.com/linux/${profile.distribution}\nSuites: ${suite}\nComponents: stable\nArchitectures: ${architecture}\nSigned-By: /etc/apt/keyrings/docker.asc`;
       const repository = await ensureAptRepository(input, host, identity, profile, target, checksum, expectedSource, remaining);
       if (repository) return repository;
       const sourceOptions = ["-o", "RootDir=/", "-o", "Dir::State::status=/var/lib/dpkg/status", "-o", "Debug::NoLocking=false", "-o", "APT::Get::AllowUnauthenticated=false", "-o", "Acquire::AllowInsecureRepositories=false", "-o", "DPkg::Options::=--root=/", "-o", "DPkg::Options::=--admindir=/var/lib/dpkg", "-o", "Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources", "-o", "Dir::Etc::sourceparts=-"];
-      const missingPackages = Object.fromEntries(Object.entries(profile.packages).filter(([name]) => actual.missing.includes(name)));
+      const packageVersions = aptPackageVersions(profile);
+      const packageArtifacts = aptPackageArtifacts(profile);
+      const missingPackages = Object.fromEntries(Object.entries(packageVersions).filter(([name]) => actual.missing.includes(name)));
       const packages = Object.entries(missingPackages).map(([name, version]) => `${name}=${version}`);
       const dependencyPolicy = ["--no-install-recommends", "--no-install-suggests"];
       const simulationOutput = ["--quiet=2", "-o", "APT::Get::Show-User-Simulation-Note=false"];
-      const simulated = await run(["apt-get", ...sourceOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-remove", "--no-upgrade", "install", ...packages]);
-      if (simulated.status !== "completed" || simulated.exitCode !== 0 || !exactSimulation(simulated.stdout, missingPackages)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The package plan requires changes outside the exact verified missing package set; existing software was preserved.", actions: [] });
+      if (!profile.distroDependencies) {
+        const simulated = await run(["apt-get", ...sourceOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-remove", "--no-upgrade", "install", ...packages]);
+        if (simulated.status !== "completed" || simulated.exitCode !== 0 || !exactSimulation(simulated.stdout, missingPackages, profile.distroDependencies)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The package plan requires changes outside the exact verified missing package set; existing software was preserved.", actions: [] });
+      }
       const beforeInstall = await inspectAptPackageState(profile, host, remaining);
       if (beforeInstall.state !== "compatible" || JSON.stringify(beforeInstall) !== JSON.stringify(actual)) return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "Package state changed during planning. Reprobe before resuming; no packages were installed by this action.", actions: [] }, { packageState: { state: beforeInstall.state, present: [...beforeInstall.present], missing: [...beforeInstall.missing] }, resumable: true });
       const fullHealth = await run(aptHealthArgs, { outputLimitBytes: 2097152 });
@@ -117,9 +132,15 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         const localSourceOptions = [...await stage.prepareLocalSources(sourceOptions), ...await stage.prepareArchiveCache(host, profile, Object.keys(missingPackages), remaining)];
         const fresh = await inspectAptPackageState(profile, host, remaining);
         if (JSON.stringify(fresh) !== JSON.stringify(actual)) throw new AptPayloadRecovery("Package state changed after archive verification");
-        for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name as AptPackageName, remaining);
-        const guardPackages = await Promise.all(Object.keys(missingPackages).map(async (name, index) => ({ name, version: profile.packages[name as AptPackageName], architecture: profile.artifacts[name as AptPackageName].architecture, sha256: profile.artifacts[name as AptPackageName].sha256, size: profile.artifacts[name as AptPackageName].size, path: stage.archivePaths[index]!, ...await stage.fileIdentity(stage.archivePaths[index]!) })));
-        const guardBytes = Buffer.from(JSON.stringify({ formatVersion: 1, user: process.getuid!(), packages: guardPackages, present: Object.fromEntries(actual.present.map((name) => [name, profile.packages[name as AptPackageName]])) }));
+        for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name, remaining);
+        if (profile.distroDependencies) {
+          const simulated = await run(["apt-get", ...localSourceOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.archivePaths]);
+          if (simulated.status === "timeout" || simulated.terminationUnconfirmed) throw new AptPayloadRecovery("The unprivileged local-archive simulation has no confirmed terminal result");
+          if (simulated.status !== "completed" || simulated.exitCode !== 0 || simulated.terminationUnconfirmed || !exactSimulation(simulated.stdout, missingPackages, profile.distroDependencies)) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The exact declared local package closure is unavailable or requires undeclared changes; existing software was preserved.", actions: [] });
+          if (await freshNftablesState(profile, actual.missing, host, remaining) !== "clear") return failure("setup", 5, { code: "RECOVERY_REQUIRED", message: "The nftables environment changed during acquisition or planning. Existing state was preserved.", actions: [] }, { resumable: true });
+        }
+        const guardPackages = await Promise.all(Object.keys(missingPackages).map(async (name, index) => ({ name, version: packageVersions[name], architecture: packageArtifacts[name]!.architecture, sha256: packageArtifacts[name]!.sha256, size: packageArtifacts[name]!.size, path: stage.archivePaths[index]!, ...await stage.fileIdentity(stage.archivePaths[index]!) })));
+        const guardBytes = Buffer.from(JSON.stringify({ formatVersion: 1, user: process.getuid!(), packages: guardPackages, present: Object.fromEntries(actual.present.map((name) => [name, packageVersions[name]])), ...(profile.distroDependencies ? { distroDependencies: profile.distroDependencies } : {}) }));
         const planPath = await stage.writeOwned("apt-plan.json", guardBytes);
         const guardChecksum = Bun.CryptoHasher.hash("sha256", guardBytes, "hex");
         if (!/^[A-Za-z0-9_./@+%~-]+$/.test(process.execPath)) throw new AptPayloadUnavailable("The Bun executable path cannot be safely framed for the standard APT tool protocol");
@@ -135,16 +156,17 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         const once = new Set(covered.filter((grant) => grant?.mode === "once").map((grant) => grant!.id));
         const privilegedLeases = covered.map((grant) => once.has(grant!.id) ? { ...grant!, revoked: true } : grant!);
         await writeGrants(host, grants.map((grant) => once.has(grant.id) ? { ...grant, revoked: true } : grant));
+        const recovery = { formatVersion: 2, operationId: crypto.randomUUID(), action: "install", method: profile.method, machine: identity.machineId, user: process.getuid!(), bootId: identity.bootId, checksum, target, authority: [acquisitionLease!, ...privilegedLeases], artifacts: await stage.recoveryManifest(remaining, host.syncDirectory) };
         const fence = await open(pendingPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
         retain = true;
-        try { await fence.writeFile(JSON.stringify({ formatVersion: 1, checksum })); await fence.sync(); } finally { await fence.close(); }
+        try { await fence.writeFile(JSON.stringify(recovery)); await fence.sync(); } finally { await fence.close(); }
         await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host));
         const clearFence = async (terminalInstall = false) => { await stage.finishArchiveCache(remaining, terminalInstall); await unlink(pendingPath); await (host.syncDirectory ?? syncStateDirectory)(stateDirectory(host)); retain = false; };
         await stage.verifyLocalSources(remaining);
         await stage.verifyArchiveCache(remaining);
         const localPlan = await run(["sudo", "-n", "apt-get", ...localSourceOptions, ...guardOptions, ...dependencyPolicy, ...simulationOutput, "--simulate", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.archivePaths]);
         if (localPlan.status === "timeout" || localPlan.terminationUnconfirmed) throw new AptPayloadRecovery("The privileged local-archive simulation has no confirmed terminal result");
-        if (localPlan.status !== "completed" || localPlan.exitCode !== 0 || !exactSimulation(localPlan.stdout, missingPackages)) {
+        if (localPlan.status !== "completed" || localPlan.exitCode !== 0 || !exactSimulation(localPlan.stdout, missingPackages, profile.distroDependencies)) {
           const state = await inspectAptPackageState(profile, host, remaining);
           if (state.state !== "compatible" || JSON.stringify(state) !== JSON.stringify(actual)) throw new AptPayloadRecovery("Package state changed during privileged simulation");
           await clearFence();
@@ -154,7 +176,8 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, ident
         if (!stillGranted.some(leaseMatches) || privilegedLeases.some((lease) => !stillGranted.some((candidate) => Object.entries(lease).every(([key, value]) => candidate[key as keyof Grant] === value)))) throw new AptPayloadRecovery("Privileged action authority changed after simulation");
         const stable = await inspectAptPackageState(profile, host, remaining);
         if (JSON.stringify(stable) !== JSON.stringify(actual)) throw new AptPayloadRecovery("Package state changed before local archive installation");
-        for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name as AptPackageName, remaining);
+        for (const [index, name] of Object.keys(missingPackages).entries()) await stage.verify(stage.paths[index]!, profile, name, remaining);
+        if (await freshNftablesState(profile, actual.missing, host, remaining) !== "clear") throw new AptPayloadRecovery("The nftables environment changed before privileged installation");
         await stage.verifyLocalSources(remaining);
         await stage.verifyArchiveCache(remaining);
         const installed = await run(["sudo", "-n", "apt-get", ...localSourceOptions, ...guardOptions, ...dependencyPolicy, "--assume-yes", "--no-download", "--no-remove", "--no-upgrade", "install", ...stage.archivePaths]);

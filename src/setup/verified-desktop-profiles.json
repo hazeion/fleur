@@ -1,0 +1,45 @@
+{
+  "formatVersion": 1,
+  "entries": [
+    {
+      "evidence": {
+        "scope": "native-desktop-placement-method",
+        "runtimeReadinessAdmission": false,
+        "sourceCommit": "86849ab70392b3c2585e987ab54ea058005754b0",
+        "planSha256": "2eda0892476dda05aff5e81c8d01fca97901b235c80046a5c0cfddd476b6478a",
+        "artifactReportSha256": "bb8241fe2d942bebcd26254237146b7947be2c58a58f4ab4bdddc5e274802741",
+        "placementReportSha256s": [
+          "df1f8f9403cb9d93abd5bee2a84804af9101ecef1635f4b1b8a1e6149de57be0",
+          "9d93ece1bd181d4a20f4d88e764f223beefffd124f1c9513e51359e440df4363"
+        ],
+        "host": {
+          "system": "darwin",
+          "release": "15.7.7",
+          "architecture": "x64"
+        },
+        "artifact": {
+          "version": "4.96.1",
+          "build": "244132",
+          "architecture": "x64",
+          "url": "https://desktop.docker.com/mac/main/amd64/244132/Docker.dmg",
+          "sha256": "3d35634cf3dd0373d37d986de10eb744950d3822124615e774335f7be2a1d27a",
+          "bytes": 659125733,
+          "teamId": "9BNSXJN65R"
+        }
+      },
+      "profile": {
+        "method": "docker-desktop-official-dmg",
+        "artifactAuthentication": "authenticated",
+        "nativeEvidence": "verified",
+        "release": "15.7.7",
+        "architecture": "x64",
+        "version": "4.96.1",
+        "build": "244132",
+        "url": "https://desktop.docker.com/mac/main/amd64/244132/Docker.dmg",
+        "sha256": "3d35634cf3dd0373d37d986de10eb744950d3822124615e774335f7be2a1d27a",
+        "bytes": 659125733,
+        "teamId": "9BNSXJN65R"
+      }
+    }
+  ]
+}

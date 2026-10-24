@@ -135,6 +135,8 @@ test("the actual guest command records signed index bytes without opening APT's 
     ]);
     const state = await Bun.file(join(root, "protocol-state.json")).json();
     expect(state.aptReads).not.toContain("lock");
+    expect(state.aptReads).toContain("archive.ubuntu.com_ubuntu_dists_noble_InRelease");
+    expect(state.aptReads).toContain("archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages");
     expect(state.unexpected).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);

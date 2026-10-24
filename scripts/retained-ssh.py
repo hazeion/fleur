@@ -51,44 +51,67 @@ def exited(child):
 
 
 def inventory(pid):
+    deadline = time.monotonic() + 1
+    def check_budget():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("inventory deadline")
     # No command arguments or ambient loader/configuration variables are read.
-    probe = subprocess.Popen(["/bin/ps", "-axo", "pid=,pgid=,stat="], stdout=subprocess.PIPE,
+    args = (["/bin/ps", "-x", "-g", str(pid), "-o", "pid=,pgid=,stat="]
+            if sys.platform == "darwin" else ["/bin/ps", "-axo", "pid=,pgid=,stat="])
+    check_budget()
+    probe = subprocess.Popen(args, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                              env={"LC_ALL": "C", "LANG": "C", "PATH": "/usr/bin:/bin"})
-    selector = selectors.DefaultSelector()
-    selector.register(probe.stdout, selectors.EVENT_READ)
-    data = bytearray()
-    deadline = time.monotonic() + 1
+    selector = None
     try:
+        check_budget()
+        selector = selectors.DefaultSelector()
+        check_budget()
+        selector.register(probe.stdout, selectors.EVENT_READ)
+        check_budget()
+        data = bytearray()
         while selector.get_map():
-            if time.monotonic() >= deadline:
-                raise RuntimeError("inventory deadline")
+            check_budget()
             for key, _ in selector.select(0.02):
                 part = os.read(key.fileobj.fileno(), 8192)
+                check_budget()
                 if not part:
                     selector.unregister(key.fileobj)
                 else:
                     data.extend(part)
                     if len(data) > 2 * 1024 * 1024:
                         raise RuntimeError("inventory size")
-        while exited(probe) is None:
-            if time.monotonic() >= deadline:
-                raise RuntimeError("inventory deadline")
+        while True:
+            check_budget()
+            observed = exited(probe)
+            check_budget()
+            if observed is not None:
+                break
             time.sleep(0.01)
     finally:
         try:
-            os.kill(probe.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        probe.wait(timeout=1)
-        selector.close()
-        probe.stdout.close()
+            # A successful fresh WNOWAIT proves this parent still owns the
+            # reservation. Lost/uncertain custody authorizes no PID signal/reap.
+            exited(probe)
+            try:
+                os.kill(probe.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            probe.wait(timeout=1)
+        finally:
+            try:
+                if selector is not None:
+                    selector.close()
+            finally:
+                probe.stdout.close()
     if probe.returncode != 0:
         raise RuntimeError("inventory exit")
+    check_budget()
     seen = set()
     found = False
     live = 0
     for line in data.decode("ascii").splitlines():
+        check_budget()
         match = re.fullmatch(r"\s*([0-9]+)\s+([0-9]+)\s+([!-~]{1,32})\s*", line)
         if not match:
             raise RuntimeError("inventory schema")
@@ -108,6 +131,7 @@ def inventory(pid):
             found = True
         elif state[0] not in ("Z", "X"):
             live += 1
+    check_budget()
     if not found:
         raise RuntimeError("leader absent")
     return live

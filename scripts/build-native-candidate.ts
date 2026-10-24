@@ -4,9 +4,17 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type catalogShape from "./native-candidate-ubuntu24-amd64.json";
 import { productionHost } from "../src/setup/host.ts";
+import type { AptDistroDependencies } from "../src/setup/apt-dependencies.ts";
+import { validDistroDependencies } from "../src/setup/apt-dependencies.ts";
 
-const catalogSha256 = "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58";
+const defaultCatalogSha256 = "540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58";
+const candidateCatalogs = {
+  "ubuntu24-amd64": { file: "./native-candidate-ubuntu24-amd64.json", sha256: defaultCatalogSha256 },
+  "ubuntu26-amd64": { file: "./native-candidate-ubuntu26-amd64.json", sha256: "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a" },
+  "debian13-amd64": { file: "./native-candidate-debian13-amd64.json", sha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d" },
+} as const;
 const markerName = "internal-native-candidate.json";
+const catalogName = "internal-native-candidate-catalog.json";
 const disclosure = "INTERNAL NATIVE CANDIDATE: artifact-authenticated catalog; installation evidence pending; runtime support unverified.\n";
 const repository = resolve(import.meta.dir, "..");
 const hash = (bytes: Uint8Array) => Bun.CryptoHasher.hash("sha256", bytes, "hex");
@@ -118,10 +126,18 @@ async function publish(scratch: string, output: Awaited<ReturnType<typeof output
     await output.verify();
   } finally { try { await sourceDirectory?.close(); } finally { library.close(); } }
 }
-async function build(output: string) {
-  const catalogBytes = await readFile(new URL("./native-candidate-ubuntu24-amd64.json", import.meta.url));
+async function build(output: string, fixture: keyof typeof candidateCatalogs = "ubuntu24-amd64") {
+  const { sha256: catalogSha256, file } = candidateCatalogs[fixture];
+  const catalogBytes = await readFile(new URL(file, import.meta.url));
   if (hash(catalogBytes) !== catalogSha256) throw new Error("The source-owned candidate catalog changed; review and pin it explicitly.");
-  const catalog = JSON.parse(catalogBytes.toString("utf8")) as typeof catalogShape;
+  const catalog = JSON.parse(catalogBytes.toString("utf8")) as Omit<typeof catalogShape, "profile"> & { profile: typeof catalogShape.profile & { distroDependencies?: AptDistroDependencies } };
+  if (!validDistroDependencies(catalog.profile)) throw new Error("The fixed candidate dependency closure is invalid.");
+  const declared = { ...catalog.profile.packages, ...Object.fromEntries(Object.entries(catalog.profile.distroDependencies?.artifacts ?? {}).map(([name, artifact]) => [name, artifact.version])) };
+  if (catalog.artifacts.length !== Object.keys(declared).length || new Set(catalog.artifacts.map(({ name }) => name)).size !== catalog.artifacts.length
+      || catalog.artifacts.some(({ name, version, url, sha256, size }) => {
+        const dependency = catalog.profile.distroDependencies?.artifacts[name as keyof AptDistroDependencies["artifacts"]];
+        return declared[name as keyof typeof declared] !== version || dependency && (dependency.version !== version || dependency.url !== url || dependency.sha256 !== sha256 || dependency.size !== size);
+      })) throw new Error("The fixed candidate artifacts differ from its package closure.");
   output = join(await realpath(dirname(output)), basename(output));
   const fromSource = relative(await realpath(repository), output);
   if (fromSource === "" || (fromSource !== ".." && !fromSource.startsWith(`..${sep}`) && !isAbsolute(fromSource))) throw new Error("Candidate output must be outside the source repository.");
@@ -139,7 +155,7 @@ async function build(output: string) {
     await run(["/usr/bin/tar", "-xf", ordinaryTar, "-C", scratch], repository);
     const staged = join(scratch, "package");
     const sourceFiles = await files(staged);
-    if (sourceFiles.some(({ path }) => path.startsWith("scripts/") || path === markerName || path === "bin/native-candidate-catalog.ts")) throw new Error("Ordinary release unexpectedly contains internal candidate tooling.");
+    if (sourceFiles.some(({ path }) => path.startsWith("scripts/") || path === markerName || path === catalogName || path === "bin/native-candidate-catalog.ts")) throw new Error("Ordinary release unexpectedly contains internal candidate tooling.");
     const ordinarySha256 = hash(await readFile(ordinary));
     const provenance = { ordinaryArchiveSha256: ordinarySha256, sourceFilesSha256: hash(Buffer.from(JSON.stringify(sourceFiles))), sourceFiles };
     const metadata = {
@@ -148,7 +164,7 @@ async function build(output: string) {
       legacyProfileAdmission: { verified: true, meaning: "internal-catalog-admission-only" },
       provenance, authentication: catalog.authentication, artifacts: catalog.artifacts, limits: catalog.limits,
     };
-    const artifacts = Object.fromEntries(catalog.artifacts.map(({ name, version, url, sha256, size }) => [name, { name, version, architecture: catalog.profile.architecture === "x64" ? "amd64" : "arm64", url, sha256, size }]));
+    const artifacts = Object.fromEntries(catalog.artifacts.filter(({ name }) => Object.hasOwn(catalog.profile.packages, name)).map(({ name, version, url, sha256, size }) => [name, { name, version, architecture: catalog.profile.architecture === "x64" ? "amd64" : "arm64", url, sha256, size }]));
     const profile = { ...catalog.profile, artifacts, internalCandidateCatalogSha256: catalogSha256, installationEvidence: "pending", runtimeSupport: "unverified" };
     const entryPath = join(staged, "bin", "fleur.ts");
     const entry = await readFile(entryPath, "utf8");
@@ -157,14 +173,15 @@ async function build(output: string) {
     const injected = `import { productionHost } from "../src/setup/host.ts";\nimport { observeCandidateCommands } from "./candidate-command-observer.ts";\nimport { candidateProfiles } from "./native-candidate-catalog.ts";\nprocess.stderr.write(${JSON.stringify(disclosure)});\nconst handlers = [...projectCommands, ...setupCommands(observeCandidateCommands(observeCandidateCommands(productionHost(), "apt-local-archive-install")), candidateProfiles, Object.freeze([]))];`;
     await writeFile(entryPath, entry.replace(anchor, injected));
     await writeFile(join(staged, "bin", "candidate-command-observer.ts"), await readFile(join(repository, "scripts", "candidate-command-observer.ts")));
-    await writeFile(join(staged, "bin", "native-candidate-catalog.ts"), `// Internal immutable source-owned catalog; verified means admission only.\nconst profile = ${JSON.stringify(profile, null, 2)} as const;\nObject.freeze(profile.packages);\nfor (const artifact of Object.values(profile.artifacts)) Object.freeze(artifact);\nObject.freeze(profile.artifacts);\nexport const candidateProfiles = Object.freeze([Object.freeze(profile)]);\n`);
+    await writeFile(join(staged, "bin", "native-candidate-catalog.ts"), `// Internal immutable source-owned catalog; verified means admission only.\nconst profile = ${JSON.stringify(profile, null, 2)} as const;\nObject.freeze(profile.packages);\nfor (const artifact of Object.values(profile.artifacts)) Object.freeze(artifact);\nObject.freeze(profile.artifacts);\n${catalog.profile.distroDependencies ? "for (const artifact of Object.values(profile.distroDependencies.artifacts)) Object.freeze(artifact);\nObject.freeze(profile.distroDependencies.artifacts);\nObject.freeze(profile.distroDependencies);\n" : ""}export const candidateProfiles = Object.freeze([Object.freeze(profile)]);\n`);
     const manifest = JSON.parse(await readFile(join(staged, "package.json"), "utf8"));
     manifest.name = "fleur-internal-native-candidate";
     manifest.private = true;
     manifest.fleurInternalNativeCandidate = { catalogId: catalog.catalogId, catalogSha256, installationEvidence: "pending", runtimeSupport: "unverified" };
-    manifest.files = [...manifest.files, markerName];
+    manifest.files = [...manifest.files, markerName, catalogName];
     await writeFile(join(staged, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
     await writeFile(join(staged, markerName), JSON.stringify(metadata, null, 2) + "\n");
+    await writeFile(join(staged, catalogName), catalogBytes, { flag: "wx", mode: 0o644 });
     const candidate = join(scratch, "fleur-internal-native-candidate.tgz");
     await run([process.execPath, "pm", "pack", "--ignore-scripts", "--filename", candidate], staged);
     const report = {
@@ -180,10 +197,10 @@ async function build(output: string) {
   } finally { try { await ownedOutput?.directory.close(); } finally { await rm(scratch, { recursive: true, force: true }); } }
 }
 const args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--out" || !args[1]) {
-  process.stderr.write("Use --out <new-owned-directory>; candidate profiles are source-owned.\n");
+if ((args.length !== 2 && args.length !== 4) || args[0] !== "--out" || !args[1] || (args.length === 4 && (args[2] !== "--fixture" || !Object.hasOwn(candidateCatalogs, args[3]!)))) {
+  process.stderr.write("Use --out <new-owned-directory> [--fixture <ubuntu24-amd64|ubuntu26-amd64|debian13-amd64>]; candidate profiles are source-owned.\n");
   process.exitCode = 2;
 } else {
-  try { await build(resolve(args[1])); }
+  try { await build(resolve(args[1]), (args[3] ?? "ubuntu24-amd64") as keyof typeof candidateCatalogs); }
   catch (error) { process.stderr.write((error instanceof Error ? error.message : "Internal candidate build failed") + "\n"); process.exitCode = 1; }
 }

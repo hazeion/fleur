@@ -20,8 +20,10 @@ export async function observePreparation(target: BootTarget, remainingBudgetMs =
   const result: PreparationObservation = { formatVersion: 1, scope: "fresh-linux-preparation-observation", ok: false, transport: { timeoutMs, elapsedMs: 0, deadlineFired: false, exitCode: null, signal: null, stdoutBytes: 0, stderrBytes: 0, outputLimitExceeded: false }, stages: [], lastStage: null };
   const fail = (code: string, message: string) => { result.error ??= { code, message }; };
   if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535 || !/^[a-f0-9-]{36}$/.test(target.nonce) || !target.identity || !target.knownHosts || !Number.isFinite(remainingBudgetMs) || remainingBudgetMs <= 0) { fail("ARGUMENT_INVALID", "An exact pinned guest and positive bounded observation budget are required."); return result; }
+  // tar synthesizes absent package directories using the login mask; keep
+  // newly prepared inputs private without repairing pre-existing unsafe nodes.
   const remote = [
-    `test "$(cat /etc/fleur-owned-guest)" = '${target.nonce}'`, "cd lab",
+    `test "$(cat /etc/fleur-owned-guest)" = '${target.nonce}'`, "cd lab", "umask 077",
     event("bun-preparation", "started"), "FLEUR_GUEST_PREPARATION_EVENTS=yes python3 -I prepare-fresh-linux-guest.py", event("bun-preparation", "completed"),
     event("candidate-extraction", "started"), "tar -xzf fleur-internal-native-candidate.tgz", event("candidate-extraction", "completed"),
     event("restriction-extraction", "started"), "tar -xf runtime-probe.tar", event("restriction-extraction", "completed"), event("complete", "completed"),

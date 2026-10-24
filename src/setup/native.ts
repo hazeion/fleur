@@ -1,7 +1,9 @@
 import { verifiedInstallProfiles } from "./verified-install-profiles.ts";
+import { verifiedDesktopProfiles } from "./verified-desktop-profiles.ts";
 import type { ArchInstallProfile } from "./native-arch.ts";
 import { inspectAptPackageState } from "./native-state.ts";
 import type { HostIdentity, SetupHost } from "./commands.ts";
+import type { AptDistroDependencies } from "./apt-dependencies.ts";
 
 export type AptPackageName = "docker-ce" | "docker-ce-cli" | "containerd.io" | "docker-buildx-plugin" | "docker-compose-plugin";
 export interface AptPackageArtifact {
@@ -23,6 +25,7 @@ export interface AptInstallProfile {
   readonly repositoryFingerprint: string;
   readonly packages: Readonly<Record<AptPackageName, string>>;
   readonly artifacts: Readonly<Record<AptPackageName, AptPackageArtifact>>;
+  readonly distroDependencies?: AptDistroDependencies;
 }
 export interface DesktopInstallProfile {
   readonly method: "docker-desktop-official-dmg";
@@ -39,7 +42,7 @@ export interface DesktopInstallProfile {
 }
 export type NativeInstallProfile = AptInstallProfile | ArchInstallProfile | DesktopInstallProfile;
 /** Only source-owned exact records with recorded artifact/native evidence are admitted. */
-export const nativeInstallProfiles: readonly NativeInstallProfile[] = verifiedInstallProfiles;
+export const nativeInstallProfiles: readonly NativeInstallProfile[] = Object.freeze([...verifiedInstallProfiles, ...verifiedDesktopProfiles]);
 export function selectNativeProfile(identity: HostIdentity, profiles: readonly NativeInstallProfile[]): NativeInstallProfile | undefined {
   return profiles.find((profile) => (profile.method === "docker-desktop-official-dmg" ? identity.system === "darwin" && profile.artifactAuthentication === "authenticated" : identity.system === "linux" && profile.verified === true && profile.distribution === identity.distribution) && profile.release === identity.release && profile.architecture === identity.architecture);
 }

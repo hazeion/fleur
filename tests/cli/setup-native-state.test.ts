@@ -20,7 +20,7 @@ async function observeSetup(status: string, probe: { output?: string; exitCode?:
   try {
     const outcome = await runCli(["setup", "--json"], { cwd: directory, handlers: setupCommands({
       stateDirectory: join(directory, "state"),
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args) => {
         calls.push([...args]);
         if (args[0] === "docker") return { status: "missing", stdout: "", stderr: "" };
@@ -55,7 +55,7 @@ async function partialInstallation({ authorize = true, interruptFirst = false, d
   try {
     const handlers = setupCommands({
       stateDirectory: join(directory, "state"), interactive: authorize, confirmHuman: async () => "once",
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args, _timeout, context) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, stdout, stderr: "", exitCode });
         if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/run/docker.sock") return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
@@ -203,7 +203,7 @@ test.each(["DPKG_ROOT", "DPKG_ADMINDIR"] as const)("package inventory ignores %s
     const production = productionHost();
     const outcome = await runCli(["setup"], { cwd: directory, handlers: setupCommands({
       ...production, stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => "once",
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args, timeout) => {
         const done = (stdout = "", exitCode = 0) => ({ status: "completed" as const, stdout, stderr: "", exitCode });
         if (args[0] === "/usr/bin/stat" && args.at(-1) === "/var/run/docker.sock") return { status: "completed", exitCode: 1, stdout: "", stderr: "No such file or directory" };
@@ -238,7 +238,7 @@ test.each(["ssh://private-host", "unix:///tmp/socket?redirect=other"])("native p
   try {
     const outcome = await runCli(["setup", "--json"], { cwd: directory, handlers: setupCommands({
       stateDirectory: join(directory, "state"), interactive: true, confirmHuman: async () => { prompts++; return "once"; },
-      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", machineId: "a".repeat(64) }),
+      host: async () => ({ system: "linux", architecture: "x64", translated: false, release: "24.04", distribution: "ubuntu", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
       run: async (args) => {
         calls.push([...args]);
         if (args[0] === "dpkg-query") return { status: "completed", exitCode: 1, stdout: "", stderr: "" };

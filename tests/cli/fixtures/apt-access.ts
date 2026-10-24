@@ -62,7 +62,7 @@ export async function aptAccessFixture() {
   const host = {
     stateDirectory: join(root, "state"), interactive: true,
     confirmHuman: async (plan: { action: string; target: string }) => { const { action } = plan; confirmations.push(plan); prompts.push(action); return "once" as const; },
-    host: async () => ({ system: "linux", architecture: "x64", translated: false as const, distribution: "ubuntu", release: "24.04", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false as const, distribution: "ubuntu", release: "24.04", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     run: async (args: readonly string[]): Promise<HostCommandResult> => {
       calls.push([...args]);
       if (args[0] === "/usr/bin/getent") {

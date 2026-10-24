@@ -1,5 +1,6 @@
 import { nativeReadinessProfiles, snapshotReadinessProfiles, readinessCandidates, matchReadinessServer, sameReadinessDaemon, type VerifiedReadinessProfile } from "./readiness.ts";
 import { hasPendingLinuxAccess } from "./access-pending.ts";
+import { hasPendingPackageTransaction } from "./package-pending.ts";
 import { hasPendingArchService, hasPendingAptService } from "./service-pending.ts";
 import { observeEndpointActivation } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
@@ -20,6 +21,7 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
     if (remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Prerequisite checks exceeded the operation deadline.", actions: [] });
     if (identity.translated !== false) return failure("doctor", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Run Fleur through native Bun before setup.", expected: "native execution", actual: identity.translated === true ? "translated execution" : "unknown translation state", actions: [{ command: "fleur doctor", description: "Use native Bun and retry." }] });
     if (!installationMethod(identity)) return failure("doctor", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "The native operating-system target is outside the supported setup matrix.", actual: "unsupported platform", actions: [] });
+    if (await hasPendingPackageTransaction(host, identity)) return failure("doctor", 5, { code: "RECOVERY_REQUIRED", message: "An earlier privileged package transaction is unresolved. Its pending state and private artifacts were preserved; inspect the transaction before resuming setup.", actions: [] });
     const cli = await run(["docker", "--version"]);
     if (cli.status === "timeout") return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Docker CLI did not finish within the operation deadline.", actions: [] });
     if (cli.status === "missing") return failure("doctor", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Docker CLI is missing.", actions: [{ command: "fleur setup", description: "Inspect prerequisite setup actions." }] }, { components: { cli: { state: "missing" } } });

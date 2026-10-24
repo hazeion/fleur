@@ -1,6 +1,6 @@
 # Linux service startup
 
-This capability is under development. Production installation catalogs remain empty; fixture results do not admit a native release profile.
+Arch installation remains unqualified and deferred under the [approved platform amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944). Its full native qualification does not block #24 or v1. Retained service and activation-safety tests remain coverage. Exact Ubuntu/Debian x64 package and Intel Desktop placement catalogs are described in the setup documents; fixtures never admit a native release profile.
 
 After confirming the exact installed Arch packages, setup can offer a separate `service-start` action for the authenticated Docker service, Docker socket and containerd service. The plan binds the user, machine, selected system endpoint, exact package profile, unit content hashes, dependencies and current enablement. Installation permission does not authorize startup. Starting these units never authorizes boot enablement, membership changes, socket permission changes or configuration replacement.
 

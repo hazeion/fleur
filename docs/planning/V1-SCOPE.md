@@ -13,7 +13,7 @@ One invocation prepares an environment where an existing coding agent can quickl
 ## Confirmed requirements
 
 - TypeScript, Bun runtime, Preact, Tailwind, Vite, and development PostgreSQL managed through Docker. Server-default rendering uses interactive client islands. Docker also isolates application execution in production; production PostgreSQL is explicitly configured and separately managed.
-- Native Intel/Apple Silicon macOS, Ubuntu 24.04/26.04 amd64/arm64, Debian 13 amd64/arm64, and Arch x86_64 support. Each release must publish its verified OS/runtime matrix; exact macOS versions remain tied to Bun/Docker compatibility.
+- Required native targets are Intel macOS, Ubuntu 24.04/26.04 amd64 and Debian 13 amd64, under the [approved October 24 platform amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944). Apple Silicon, other ARM64 targets and Arch are deferred and do not block v1 or #24. Each release must publish its exact verified OS/runtime matrix; exact macOS versions remain tied to Bun/Docker compatibility. Existing ARM/Arch tests and scoped evidence remain useful coverage, without establishing full release support. Safety, isolation, cleanup, repeat and deadline requirements remain unchanged for required targets.
 - Consistent client/, server/, and shared/ layout.
 - Fleur application and database APIs with inferred types and runtime validation. Type safety is a core requirement.
 - Application agents use approved dependencies and Tailwind only. Additional packages may be suggested, never independently installed. Enforce dependencies, imports, and styling in development, verification, and builds.

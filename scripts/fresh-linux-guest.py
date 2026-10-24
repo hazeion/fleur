@@ -523,6 +523,7 @@ def resume_guest(nonce, expected_digest, owned_binding=None):
         GUEST_DEADLINE = deadline
         budget_seconds(900)
         verify_owned_binding(owned_binding)
+        verify_guest_candidate_target(owned_binding)
         if handoff_artifacts() != payload.get("artifacts"):
             raise RuntimeError("Resume artifact identities changed")
         REPORT.clear()
@@ -562,6 +563,7 @@ def resume_guest(nonce, expected_digest, owned_binding=None):
         if checkpoint_fd is not None:
             os.close(checkpoint_fd)
         os.close(directory)
+    debian_dependency_preservation("freshLogin", owned_binding)
     REPORT["freshLoginSnapshot"] = fresh_snapshot
     REPORT["accessResume"] = {"checkpointSha256": expected_digest, "sessionGroups": current["sessionGroups"]}
     REPORT["ordinaryUserSetupAfterResume"] = command_json("setup")
@@ -704,9 +706,240 @@ def verify_owned_binding(binding, *, query=None, absolute_deadline=None):
             or type(observed.get('uid')) is not int
             or tuple(observed.get(key) for key in binding._fields) != tuple(binding)):
         raise RuntimeError("Original owned guest fixture binding changed")
+    os_release = observed.get('osRelease')
+    if (type(os_release) is not dict or set(os_release) != {'id', 'versionId', 'sha256'}
+            or (os_release['id'], os_release['versionId']) not in (('ubuntu','24.04'), ('ubuntu','26.04'), ('debian','13'))
+            or type(os_release['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', os_release['sha256']) is None):
+        raise RuntimeError('Original owned guest OS binding is incomplete')
     REPORT['ownedGuestCustody'] = {key: observed[key] for key in ('formatVersion', 'scope', 'ok', *binding._fields,
-        'fixtureCustodyValidated', 'runtimeSupport', 'runtimeAdmission', 'humanConsentProof', 'nativeCpuPerformanceProof')}
+        'fixtureCustodyValidated', 'runtimeSupport', 'runtimeAdmission', 'humanConsentProof', 'nativeCpuPerformanceProof', 'osRelease')}
     return binding
+
+
+INTERNAL_CATALOGS = {
+    'ubuntu-24.04-amd64-docker-2026-10-19': ('540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58', 'ubuntu', '24.04', 'x64'),
+    'ubuntu-26.04-amd64-docker-2026-10-19': ('e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a', 'ubuntu', '26.04', 'x64'),
+    'debian-13-amd64-docker-2026-10-19': ('032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d', 'debian', '13', 'x64'),
+}
+
+
+def checked_internal_candidate():
+    started = time.monotonic()
+    deadline = started + budget_seconds(10)
+    def check_budget():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Internal candidate catalog deadline expired')
+    check_budget()
+    directory = os.open(ROOT/'package', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    records = []
+    try:
+        check_budget()
+        parent = os.fstat(directory)
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+            raise RuntimeError('Internal candidate catalog custody differs')
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise RuntimeError('Internal candidate catalog has duplicate fields')
+                value[key] = item
+            return value
+        def read(name):
+            check_budget()
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                check_budget()
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or before.st_mode & 0o022 or not 0 < before.st_size <= 65536:
+                    raise RuntimeError('Internal candidate catalog custody differs')
+                body = bytearray()
+                while len(body) <= before.st_size:
+                    check_budget()
+                    chunk = os.read(fd, min(65536, before.st_size+1-len(body)))
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+                check_budget()
+                after = os.fstat(fd)
+                check_budget()
+                named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                check_budget()
+                if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(before) != file_identity(named):
+                    raise RuntimeError('Internal candidate catalog changed')
+                records.append((name, file_identity(before)))
+                return bytes(body)
+            finally:
+                os.close(fd)
+        metadata = json.loads(read('internal-native-candidate.json'), object_pairs_hook=unique)
+        catalog_id = metadata.get('catalogId') if type(metadata) is dict else None
+        if type(catalog_id) is not str or catalog_id not in INTERNAL_CATALOGS:
+            raise RuntimeError('Internal candidate target is not source-owned')
+        expected_sha, distribution, release, architecture = INTERNAL_CATALOGS[catalog_id]
+        raw = read('internal-native-candidate-catalog.json')
+        if hashlib.sha256(raw).hexdigest() != expected_sha:
+            raise RuntimeError('Internal candidate catalog bytes differ')
+        catalog = json.loads(raw, object_pairs_hook=unique)
+        fields = ('formatVersion', 'catalogId', 'artifactAuthentication', 'installationEvidence', 'runtimeSupport', 'authentication', 'artifacts', 'limits')
+        if (metadata.get('internalArtifact') is not True or metadata.get('catalogSha256') != expected_sha
+                or json.dumps(metadata.get('legacyProfileAdmission'), sort_keys=True, allow_nan=False) != json.dumps({'verified':True, 'meaning':'internal-catalog-admission-only'}, sort_keys=True)
+                or json.dumps({key:metadata.get(key) for key in fields}, sort_keys=True, allow_nan=False) != json.dumps({key:catalog[key] for key in fields}, sort_keys=True, allow_nan=False)
+                or (catalog['profile']['distribution'], catalog['profile']['release'], catalog['profile']['architecture']) != (distribution, release, architecture)):
+            raise RuntimeError('Internal candidate catalog metadata differs')
+        for name, expected in records:
+            check_budget()
+            if file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) != expected:
+                raise RuntimeError('Internal candidate catalog changed')
+        check_budget()
+        named = (ROOT/'package').lstat()
+        check_budget()
+        if (named.st_dev, named.st_ino, named.st_mode, named.st_uid) != (parent.st_dev, parent.st_ino, parent.st_mode, parent.st_uid) or time.monotonic() >= deadline:
+            raise RuntimeError('Internal candidate catalog custody changed')
+        REPORT['executionArtifact'] = {'kind':'internal-candidate', 'catalogId':catalog_id, 'catalogSha256':expected_sha}
+        return catalog
+    finally:
+        os.close(directory)
+
+
+def legacy_os_release_snapshot():
+    started = time.monotonic()
+    deadline = started + budget_seconds(10)
+    def check_budget():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Legacy OS release snapshot deadline expired')
+    check_budget()
+    # /etc/os-release normally aliases /usr/lib/os-release. Retain the opened
+    # regular target and compare its published identity; never block on a FIFO.
+    fd = os.open('/etc/os-release', os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        check_budget()
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_mode & 0o022 or not 0 < before.st_size <= 16384:
+            raise RuntimeError('Legacy OS release type or size is unsafe')
+        body = bytearray()
+        while len(body) <= before.st_size:
+            check_budget()
+            block = os.read(fd, min(4096, before.st_size+1-len(body)))
+            check_budget()
+            if not block:
+                break
+            body.extend(block)
+        check_budget()
+        after = os.fstat(fd)
+        check_budget()
+        named = os.stat('/etc/os-release')
+        check_budget()
+        if len(body) != before.st_size or file_identity(before) != file_identity(after) or file_identity(after) != file_identity(named):
+            raise RuntimeError('Legacy OS release snapshot changed')
+        return bytes(body).decode()
+    finally:
+        os.close(fd)
+
+
+def verify_guest_candidate_target(owned_binding):
+    if owned_binding is not None:
+        # The original manifest and same protected read already authenticate
+        # these bytes. Do not replace that proof with another /etc pathname read.
+        observed = REPORT.get('ownedGuestCustody', {}).get('osRelease')
+        if (type(observed) is not dict or set(observed) != {'id', 'versionId', 'sha256'}
+                or (observed['id'], observed['versionId']) not in (('ubuntu','24.04'), ('ubuntu','26.04'), ('debian','13'))
+                or type(observed['sha256']) is not str or re.fullmatch(r'[a-f0-9]{64}', observed['sha256']) is None):
+            raise RuntimeError('Original owned guest candidate target OS binding changed')
+        fields = {'ID':observed['id'], 'VERSION_ID':observed['versionId']}
+        release = observed['versionId']
+        os_release = None  # No redundant raw-file observation is claimed.
+        os_evidence = {'source':'validated-owned-manifest', **observed}
+    else:
+        os_release = legacy_os_release_snapshot()
+        fields = {}
+        for line in os_release.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                if key in fields:
+                    raise RuntimeError('Guest candidate target OS record is ambiguous')
+                fields[key] = value.strip('"')
+        release = '24.04'
+        if fields.get('ID') != 'ubuntu' or fields.get('VERSION_ID') != release:
+            raise RuntimeError('Legacy guest candidate target requires the original Ubuntu24 fixture')
+        os_evidence = {'source':'legacy-nonce-only-observation', 'fixtureCustodyValidated':False,
+                       'id':fields['ID'], 'versionId':release, 'sha256':hashlib.sha256(os_release.encode()).hexdigest()}
+    if (fields.get('ID'), release) not in (('ubuntu','24.04'), ('ubuntu','26.04'), ('debian','13')) or run(['uname', '-m'])[1].strip() != 'x86_64':
+        raise RuntimeError('Guest candidate target differs from the closed native tuple')
+    try:
+        (ROOT/'package/internal-native-candidate.json').lstat()
+    except FileNotFoundError:
+        if release not in ORDINARY_QUALIFICATIONS or fields.get('ID') != ORDINARY_QUALIFICATIONS[release]['distribution']:
+            raise RuntimeError('Ordinary guest candidate target is not admitted')
+    else:
+        catalog = checked_internal_candidate()
+        if (catalog['profile']['distribution'], catalog['profile']['release'], catalog['profile']['architecture']) != (fields['ID'], release, 'x64'):
+            raise RuntimeError('Internal candidate target differs from the original guest OS')
+    return os_release, os_evidence
+
+
+ORDINARY_QUALIFICATIONS = {
+    '24.04': {'distribution':'ubuntu', 'suite':'noble', 'reportSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
+              'sourceCommit':'a9606d74fd55b252c0aab8432ff72ec513457a5e',
+              'artifactCatalogSha256':'540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'},
+    '26.04': {'distribution':'ubuntu', 'suite':'resolute', 'reportSha256':'5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07',
+              'sourceCommit':'ad3869c6d34e01bebd16a248adeb8c3e53d53d8a',
+              'artifactCatalogSha256':'e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a'},
+    '13': {'distribution':'debian', 'suite':'trixie',
+           'reportSha256':'6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e',
+           'sourceCommit':'300cdaf30e1ea4786b096786e458f698984fe038',
+           'artifactCatalogSha256':'032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d',
+           'profileSha256':'588ab6035cc9ff24d0591cd10a0fe3c066f092f7bdf297610907ce4835289983'},
+}
+
+
+def ordinary_target_release():
+    custody = REPORT.get('ownedGuestCustody')
+    if custody is None:
+        # Legacy nonce-only fixtures remain limited to Ubuntu24 by the OS gate.
+        return '24.04'
+    os_release = custody.get('osRelease') if type(custody) is dict else None
+    if (type(os_release) is not dict or os_release.get('versionId') not in ORDINARY_QUALIFICATIONS
+            or os_release.get('id') != ORDINARY_QUALIFICATIONS[os_release['versionId']]['distribution']):
+        raise RuntimeError('Original ordinary target OS is unavailable')
+    return os_release['versionId']
+
+
+def checked_ordinary_profile(entry):
+    if type(entry) is not dict or set(entry) != {'evidence', 'profile'} or type(entry['profile']) is not dict:
+        raise RuntimeError('Compiled ordinary profile evidence differs')
+    profile = entry['profile']
+    release = profile.get('release')
+    if type(release) is not str or release not in ORDINARY_QUALIFICATIONS:
+        raise RuntimeError('Compiled ordinary profile target differs')
+    qualification = ORDINARY_QUALIFICATIONS[release]
+    evidence = {key:qualification[key] for key in ('reportSha256', 'sourceCommit', 'artifactCatalogSha256')}
+    if entry['evidence'] != evidence:
+        raise RuntimeError('Compiled ordinary profile evidence differs')
+    if qualification['distribution'] == 'debian':
+        # Pin the entire canonical eight-package profile, including every nested
+        # dependency authority, artifact and side effect, to the measured catalog.
+        digest = hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if digest != qualification['profileSha256']:
+            raise RuntimeError('Compiled ordinary Debian dependency closure differs')
+        return release, {**profile['packages'], **{name: artifact['version'] for name, artifact in profile['distroDependencies']['artifacts'].items()}}
+    suite = qualification['suite']
+    expected = {'docker-ce': f'5:29.9.1-1~ubuntu.{release}~{suite}', 'docker-ce-cli': f'5:29.9.1-1~ubuntu.{release}~{suite}',
+                'containerd.io': f'2.4.2-2~ubuntu.{release}~{suite}', 'docker-buildx-plugin': f'0.38.0-1~ubuntu.{release}~{suite}',
+                'docker-compose-plugin': f'5.6.0-1~ubuntu.{release}~{suite}'}
+    if (set(profile) != {'method', 'verified', 'distribution', 'release', 'architecture', 'repositoryFingerprint', 'packages', 'artifacts'}
+            or profile['method'] != 'docker-official-apt' or profile['verified'] is not True or profile['distribution'] != 'ubuntu'
+            or profile['architecture'] != 'x64'
+            or profile['repositoryFingerprint'] != '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' or profile['packages'] != expected
+            or type(profile['artifacts']) is not dict or set(profile['artifacts']) != set(expected)):
+        raise RuntimeError('Compiled ordinary profile tuple differs')
+    for name, version in expected.items():
+        item = profile['artifacts'][name]
+        if (type(item) is not dict or set(item) != {'name', 'version', 'architecture', 'url', 'sha256', 'size'}
+                or item['name'] != name or item['version'] != version or item['architecture'] != 'amd64'
+                or type(item['url']) is not str or not item['url'].startswith(f'https://download.docker.com/linux/ubuntu/dists/{suite}/pool/stable/amd64/')
+                or type(item['sha256']) is not str or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])
+                or type(item['size']) is not int or item['size'] <= 0):
+            raise RuntimeError('Compiled ordinary profile artifact differs')
+    return release, expected
 
 
 def installation_packages():
@@ -717,9 +950,8 @@ def installation_packages():
         pass
     else:
         # Preserve the existing internal-candidate artifact contract.
-        metadata = json.loads(marker.read_text())
-        REPORT['executionArtifact'] = {'kind': 'internal-candidate'}
-        return [item['name'] + '=' + item['version'] for item in metadata['artifacts']]
+        catalog = checked_internal_candidate()
+        return [item['name'] + '=' + item['version'] for item in catalog['artifacts']]
     package = json.loads((ROOT / 'package/package.json').read_text())
     if type(package) is not dict or package.get('name') != 'fleur' or 'fleurInternalNativeCandidate' in package:
         raise RuntimeError('Ordinary verification requires the real Fleur package without an internal marker')
@@ -736,37 +968,177 @@ def installation_packages():
             raise RuntimeError('Compiled ordinary profile metadata changed')
     finally:
         os.close(fd)
-    value = json.loads(body)
-    evidence = {'reportSha256': '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',
-                'sourceCommit': 'a9606d74fd55b252c0aab8432ff72ec513457a5e',
-                'artifactCatalogSha256': '540de9d76fc2aa8c260d1579a68c64ff0f1474b61cd332cfd428785432a56e58'}
+    def unique(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise RuntimeError('Compiled ordinary profile contains duplicate fields')
+            result[name] = value
+        return result
+    value = json.loads(body, object_pairs_hook=unique)
     if (type(value) is not dict or set(value) != {'formatVersion', 'entries'} or type(value['formatVersion']) is not int
-            or value['formatVersion'] != 1 or type(value['entries']) is not list or len(value['entries']) != 1):
+            or value['formatVersion'] != 1 or type(value['entries']) is not list or not 1 <= len(value['entries']) <= len(ORDINARY_QUALIFICATIONS)):
         raise RuntimeError('Exact compiled ordinary profile record required')
-    entry = value['entries'][0]
-    if type(entry) is not dict or set(entry) != {'evidence', 'profile'} or entry['evidence'] != evidence:
-        raise RuntimeError('Compiled ordinary profile evidence differs')
-    profile = entry['profile']
-    expected = {'docker-ce': '5:29.9.1-1~ubuntu.24.04~noble', 'docker-ce-cli': '5:29.9.1-1~ubuntu.24.04~noble',
-                'containerd.io': '2.4.2-2~ubuntu.24.04~noble', 'docker-buildx-plugin': '0.38.0-1~ubuntu.24.04~noble',
-                'docker-compose-plugin': '5.6.0-1~ubuntu.24.04~noble'}
-    if (type(profile) is not dict or set(profile) != {'method', 'verified', 'distribution', 'release', 'architecture', 'repositoryFingerprint', 'packages', 'artifacts'}
-            or profile['method'] != 'docker-official-apt' or profile['verified'] is not True or profile['distribution'] != 'ubuntu'
-            or profile['release'] != '24.04' or profile['architecture'] != 'x64'
-            or profile['repositoryFingerprint'] != '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' or profile['packages'] != expected
-            or type(profile['artifacts']) is not dict or set(profile['artifacts']) != set(expected)):
-        raise RuntimeError('Compiled ordinary profile tuple differs')
-    for name, version in expected.items():
-        item = profile['artifacts'][name]
-        if (type(item) is not dict or set(item) != {'name', 'version', 'architecture', 'url', 'sha256', 'size'}
-                or item['name'] != name or item['version'] != version or item['architecture'] != 'amd64'
-                or type(item['url']) is not str or not item['url'].startswith('https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/')
-                or type(item['sha256']) is not str or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])
-                or type(item['size']) is not int or item['size'] <= 0):
-            raise RuntimeError('Compiled ordinary profile artifact differs')
+    profiles = {}
+    for entry in value['entries']:
+        release, packages = checked_ordinary_profile(entry)
+        if release in profiles:
+            raise RuntimeError('Duplicate compiled ordinary profile target')
+        profiles[release] = packages
+    release = ordinary_target_release()
+    if release not in profiles:
+        raise RuntimeError('Compiled ordinary profile differs from the original OS target')
+    expected = profiles[release]
+    evidence = ORDINARY_QUALIFICATIONS[release]
     REPORT['executionArtifact'] = {'kind': 'ordinary', 'packageName': 'fleur', 'admissionMetadataSha256': hashlib.sha256(body).hexdigest(),
                                   'artifactCatalogSha256': evidence['artifactCatalogSha256']}
     return [name + '=' + version for name, version in expected.items()]
+
+
+# Fixture-only root actions. This source is never a product installer capability.
+DEBIAN_CANARY_ROOT = r"""import importlib.util,json,math,os,re,selectors,shlex,signal,stat,subprocess,sys,time
+request=json.loads(sys.argv[1]);binding=request['binding'];phase=request['phase'];end=request['deadline']
+if (set(request)!={'binding','phase','deadline'} or set(binding)!={'nonce','bootId','uid','manifestSha256'} or phase not in ('before','afterInstall','freshLogin','afterRuntime','cleanup')
+ or os.getuid()!=0 or os.geteuid()!=0 or type(end) not in (int,float) or not math.isfinite(end) or not time.monotonic()<end<=time.monotonic()+30):raise RuntimeError('Fixed owned canary invocation required')
+producer='/usr/local/lib/fleur-owned-guest.py'
+for path in ('/','/usr','/usr/local','/usr/local/lib',producer):
+ info=os.lstat(path)
+ if info.st_uid!=0 or info.st_mode&0o022 or stat.S_ISLNK(info.st_mode):raise RuntimeError('Unsafe protected canary validator')
+spec=importlib.util.spec_from_file_location('fleur_canary_custody',producer);module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+def custody():
+ context=module.validate(binding['nonce'],deadline=end,ordinary_uid=binding['uid'])
+ if (context.boot_id,context.uid,context.manifest_sha256)!=(binding['bootId'],binding['uid'],binding['manifestSha256']) or context.os_release[:2]!=('debian','13'):raise RuntimeError('Original Debian canary custody changed')
+ return context
+custody()
+if re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}',binding['nonce']) is None:raise RuntimeError('Canonical nonce required')
+chain='FL'+binding['nonce'].replace('-','')[:20];comment='fleur-'+binding['nonce'];tool='/usr/sbin/iptables-nft'
+def command(args,allowed=(0,)):
+ custody();remaining=end-time.monotonic()
+ if remaining<=0:raise TimeoutError('Canary deadline expired')
+ child=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
+ selector=None
+ try:
+  output={child.stdout:bytearray(),child.stderr:bytearray()}
+  selector=selectors.DefaultSelector()
+  for stream in output:selector.register(stream,selectors.EVENT_READ)
+  while selector.get_map():
+   if time.monotonic()>=end:raise TimeoutError('Owned canary command deadline expired')
+   for key,_ in selector.select(min(0.1,max(0,end-time.monotonic()))):
+    part=os.read(key.fileobj.fileno(),8192)
+    if not part:selector.unregister(key.fileobj);continue
+    bound=1048576 if key.fileobj is child.stdout else 65536
+    if len(output[key.fileobj])+len(part)>bound:raise RuntimeError('Owned canary command output exceeded its bound')
+    output[key.fileobj].extend(part)
+  while os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None:
+   if time.monotonic()>=end:raise TimeoutError('Owned canary command deadline expired')
+   time.sleep(0.01)
+  if time.monotonic()>=end:raise TimeoutError('Owned canary command deadline expired')
+ finally:
+  # The unreaped leader reserves this PGID until signaling is finished.
+  try:
+   try:os.killpg(child.pid,signal.SIGKILL)
+   except (ProcessLookupError,PermissionError):pass
+   child.wait(timeout=5)
+   retirement=time.monotonic()+5
+   while True:
+    try:os.killpg(child.pid,0)
+    except ProcessLookupError:break
+    except PermissionError:pass
+    if time.monotonic()>=retirement:raise RuntimeError('Owned canary command retirement unconfirmed')
+    time.sleep(0.02)
+  finally:
+   try:
+    if selector is not None:selector.close()
+   finally:
+    try:child.stdout.close()
+    finally:child.stderr.close()
+ if child.returncode not in allowed:raise RuntimeError('Owned canary observation failed')
+ return bytes(output[child.stdout]).decode('utf-8')
+for directory in ('/usr','/usr/sbin','/usr/bin'):
+ info=os.stat(directory)
+ if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:raise RuntimeError('Unsafe firewall tool directory')
+selected=os.path.realpath(tool);info=os.stat(selected)
+if selected!='/usr/sbin/xtables-nft-multi' or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:raise RuntimeError('Unexpected firewall tool backend')
+if command(['/usr/bin/dpkg-query','--root=/','--admindir=/var/lib/dpkg','--search','--',tool]).strip()!='iptables: '+tool:raise RuntimeError('Firewall tool ownership unavailable')
+if command(['/usr/bin/dpkg','--root=/','--admindir=/var/lib/dpkg','--verify','iptables'])!='':raise RuntimeError('Firewall tool package integrity differs')
+version=command([tool,'--version']).strip()
+if re.fullmatch(r'iptables v[0-9]+\.[0-9]+\.[0-9]+ \(nf_tables\)',version) is None:raise RuntimeError('nf_tables backend required')
+properties=['LoadState','ActiveState','SubState','UnitFileState','ExecMainPID','ExecMainStartTimestampMonotonic','ActiveEnterTimestampMonotonic','InactiveExitTimestampMonotonic']
+raw=command(['/usr/bin/systemctl','show','nftables.service','--property='+','.join(properties)],(0,1,4));service={}
+for line in raw.splitlines():
+ key,separator,value=line.partition('=')
+ if not separator or key not in properties or key in service:raise RuntimeError('Ambiguous nftables service observation')
+ service[key]=value
+if set(service)!=set(properties):raise RuntimeError('Incomplete nftables service observation')
+expected={'LoadState':'not-found' if phase=='before' else 'loaded','ActiveState':'inactive','SubState':'dead','UnitFileState':'' if phase=='before' else 'disabled','ExecMainPID':'0','ExecMainStartTimestampMonotonic':'0','ActiveEnterTimestampMonotonic':'0','InactiveExitTimestampMonotonic':'0'}
+if service!=expected:raise RuntimeError('nftables service executed or its state changed')
+def detached():
+ lines=command([tool,'--wait','2','-t','filter','-S']).splitlines()
+ for line in lines:
+  tokens=shlex.split(line)
+  if any(tokens[i] in ('-j','-g','--jump','--goto') and tokens[i+1]==chain for i in range(len(tokens)-1)):raise RuntimeError('Owned canary acquired a reference')
+ return lines
+if phase=='before':
+ if any(shlex.split(line)[:2]==['-N',chain] for line in detached()):raise RuntimeError('Owned canary collision')
+ command([tool,'--wait','2','-t','filter','-N',chain])
+ command([tool,'--wait','2','-t','filter','-A',chain,'-m','comment','--comment',comment,'-j','RETURN'])
+detached();canary=command([tool,'--wait','2','-t','filter','-S',chain])
+if [shlex.split(line) for line in canary.splitlines()]!=[['-N',chain],['-A',chain,'-m','comment','--comment',comment,'-j','RETURN']]:raise RuntimeError('Original owned canary changed')
+if phase=='cleanup':
+ command([tool,'--wait','2','-t','filter','-D',chain,'-m','comment','--comment',comment,'-j','RETURN'])
+ command([tool,'--wait','2','-t','filter','-X',chain])
+ if any(shlex.split(line)[:2]==['-N',chain] for line in detached()):raise RuntimeError('Owned canary cleanup unconfirmed')
+custody();print(json.dumps({'binding':binding,'phase':phase,'backend':'nf_tables','tool':tool,'selectedTool':selected,'toolVersion':version,'chain':chain,'canary':canary,'service':service,'cleanup':phase=='cleanup'}))
+"""
+
+
+def debian_dependency_preservation(phase, owned_binding):
+    artifact = REPORT.get('executionArtifact', {})
+    internal = artifact.get('catalogId') == 'debian-13-amd64-docker-2026-10-19'
+    ordinary = (artifact.get('kind') == 'ordinary' and artifact.get('packageName') == 'fleur'
+                and artifact.get('artifactCatalogSha256') == ORDINARY_QUALIFICATIONS['13']['artifactCatalogSha256'])
+    if not internal and not ordinary:
+        return
+    if type(owned_binding) is not OwnedGuestBinding:
+        raise RuntimeError('Debian dependency canary requires the original owned guest')
+    verify_owned_binding(owned_binding)
+    if phase not in ('before', 'afterInstall', 'freshLogin', 'afterRuntime', 'cleanup'):
+        raise RuntimeError('Fixed canary phase required')
+    prior = {'before':[], 'afterInstall':['before'], 'freshLogin':['before','afterInstall'], 'afterRuntime':['before','afterInstall','freshLogin'], 'cleanup':['before','afterInstall','freshLogin','afterRuntime']}[phase]
+    existing = REPORT.get('debianDependencyPreservation', {}).get('observations', {})
+    if list(existing) != prior or REPORT.get('debianDependencyPreservation', {}).get('cleanup') is True:
+        raise RuntimeError('Owned canary phase sequence differs')
+    deadline = time.monotonic() + budget_seconds(30)
+    request = {'binding': owned_binding._asdict(), 'phase': phase, 'deadline': deadline}
+    _, text, _ = run(['/usr/bin/sudo', '--non-interactive', '--', '/usr/bin/python3', '-I', '-c', DEBIAN_CANARY_ROOT, json.dumps(request)], timeout=30, absolute_deadline=deadline)
+    if len(text.encode()) > 16384:
+        raise RuntimeError('Canary report exceeded its bound')
+    frame = json.loads(text)
+    chain = 'FL' + owned_binding.nonce.replace('-', '')[:20]
+    if (type(frame) is not dict or set(frame) != {'binding','phase','backend','tool','selectedTool','toolVersion','chain','canary','service','cleanup'}
+            or frame['binding'] != owned_binding._asdict() or frame['phase'] != phase or frame['backend'] != 'nf_tables'
+            or frame['tool'] != '/usr/sbin/iptables-nft' or frame['selectedTool'] != '/usr/sbin/xtables-nft-multi'
+            or type(frame['toolVersion']) is not str or re.fullmatch(r'iptables v[0-9]+\.[0-9]+\.[0-9]+ \(nf_tables\)', frame['toolVersion']) is None
+            or frame['chain'] != chain or type(frame['canary']) is not str or type(frame['service']) is not dict or frame['cleanup'] is not (phase == 'cleanup')):
+        raise RuntimeError('Original canary result binding differs')
+    expected_canary = [['-N',chain],['-A',chain,'-m','comment','--comment','fleur-'+owned_binding.nonce,'-j','RETURN']]
+    import shlex
+    if [shlex.split(line) for line in frame['canary'].splitlines()] != expected_canary:
+        raise RuntimeError('Owned detached canary differs')
+    expected_service = {'LoadState':'not-found' if phase == 'before' else 'loaded','ActiveState':'inactive','SubState':'dead','UnitFileState':'' if phase == 'before' else 'disabled','ExecMainPID':'0','ExecMainStartTimestampMonotonic':'0','ActiveEnterTimestampMonotonic':'0','InactiveExitTimestampMonotonic':'0'}
+    if frame['service'] != expected_service:
+        raise RuntimeError('nftables service execution or state differs')
+    evidence = REPORT.setdefault('debianDependencyPreservation', {'scope':'owned-disconnected-canary-and-nftables-service-only','backend':'nf_tables','cleanup':False,'observations':{}})
+    observations = evidence['observations']
+    prior = {'before':[], 'afterInstall':['before'], 'freshLogin':['before','afterInstall'], 'afterRuntime':['before','afterInstall','freshLogin'], 'cleanup':['before','afterInstall','freshLogin','afterRuntime']}[phase]
+    if list(observations) != prior:
+        raise RuntimeError('Owned canary phase sequence differs')
+    if phase != 'before' and any(frame[key] != observations['before'][key] for key in ('binding','backend','tool','selectedTool','toolVersion','chain','canary')):
+        raise RuntimeError('Owned canary changed across setup')
+    if phase == 'cleanup':
+        evidence['cleanup'] = True
+    else:
+        observations[phase] = frame
 
 
 def main():
@@ -797,10 +1169,8 @@ def main():
         (ROOT / "package/internal-native-candidate.json").lstat()
     except FileNotFoundError:
         ordinary_packages = installation_packages()
-    os_release = Path("/etc/os-release").read_text()
-    if 'ID=ubuntu\n' not in os_release or 'VERSION_ID="24.04"' not in os_release or run(["uname", "-m"])[1].strip() != "x86_64":
-        raise RuntimeError("Guest differs from frozen Ubuntu24 amd64 tuple")
-    REPORT["guest"] = {"osRelease": os_release, "kernel": run(["uname", "-srmo"])[1],
+    os_release, os_evidence = verify_guest_candidate_target(owned_binding)
+    REPORT["guest"] = {"osRelease": os_release, "osReleaseEvidence": os_evidence, "kernel": run(["uname", "-srmo"])[1],
                        "virtualization": run(["systemd-detect-virt"])[1].strip(), "bun": run([BUN, "--version"])[1].strip()}
     if REPORT["guest"]["virtualization"] not in ("qemu", "kvm") or REPORT["guest"]["bun"] != "1.4.3":
         raise RuntimeError("Guest virtualization/runtime identity differs")
@@ -808,6 +1178,7 @@ def main():
     REPORT["baseline"] = baseline
     if any(re.match(r"(?:docker-ce|docker-ce-cli|containerd\.io|docker-buildx-plugin|docker-compose-plugin)\t", line) for line in baseline["packages"].splitlines()):
         raise RuntimeError("Guest already contains Docker packages; fresh-install proof refused")
+    debian_dependency_preservation("before", owned_binding)
     REPORT["doctorBefore"] = command_json("doctor")
     REPORT["noninteractiveSetup"] = command_json("setup")
     if REPORT["noninteractiveSetup"]["exitCode"] != 3 or snapshot() != baseline:
@@ -817,6 +1188,7 @@ def main():
         raise RuntimeError("Denied setup altered baseline or did not preserve authority boundary")
     REPORT["authorizedFixtureSetup"] = setup_pty("once")
     REPORT["afterSetup"] = snapshot()
+    debian_dependency_preservation("afterInstall", owned_binding)
     packages = ordinary_packages if ordinary_packages is not None else installation_packages()
     simulation = run(["apt-get", "--simulate", "--no-install-recommends", "--no-remove", "--no-upgrade", "install"] + packages, allowed=(0, 100))
     REPORT["actualDependencySimulation"] = {"exitCode": simulation[0], "stdout": simulation[1], "stderr": simulation[2]}
@@ -934,10 +1306,11 @@ def admitted_readiness(observed, command):
             or type(envelope['data']) is not dict or type(envelope['data'].get('components')) is not dict):
         return False
     components = envelope['data']['components']
-    evidence = '75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'
+    release = ordinary_target_release()
+    evidence = ORDINARY_QUALIFICATIONS[release]['reportSha256']
     return (all(type(components.get(name)) is dict and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
             and components['smoke'].get('cleanup') is True
-            and components.get('release') == {'state': 'verified', 'profile': 'ubuntu-24.04-x64-docker-29.9.1',
+            and components.get('release') == {'state': 'verified', 'profile': f"{ORDINARY_QUALIFICATIONS[release]['distribution']}-{release}-x64-docker-29.9.1",
                                                'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
 
 
@@ -998,6 +1371,28 @@ def observe_ordinary_daemon(docker):
             'source': 'ordinary-user-local-docker-cli', 'info': info, 'server': server, 'securityOptionsEvidence': security}
 
 
+def observe_debian_candidate_daemon(docker):
+    def identity():
+        value = run(docker + ['info', '--format', '{{.ID}}'], timeout=10)[1].strip()
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:._-]{0,255}', value) is None:
+            raise RuntimeError('Candidate daemon identity is unavailable')
+        return hashlib.sha256(value.encode()).hexdigest()
+    before = identity()
+    observed = observe_ordinary_daemon(docker)
+    after = identity()
+    info, server = observed['info'], observed['server']
+    engine = server['Components'][0]
+    if (before != after or observed['securityOptionsEvidence']['state'] != 'recorded'
+            or info['ServerVersion'] != server['Version'] or info['KernelVersion'] != server['KernelVersion']
+            or info['OSType'] != server['Os'] or server['Os'] != 'linux'
+            or info['Architecture'] not in ('x86_64', 'amd64') or server['Arch'] != 'amd64'
+            or engine['Version'] != server['Version'] or engine['Details']['GitCommit'] != server['GitCommit']):
+        raise RuntimeError('Candidate daemon tuple is incoherent or changed')
+    info['SecurityOptions'].sort()
+    return {**observed, 'scope': 'debian-candidate-daemon-readiness-observation',
+            'daemonIdSha256': before, 'restartContinuityProof': False}
+
+
 def verify_smoke_and_restrictions(state, owned_binding=None):
     context = run(["docker", "context", "show"])[1].strip()
     endpoint = json.loads(run(["docker", "context", "inspect", context, "--format", "{{json .Endpoints.docker}}"])[1])["Host"]
@@ -1008,6 +1403,10 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         REPORT['ordinaryDaemonObservation'] = observe_ordinary_daemon(docker)
         if REPORT['ordinaryDaemonObservation']['securityOptionsEvidence']['state'] != 'recorded':
             raise RuntimeError('Ordinary daemon security option observation is unavailable')
+    debian_candidate = REPORT.get('executionArtifact', {}).get('catalogId') == 'debian-13-amd64-docker-2026-10-19'
+    if debian_candidate:
+        verify_owned_binding(owned_binding)
+        REPORT['candidateDaemonObservation'] = {'before': observe_debian_candidate_daemon(docker), 'stable': False}
     image = run([BUN, "-e", "import {smokeImages} from " + json.dumps(str(ROOT / "package/src/setup/profiles.ts")) + ";process.stdout.write(smokeImages.x64)"])[1]
     if not re.fullmatch(r"oven/bun@sha256:[a-f0-9]{64}", image):
         raise RuntimeError("Smoke image is not digest-pinned")
@@ -1097,6 +1496,15 @@ def verify_smoke_and_restrictions(state, owned_binding=None):
         if code != 0 or REPORT["restrictionProbe"]["result"].get("cleanup_complete") is not True or REPORT["restrictionProbe"]["result"].get("bounded_probe_passed") is not True:
             REPORT["error"] = {"code": "RESTRICTION_EVIDENCE_REQUIRED", "message": "Actual guest runtime restriction probe did not pass. Inspect restrictionProbe for the observed exit status and bounded result."}
             return
+        if debian_candidate:
+            verify_owned_binding(owned_binding)
+            observation = REPORT['candidateDaemonObservation']
+            observation['after'] = observe_debian_candidate_daemon(docker)
+            if observation['before'] != observation['after']:
+                raise RuntimeError('Candidate daemon identity or tuple changed during verification')
+            observation['stable'] = True
+        debian_dependency_preservation("afterRuntime", owned_binding)
+        debian_dependency_preservation("cleanup", owned_binding)
         REPORT["installationEvidence"] = "verified-full-system-guest"
         REPORT["ok"] = True
     finally:

@@ -27,7 +27,13 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000,
     "cat /etc/fleur-owned-guest",
   ].join("; ");
   const child = startRetainedSsh(["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${target.knownHosts}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=3", "-i", target.identity, "-p", String(target.port), "fleur@127.0.0.1", remote]);
-  const timer = setTimeout(() => { transport.deadlineFired = true; child.requestTermination(); }, transport.timeoutMs);
+  // Synchronous relay setup consumes the supplied work allowance too. Expire
+  // before yielding so buffered readiness cannot start SSH after that allowance.
+  const remainingWorkMs = started + transport.timeoutMs - performance.now();
+  const expire = () => { transport.deadlineFired = true; child.requestTermination(); };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (remainingWorkMs <= 0) expire();
+  else timer = setTimeout(expire, remainingWorkMs);
   const cancel = () => child.requestTermination();
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
@@ -36,6 +42,12 @@ export async function observeBoot(target: BootTarget, remainingBudgetMs = 10000,
   try {
     const [stdout, stderr, code] = await Promise.race([Promise.all([bounded(child.stdout!, (bytes) => { transport.stdoutBytes = bytes; }), bounded(child.stderr!, (bytes) => { transport.stderrBytes = bytes; }), finished]), child.signalFailed]);
     if (code === 75) return result("pending");
+    const closedLoopback = `Connection closed by 127.0.0.1 port ${target.port}\r\n`;
+    // A completed empty connection close supplies no boot result. Poll only
+    // within the original boot budget; semantic readiness remains mandatory.
+    if (code === 255 && stdout === "" && child.signal === null && !child.terminationRequested
+        && !transport.deadlineFired && !signal?.aborted && performance.now() < started + transport.timeoutMs
+        && (stderr === closedLoopback || stderr === closedLoopback.replaceAll("\r\n", "\n"))) return result("pending");
     const preAuthenticationReset = `kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 127.0.0.1 port ${target.port}\r\n`;
     if (code === 255 && stdout === "" && (stderr === preAuthenticationReset || stderr === preAuthenticationReset.replaceAll("\r\n", "\n"))) return result("pending");
     if (code === 255 && /(?:connect to host 127\.0\.0\.1 port [0-9]+: Connection (?:refused|timed out)|Connection timed out during banner exchange)/.test(stderr)) return result("pending");

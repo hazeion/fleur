@@ -21,7 +21,7 @@ async function endpointIdentity(host: SetupHost, remaining: () => number, path: 
   if (remaining() <= 0 || path.length > 4096 || !path.startsWith("/") || [...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) throw new Error("Invalid passive socket path");
   const result = await host.run(["/usr/bin/stat", "--dereference", "--format=%d|%i|%F", "--", path], remaining());
   if (absentAllowed && result.status === "completed" && result.exitCode === 1 && /No such file or directory/.test(result.stderr) && result.stdout.trim() === "" && !("terminationUnconfirmed" in result && result.terminationUnconfirmed)) return null;
-  if (expectedType === "socket" && !absentAllowed && result.status === "completed" && result.exitCode === 1 && !result.terminationUnconfirmed && result.stdout === "" && /^[A-Za-z0-9_./@+%~:-]+$/.test(path) && result.stderr === `/usr/bin/stat: cannot statx '${path}': Permission denied\n`) throw new ProtectedSocketPath();
+  if ((expectedType === "socket" || expectedType === "fifo") && !absentAllowed && result.status === "completed" && result.exitCode === 1 && !result.terminationUnconfirmed && result.stdout === "" && /^[A-Za-z0-9_./@+%~:-]+$/.test(path) && [`/usr/bin/stat: cannot statx '${path}': Permission denied\n`, `stat: cannot statx '${path}': Permission denied\n`].includes(result.stderr)) throw new ProtectedSocketPath();
   const identity = result.stdout.length <= 128 ? (expectedType === "socket" ? /^([0-9]+)\|([1-9][0-9]*)\|socket\s*$/ : expectedType === "fifo" ? /^([0-9]+)\|([1-9][0-9]*)\|fifo\s*$/ : /^([0-9]+)\|([1-9][0-9]*)\|character special file\s*$/).exec(result.stdout) : null;
   if (!confirmed(result) || !identity) throw new Error("Endpoint identity unavailable");
   return `${BigInt(identity[1]!)}|${BigInt(identity[2]!)}`;
@@ -73,6 +73,7 @@ export async function observeEndpointActivation(host: SetupHost, remaining: () =
     const inventoryArgs = ["/usr/bin/systemctl", "--system", "list-units", "--all", "--type=socket", "--plain", "--no-legend", "--no-pager", "--full"];
     let wireRemaining = 3000;
     let firstSnapshot: Promise<UnixSocketSnapshot> | undefined;
+    let protectedFifo = false;
     const relevant = new Map<string, { kind: string; key: string }>();
     const units = new Map<string, { socket: boolean; key: string }>();
     const rememberUnit = (unit: string, socket: boolean, key: string) => {
@@ -124,7 +125,14 @@ export async function observeEndpointActivation(host: SetupHost, remaining: () =
               matching = true;
             }
           } catch (error) {
-            if (!(error instanceof ProtectedSocketPath) || kind === "FIFO" || kind === "Special") throw error;
+            if (!(error instanceof ProtectedSocketPath) || kind === "Special") throw error;
+            if (kind === "FIFO") {
+              if (["/run/docker.sock", "/var/run/docker.sock"].includes(path)) throw error;
+              // A stable active manager-held FIFO cannot receive AF_UNIX RPC.
+              // This excludes its transport, not its inaccessible pathname identity.
+              protectedFifo = true;
+              continue;
+            }
             if (await protectedIdentity(path, kind)) matching = true;
           }
         }
@@ -139,11 +147,13 @@ export async function observeEndpointActivation(host: SetupHost, remaining: () =
         if (state.LoadState !== "loaded" || state.ActiveState !== "active" || state.SubState !== "running" || values.ActiveState !== "active" || (values.SubState !== "listening" && values.SubState !== "running")) { blocked.add(unit); triggers.add(target); }
       }
     }
-    if (firstSnapshot) {
+    if (firstSnapshot || protectedFifo) {
       if (JSON.stringify(socketNames(await read(host, remaining, inventoryArgs)).sort()) !== JSON.stringify([...names].sort()) || await endpointIdentity(host, remaining, endpoint.slice(7), "socket", true) !== selected) throw new Error("Activation inventory or selected identity changed");
       for (const [unit, original] of units) if (metadataKey(await properties(host, remaining, unit, original.socket)) !== original.key) throw new Error("Activation metadata changed");
-      const second = await snapshot();
-      for (const [path, original] of relevant) if (bindingKey(relevantBinding(second, path, original.kind)) !== original.key) throw new Error("Kernel binding changed");
+      if (firstSnapshot) {
+        const second = await snapshot();
+        for (const [path, original] of relevant) if (bindingKey(relevantBinding(second, path, original.kind)) !== original.key) throw new Error("Kernel binding changed");
+      }
     }
     return blocked.size ? { state: "activation-needed", sockets: [...blocked].sort(), triggers: [...triggers].sort() } : { state: "clear" };
   } catch { return { state: "activation-unknown" }; }

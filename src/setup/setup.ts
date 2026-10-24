@@ -1,3 +1,6 @@
+import { AptInspectionRequired } from "./apt-auxiliary.ts";
+import { hasPendingPackageTransaction } from "./package-pending.ts";
+import { reconcileApt } from "./apt-recovery.ts";
 import { nativeReadinessProfiles, snapshotReadinessProfiles, type VerifiedReadinessProfile } from "./readiness.ts";
 import { permitsArchSystemStart } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
@@ -20,12 +23,21 @@ export async function setup(input: CommandInput, host: SetupHost, profiles: read
   const deadline = performance.now() + input.timeoutSeconds * 1000;
   const policy = snapshotReadinessProfiles(readinessProfiles);
   const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
-  const identity = await host.host();
+  const identity = Object.freeze({ ...await host.host() });
   const method = installationMethod(identity);
   if (identity.translated !== false || !method) return failure("setup", 4, { code: "PREREQUISITE_UNAVAILABLE", message: "Assisted setup requires a supported native platform.", actions: [{ command: "fleur doctor", description: "Inspect native platform compatibility." }] });
   let endpoint: string | undefined;
   const probe = () => doctor({ ...input, args: [], timeoutSeconds: remaining() / 1000 }, host, (local) => { endpoint = local; }, policy);
   const observed = await probe();
+  if (observed.result.error?.code === "RECOVERY_REQUIRED") {
+    const recoveryProfile = selectNativeProfile(identity, profiles);
+    if (recoveryProfile?.method === "docker-official-apt" && await hasPendingPackageTransaction(host, identity)) {
+      try {
+        await reconcileApt(host, Object.freeze({ ...identity }), recoveryProfile, remaining, input);
+        return reframe(await probe(), { recovery: { state: "reconciled", historicalOutcome: "unknown", artifacts: "retained" } });
+      } catch (error) { if (error instanceof AptInspectionRequired) return error.outcome; return failure("setup", 5, { code: error instanceof SetupBusy ? "MAINTENANCE_BUSY" : "RECOVERY_REQUIRED", message: "Interrupted APT setup remains blocked. Reconciliation requires a verified reboot, matching original evidence, exact healthy packages and no observed package-manager contention. Preserve the private evidence; inspect package state manually before retrying.", actions: [] }, { resumable: true }); }
+    }
+  }
   if (observed.result.ok) return reframe(observed);
   const imageNeeded = (outcome: CliOutcome) => outcome.result.error?.code === "AUTHORITY_REQUIRED";
   if (imageNeeded(observed) && endpoint) {

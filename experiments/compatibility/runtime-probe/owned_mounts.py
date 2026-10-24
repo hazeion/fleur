@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
+import time
 
 
 def _decode(value):
@@ -353,22 +354,138 @@ def native_self_test():
                     unmount_path(target)
 
 
-def remove_roots(root,token,expected):
+def valid_removal_progress(rows):
+    return (type(rows) is list and len(rows) <= 128
+            and all(type(row) is list and len(row) == 11
+                    and all(type(value) is int and 0 <= value < 2**64 for value in row)
+                    and row[0] in (1, 2) and row[1] in (1, 2) and row[2] in (1, 2, 3, 4)
+                    and row[10] <= 4095 for row in rows))
+
+
+def parse_removal_progress(raw, attempt):
+    if (type(raw) is not bytes or len(raw) > 16384 or not raw or not raw.endswith(b'\n')
+            or type(attempt) is not int or attempt not in (1, 2)):
+        raise ValueError('removal progress bound')
+    lines = raw.decode('ascii').splitlines()
+    if any(re.fullmatch(r'[0-9]{1,20}(?: [0-9]{1,20}){10}', line) is None for line in lines):
+        raise ValueError('removal progress fields')
+    rows = [list(map(int, line.split())) for line in lines]
+    if len(rows) > 64 or not valid_removal_progress(rows) or any(row[0] != attempt for row in rows):
+        raise ValueError('removal progress values')
+    return rows
+
+
+class _RemovalProgress:
+    """Numeric diagnostics only, used by one isolated synchronous root helper."""
+    def __init__(self, root_fd, attempt):
+        if type(attempt) is not int or attempt not in (1, 2):
+            raise ValueError('removal attempt invalid')
+        self.attempt, self.fd, self.records = attempt, None, 0
+        self.started = self.last = time.monotonic_ns()
+        self.tree = self.inode = self.unlinks = self.directories = 0
+        self.unlink_ns = self.directory_ns = self.maximum_ns = 0
+        try:
+            self.fd = os.open(f'removal-progress-{attempt}.facts', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                              0o644, dir_fd=root_fd)
+            os.fchmod(self.fd, 0o644)
+            info = os.fstat(self.fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or info.st_mode & 0o0777 != 0o644:
+                raise ValueError('removal journal custody')
+        except (OSError, ValueError):
+            self.close()
+
+    def emit(self, stage, now=None, error=0):
+        now = time.monotonic_ns() if now is None else now
+        # Progress cannot consume slots reserved for both phase boundaries/errors.
+        if self.fd is None or self.records >= (56 if stage in (2, 4) else 64):
+            return
+        row = [self.attempt, self.tree, stage, self.inode, max(0, (now-self.started)//1000),
+               self.unlinks, self.directories, self.unlink_ns//1000, self.directory_ns//1000,
+               self.maximum_ns//1000, error]
+        body = (' '.join(map(str, row))+'\n').encode('ascii')
+        try:
+            if os.write(self.fd, body) != len(body):
+                raise OSError('partial numeric journal write')
+            self.records += 1
+            self.last = now
+        except OSError:
+            self.close()
+
+    def begin(self, tree, root_fd, name):
+        self.tree = tree
+        self.unlinks = self.directories = self.unlink_ns = self.directory_ns = self.maximum_ns = 0
+        try:
+            self.inode = os.stat(name, dir_fd=root_fd, follow_symlinks=False).st_ino
+        except OSError:
+            self.inode = 0
+        self.emit(1)
+
+    def operation(self, function, directory, *args, **kwargs):
+        started = time.monotonic_ns()
+        try:
+            result = function(*args, **kwargs)
+        except BaseException as error:
+            number = getattr(error, 'errno', 0)
+            self.emit(4, error=number if type(number) is int and 0 <= number <= 4095 else 0)
+            raise
+        ended = time.monotonic_ns()
+        elapsed = max(0, ended-started)
+        if directory:
+            self.directories += 1
+            self.directory_ns += elapsed
+        else:
+            self.unlinks += 1
+            self.unlink_ns += elapsed
+        self.maximum_ns = max(self.maximum_ns, elapsed)
+        if ended-self.last >= 500_000_000:
+            self.emit(2, ended)
+        return result
+
+    def close(self):
+        if self.fd is not None:
+            try: os.close(self.fd)
+            except OSError: pass
+            self.fd = None
+
+
+class _RemovalOs:
+    def __init__(self, original, progress):
+        self.original, self.progress = original, progress
+        # Python's fd-safe walker compares operation objects by identity.
+        self.unlink = lambda *args, **kwargs: progress.operation(original.unlink, False, *args, **kwargs)
+        self.rmdir = lambda *args, **kwargs: progress.operation(original.rmdir, True, *args, **kwargs)
+    def __getattr__(self, name):
+        return getattr(self.original, name)
+
+
+def remove_roots(root,token,expected,attempt=None):
     """Remove only owned trees through a pinned directory after zero-mount proof."""
     import shutil
     root_fd,identity=_owner(root,token)
+    progress = None
     try:
         if type(expected) is not dict or identity!=expected.get('root') or plan(_table(),str(root)):
             raise ValueError('owned removal prerequisites changed')
         if not shutil.rmtree.avoids_symlink_attacks:
             raise ValueError('anchored removal unavailable')
-        for name in ('data','exec'):
-            try:shutil.rmtree(name,dir_fd=root_fd)
-            except FileNotFoundError:pass
+        original = shutil.os
+        if attempt is not None:
+            progress = _RemovalProgress(root_fd, attempt)
+            shutil.os = _RemovalOs(original, progress)
+        try:
+            for tree, name in enumerate(('data','exec'), 1):
+                if progress: progress.begin(tree, root_fd, name)
+                try:shutil.rmtree(name,dir_fd=root_fd)
+                except FileNotFoundError:pass
+                if progress: progress.emit(3)
+        finally:
+            shutil.os = original
         for name in ('docker.sock','docker.pid','daemon.log','tasks.tmp','shim.tmp'):
             try:os.unlink(name,dir_fd=root_fd)
             except FileNotFoundError:pass
-    finally:os.close(root_fd)
+    finally:
+        if progress: progress.close()
+        os.close(root_fd)
 
 
 def native_propagation_test():

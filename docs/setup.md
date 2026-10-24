@@ -12,15 +12,17 @@ Grants live in the OS user's private state directory outside application project
 
 See [Docker Desktop application placement](setup-desktop.md) for its separate authority and recovery rules, and [setup artifact evidence](setup-artifact-evidence.md) for verified payload observations and their native-support limits.
 
-## Current evidence and remaining work
+## Current verified scope
 
-Observed CLI, daemon, Compose and smoke readiness do not automatically admit a release profile. Doctor returns success only when the native host, Bun, Docker CLI build, authoritative Engine/kernel/containerd/runc tuple, Compose and pinned image match a reviewed source-owned readiness policy, the same daemon identity and recorded cgroup driver/operating mode/security options remain observable, advertised CPU/memory/PID enforcement is available, and the owned smoke completes with confirmed cleanup. Advertised capability flags are current-state guards, not a replacement for the recorded isolation experiment. Installation profiles and human grants are separate authority. No user argument, project file or environment variable selects a readiness policy. The source-owned catalog includes an exact Ubuntu 24.04 x64 prerequisite tuple: Bun 1.4.3, Docker CLI/Engine 29.9.1, kernel 6.8.0-147-generic, containerd 2.4.2, runc 1.5.2 and Compose 5.6.0. Its recorded cgroup v2 systemd rootful mode and security options must also match. Other tuples retain exit 4 with release state unverified after smoke readiness. The record cites actual readiness and isolation evidence; test policies never admit a platform. The ordinary packed path has now passed matching Ubuntu VM verification, including repeated Doctor/setup success, preserved grants/state and the original bounded restriction checks. The exact evidence and remaining platform limits are recorded below. Native Debian/Arch installation and other unmeasured targets remain outside existing evidence.
+Required v1 qualification covers Intel macOS, Ubuntu 24.04/26.04 amd64 and Debian 13 amd64 under the [approved platform amendment](https://github.com/hazeion/fleur/issues/5#issuecomment-6385377944). Apple Silicon, other ARM64 targets and Arch are deferred and do not block #24. Existing GitHub ARM tests and scoped measured readiness records remain; they do not establish complete release support for deferred targets. Required-target safety, authority, recovery, isolation, repeats, deadlines and cleanup remain unchanged.
 
-The exact Ubuntu 24.04 x64 official APT package set is mapped in the fixed packaged `verified-apt-profiles.json` catalog with authenticated payload hashes and native evidence references. It exposes a plan without granting permission; each package/configuration/access/service action still requires its own matching human grant. An unavailable stable machine identity returns a human action before reading grants or inspecting packages. The ordinary packed installation path has passed the exact Ubuntu VM proof recorded in the artifact evidence document.
+Observed CLI, daemon, Compose and smoke readiness do not automatically admit a release profile. Doctor returns success only when the native host, Bun, Docker CLI build, authoritative Engine/kernel/containerd/runc tuple, Compose and pinned image match a reviewed source-owned readiness policy, the same daemon identity and recorded cgroup driver/operating mode/security options remain observable, advertised CPU/memory/PID enforcement is available, and the owned smoke completes with confirmed cleanup. Advertised capability flags are current-state guards, not a replacement for the recorded isolation experiment. Installation profiles and human grants are separate authority. No user argument, project file or environment variable selects a readiness policy. The source-owned catalog includes exact Ubuntu 24.04, Ubuntu 26.04 and Debian 13 x64 prerequisite tuples. It also includes the exact Intel macOS 15.7.7/Desktop 4.96.1 prerequisite tuple. The Ubuntu 24.04 tuple uses Bun 1.4.3, Docker CLI/Engine 29.9.1, kernel 6.8.0-147-generic, containerd 2.4.2, runc 1.5.2 and Compose 5.6.0. Ubuntu 26.04 uses the same component builds with kernel 7.0.0-38-generic. Their recorded cgroup v2 systemd rootful mode and security options must also match. Other tuples retain exit 4 with release state unverified after smoke readiness. The record cites actual readiness and isolation evidence; test policies never admit a platform. The ordinary packed Ubuntu 24.04 and 26.04 paths have passed matching VM verification, including repeated Doctor/setup success, preserved grants/state and the original bounded restriction checks. The exact evidence and remaining platform limits are recorded below. The Debian 13 tuple uses the same component builds with kernel `6.12.113+deb13-cloud-amd64`; its internal candidate passed two fresh native runs. Ordinary packed Debian installation and separately scoped assisted recovery each passed two fresh native runs. Intel macOS uses Bun 1.4.3, Docker CLI/Engine 29.9.2, Desktop 4.96.1 build 244132, Linuxkit 7.0.14-linuxkit, rootful cgroupfs/v2, builtin seccomp/cgroup namespaces, containerd 2.4.2, runc 1.5.2 and Compose 5.6.0. Two full native runtime proofs and two ordinary packed Doctor/ready-setup rounds passed independent review; the separate official placement method also has its recorded native repeats. Native Arch installation remains unqualified and deferred; other unmeasured tuples remain unverified.
+
+The exact Ubuntu 24.04, Ubuntu 26.04 and Debian 13 x64 official APT package sets are mapped in the fixed packaged `verified-apt-profiles.json` catalog with authenticated payload hashes and native evidence references. Each exposes a plan without granting permission; each package/configuration/access/service action still requires its own matching human grant. An unavailable stable machine identity returns a human action before reading grants or inspecting packages. Debian also includes three authenticated distribution dependencies and their separately disclosed configuration/helper-state effects. Its ordinary packed native installation and assisted-recovery repeats passed independent review. Both Ubuntu ordinary packed installation paths have passed their exact VM proofs; the Ubuntu 26.04 path passed two fresh attempts at the same source commit. Both are recorded in the artifact evidence document.
 
 ### Installer profiles awaiting qualification
 
-Assisted package installation remains blocked. Platforms without an admitted installer row require manual setup. The permitted methods are verified official Docker Desktop on native macOS, Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64/arm64, and official pacman packages on Arch x86_64. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication and the exact Ubuntu guest installation are recorded separately in the artifact evidence document. Research candidates do not become executable merely by appearing in that inventory. A missing or incompatible source-owned profile requires manual action; the remaining platform evidence leaves this acceptance criterion incomplete.
+Platforms without an admitted installer row require manual setup. Required-target methods are verified official Docker Desktop on native Intel macOS and Docker's official signed apt repository on Ubuntu 24.04/26.04 and Debian 13 amd64. ARM and Arch installer candidates remain deferred and cannot admit themselves through research metadata. The candidate inventory in `src/setup/installer-candidates.json` records exact available package versions, hashes and sources for research. Artifact authentication and the exact Ubuntu guest installation are recorded separately in the artifact evidence document. Research candidates do not become executable merely by appearing in that inventory. A missing or incompatible source-owned profile requires manual action; remaining required-target evidence controls completion; deferred platforms are not closure gates.
 
 Installation, repository changes, service starting/enabling, Docker access privileges, PATH/configuration and agreement acceptance require separate authority. Package post-install scripts and Desktop installation can have these side effects; an install grant cannot silently cover them. Fleur never removes conflicts, upgrades or replaces existing installations, edits profiles/context, changes Docker permissions or accepts legal terms automatically.
 
@@ -28,7 +30,7 @@ Official method references: [macOS](https://docs.docker.com/desktop/setup/instal
 
 ### Native apt adapter checkpoint
 
-The compiled native profile catalog includes the admitted exact Ubuntu row described
+The compiled native profile catalog includes the admitted exact Ubuntu and Debian rows described
 above. Research candidate metadata cannot authorize execution. The apt
 adapter handles the compatible missing subset of an exact package set against
 the exact official Docker repository. Fully configured exact versions with a
@@ -38,8 +40,7 @@ changes. An existing usable CLI that is not accounted for by the exact configure
 `docker-ce-cli` package is preserved rather than replaced. A rejected remote or
 malformed Docker endpoint does not enter native package planning. Inventory queries explicitly target `/` and `/var/lib/dpkg`, so
 `DPKG_ROOT` and `DPKG_ADMINDIR` cannot redirect the inventory away from the host
-that the installation targets. Repository creation has a separate scoped adapter. Desktop and Arch installation
-remain unfinished.
+that the installation targets. Repository creation has a separate scoped adapter. The exact Intel Desktop placement row is described in the separate Desktop document; Arch installation remains unqualified.
 
 A verified apt plan requires separate installation, configuration, Docker access,
 service start and service enable grants because authenticated maintainer scripts
@@ -77,9 +78,7 @@ removes successful shared system configuration automatically.
 
 Official apt signatures and package payloads, Arch package signatures and Docker
 Desktop disk image identities have been authenticated during development. This
-artifact evidence does not establish native installation or runtime support. The
-compiled native profile catalog is still disabled; disposable command fixtures
-exercise the adapters without changing host software.
+artifact evidence does not establish native installation or runtime support. The compiled catalog admits only the exact reviewed Ubuntu/Debian APT and Intel Desktop placement rows described above. Other adapter rows remain disabled; disposable command fixtures exercise those adapters without admitting them.
 
 ### Arch adapter checkpoint
 
@@ -111,6 +110,82 @@ An unconfirmed privileged transaction retains private installer data and reports
 recovery. Further setup cannot create new grants while that transaction remains
 indeterminate. Native verification must still establish privileged child cleanup
 before this adapter can be admitted as supported.
+
+Doctor and setup check retained APT transaction records on Ubuntu and Debian,
+and Arch transaction records on Arch, before running host commands. Unresolved
+or unreadable records block readiness with `RECOVERY_REQUIRED` and exit 5 even
+if Docker would otherwise be ready. Malformed records, directories and dangling symlinks
+remain blocking evidence. This check preserves pending state, grants and private
+artifacts. Doctor never reconciles an interrupted transaction. Legacy records lack
+the boot and artifact identity needed for safe automatic recovery.
+
+New APT package actions require an observed kernel boot UUID before requesting
+authority. Their format-2 pending record preserves the original host observation,
+operation and profile identity, historical grant records, and an inventory of the
+owned installer files and directories. Device/inode values retain their full
+precision; files include their verified digest and size. Stage files and
+directories are synced before the pending record and its parent directory, and
+all of that precedes privileged APT. A durability failure prevents launch and
+retains the private evidence. After a verified different kernel boot, setup can reconcile an exact format-2
+record under its normal setup lock. It requires matching machine, user, source
+profile, historical grants and retained artifact identities, every exact package
+fully configured, a healthy complete dpkg inventory, and clear passive kernel
+observations of the known package-manager locks. Repeated package/configuration
+observations must agree. These samples do not exclude concurrent administrator
+package changes. The original action uses private source/cache paths only as
+command arguments; recovery also refuses observed APT configuration references
+to that retained stage. This is not a universal scan of administrator-created
+references outside the supported setup contract.
+
+Reconciliation preserves the unknown historical command outcome. It performs no
+acquisition, simulation, installation, repair or artifact deletion. If the
+original files and auxiliary directories remain readable with their original
+ownership and contents, reconciliation needs no new grant.
+
+Only the original `archives/partial` and `local-lists/auxfiles` directory inodes
+may instead require a separately scoped `recovery-inspect` action using
+`docker-official-apt`. Their fixed modes and protected ancestry must match. The
+current owner must be root, the invoking user or the `_apt` account resolved from
+the protected local account database. This verifies allowed current state; it does
+not identify who changed ownership. Other ownership changes remain blocked.
+
+A human must authorize a fresh once-only inspection grant. Its plan binds the
+operation, original pending record and profile, machine, user, current boot,
+inspector source, Bun executable, account database and current directory
+metadata. Remembered and cross-operation permission cannot cover inspection.
+JSON/noninteractive setup creates no grant and returns exit 3 with its plan;
+`--grant` can supply a matching existing once grant. Grant inspection and
+revocation remain available. Installation grants are never restored or reused.
+
+The fixed read-only inspector uses noninteractive sudo and held directory
+references. It verifies the live parent process, executable identity, directory
+ancestry and exact inodes, then proves that both directories are empty without
+traversing or reading children. It rechecks identity, ownership, modes and
+nanosecond change timestamps. The grant is durably consumed before invocation.
+Missing OS authentication returns exit 3 and requires a fresh grant. Unknown
+contents, changed evidence, invalid output or uncertain termination returns 5;
+no reconciliation receipt or cleanup claim follows from an uncertain inspection.
+The inspector and all rechecks share the original setup deadline. These are
+sampled observations, not atomic exclusion of concurrent administrator activity.
+
+A protected durable receipt binds the original marker digest and operation,
+profile, machine, user and boot identities before the active marker is retired.
+When inspection was required it also retains the consumed inspection grant,
+source, execution binding and observed auxiliary metadata. The original files
+remain evidence and cannot become inputs to later setup actions. A matching prior
+receipt can complete interrupted retirement after rechecking current evidence,
+without repeating the privileged inspection or restoring its grant. Foreign
+receipts or changed evidence remain blocked.
+
+Doctor runs again after reconciliation; service, access and image authority
+requirements remain independent. Same-boot uncertainty, legacy records, partial
+packages, contention, nonempty auxiliary directories and unexplained artifact
+changes require manual recovery. Two native Ubuntu 26 x64 observations qualified the assisted inspection path
+for completed installation effects with a missing parent receipt after a verified
+reboot. Both preserved the unknown original outcome and required a separate
+once-only inspection grant. Other interruption windows and platforms remain
+unqualified; this does not establish automatic recovery. See the exact inputs and
+report hashes in [setup artifact evidence](setup-artifact-evidence.md#repeated-ubuntu-26-assisted-apt-recovery).
 
 ### Frozen APT payload gate
 
@@ -223,17 +298,41 @@ and successful native installation still require the guest verification gate.
 
 Passive activation observation recognizes loaded sockets in stable listening or
 running states. A matching socket still blocks Docker RPC unless every reported
-activation target is already an active, running service. Filesystem listeners
-must match their declared kind: Stream, Datagram and SequentialPacket endpoints
-must be sockets; FIFO endpoints must be FIFOs with a distinct device/inode from
-the selected Docker socket. Unknown kinds, unavailable identity evidence, conflicting types
-and inconsistent identities remain activation-unknown. Finding an unrelated FIFO
-does not stop inspection of the remaining socket owners. These passive checks do
-not grant service startup authority or contact the daemon.
+activation target is already an active, running service. Filesystem Stream,
+Datagram and SequentialPacket listeners must be sockets. An accessible FIFO must
+be a FIFO with a distinct device/inode from the selected Docker socket; a
+contradictory observed type or identity is never ignored.
+
+A protected FIFO has one narrowly scoped alternative when direct stat completes
+with exit1, empty stdout, an exact C-locale path-specific permission-denied error
+and confirmed command termination. The trusted system manager must report the
+unit as loaded and active in a stable listening or running state, with an
+absolute FIFO Listen path. That retained FIFO transport cannot receive AF_UNIX
+socket RPC; this is transport exclusion, not proof of its inaccessible pathname
+identity. Before contacting the selected Docker socket, Fleur must observe the
+same complete socket inventory, selected socket identity and every observed
+unit's full metadata again, including initially inactive units. Any change
+remains activation-unknown. The two default Docker socket paths cannot use this
+FIFO alternative.
+
+This alternative trusts the system manager and kernel to preserve the declared
+FIFO transport type. Repeated observations detect changes but are not atomic;
+contradictory manager or filesystem evidence must remain activation-unknown.
+
+Unknown kinds, malformed or nonexact errors, timeouts, uncertain termination,
+conflicting types and inconsistent identities remain activation-unknown. Special
+listeners retain their direct type/identity requirement. Finding an unrelated
+FIFO never stops inspection of later units or other Listen entries; unknown
+UNIX-socket owners and stopped activation targets still block RPC. These passive
+checks neither grant service startup authority nor contact the daemon.
 
 
-On Linux, an exact permission-denied response for a protected filesystem socket
-listener may use a private, unprivileged Unix SOCK_DIAG capability. The selected
+On Linux, a protected filesystem socket listener may use a private, unprivileged
+Unix SOCK_DIAG capability only on the same exact completed permission-denied
+response. Both `stat: cannot statx` and `/usr/bin/stat: cannot statx` program-name
+spellings are recognized, with the exact requested path and C-locale error; a
+generic permission-denied message is insufficient. This spelling recognition
+also applies to the protected FIFO alternative above. The selected
 Docker endpoint still requires direct socket stat. The fallback requires positive
 NAME/VFS evidence for a unique binding, two complete kernel dumps with stable
 relevant identities and cookies, and fresh inventory, selected-socket, every observed socket unit and matching
@@ -278,3 +377,22 @@ startup observations require it to be active when declared, using an explicit
 `--` before its name. Startup includes the declared prerequisite in its plan and
 checksum and rejects declaration changes after authorization. No mount operation
 is authorized; arbitrary mount dependencies remain refused.
+
+For the measured Ubuntu 26.04 APT profile, service/access provenance also accepts
+Ubuntu's default sudo-rs alternatives layout. It requires the exact root-owned
+`/usr/bin/sudo` → `/etc/alternatives/sudo` → `/usr/lib/cargo/bin/sudo` chain,
+protected canonical provider directories, a root-owned single-link setuid target,
+installed `sudo-rs` package ownership and clean package verification. The same
+checks cover all path ancestors and run again after human confirmation. They do
+not provide an atomic guarantee against concurrent changes by another root
+administrator. Unknown aliases and altered providers
+require manual action; Fleur never changes the selected provider. Existing
+regular-file sudo checks remain in place for other reviewed layouts. Two owned Ubuntu 26.04 installation/runtime attempts exercised this layout;
+ordinary packed verification is recorded separately in the artifact evidence. Ubuntu documents the
+provider choice in its [user-management guide](https://ubuntu.com/server/docs/how-to/security/user-management/).
+
+Interrupted APT recovery preserves each downloaded source package's recorded
+permissions. Authenticated source packages may have mode `0600` or `0644` inside
+their original owned `0700` package directories. Cache copies, the plan, lock and
+local configuration files require `0600`. Recovery never changes these permissions
+and refuses any current mode that differs from the original record.

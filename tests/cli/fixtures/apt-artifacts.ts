@@ -39,7 +39,7 @@ export async function aptArtifactProtocol(args: readonly string[], context: { re
   return undefined;
 }
 
-export type AptGuardFault = "unknown-package" | "existing-version" | "direction" | "target-version" | "configure-before-install" | "duplicate-configure" | "duplicate-install" | "missing-install" | "archive-path-canonical" | "archive-path-different" | "invocation" | "plan-mode" | "plan-json" | "plan-schema" | "protocol-header" | "protocol-config" | "protocol-action" | "package-state" | "archive-identity" | "archive-digest";
+export type AptGuardFault = "native-dependency-architecture" | "foreign-dependency-architecture" | "duplicate-dependency-alias" | "extra-configure" | "unknown-package" | "existing-version" | "direction" | "target-version" | "configure-before-install" | "duplicate-configure" | "duplicate-install" | "missing-install" | "archive-path-canonical" | "archive-path-different" | "invocation" | "plan-mode" | "plan-json" | "plan-schema" | "protocol-header" | "protocol-config" | "protocol-action" | "package-state" | "archive-identity" | "archive-digest";
 
 /** Executes the actual source-owned hook through a disposable external APT/dpkg fixture. */
 export async function aptGuardProtocol(args: readonly string[], packages: Readonly<Record<string, string>>, rows: readonly string[], fault?: AptGuardFault, sink?: "closed" | "full", noDownloadCache = false): Promise<HostCommandResult> {
@@ -63,6 +63,15 @@ export async function aptGuardProtocol(args: readonly string[], packages: Readon
       }
       return [`${name} - < ${packages[name]} ${selected}`, `${name} - < ${packages[name]} **CONFIGURE**`];
     });
+    if (fault === "native-dependency-architecture" || fault === "foreign-dependency-architecture" || fault === "duplicate-dependency-alias") {
+      for (let index = 0; index < actions.length; index++) {
+        if (!/^(libjansson4|libnftables1) /.test(actions[index]!)) continue;
+        const qualified = actions[index]!.replace(/^(\S+)/, `$1:${fault === "foreign-dependency-architecture" ? "arm64" : "amd64"}`);
+        if (fault === "duplicate-dependency-alias") { actions.splice(index + 1, 0, qualified); break; }
+        actions[index] = qualified;
+      }
+    }
+    if (fault === "extra-configure") actions.push("foreign-package - < 1 **CONFIGURE**");
     if (fault === "unknown-package") actions[0] = actions[0]!.replace(/^\S+/, "PRIVATE-SENTINEL");
     if (fault === "existing-version") actions[0] = actions[0]!.replace(" - < ", " 0 < ");
     if (fault === "direction") actions[0] = actions[0]!.replace(" - < ", " - > ");

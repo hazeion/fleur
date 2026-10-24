@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import debianCatalog from "../../scripts/native-candidate-debian13-amd64.json";
+import type { AptInstallProfile } from "../../src/setup/native.ts";
+import { debianDependencyPackages } from "./fixtures/apt-debian-dependencies.ts";
 import { runCli } from "../../src/cli/main.ts";
 import { setupCommands, type HostCommandResult } from "../../src/setup/commands.ts";
 
@@ -6,7 +9,7 @@ for (const distribution of ["ubuntu", "debian"] as const) test(`${distribution} 
   const calls: string[][] = [];
   const done = (stdout = "", exitCode = 0): HostCommandResult => ({ status: "completed", exitCode, stdout, stderr: "" });
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({
-    host: async () => ({ system: "linux", architecture: "x64", translated: false, distribution, release: distribution === "ubuntu" ? "24.04" : "13", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false, distribution, release: distribution === "ubuntu" ? "24.04" : "13", bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     run: async (args) => {
       calls.push([...args]);
       if (args[0] === "docker") {
@@ -77,7 +80,9 @@ const aptArtifacts = {
   }
 } as const;
 const aptProfile = { method: "docker-official-apt" as const, verified: true as const, distribution: "ubuntu" as const, release: "24.04" as const, architecture: "x64" as const, repositoryFingerprint: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88", packages: aptPackages, artifacts: aptArtifacts };
-async function aptServiceFixture() {
+async function aptServiceFixture(debianHealthNames?: "native" | "foreign" | "duplicate") {
+  const selectedProfile: AptInstallProfile = debianHealthNames ? { ...debianCatalog.profile, artifacts: Object.fromEntries(debianCatalog.artifacts.filter(({ name }) => Object.hasOwn(debianCatalog.profile.packages, name)).map(({ name, version, url, sha256, size }) => [name, { name, version, architecture: "amd64", url, sha256, size }])) } as AptInstallProfile : aptProfile;
+  const selectedPackages = debianHealthNames ? { ...debianCatalog.profile.packages, ...debianDependencyPackages } : aptPackages;
   const { mkdtemp } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const root = await mkdtemp("/tmp/fleur-apt-service-");
@@ -89,7 +94,7 @@ async function aptServiceFixture() {
   const host = {
     stateDirectory: join(root, "state"), interactive: true,
     confirmHuman: async ({ action }: { action: string }) => { prompts.push(action); return "once" as const; },
-    host: async () => ({ system: "linux", architecture: "x64", translated: false as const, distribution: "ubuntu", release: "24.04", machineId: "a".repeat(64) }),
+    host: async () => ({ system: "linux", architecture: "x64", translated: false as const, distribution: selectedProfile.distribution, release: selectedProfile.release, bootId: "11111111-1111-4111-8111-111111111111", machineId: "a".repeat(64) }),
     run: async (args: readonly string[]): Promise<HostCommandResult> => {
       calls.push([...args]);
       if (args[0] === "docker") {
@@ -99,7 +104,11 @@ async function aptServiceFixture() {
         if (args.includes("compose")) return done("5.6.0");
         if (args.includes("image")) return done("", 1, "No image");
       }
-      if (args[0] === "dpkg-query") return done(Object.entries(aptPackages).map(([name, version]) => `${name}\t${version}\tinstalled\tok`).join("\n"));
+      if (args[0] === "dpkg-query") return done(Object.entries(selectedPackages).flatMap(([name, version]) => {
+        const row = (binary: string) => `${binary}\t${version}\tinstalled\tok`;
+        if (!debianHealthNames || args.length !== 5 || !["libjansson4", "libnftables1"].includes(name)) return [row(name)];
+        return debianHealthNames === "duplicate" ? [row(name), row(`${name}:amd64`)] : [row(`${name}:${debianHealthNames === "native" ? "amd64" : "arm64"}`)];
+      }).join("\n"));
       if (args[0] === "/usr/bin/dpkg-query" && args.includes("--search")) {
         const path = args.at(-1)!;
         return done(`${path.endsWith("containerd.service") ? "containerd.io" : path.endsWith("/systemctl") ? "systemd" : path.endsWith("/sudo") ? "sudo" : "docker-ce"}: ${path}\n`);
@@ -123,7 +132,7 @@ async function aptServiceFixture() {
       throw new Error(`Unexpected APT service fixture operation ${args[0]}`);
     },
   };
-  return { root, host, calls, prompts, state, handlers: setupCommands(host, [aptProfile]) };
+  return { root, host, calls, prompts, state, handlers: setupCommands(host, [selectedProfile]) };
 }
 test("exact installed APT packages offer separate startup authority while preserving active containerd", async () => {
   const fixture = await aptServiceFixture();
@@ -554,5 +563,23 @@ test("a newly declared root mount after startup authorization leaves the grant u
     expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
     const grants = await runCli(["setup", "grants", "list", "--json"], { cwd: fixture.root, handlers: fixture.handlers });
     expect(grants.result.data).toMatchObject({ grants: [{ action: "service-start", revoked: false }] });
+  } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+for (const names of ["native", "foreign", "duplicate"] as const) test(`Debian service startup validates ${names} aliases in its secondary complete package observation`, async () => {
+  const fixture = await aptServiceFixture(names);
+  try {
+    const outcome = await runCli(["setup"], { cwd: fixture.root, handlers: fixture.handlers });
+    expect(fixture.calls.some((args) => args[0] === "dpkg-query" && args.length === 5)).toBe(true);
+    if (names === "native") {
+      expect(outcome.result.data).toMatchObject({ setupAction: { action: "service-start", state: "completed" } });
+      expect(fixture.prompts).toEqual(["service-start"]);
+      expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo" && args.includes("start"))).toBe(true);
+    } else {
+      expect(outcome.exitCode).toBe(3);
+      expect(outcome.result.error?.code).toBe("HUMAN_ACTION_REQUIRED");
+      expect(fixture.prompts).toEqual([]);
+      expect(fixture.calls.some((args) => args[0] === "/usr/bin/sudo")).toBe(false);
+    }
   } finally { const { rm } = await import("node:fs/promises"); await rm(fixture.root, { recursive: true, force: true }); }
 });

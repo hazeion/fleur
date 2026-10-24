@@ -1193,3 +1193,38 @@ They neither repair host state nor change any acceptance decision. Independent
 protocol tests and direct reconciliation tests exercise unknown/busy lock refusal,
 native-shaped retained packages and separate inspection authority. The native
 cause remains unconfirmed until a new executed report identifies the refusal.
+
+Candidate `3a6f88fe5b6143ec3f252213f1d797a4383027b1` passed all three
+applicable workflows, including 1,275 CLI tests and 12,227 assertions. Independent
+review accepted both prerequisite reports and all four runtime reports with the
+original enforcement, repeats, deadlines and disposal gates. Runtime review
+summary SHA256 is
+`47be5c50b24fba30f93eebdc5d9ea410352e470195cda2ae67fdedc92661ebc1`.
+Its [native diagnostic run](https://github.com/hazeion/fleur/actions/runs/40091959632)
+again refused reconciliation after the completed interruption and real reboot.
+Report SHA256 is
+`d43d64ccc0212d4196531621857e01aecd47fb08a577cdbd1208ee35a1de741b`.
+
+Both observations identify the same blocker: `/var/cache/apt/archives/lock`
+returns `ENOENT`, so the observer returns `unknown`. The other three lock files
+are protected root-owned regular single-link files. Kernel lock records parse
+and name unrelated inodes. All eight package versions and the full 330-row
+healthy inventory match, and service provenance passes. No administrator
+restoration was performed; recovery remains unqualified.
+
+The lock observer now permits only that fixed archive lock to be absent. It
+requires an existing root-owned, non-writable directory ancestor chain, stable
+identities before/after the bounded kernel observation, and repeated exact
+`ENOENT` for the lock. Other missing locks, permission errors, unsafe paths,
+identity changes, malformed kernel records and actual contention still refuse.
+It never creates, acquires, removes or repairs a lock. The focused regression
+first reproduced `unknown` for the native-shaped absent lock before the fix.
+Fresh execution of the corrected product is still required.
+
+Independent review confirmed the native blocking gate, original interruption
+ledger, real reboot custody, configuration preservation and complete disposal.
+Seventeen focused lock/reconciliation tests passed with 156 assertions,
+including an actual reconciler regression demonstrated red against the original
+observer. An additional focused APT payload/recovery run passed 191 tests with
+5,744 assertions. These local results do not establish later native recovery
+predicates or replace the required fresh repeat.

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reconcileApt } from "../../src/setup/apt-recovery.ts";
 import { AptInspectionRequired } from "../../src/setup/apt-auxiliary.ts";
+import { observeAptLocks, type AptLockFilesystem } from "../../src/setup/apt-locks.ts";
 import { aptCacheArchiveFilename, aptPackageArtifacts, aptPackageVersions, aptPlanTarget } from "../../src/setup/apt-dependencies.ts";
 import type { HostIdentity, SetupHost } from "../../src/setup/commands.ts";
 import { aptFixtureBytes } from "./fixtures/apt-artifacts.ts";
@@ -11,7 +12,7 @@ import { debianDependencyProfile } from "./fixtures/apt-debian-dependencies.ts";
 
 // Real retained files and the actual reconciler. Host protocol data is synthetic;
 // the injected auxiliary boundary represents unreadable Linux _apt-owned dirs.
-async function scenario(locks: "clear" | "busy" | "unknown" = "clear", badControlMode = false) {
+async function scenario(locks: "clear" | "busy" | "unknown" | NonNullable<SetupHost["aptPackageLocks"]> = "clear", badControlMode = false) {
   const root = await mkdtemp(join(tmpdir(), "fleur-debian-reconcile-contract-"));
   const uid = process.getuid!();
   try {
@@ -53,7 +54,7 @@ async function scenario(locks: "clear" | "busy" | "unknown" = "clear", badContro
     const inventory = Object.entries(aptPackageVersions(debianDependencyProfile)).map(([name, version]) => `${["libjansson4", "libnftables1"].includes(name) ? name + ":amd64" : name}\t${version}\tinstalled\tok\n`).join("");
     const calls: string[][] = []; let auxiliaryRetentions = 0; let privilegedReads = 0;
     const host: SetupHost = {
-      stateDirectory: directory, host: async () => identity, aptPackageLocks: async () => locks,
+      stateDirectory: directory, host: async () => identity, aptPackageLocks: async (timeout) => typeof locks === "function" ? locks(timeout) : locks,
       run: async (args) => {
         calls.push([...args]);
         if (args[0] === "dpkg-query") return { status: "completed", exitCode: 0, stdout: inventory, stderr: "" };
@@ -106,5 +107,46 @@ for (const locks of ["busy", "unknown"] as const) {
     expect(result.auxiliaryRetentions).toBe(0);
     expect(result.pendingAfter).toBe(result.pendingBefore);
     expect(result.grantsAfter).toBe(result.grantsBefore);
+  });
+}
+
+for (const busy of [false, true]) {
+  test(`actual Debian reconciler uses passive native-shaped archive absence without bypassing ${busy ? "contention" : "inspection authority"}`, async () => {
+    let kernelReads = 0;
+    const identities = new Map([
+      ["/var/lib/dpkg/lock", 5074n], ["/var/lib/dpkg/lock-frontend", 5073n], ["/var/lib/apt/lists/lock", 77n],
+    ]);
+    const ancestors = ["/", "/var", "/var/cache", "/var/cache/apt", "/var/cache/apt/archives"];
+    const io: AptLockFilesystem = {
+      system: "linux",
+      identity: async (path) => {
+        if (path === "/var/cache/apt/archives/lock") throw Object.assign(Error("Native-shaped absent global archive lock"), { code: "ENOENT" });
+        const ino = identities.get(path);
+        if (ino !== undefined) return { dev: 65025n, ino, uid: 0n, mode: 0o100600n, nlink: 1n, regular: true };
+        const i = ancestors.indexOf(path);
+        if (i < 0) throw Error("Unexpected lock observation path");
+        return { dev: 65025n, ino: BigInt(100 + i), uid: 0n, mode: 0o040755n, nlink: 2n, regular: false };
+      },
+      locks: async () => { kernelReads++; return Buffer.from(`1: FLOCK ADVISORY WRITE 700 fe:01:${busy ? 5074 : 131665} 0 EOF\n`); },
+    };
+    const result = await scenario((timeout) => observeAptLocks(timeout, io));
+    expect(result.artifactCount).toBe(8);
+    expect(result.privilegedReads).toBe(0);
+    expect(result.pendingAfter).toBe(result.pendingBefore);
+    expect(result.grantsAfter).toBe(result.grantsBefore);
+    expect(result.artifactBytesPreserved.every(Boolean)).toBe(true);
+    if (busy) {
+      expect(result.failure).not.toBeInstanceOf(AptInspectionRequired);
+      expect(result.failure).toBeInstanceOf(Error);
+      expect(result.calls).toEqual([]);
+      expect(result.auxiliaryRetentions).toBe(0);
+    } else {
+      expect(result.failure).toBeInstanceOf(AptInspectionRequired);
+      expect((result.failure as AptInspectionRequired).outcome).toMatchObject({ exitCode: 3, result: { error: { code: "AUTHORITY_REQUIRED" }, data: { grantsCreated: false, plan: { action: "recovery-inspect" } } } });
+      expect(result.auxiliaryRetentions).toBe(1);
+      expect(result.calls.some((args) => args[0] === "dpkg-query")).toBe(true);
+      expect(result.calls.every((args) => ["dpkg-query", "apt-config"].includes(args[0]!))).toBe(true);
+    }
+    expect(kernelReads).toBeGreaterThan(0);
   });
 }

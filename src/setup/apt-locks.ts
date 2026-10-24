@@ -22,15 +22,30 @@ const filesystem: AptLockFilesystem = {
   },
 };
 
+const archiveLock = "/var/cache/apt/archives/lock";
+const archiveParents = ["/", "/var", "/var/cache", "/var/cache/apt", "/var/cache/apt/archives"];
+function sameIdentity(before: AptLockFileIdentity, after: AptLockFileIdentity): boolean {
+  return before.dev === after.dev && before.ino === after.ino && before.uid === after.uid && before.mode === after.mode && before.nlink === after.nlink && before.regular === after.regular;
+}
+
 /** Passive kernel observations only. This never acquires, removes or repairs a package lock. */
 export async function observeAptLocks(timeoutMs: number, io: AptLockFilesystem = filesystem): Promise<"clear" | "busy" | "unknown"> {
   if (io.system !== "linux" || timeoutMs <= 0) return "unknown";
   const deadline = performance.now() + timeoutMs;
   try {
-    const paths = ["/var/lib/dpkg/lock", "/var/lib/dpkg/lock-frontend", "/var/lib/apt/lists/lock", "/var/cache/apt/archives/lock"];
-    const snapshots = await Promise.all(paths.map((path) => io.identity(path)));
-    if (snapshots.some((info) => !info.regular || info.uid !== 0n || info.nlink !== 1n || (info.mode & 0o022n) !== 0n)) return "unknown";
-    const identities = snapshots.map((info) => ({ major: ((info.dev >> 8n) & 0xfffn) | ((info.dev >> 32n) & 0xfffff000n), minor: (info.dev & 0xffn) | ((info.dev >> 12n) & 0xffffff00n), inode: info.ino }));
+    const paths = ["/var/lib/dpkg/lock", "/var/lib/dpkg/lock-frontend", "/var/lib/apt/lists/lock", archiveLock];
+    const identity = async (path: string): Promise<AptLockFileIdentity | null> => {
+      try { return await io.identity(path); }
+      catch (error) { if (path === archiveLock && (error as { code?: string })?.code === "ENOENT") return null; throw error; }
+    };
+    const snapshots = await Promise.all(paths.map(identity));
+    if (snapshots.some((info) => info !== null && (!info.regular || info.uid !== 0n || info.nlink !== 1n || (info.mode & 0o022n) !== 0n))) return "unknown";
+    // A minimal host using a private archive cache need never have created the
+    // global archive lock. Observe its absence only under a protected, stable
+    // directory chain. Never create a lock or infer absence from other errors.
+    const parents = snapshots.at(-1) === null ? await Promise.all(archiveParents.map((path) => io.identity(path))) : [];
+    if (parents.some((info) => info.uid !== 0n || (info.mode & 0o170000n) !== 0o040000n || (info.mode & 0o022n) !== 0n || info.nlink < 1n || info.regular)) return "unknown";
+    const identities = snapshots.filter((info) => info !== null).map((info) => ({ major: ((info.dev >> 8n) & 0xfffn) | ((info.dev >> 32n) & 0xfffff000n), minor: (info.dev & 0xffn) | ((info.dev >> 12n) & 0xffffff00n), inode: info.ino }));
     const bytes = await io.locks(deadline);
     if (bytes.byteLength > 2097152) return "unknown";
     for (const line of Buffer.from(bytes).toString("utf8").split("\n").filter(Boolean)) {
@@ -38,8 +53,12 @@ export async function observeAptLocks(timeoutMs: number, io: AptLockFilesystem =
       if (!match) return "unknown";
       if (identities.some((id) => id.major === BigInt("0x" + match[1]) && id.minor === BigInt("0x" + match[2]) && id.inode === BigInt(match[3]!))) return "busy";
     }
-    const after = await Promise.all(paths.map((path) => io.identity(path)));
-    if (after.some((info, index) => info.dev !== snapshots[index]!.dev || info.ino !== snapshots[index]!.ino || info.uid !== snapshots[index]!.uid || info.mode !== snapshots[index]!.mode || info.nlink !== 1n)) return "unknown";
+    const after = await Promise.all(paths.map(identity));
+    if (after.some((info, index) => { const before = snapshots[index]!; return info === null || before === null ? info !== before : !sameIdentity(before, info); })) return "unknown";
+    if (parents.length) {
+      const current = await Promise.all(archiveParents.map((path) => io.identity(path)));
+      if (current.some((info, index) => !sameIdentity(parents[index]!, info))) return "unknown";
+    }
     return performance.now() < deadline ? "clear" : "unknown";
   } catch { return "unknown"; }
 }

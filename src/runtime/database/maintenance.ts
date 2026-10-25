@@ -53,7 +53,7 @@ export class MaintenanceLease {
     const configuredControl = configuration.controlUrl ?? process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL;
     const controlUrl = configuredControl ? databaseUrl(configuredControl) : new URL(targetUrl);
     if (!configuredControl) controlUrl.pathname = "/postgres";
-    if (controlUrl.pathname === targetUrl.pathname || controlUrl.hostname !== targetUrl.hostname || (controlUrl.port || "5432") !== (targetUrl.port || "5432")) throw new Error("CONFIGURATION_MISSING");
+    if (controlUrl.pathname === targetUrl.pathname) throw new Error("CONFIGURATION_MISSING");
     const sql = new SQL(controlUrl.toString(), { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
     const target = new SQL(targetUrl.toString(), { max: 1, connectionTimeout: 2 });
     const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void target.close({ timeout: 0 }).catch(() => {}); }, Math.min(configuration.timeoutMs ?? 5000, 5000));

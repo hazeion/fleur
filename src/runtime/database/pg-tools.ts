@@ -17,7 +17,7 @@ export async function pgTool(tool: "pg_dump" | "pg_restore", args: readonly stri
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     child = Bun.spawn([io.directory ? join(io.directory, tool) : tool, ...args], {
-      env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C", PGHOST: url.hostname, PGPORT: url.port || "5432", PGDATABASE: url.pathname.slice(1), PGUSER: decodeURIComponent(url.username), PGPASSWORD: decodeURIComponent(url.password), PGCONNECT_TIMEOUT: "3", PGOPTIONS: "-c statement_timeout=30000 -c lock_timeout=3000", PGPASSFILE: "/dev/null", PGSERVICEFILE: "/dev/null" },
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C", PGHOST: url.hostname, PGPORT: url.port || "5432", PGDATABASE: url.pathname.slice(1), PGUSER: decodeURIComponent(url.username), PGPASSWORD: decodeURIComponent(url.password), PGCONNECT_TIMEOUT: "3", PGOPTIONS: "-c statement_timeout=30000 -c lock_timeout=3000 -c timezone=UTC -c datestyle=ISO,YMD", PGPASSFILE: "/dev/null", PGSERVICEFILE: "/dev/null" },
       stdin: io.input ? Bun.file(io.input) : "ignore", stdout: output ? output.fd : "ignore", stderr: "ignore",
     });
     let expired = false;

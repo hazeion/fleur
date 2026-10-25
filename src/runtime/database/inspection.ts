@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, link, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { deflateSync, inflateSync } from "node:zlib";
 import { z } from "zod";
 import type { Json } from "../../cli/result";
 import { MaintenanceLease, digest, syncDirectory, type MaintenanceConfiguration } from "./maintenance";
@@ -60,7 +61,7 @@ export async function inspectDatabase(url: string, options: InspectionOptions, c
         if (raw.toString("base64url") !== options.cursor) throw new Error();
         const decipher = createDecipheriv("aes-256-gcm", key, raw.subarray(0, 12));
         decipher.setAuthTag(raw.subarray(12, 28));
-        const value = z.strictObject({ binding: z.literal(binding), after: z.array(z.string()).max(100) }).parse(JSON.parse(Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString()));
+        const value = z.strictObject({ binding: z.literal(binding), after: z.array(z.string()).max(100) }).parse(JSON.parse(inflateSync(Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]), { maxOutputLength: 1048576 }).toString()));
         if (value.after.length !== primary.length) throw new Error();
         after = value.after;
       } catch { throw new Error("ARGUMENT_INVALID"); }
@@ -88,8 +89,9 @@ export async function inspectDatabase(url: string, options: InspectionOptions, c
     if (truncated && rows.length) {
       const last = rows[rows.length-1] as Record<string, string>;
       const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv);
-      const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ binding, after: primary.map(name => last[name]) })), cipher.final()]);
+      const ciphertext = Buffer.concat([cipher.update(deflateSync(JSON.stringify({ binding, after: primary.map(name => last[name]) }))), cipher.final()]);
       next = Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url");
+      if (next.length > 16384) throw new Error("RESULT_TOO_LARGE");
     }
     const result = { table: table ?? null, columns, rows, cursor: next, truncated };
     if (Buffer.byteLength(JSON.stringify(result)) > 1044480) throw new Error("RESULT_TOO_LARGE");

@@ -37,7 +37,7 @@ export const databaseCommands: readonly CommandDefinition[] = [
       return success(definition.name, await backupDatabase(url, value("--out")!, { ...config, timeoutMs: timeoutSeconds*1000, ...(process.env.FLEUR_PRIVATE_PG_TOOLS ? { toolDirectory: process.env.FLEUR_PRIVATE_PG_TOOLS } : {}) }));
     } catch (error) {
       const code = error instanceof Error && ["ARGUMENT_INVALID", "CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "RESULT_TOO_LARGE", "UNSUPPORTED_CAPABILITY", "PREREQUISITE_UNAVAILABLE", "BACKUP_VERIFICATION_FAILED", "DESTINATION_EXISTS"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
-      return failure(definition.name, code === "ARGUMENT_INVALID" ? 2 : ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code) ? 5 : ["CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE", "BACKUP_VERIFICATION_FAILED", "DESTINATION_EXISTS"].includes(code) ? 4 : 1, { code, message: "The database operation could not complete safely.", actions: [{ command: "fleur db recover --inspect", description: "Inspect maintenance state before retrying." }] });
+      return failure(definition.name, code === "ARGUMENT_INVALID" ? 2 : ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code) ? 5 : ["CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(code) ? 4 : 1, { code, message: "The database operation could not complete safely.", actions: [{ command: "fleur db recover --inspect", description: "Inspect maintenance state before retrying." }] });
     }
   },
 }));

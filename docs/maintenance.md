@@ -17,7 +17,7 @@ The namespace binds the verified PostgreSQL cluster system identifier and projec
 
 ## Inspection and export
 
-`db inspect` lists application tables in `public`. `--table` selects a base table with a primary key. Inspection uses a read-only transaction, defaults to 100 rows and permits 1–500. Table lists and rows return an opaque authenticated cursor when truncated. Row cursors bind target identity, table and column metadata. Tampered or incompatible cursors fail. Rows use native primary-key ordering and return column values as exact strings or null, preserving PostgreSQL numeric precision. A cursor continues a live Read Committed listing; it is not a historical snapshot across invocations.
+`db inspect` lists application tables in `public`. `--table` selects a base table with a primary key. Inspection uses a read-only transaction, defaults to 100 rows and permits 1–500. Table lists and rows return an opaque authenticated cursor when truncated. Row cursors bind target identity, table and column metadata. Cursor contents are compressed before authenticated encryption. Decoding bounds expansion to 1 MiB; tokens are limited to 16 KiB. A continuation that cannot fit fails explicitly with RESULT_TOO_LARGE rather than returning an unusable cursor. Tampered or incompatible cursors fail. Rows use native primary-key ordering and return column values as exact strings or null, preserving PostgreSQL numeric precision. A cursor continues a live Read Committed listing; it is not a historical snapshot across invocations.
 
 The complete encoded page is bounded below 1 MiB, including column metadata and cursor. A row that cannot fit fails with `RESULT_TOO_LARGE`; Fleur does not print a partial row. Uniquely named application columns remain ordinary data.
 

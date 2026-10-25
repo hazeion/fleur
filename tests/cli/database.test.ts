@@ -28,3 +28,19 @@ test("database commands reject positional SQL and incomplete backup/recovery gra
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("an existing backup destination is an operation failure and preserves the file", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(`${tmpdir()}/fleur-backup-collision-`);
+  try {
+    await writeFile(`${root}/fleur.json`, JSON.stringify({ formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" }));
+    await writeFile(`${root}/existing.dump`, "unrelated content");
+    const child = Bun.spawn([process.execPath, resolve("bin/fleur.ts"), "db", "backup", "--out", `${root}/existing.dump`, "--project", root, "--json"], { env: { ...process.env, FLEUR_PRIVATE_DATABASE_URL: "postgres://uncontacted@127.0.0.1/uncontacted" }, stdout: "pipe", stderr: "pipe" });
+    const [text, errors, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(errors).toBe("");
+    expect(exit).toBe(1);
+    expect(JSON.parse(text).error.code).toBe("DESTINATION_EXISTS");
+    expect(await Bun.file(`${root}/existing.dump`).text()).toBe("unrelated content");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

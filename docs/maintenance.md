@@ -82,3 +82,71 @@ After reviewing that evidence, rerun the corresponding `db migration apply` or `
 For example, an interrupted apply whose transaction rolled back still reports `applying` in the durable marker. Inspection proves the original schema/data/history. Approved reconciliation records `rollback verified`, and a fresh inspection plus migration status proves that the original data remains and the migration is pending. An interrupted commit can instead match the complete new history and catalog. Reconciliation records that existing commit without running its SQL again. An inspection exit code alone is not proof of either outcome.
 
 `SCHEMA_DRIFT`, `MIGRATION_EDITED`, `MIGRATIONS_PENDING` and uncertain recovery block with exit 5. `MIGRATION_INCOMPATIBLE` reports an unsupported/backfill-requiring plan with exit 1. Approval uses exit 3; unavailable configuration/tools use exit 4. Other verification failures use exit 1. All results retain the version 1 JSON envelope and safe recovery actions.
+
+## Owned seeds and development reset
+
+`fleur db seed` reads exported `defineSeed` declarations from `seeds/` and server
+modules through the restricted registration worker. Seed modules have server
+import authority. They cannot execute shell commands, supply SQL, acquire database
+credentials or receive a database connection. The trusted broker validates the
+serialized declarations again before applying them.
+
+```ts
+import { defineSeed } from "fleur/database";
+import { exercises } from "../server/tables";
+
+export const catalog = defineSeed({
+  key: "exercise-catalog",
+  table: exercises,
+  rows: [{ ownerKey: "squat", values: { id: 1, name: "Squat" } }],
+});
+```
+
+Keys start with an ASCII letter or digit and contain up to 128 letters, digits,
+periods, underscores, colons or hyphens. Row ownership keys are unique within a
+seed. Values use the table's inferred insert type and runtime validation.
+Generated identifiers may be omitted and are retained in ownership metadata.
+`dependsOn: [parentSeed]` declares ordering when another seeded table supplies a
+foreign-key parent. Export every dependency. Missing dependencies, cycles and
+ambiguous ownership fail the whole run.
+
+A successful result reports `inserted`, `updated` and `skipped` rows. An unchanged
+owned row can update. A user-edited row is skipped with reason `user-edited`.
+Versioned tables compare the last applied public row and version before an
+expected-version write. Unversioned tables compare canonical public-row
+fingerprints under locks. Repeating unchanged declarations does not advance a
+row's version. Removing a declaration does not delete data.
+
+Fleur stores ownership in `fleur_internal.seed_ownership` and installs
+`public.fleur_seed_deleted_v1` with `fleur_seed_delete_v1` deletion triggers on
+seeded tables. These are Fleur-owned maintenance objects. Their public catalog
+definitions enter the stored catalog fingerprint. Managed deletes and foreign-key
+cascades record tombstones in the same transaction. Missing rows are reconciled
+before seeding. A deleted row is skipped with reason `deleted`; a recreated row
+with that identity is a conflict. Seed metadata updates do not mark public rows
+as edited. A later ownership or foreign-key failure rolls back all seed writes.
+
+`fleur db reset [--seed] [--grant <id>]` is available only when the trusted
+lifecycle environment explicitly supplies
+`FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL` matching `FLEUR_PRIVATE_DATABASE_URL`.
+Production database configuration must never supply that development binding.
+The command accepts no public target override. An absent or different binding
+returns authority category 3 before changing the target.
+
+Reset requires human target/plan-specific approval and a retained backup that has
+passed disposable restoration and integrity verification. Approval covers current
+migration checksums, optional seed declarations and the current target state.
+Changed migration contents invalidate it. JSON output never grants destructive
+authority. The control-database lock remains held while the original database is
+dropped and recreated with current migrations. Application admission and competing
+maintenance remain blocked throughout. Reset leaves application tables empty
+unless `--seed` is explicit. Requested seeding starts with fresh ownership.
+
+If reset stops after replacement starts, read `db recover --inspect` and retain
+the marker and backup. A repeated reset cannot clear the uncertainty or silently
+repeat recreation. Inspect the actual database and backup before an explicitly
+approved `db restore --from <retained-backup>`. Never delete the marker to force
+startup. A missing replacement database remains fenced. Explicit restore can reconstruct
+it only when the durable reset record binds that exact retained archive and the
+original cluster, database and owner. It re-verifies the archive in a disposable
+database before recreating the missing target.

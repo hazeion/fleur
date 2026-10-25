@@ -43,6 +43,8 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "db inspect", usage: "db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]", summary: "Inspect bounded application data or export it to a file.", options: [{ name: "--table", value: true }, { name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--export", value: true }] },
     { name: "db backup", usage: "db backup --out <file>", summary: "Create and restore-verify a retained database backup.", options: [{ name: "--out", value: true }] },
     { name: "db recover", usage: "db recover --inspect", summary: "Inspect durable maintenance state without clearing it.", options: [{ name: "--inspect", value: false }] },
+    { name: "db seed", usage: "db seed", summary: "Reconcile declared seed ownership without overwriting user edits.", options: [] },
+    { name: "db reset", usage: "db reset [--seed] [--grant <id>]", summary: "Reset only the explicitly bound development database after approved verified backup.", options: [{ name: "--seed", value: false }, { name: "--grant", value: true }] },
     { name: "db migration generate", usage: "db migration generate", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [] },
     { name: "db migration plan", usage: "db migration plan", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [] },
     { name: "db migration status", usage: "db migration status", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [] },
@@ -169,4 +171,28 @@ test("packed release carries its offline creation and prerequisite documentation
   const setupDocumentation = await Bun.file(join(scratch, "package/docs/setup.md")).text();
   expect(setupDocumentation).toContain("The source-owned catalog includes exact Ubuntu 24.04, Ubuntu 26.04 and Debian 13 x64 prerequisite tuples.");
   expect(setupDocumentation).toContain("Platforms without an admitted installer row require manual setup.");
+});
+
+test("packed seed/reset grammar rejects raw SQL and generic approval and reports absent configuration", async () => {
+  const project = join(scratch, "seed-command-project");
+  await mkdir(project);
+  await writeFile(join(project, "fleur.json"), JSON.stringify({ formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" }));
+  for (const args of [["db", "seed", "SELECT 1"], ["db", "reset", "--yes"], ["db", "reset", "--grant"], ["db", "seed", "--seed"]]) {
+    const response = await cli(...args, "--project", project, "--json");
+    expect(response.exit).toBe(2); expect(JSON.parse(response.stdout).error.code).toBe("ARGUMENT_INVALID");
+  }
+  for (const args of [["db", "seed"], ["db", "reset"], ["db", "reset", "--seed"]]) {
+    const response = await cli(...args, "--project", project, "--json");
+    expect(response.exit).toBe(4); expect(JSON.parse(response.stdout).error.code).toBe("CONFIGURATION_MISSING");
+  }
+});
+
+test("packed reset refuses a database without the trusted development binding before connecting", async () => {
+  const project = join(scratch, "reset-authority-project");
+  await mkdir(project);
+  await writeFile(join(project, "fleur.json"), JSON.stringify({ formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" }));
+  const child = Bun.spawn([process.execPath, executable, "db", "reset", "--project", project, "--json"], { cwd: scratch, env: { PATH: path, HOME: scratch, FLEUR_PRIVATE_DATABASE_URL: "postgres://uncontacted@127.0.0.1/uncontacted" }, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(stderr).toBe(""); expect(exit).toBe(3);
+  expect(JSON.parse(stdout)).toMatchObject({ formatVersion: 1, command: "db reset", ok: false, data: null, error: { code: "REQUEST_DENIED" }, truncated: false });
 });

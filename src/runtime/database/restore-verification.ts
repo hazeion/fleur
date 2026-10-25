@@ -1,13 +1,15 @@
+import { unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { SQL } from "bun";
 import { z } from "zod";
 import { MaintenanceLease, databaseUrl, digest, type MaintenanceMarker } from "./maintenance";
 import { quote } from "./inspection";
 import { dataIntegrity } from "./integrity";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
-import { pgTool, fileDigest } from "./pg-tools";
+import { pgTool, fileDigest, schemaDumpArguments } from "./pg-tools";
 import type { BackupConfiguration } from "./backup";
 
-export const backupManifest=z.strictObject({formatVersion:z.literal(1),target:z.strictObject({cluster:z.string(),database:z.string(),oid:z.string(),owner:z.string(),address:z.string(),port:z.number()}),sha256:z.string().regex(/^[a-f0-9]{64}$/),bytes:z.number().int().positive(),verified:z.literal(true),complete:z.literal(true),cleanupVerified:z.literal(true),schemaSha256:z.string(),dataSha256:z.string(),catalogSha256:z.string(),history:z.array(z.string()).max(1000),planChecksum:z.string()});
+export const backupManifest=z.strictObject({formatVersion:z.literal(1),target:z.strictObject({cluster:z.string(),database:z.string(),oid:z.string(),owner:z.string(),address:z.string(),port:z.number()}),sha256:z.string().regex(/^[a-f0-9]{64}$/),bytes:z.number().int().positive(),verified:z.literal(true),complete:z.literal(true),cleanupVerified:z.literal(true),schemaSha256:z.string(),dataSha256:z.string(),catalogSha256:z.string().optional(),history:z.array(z.string()).max(1000).optional(),planChecksum:z.string()});
 export type BackupManifest=z.infer<typeof backupManifest>;
 const literal=(value:string)=>"'"+value.replaceAll("'","''")+"'";
 export async function cleanupInterruptedVerification(lease: MaintenanceLease, marker: MaintenanceMarker): Promise<void> {
@@ -30,12 +32,13 @@ export async function cleanupInterruptedVerification(lease: MaintenanceLease, ma
   if(remaining.length)throw new Error("RECOVERY_REQUIRED");
 }
 /** Re-verify the selected retained bytes using a new unprivileged, uniquely owned target. */
-export async function verifyRetainedArchive(url:string,archive:string,manifest:BackupManifest,lease:MaintenanceLease,marker:MaintenanceMarker,config:BackupConfiguration):Promise<MaintenanceMarker> {
+export async function verifyRetainedArchive(url:string,archive:string,manifest:BackupManifest,lease:MaintenanceLease,marker:MaintenanceMarker,config:BackupConfiguration) {
   const started=performance.now();
   const token=crypto.randomUUID().replaceAll("-",""),name=`fleur_verify_${token}`,password=crypto.randomUUID();
   const tag=`fleur-verification-v1:${digest(JSON.stringify(lease.target))}:${token}`;
   marker={...marker,verification:{database:name,role:name,token}};await lease.persist(marker);
   let sql:SQL|undefined;
+  const schemaFile=join(lease.directory,`verify-${token}.sql`);
   try {
     await lease.sql.unsafe("BEGIN");
     await lease.sql.unsafe(`CREATE ROLE ${quote(name)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD ${literal(password)}`);
@@ -49,10 +52,14 @@ export async function verifyRetainedArchive(url:string,archive:string,manifest:B
     if(identity[0]?.database!==name||identity[0]?.role!==name||[identity[0]?.rolsuper,identity[0]?.rolcreatedb,identity[0]?.rolcreaterole,identity[0]?.rolreplication,identity[0]?.rolbypassrls].some(Boolean))throw new Error("BACKUP_VERIFICATION_FAILED");
     await pgTool("pg_restore",["--no-owner","--no-acl","--exit-on-error","--single-transaction","--no-password",`--dbname=${name}`],target.toString(),{input:archive,timeoutMs:Math.max(1,(config.timeoutMs??60000)-(performance.now()-started)),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
     await sql.unsafe("SET timezone='UTC'; SET datestyle='ISO,YMD'");
-    if(await catalogFingerprint(sql)!==manifest.catalogSha256||await dataIntegrity(sql)!==manifest.dataSha256||JSON.stringify((await migrationHistory(sql)).map(row=>row.checksum))!==JSON.stringify(manifest.history))throw new Error("BACKUP_VERIFICATION_FAILED");
+    const catalogSha256=await catalogFingerprint(sql),history=(await migrationHistory(sql)).map(row=>row.checksum);
+    if((manifest.catalogSha256!==undefined&&catalogSha256!==manifest.catalogSha256)||await dataIntegrity(sql)!==manifest.dataSha256||(manifest.history!==undefined&&JSON.stringify(history)!==JSON.stringify(manifest.history)))throw new Error("BACKUP_VERIFICATION_FAILED");
+    await pgTool("pg_dump",schemaDumpArguments,target.toString(),{output:schemaFile,timeoutMs:Math.max(1,(config.timeoutMs??60000)-(performance.now()-started)),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
+    if((await fileDigest(schemaFile)).sha256!==manifest.schemaSha256)throw new Error("BACKUP_VERIFICATION_FAILED");
     if(JSON.stringify(await fileDigest(archive))!==JSON.stringify({bytes:manifest.bytes,sha256:manifest.sha256}))throw new Error("BACKUP_VERIFICATION_FAILED");
-    return marker;
+    return {marker,manifest:{...manifest,catalogSha256,history}};
   } finally {
+    await unlink(schemaFile).catch(()=>{});
     await sql?.close({timeout:0});
     await lease.sql.unsafe("ROLLBACK").catch(()=>{});
     await cleanupInterruptedVerification(lease,marker);

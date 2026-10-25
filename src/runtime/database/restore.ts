@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { authorizeMaintenance, privateJson, type MaintenanceAuthority } from "./maintenance-authority";
 import { backupDatabase, type BackupConfiguration } from "./backup";
-import { backupManifest, verifyRetainedArchive } from "./restore-verification";
+import { backupManifest, verifyRetainedArchive, cleanupInterruptedVerification } from "./restore-verification";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { readMigrations } from "./migration-plan";
 import { dataIntegrity } from "./integrity";
@@ -17,7 +17,7 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
   const started=performance.now(),remaining=()=>Math.max(1,(config.timeoutMs??60000)-(performance.now()-started));
   const archive=resolve(from),manifest=backupManifest.parse(await privateJson(archive+".manifest.json"));
   const plans=await readMigrations(project);
-  if(manifest.history.some((checksum,index)=>checksum!==plans[index]?.checksum))throw new Error("MIGRATION_EDITED");
+  if(manifest.history?.some((checksum,index)=>checksum!==plans[index]?.checksum))throw new Error("MIGRATION_EDITED");
   const lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()},true);
   const sql=new SQL(url,{max:1,connectionTimeout:2,idleTimeout:0,maxLifetime:0});
   const frozen=join(lease.directory,`restore-${crypto.randomUUID()}.dump`),script=frozen+".sql",command=script+".psql";
@@ -51,12 +51,16 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
     if(await catalogFingerprint(sql)!==beforeSchema||await dataIntegrity(sql)!==beforeData)throw new Error("AUTHORITY_REQUIRED");
     if((await fileDigest(archive)).sha256!==manifest.sha256)throw new Error("AUTHORITY_REQUIRED");
     await pgTool("psql",["--version"],url,io());
-    const intent={operation:"restore" as const,beforeSchema,beforeData,beforeHistory,afterSchema:manifest.catalogSha256,afterData:manifest.dataSha256,afterHistory:manifest.history,restoreFrom:archive};
+    if(previous)await cleanupInterruptedVerification(lease,previous);
+    const intent={operation:"restore" as const,beforeSchema,beforeData,beforeHistory,afterSchema:manifest.catalogSha256??null,afterData:manifest.dataSha256,afterHistory:manifest.history??null,restoreFrom:archive};
     const preservation=await backupDatabase(url,join(lease.directory,`preserved-${crypto.randomUUID()}.dump`),{...config,timeoutMs:remaining()},{lease,source:sql,planChecksum,intent});
     marker=await lease.marker()??undefined;
     if(!marker)throw new Error("RECOVERY_REQUIRED");
     marker={...marker,backup:archive,intent:{...intent,preservedBackup:preservation.destination}};
-    marker=await verifyRetainedArchive(url,frozen,manifest,lease,marker,{...config,timeoutMs:remaining()});
+    const verified=await verifyRetainedArchive(url,frozen,manifest,lease,marker,{...config,timeoutMs:remaining()});
+    const expected=verified.manifest;marker={...verified.marker,intent:{...intent,preservedBackup:preservation.destination,afterSchema:expected.catalogSha256,afterHistory:expected.history}};
+    if(expected.history.some((checksum,index)=>checksum!==plans[index]?.checksum))throw new Error("MIGRATION_EDITED");
+    await lease.persist(marker);
     await pgTool("pg_restore",["--no-owner","--no-acl","--file=-"],url,{...io(),input:frozen,output:script});
     const schemas=await sql.unsafe("SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' ESCAPE '\\' AND nspname <> 'information_schema' ORDER BY nspname");
     const output=await open(command,"wx",0o600);
@@ -67,9 +71,9 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
     }finally{await output.close();}
     marker={...marker,stage:"applying"};await lease.persist(marker);await lease.assertSession();
     await pgTool("psql",["--no-psqlrc","--no-password","--single-transaction","--set=ON_ERROR_STOP=1","--file=-"],url,{...io(),input:command});
-    if(await catalogFingerprint(sql)!==manifest.catalogSha256||await dataIntegrity(sql)!==manifest.dataSha256||JSON.stringify((await migrationHistory(sql)).map(row=>row.checksum))!==JSON.stringify(manifest.history))throw new Error("BACKUP_VERIFICATION_FAILED");
-    await lease.persist({...marker,stage:"committed",schemaState:{catalog:manifest.catalogSha256,history:manifest.history},epoch:crypto.randomUUID()});
-    return {restored:true,replacesCurrentData:true,backup:archive,preservedBackup:preservation.destination,pending:plans.slice(manifest.history.length).map(plan=>plan.id)};
+    if(await catalogFingerprint(sql)!==expected.catalogSha256||await dataIntegrity(sql)!==manifest.dataSha256||JSON.stringify((await migrationHistory(sql)).map(row=>row.checksum))!==JSON.stringify(expected.history))throw new Error("BACKUP_VERIFICATION_FAILED");
+    await lease.persist({...marker,stage:"committed",schemaState:{catalog:expected.catalogSha256,history:expected.history},epoch:crypto.randomUUID()});
+    return {restored:true,replacesCurrentData:true,backup:archive,preservedBackup:preservation.destination,pending:plans.slice(expected.history.length).map(plan=>plan.id)};
   }catch(error){if(marker)await lease.persist({...marker,stage:"recovery required"}).catch(()=>{});throw error;}
   finally{clearTimeout(timer);await sql.close({timeout:0});await lease.close();for(const path of [frozen,script,command])await unlink(path).catch(()=>{});}
 }

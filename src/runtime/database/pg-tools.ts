@@ -30,3 +30,5 @@ export async function pgTool(tool: "pg_dump" | "pg_restore" | "psql", args: read
     throw error;
   } finally { clearTimeout(timer); await output?.close(); }
 }
+
+export const schemaDumpArguments=["--schema-only","--no-owner","--no-acl","--restrict-key=FleurBackupVerificationV1","--no-password"] as const;

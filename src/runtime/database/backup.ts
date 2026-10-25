@@ -6,10 +6,10 @@ import { MaintenanceLease, databaseUrl, digest, syncDirectory, type MaintenanceC
 import { quote, publishFile } from "./inspection";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { dataIntegrity } from "./integrity";
-import { fileDigest, pgTool } from "./pg-tools";
+import { fileDigest, pgTool, schemaDumpArguments } from "./pg-tools";
 
 export interface BackupConfiguration extends MaintenanceConfiguration { readonly toolDirectory?: string; readonly timeoutMs?: number; }
-const schemaArgs = ["--schema-only", "--no-owner", "--no-acl", "--restrict-key=FleurBackupVerificationV1", "--no-password"];
+const schemaArgs = schemaDumpArguments;
 function literal(value: string): string { return "'"+value.replaceAll("'", "''")+"'"; }
 async function absent(path: string): Promise<void> {
   try { await lstat(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
@@ -20,7 +20,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
   await absent(out); await absent(out+".manifest.json");
   const started = performance.now(), deadline = config.timeoutMs ?? 60_000;
   const remaining = () => { const time = deadline-(performance.now()-started); if (time <= 0) throw new Error("BACKUP_VERIFICATION_FAILED"); return time; };
-  const tool = (name: "pg_dump" | "pg_restore", args: string[], url: string, io: { output?: string; input?: string } = {}) => pgTool(name, args, url, { ...io, timeoutMs: remaining(), ...(config.toolDirectory ? { directory: config.toolDirectory } : {}) });
+  const tool = (name: "pg_dump" | "pg_restore", args: readonly string[], url: string, io: { output?: string; input?: string } = {}) => pgTool(name, args, url, { ...io, timeoutMs: remaining(), ...(config.toolDirectory ? { directory: config.toolDirectory } : {}) });
   await tool("pg_dump", ["--version"], urlValue);
   await tool("pg_restore", ["--version"], urlValue);
   const lease = held?.lease ?? await MaintenanceLease.acquire(urlValue, true, config);

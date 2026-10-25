@@ -69,7 +69,7 @@ export async function applyMigrations(url: string, project: string, config: Back
     commitAttempted=true;
     await sql.unsafe("COMMIT"); transaction=false;
     await assertMigrationState(sql);
-    await lease.persist({...marker,stage:"committed",schemaState:{catalog:marker.intent!.afterSchema!,history:marker.intent!.afterHistory},epoch:randomUUID()});
+    await lease.persist({...marker,stage:"committed",schemaState:{catalog:marker.intent!.afterSchema!,history:marker.intent!.afterHistory!},epoch:randomUUID()});
     return {applied:pending.map(plan=>plan.id),backup};
   } catch(error) {
     if(transaction) await sql.unsafe("ROLLBACK").catch(()=>{});

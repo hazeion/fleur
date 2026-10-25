@@ -43,6 +43,11 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "db inspect", usage: "db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]", summary: "Inspect bounded application data or export it to a file.", options: [{ name: "--table", value: true }, { name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--export", value: true }] },
     { name: "db backup", usage: "db backup --out <file>", summary: "Create and restore-verify a retained database backup.", options: [{ name: "--out", value: true }] },
     { name: "db recover", usage: "db recover --inspect", summary: "Inspect durable maintenance state without clearing it.", options: [{ name: "--inspect", value: false }] },
+    { name: "db migration generate", usage: "db migration generate", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [] },
+    { name: "db migration plan", usage: "db migration plan", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [] },
+    { name: "db migration status", usage: "db migration status", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [] },
+    { name: "db migration apply", usage: "db migration apply [--grant <id>]", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [{ name: "--grant", value: true }] },
+    { name: "db restore", usage: "db restore --from <file> [--grant <id>]", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [{ name: "--from", value: true }, { name: "--grant", value: true }] },
   ]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });

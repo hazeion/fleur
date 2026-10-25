@@ -35,9 +35,11 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`lost PostgreSQL COMMIT acknowl
     target.port = String(address.port);
     const table = defineTable("commit_loss", { columns: { id: column.safeInteger().primaryKey(), name: column.string() } });
     const controlUrl = new URL(fixture.url); controlUrl.pathname = "/postgres";
+    await fixture.reviewSchema([table]);
     broker = new ReadBroker({ url: target.href, tables: [table], maintenance: { controlUrl: controlUrl.href } });
     await expect(broker.mutate(db => db.insert(table, { values: { id: repeat, name: "Committed once" }, returning: ["id"] }))).rejects.toThrow("OUTCOME_UNKNOWN");
     expect(commits).toBe(1);
+    await fixture.reviewSchema([table]);
     const observer = new ReadBroker({ url: fixture.url, tables: [table] });
     try { expect(await observer.read(db => db.select(table, { fields: ["id", "name", "version"] }))).toEqual([{ id: repeat, name: "Committed once", version: 1 }]); }
     finally { await observer.close(); }

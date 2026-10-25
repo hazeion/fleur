@@ -16,6 +16,7 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`an external exclusive maintena
   const broker = new ReadBroker({ url: fixture.url, tables: [table] });
   try {
     await fixture.sql.unsafe("CREATE TABLE maintenance_rows (id bigint PRIMARY KEY, name text NOT NULL, version bigint NOT NULL DEFAULT 1)");
+    await fixture.reviewSchema([table]);
     // This is the documented database-level Fleur lock key, independently calculated in SQL.
     const identity = await control.unsafe("SELECT system_identifier::text AS cluster FROM pg_control_system()");
     const database = new URL(fixture.url).pathname.slice(1);

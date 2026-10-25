@@ -53,9 +53,36 @@ export async function ownedPostgres() {
     async function pgTools(directory: string) {
       const { mkdir, writeFile } = await import("node:fs/promises");
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      for (const tool of ["pg_dump", "pg_restore"]) await writeFile(`${directory}/${tool}`, `#!/bin/sh\nexec docker exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGHOST=127.0.0.1 --env PGPORT=5432 ${id} ${tool} "$@"\n`, { mode: 0o700 });
+      for (const tool of ["pg_dump", "pg_restore", "psql"]) await writeFile(`${directory}/${tool}`, `#!/bin/sh\nexec docker exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGHOST=127.0.0.1 --env PGPORT=5432 ${id} ${tool} "$@"\n`, { mode: 0o700 });
       return directory;
     }
-    return { sql, url, cleanup, pgTools };
+    const declared=new Map<string,import("../../src/database").Table>();
+    /** Trusted fixture setup for manually authored broker/isolation SQL. This is not migration-application evidence. */
+    async function reviewSchema(tables:readonly import("../../src/database").Table[]) {
+      const {tableDefinitions}=await import("../../src/runtime/declarations");
+      const {migrationPlan}=await import("../../src/runtime/database/migration-plan");
+      const {catalogFingerprint}=await import("../../src/runtime/database/migration-state");
+      for(const table of tables)declared.set(tableDefinitions.get(table)!.name,table);
+      const plan=migrationPlan([...declared.values()]);
+      await sql!.unsafe("CREATE SCHEMA IF NOT EXISTS fleur_internal; CREATE TABLE IF NOT EXISTS fleur_internal.migrations(position integer PRIMARY KEY,id text NOT NULL UNIQUE,checksum text NOT NULL UNIQUE,parent_checksum text,catalog text NOT NULL,snapshot text NOT NULL)");
+      const connection=await sql!.reserve();
+      let catalog:string;
+      try{catalog=await catalogFingerprint(connection);}finally{connection.release();}
+      await sql!.unsafe("DELETE FROM fleur_internal.migrations");
+      await sql!.unsafe("INSERT INTO fleur_internal.migrations VALUES(1,$1,$2,NULL,$3,$4)",[plan.id,plan.checksum,catalog,JSON.stringify(plan.snapshot)]);
+    }
+    async function reviewApplication(images:import("../../src/runtime/native/endpoint").NativeImages,create=false) {
+      const {startWorker}=await import("../../src/runtime/native/host");
+      const {restoreManifest}=await import("../../src/runtime/manifest-wire");
+      const worker=await startWorker(images),session=crypto.randomUUID();
+      try {
+        const result=await worker.run({mode:"register",session},()=>{throw new Error("Unexpected fixture dispatch");});
+        if(!result||typeof result!=="object"||!("value" in result))throw new Error("Invalid fixture registration");
+        const tables=restoreManifest(result.value).tables;
+        if(create){const {tableDDL}=await import("../../src/runtime/database/table-ddl");for(const statement of tableDDL(tables))await sql!.unsafe(statement);}
+        await reviewSchema(tables);
+      }finally{await worker.close();}
+    }
+    return { sql, url, cleanup, pgTools, reviewSchema, reviewApplication };
   } catch (error) { await cleanup(); throw error; }
 }

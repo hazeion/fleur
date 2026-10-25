@@ -23,9 +23,8 @@ export const databaseCommands: readonly CommandDefinition[] = [
     const value = (flag: string) => args.includes(flag) ? args[args.indexOf(flag)+1] : undefined;
     try {
       if (definition.name === "db recover") {
-        const { MaintenanceLease } = await import("./maintenance");
-        const lease = await MaintenanceLease.acquire(url, false, config, true);
-        try { return success(definition.name, { target: lease.target, maintenance: await lease.marker(), busy: lease.busy }); } finally { await lease.close(); }
+        const {inspectMaintenance}=await import("./recovery");
+        return success(definition.name,JSON.parse(JSON.stringify(await inspectMaintenance(url,config))));
       }
       if (definition.name === "db inspect") {
         const { inspectDatabase } = await import("./inspection");

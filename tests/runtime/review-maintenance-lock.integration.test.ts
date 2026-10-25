@@ -33,6 +33,7 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`control backend death preserve
   let outcome: Promise<unknown> | undefined;
   try {
     await fixture.sql.unsafe("CREATE TABLE review_fence_rows(id bigint PRIMARY KEY, version bigint NOT NULL DEFAULT 1)");
+    await fixture.reviewSchema([fenceRows]);
     await control.unsafe("SELECT 1");
     const observed = await MaintenanceLease.acquire(fixture.url, false, { stateRoot: root });
     const key = observed.key;

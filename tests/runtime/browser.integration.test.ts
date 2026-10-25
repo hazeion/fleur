@@ -26,6 +26,7 @@ test("direct browser navigation preserves server HTML and hydrates only validate
   try {
     await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
     await fixture.sql.unsafe("INSERT INTO exercises (id,name) VALUES ('00000000-0000-4000-8000-000000000001','Squat')");
+    await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url);
     server = serveReadApplication(app, bundle);
     const address = server.url.origin;

@@ -12,6 +12,7 @@ test("PostgreSQL enforces the same full Unicode fold independently of applicatio
   const broker = new ReadBroker({ url: fixture.url, tables: [table] });
   try {
     for (const statement of declarations.tableDDL([table])) await fixture.sql.unsafe(statement);
+    await fixture.reviewSchema([table]);
     for (const [display, conflict] of [["Straße", "STRASSE"], ["Σ", "ς"], ["İ", "i\u0307"], ["𐐀", "𐐨"]]) {
       expect(caseFold(display!)).toBe(caseFold(conflict!));
       await broker.mutate(db => db.insert(table, { values: { name: display! }, returning: ["id"] }));

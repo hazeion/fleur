@@ -91,7 +91,7 @@ export class ReadBroker {
       finally { if (!abort.signal.aborted) active = undefined; }
     };
     try {
-      const admitted = MaintenanceLease.acquire(this.#url, false, this.#maintenance);
+      const admitted = MaintenanceLease.acquire(this.#url, false, {...this.#maintenance,tables:[...this.#tables]});
       void admitted.then(lease => { if (abort.signal.aborted) void lease.close().catch(() => {}); }).catch(() => {});
       admission = await Promise.race([admitted, expired]);
       connection = await this.#pool.reserve({ signal: abort.signal });
@@ -178,7 +178,7 @@ export class ReadBroker {
       if (abort.signal.aborted || performance.now() - started >= 5000
         || (error instanceof SQL.PostgresError && (error.errno === "57014" || error.code === "ERR_POSTGRES_CONNECTION_TIMEOUT"))) throw new Error("QUERY_TIMEOUT");
       if (error instanceof PublicOperationError) throw error;
-      if (error instanceof Error && ["QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(error.message)) throw error;
+      if (error instanceof Error && ["QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING", "CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(error.message)) throw error;
       throw new Error("INTERNAL_FAILURE");
     } finally {
       valid = false;

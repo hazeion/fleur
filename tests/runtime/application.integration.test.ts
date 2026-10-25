@@ -14,6 +14,7 @@ test("restricted registration, query and page workers render the disposable Post
   try {
     await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
     await fixture.sql.unsafe("INSERT INTO exercises (id,name) VALUES ('00000000-0000-4000-8000-000000000001','Squat')");
+    await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url);
     const rendered = await app.render("/exercises");
     expect(rendered.html).toContain("<h1>Exercises</h1>");

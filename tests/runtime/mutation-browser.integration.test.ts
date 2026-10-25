@@ -7,7 +7,6 @@ import { compileClient } from "../../src/runtime/build/client";
 import { prepareNativeImages } from "../../src/runtime/native/build";
 import { ReadApplication } from "../../src/runtime/application";
 import { serveReadApplication } from "../../src/runtime/http";
-import { tableDDL } from "../../src/runtime/database/table-ddl";
 import { ownedPostgres } from "./owned-postgres";
 
 test("browser saves, reports concurrent edits, and reconciles response loss without replay", async () => {
@@ -21,8 +20,8 @@ test("browser saves, reports concurrent edits, and reconciles response loss with
   let app: ReadApplication | undefined, server: ReturnType<typeof serveReadApplication> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
+    await fixture.reviewApplication(images,true);
     app = await ReadApplication.open(images, fixture.url);
-    for (const statement of tableDDL(app.registry.tables)) await fixture.sql.unsafe(statement);
     server = serveReadApplication(app, bundle);
     browser = await chromium.launch({ headless: true });
     const address = server.url.origin;

@@ -27,8 +27,8 @@ export class ReadApplication {
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
   private constructor(images: Images, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
-    this.registry = registry; this.#images = images; this.#maintenance = maintenance; this.#url = url;
-    this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance });
+    this.registry = registry; this.#images = images; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
+    this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance: this.#maintenance });
   }
   static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}): Promise<ReadApplication> {
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
@@ -38,7 +38,10 @@ export class ReadApplication {
       worker = await startWorker(images);
       const result = record(await worker.run({ mode: "register", session }, () => { throw new Error("REQUEST_DENIED"); }));
       if (result.kind !== "complete" || result.session !== session || result.sequence !== 0 || Object.keys(result).length !== 4) throw new Error("SOURCE_REJECTED");
-      return new ReadApplication(images, restoreManifest(result.value), url, maintenance);
+      const registry=restoreManifest(result.value);
+      const checked=await MaintenanceLease.acquire(url,false,{...maintenance,tables:registry.tables,completeRegistry:true});
+      await checked.close();
+      return new ReadApplication(images, registry, url, maintenance);
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
   }
   async #execute(worker: Awaited<ReturnType<typeof startWorker>>, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000): Promise<unknown> {

@@ -1,6 +1,6 @@
 # Inspecting data and verifying backups
 
-Fleur supplies three named database operations. They require the exact project pin and explicit private PostgreSQL configuration. They never accept SQL or shell arguments.
+Fleur supplies named inspection, backup, migration and recovery operations. They require the exact project pin and explicit private PostgreSQL configuration. They never accept SQL or shell arguments.
 
 ```sh
 fleur db inspect --table exercises --limit 100 --json
@@ -39,12 +39,46 @@ Cleanup checks cluster-scoped database/role identities and ownership tags before
 
 ## Interrupted work
 
-Fleur fsyncs external stages and the state directory. Records include target identity, exact backup reference, plan checksum, epoch and disposable verification identity. Stages distinguish preparing, backup verified, applying, committed, rollback verified and recovery required. This slice writes preparing, backup verified, committed and recovery required; applying and rollback belong to later migration/recovery operations.
+Fleur fsyncs external stages and the state directory. Records include target identity, exact backup reference, plan checksum, epoch and disposable verification identity. Stages distinguish preparing, backup verified, applying, committed, rollback verified and recovery required. Migration and restore also use applying and rollback verified, with recorded before/after catalog, data and history evidence.
 
 If verification or cleanup fails after preparation, normal admission remains blocked. Closing or killing the owner releases its advisory lock but never clears the durable marker. `db recover --inspect` remains read-only, including while another owner holds maintenance. It reports the target, current marker, up to 200 durable stage log entries with explicit log truncation, and live contention without replaying work or force-clearing state. Browser navigation reports maintenance with HTTP 503; mutations return a structured maintenance error without automatic retry.
 
-For an interrupted backup, inspect the recorded exact archive reference and disposable identities. Preserve those files and the marker. A successful status result proves only that inspection succeeded. Explicit reviewed recovery and restore are supplied by the following migration/recovery slice; this command cannot claim that an uncertain database is ready.
+For an interrupted backup, inspect the recorded exact archive reference and disposable identities. Preserve those files and the marker. A successful status result proves only that inspection succeeded. Use the reviewed reconciliation and restore procedures below; inspection cannot claim that an uncertain database is ready.
 
 ## Result and exit contracts
 
 All commands use the version 1 JSON envelope and global `--timeout`, `--project`, `--help` and `--json` options. `truncated` appears in both the inspection page and envelope. Invalid grammar/cursors use exit 2. Missing configuration, tools or control authority use exit 4. Maintenance contention or uncertain recovery uses exit 5. Oversized inspection results, restore/integrity failures and destination collisions fail with exit 1. Failures never return a success manifest or expose connection credentials.
+
+## Reviewed migrations
+
+```sh
+fleur db migration generate --json
+fleur db migration plan --json
+fleur db migration status --json
+fleur db migration apply --json
+fleur db restore --from before-change.dump
+```
+
+Generation compiles admitted server table declarations and registers them inside the restricted worker. It needs Bun and Docker for that explicit compilation step, but no database configuration or connection. It writes numbered `migrations/0001.json` artifacts containing SQL, the declaration snapshot, the preceding checksum and structured removal, incompatibility and required-backfill lists. Review and commit these files with the application. Generation uses the preceding saved snapshot and never changes the target database. An unchanged snapshot produces no new file.
+
+Plans admit only SQL emitted by Fleur's declaration compiler. Altered SQL, reordered history, changed checksums and nontransactional additions such as concurrent indexes are rejected. Additions with nullable columns or declared defaults preserve existing rows. Supported decimal widening preserves scale; unsupported type/identity/versioning changes and additions that need an explicit backfill are reported and refused. Resolve these declarations in an unapplied plan before proceeding. Do not remove or edit an applied file. Removing columns or tables requires separate human approval.
+
+`db migration plan` reads the complete artifact chain offline. `db migration status` compares it with actual history and normalized PostgreSQL catalogs. Comparison includes relations, columns, constraints, indexes, functions, enum/domain/range types, defaults, collations, sequence definitions, triggers and policies. The `fleur_internal` schema contains Fleur's migration metadata and is excluded from application catalog fingerprints. History checksums/order are verified separately. The external maintenance record also retains the expected catalog/history, so erasing database metadata does not bypass drift checks. Normal admission rejects drift; there is no push, automatic reset or history rewrite.
+
+Apply holds exclusive control-database ownership and the target fence through draining, backup verification and the schema transaction. SQL and ordered history commit together. The verified backup remains in private state. Applied SQL must match the reviewed artifact chain. A confirmed rollback requires proof that original schema and data remain unchanged. An uncertain commit keeps normal access blocked. Every completed maintenance resumption receives a new external epoch.
+
+## Approval and restore
+
+Destructive apply and restore require a human at an interactive terminal. The prompt identifies the verified cluster/database and exact plan checksum. Restore also identifies the backup and says that it replaces current data. JSON invocation returns `AUTHORITY_REQUIRED`, exit 3, without creating authority. There is no generic `--yes`. `--grant <id>` can consume only an existing unconsumed private grant matching the exact operation, target and observed database state. Human approval creates a single-use receipt. Changed plans, changed data, consumed receipts and unknown IDs cannot reuse approval. These grants are host maintenance authority, never application capabilities.
+
+Restore additionally requires a compatible host `psql`, alongside `pg_dump` and `pg_restore`. Missing tools fail without installation. Fleur freezes the selected archive bytes, checks its private manifest and re-verifies restoration into a new unprivileged disposable database. It retains another verified backup of the current target before replacement, including post-backup changes. Earlier format-version-1 manifests remain usable: Fleur derives missing catalog/history metadata through the disposable restore and verifies the original schema, complete data and archive hashes. Before replacing a prior interrupted marker, it also verifies cleanup of that marker's owned disposable database and role. Unsafe or active resources keep recovery blocked. PostgreSQL executes schema removal and archive restoration in one transaction through `psql`, with error-stop and no user startup file. Extra current objects disappear only after explicit replacement approval. Schema, complete data and history must match before the external marker becomes committed. An older restored schema reports pending migrations; application declarations must match before access resumes.
+
+## Recovering an interrupted migration or restore
+
+If an operation ends without a confirmed result, preserve its marker, backups and verification identities. Run `fleur db recover --inspect --json`. Inspection reports actual catalog/data fingerprints and ordered history, plus `committed`, `rollback verified`, `uncertain` or `in-progress`. It never clears the marker or repeats work. A missing target or unreadable history remains uncertain.
+
+After reviewing that evidence, rerun the corresponding `db migration apply` or `db restore --from <file>` interactively. For an uncertain recorded operation, that invocation requests fresh approval to reconcile the observed result. It only records a proven commit or rollback and advances the epoch; it does not replay the migration or restoration in that invocation. A later explicit apply can execute still-pending migrations. Cleanup of interrupted verification resources checks ownership tags and identities and never force-removes another database or role. If actual schema, data or history matches neither recorded outcome, recovery stays blocked. Choose an explicitly confirmed retained backup or investigate the discrepancy; do not delete the state directory.
+
+For example, an interrupted apply whose transaction rolled back still reports `applying` in the durable marker. Inspection proves the original schema/data/history. Approved reconciliation records `rollback verified`, and a fresh inspection plus migration status proves that the original data remains and the migration is pending. An interrupted commit can instead match the complete new history and catalog. Reconciliation records that existing commit without running its SQL again. An inspection exit code alone is not proof of either outcome.
+
+`SCHEMA_DRIFT`, `MIGRATION_EDITED`, `MIGRATIONS_PENDING` and uncertain recovery block with exit 5. `MIGRATION_INCOMPATIBLE` reports an unsupported/backfill-requiring plan with exit 1. Approval uses exit 3; unavailable configuration/tools use exit 4. Other verification failures use exit 1. All results retain the version 1 JSON envelope and safe recovery actions.

@@ -25,6 +25,7 @@ test("browser reports maintenance, resumes after verified completion and startup
   let owner: MaintenanceLease | undefined;
   try {
     await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY,name text NOT NULL,note text,version bigint NOT NULL DEFAULT 1)");
+    await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url, config);
     server = serveReadApplication(app, bundle);
     browser = await chromium.launch({ headless: true });

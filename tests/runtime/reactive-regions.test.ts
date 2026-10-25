@@ -75,3 +75,15 @@ test("a failure before later reads retains the stable boundary of the complete r
   const boundary = failed.regions.find(region => region.error === "QUERY_TIMEOUT")!;
   expect(complete.regions.find(region => region.dependencies.length === 2)?.id).toBe(boundary.id);
 });
+
+test("page dependency discovery reports internal pending work without swallowing declared failures", async () => {
+  const query = defineQuery({ name: "page.pending", input: schema.object({}), output: schema.string() });
+  handleQuery(query, async () => "stored");
+  const page = definePage({ path: "/page-pending", params: schema.object({}) });
+  registerPage(page, { component: async () => h("p", null, await readQuery(query, {})) });
+  nameExports({ query, page });
+  const pending = await executePage("/page-pending", async () => { throw new Error("QUERY_PENDING"); });
+  expect(pending.regions).toEqual([{ id: "page", dependencies: [{ name: "page.pending", input: {} }], error: "QUERY_PENDING" }]);
+  expect(pending.html).not.toContain("stored");
+  await expect(executePage("/page-pending", async () => { throw new Error("NOT_FOUND"); })).rejects.toThrow("NOT_FOUND");
+});

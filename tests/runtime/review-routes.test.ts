@@ -47,8 +47,8 @@ test("a static route wins before an overlapping dynamic route validates its para
   expect(stderr).toBe("");
   expect(exit).toBe(0);
   expect(JSON.parse(stdout)).toEqual([
-    { path: "/review-items/new", result: { html: "<h1>New item</h1>", islands: [] } },
-    { path: "/review-items/00000000-0000-4000-8000-000000000001", result: { html: "<h1>00000000-0000-4000-8000-000000000001</h1>", islands: [] } },
+    { path: "/review-items/new", result: { html: '<template data-fleur-region="page"></template><h1>New item</h1><template data-fleur-end="page"></template>', islands: [], regions: [{ id: "page", dependencies: [] }] } },
+    { path: "/review-items/00000000-0000-4000-8000-000000000001", result: { html: '<template data-fleur-region="page"></template><h1>00000000-0000-4000-8000-000000000001</h1><template data-fleur-end="page"></template>', islands: [], regions: [{ id: "page", dependencies: [] }] } },
     { path: "/review-items/not-a-uuid", error: "ROUTE_INVALID" },
   ]);
   } finally { await fixture.cleanup(); }

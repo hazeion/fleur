@@ -24,3 +24,23 @@ test("a raced destination collision preserves both the unrelated destination and
     expect(head).toBe("PGDMP");
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 240_000);
+
+for (let repeat = 1; repeat <= 2; repeat++) test(`backup rejects lost rows in a legal pg-prefixed user schema, repeat ${repeat}`, async () => {
+  const fixture = await ownedPostgres();
+  const root = await mkdtemp(join(tmpdir(), "fleur-review-schema-integrity-"));
+  try {
+    await fixture.sql.unsafe("CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.retained(id bigint PRIMARY KEY); INSERT INTO pgcustom.retained VALUES (7)");
+    const tools = await fixture.pgTools(join(root, "tools"));
+    const restore = join(tools, "pg_restore");
+    const original = await readFile(restore, "utf8");
+    await copyFile(restore, restore+".real");
+    // External tool boundary: complete the real restore, then lose one restored row.
+    const corrupt = original.replace('pg_restore "$@"', 'psql -v ON_ERROR_STOP=1 -c '+shellLiteral("DELETE FROM pgcustom.retained"));
+    await writeFile(restore, `#!/bin/sh\ncase "$1" in --version) exec ${shellLiteral(restore+".real")} "$@" ;; esac\n${shellLiteral(restore+".real")} "$@" || exit $?\n${corrupt.split("\n").slice(1).join("\n")}`, { mode: 0o700 });
+    const destination = join(root, "rejected.dump");
+    await expect(backupDatabase(fixture.url, destination, { stateRoot: root, toolDirectory: tools, timeoutMs: 120_000 })).rejects.toThrow("BACKUP_VERIFICATION_FAILED");
+    expect(await Bun.file(destination+".manifest.json").exists()).toBe(false);
+    expect(await fixture.sql.unsafe("SELECT id FROM pgcustom.retained")).toEqual([{ id: "7" }]);
+    expect(await fixture.sql.unsafe("SELECT datname FROM pg_database WHERE datname LIKE 'fleur_verify_%'")).toEqual([]);
+  } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 240_000);

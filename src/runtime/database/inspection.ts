@@ -11,6 +11,16 @@ import { MaintenanceLease, digest, syncDirectory, type MaintenanceConfiguration 
 export interface InspectionOptions { readonly table?: string; readonly limit?: number; readonly cursor?: string; readonly export?: string; }
 export function quote(name: string): string { return '"'+name.replaceAll('"', '""')+'"'; }
 async function cursorKey(lease: MaintenanceLease): Promise<Buffer> {
+  return lease.sql.begin(async sql => {
+    // Shared inspection leases can initialize concurrently, including across
+    // processes. Keep readers outside the temporary two-link publication state.
+    await sql.unsafe("SET LOCAL statement_timeout='5s'");
+    const key = BigInt.asIntN(64, BigInt(`0x${digest(`fleur:cursor-key:v1:${lease.key}`).slice(0, 16)}`)).toString();
+    await sql.unsafe("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+    return readCursorKey(lease);
+  });
+}
+async function readCursorKey(lease: MaintenanceLease): Promise<Buffer> {
   const path = `${lease.directory}/cursor.key`;
   const temporary = `${path}.${crypto.randomUUID()}.tmp`;
   const candidate = await open(temporary, "wx", 0o600);

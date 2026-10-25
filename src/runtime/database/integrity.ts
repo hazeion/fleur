@@ -5,7 +5,7 @@ import { quote } from "./inspection";
 /** Every base table, including Fleur history and metadata, all sequence states and large-object pages. */
 export async function dataIntegrity(sql: SQL): Promise<string> {
   const hash = createHash("sha256");
-  const relations = await sql.unsafe("SELECT n.nspname AS schema, c.relname AS name, c.relkind AS kind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','S','f','m') ORDER BY n.nspname COLLATE \"C\", c.relname COLLATE \"C\"");
+  const relations = await sql.unsafe("SELECT n.nspname AS schema, c.relname AS name, c.relkind AS kind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE left(n.nspname,3) <> 'pg_' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','S','f','m') ORDER BY n.nspname COLLATE \"C\", c.relname COLLATE \"C\"");
   for (const relation of relations) {
     if (relation.kind === "f") throw new Error("UNSUPPORTED_CAPABILITY");
     const name = `${quote(String(relation.schema))}.${quote(String(relation.name))}`;

@@ -41,6 +41,11 @@ test("the fixed Ubuntu26 builder emits only Resolute internal policy while ordin
     expect(doctor.exit).toBe(4);
     expect(JSON.parse(doctor.stdout)).toMatchObject({ command: "doctor", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE" } });
     expect(doctor.stderr).toContain("INTERNAL NATIVE CANDIDATE");
+    const help = await command([process.execPath, join(internal, "package/bin/fleur.ts"), "--help", "--json"], root, environment);
+    expect(help.exit).toBe(0);
+    expect(help.stdout).toContain("db backup");
+    expect(help.stdout).toContain("db inspect");
+    expect(help.stdout).toContain("db recover");
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25000);
 

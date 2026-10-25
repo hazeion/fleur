@@ -1,7 +1,7 @@
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, rename } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -31,6 +31,15 @@ export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await lstat(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new Error("RECOVERY_REQUIRED");
+  // Flush every entry, including ancestors created by another concurrent
+  // admission. Syncing only the marker directory cannot retain its own name.
+  let directory = await realpath(path);
+  for (;;) {
+    await syncDirectory(directory);
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
 }
 export async function syncDirectory(path: string): Promise<void> {
   const file = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);

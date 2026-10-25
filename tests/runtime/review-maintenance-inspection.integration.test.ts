@@ -27,6 +27,23 @@ test("inspection preserves numeric keyset order and accepts columns matching int
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 180_000);
 
+for (let repeat = 1; repeat <= 2; repeat++) test(`concurrent first inspections share usable pagination keys, repeat ${repeat}`, async () => {
+  const fixture = await ownedPostgres();
+  const root = await mkdtemp(join(tmpdir(), "fleur-review-concurrent-inspection-"));
+  try {
+    await fixture.sql.unsafe("CREATE TABLE shared_keys(id bigint PRIMARY KEY); INSERT INTO shared_keys VALUES (1),(2)");
+    const pages = await Promise.allSettled(Array.from({ length: 24 }, () => inspectDatabase(fixture.url, { table: "shared_keys", limit: 1 }, { stateRoot: root })));
+    expect(pages.filter(page => page.status === "rejected")).toEqual([]);
+    for (const result of pages) {
+      if (result.status !== "fulfilled") throw result.reason;
+      const first = result.value.data as { cursor: string; rows: unknown[] };
+      expect(first.rows).toEqual([{ id: "1" }]);
+      const second = await inspectDatabase(fixture.url, { table: "shared_keys", limit: 1, cursor: first.cursor }, { stateRoot: root });
+      expect((second.data as { rows: unknown[] }).rows).toEqual([{ id: "2" }]);
+    }
+  } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 180_000);
+
 test("a truncated table catalog supplies a cursor that reaches remaining tables", async () => {
   const fixture = await ownedPostgres();
   const root = await mkdtemp(join(tmpdir(), "fleur-review-catalog-"));

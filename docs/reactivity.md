@@ -76,18 +76,16 @@ This trades bounded idle resource use for lower refresh startup latency.
 ## Qualification status
 
 This implementation has not met the approved native refresh timing gate and
-must not be treated as release-qualified. The two-view test retains its
-five-second assertions. Exploratory Intel macOS runs using host Bun 1.4.4 (the project pins 1.4.3)
-repeatedly failed after committed
-mutations: one run delivered the new client query after approximately 5.4 seconds;
+must not be treated as release-qualified. On Intel macOS with pinned Bun 1.4.3,
+the full suite's two-view native test failed to deliver the new client query
+within five seconds after mutation success. Earlier exploratory runs on host
+Bun 1.4.4 also failed: one delivered the query after approximately 5.4 seconds;
 another delivered the query but did not update server props within the following
 five seconds. Diagnostic operation times were approximately 4–5 seconds per query
 and 4–5 seconds per server render, despite prepared one-shot workers. The fast
 browser protocol tests pass against a controlled backend; they do not establish
 native database performance.
 
-The pinned-runtime full suite is still needed to establish the native result.
-If the failure persists, the native execution/refresh mechanism requires further
-work or a live decision
+The native execution/refresh mechanism requires further work or a live decision
 under the approved specification's compatibility rule. Deadlines, physical
 retirement, cleanup verification and freshness assertions remain unchanged.

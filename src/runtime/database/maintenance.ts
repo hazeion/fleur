@@ -1,3 +1,4 @@
+import type { Table } from "../../database";
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -6,10 +7,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
-export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; }
+export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; }
 const identitySchema = z.strictObject({ cluster: z.string().regex(/^\d+$/), database: z.string().min(1).max(63), oid: z.string().regex(/^\d+$/), owner: z.string().min(1), address: z.string(), port: z.number().int(), });
 export type DatabaseIdentity = z.infer<typeof identitySchema>;
-const markerSchema = z.strictObject({ formatVersion: z.literal(1), target: identitySchema, stage: z.enum(["preparing", "backup verified", "applying", "committed", "rollback verified", "recovery required"]), planChecksum: z.string().regex(/^[a-f0-9]{64}$/), backup: z.string().nullable(), verification: z.strictObject({ database: z.string(), role: z.string(), token: z.string() }).optional(), log: z.array(z.strictObject({ at: z.string(), stage: z.string(), planChecksum: z.string().regex(/^[a-f0-9]{64}$/) })).max(200).optional(), logTruncated: z.boolean().optional(), epoch: z.string().uuid(), });
+const markerSchema = z.strictObject({ formatVersion: z.literal(1), target: identitySchema, stage: z.enum(["preparing", "backup verified", "applying", "committed", "rollback verified", "recovery required"]), planChecksum: z.string().regex(/^[a-f0-9]{64}$/), backup: z.string().nullable(), verification: z.strictObject({ database: z.string(), role: z.string(), token: z.string() }).optional(), log: z.array(z.strictObject({ at: z.string(), stage: z.string(), planChecksum: z.string().regex(/^[a-f0-9]{64}$/) })).max(200).optional(), logTruncated: z.boolean().optional(), schemaState: z.strictObject({ catalog: z.string(), history: z.array(z.string()).max(1000) }).optional(), intent: z.strictObject({ operation: z.enum(["migration","restore"]), beforeSchema: z.string(), beforeData: z.string(), beforeHistory: z.array(z.string()), afterHistory: z.array(z.string()), afterSchema: z.string().nullable(), afterData: z.string().nullable().optional(), restoreFrom: z.string().optional(), preservedBackup: z.string().optional() }).optional(), epoch: z.string().uuid(), });
 export type MaintenanceMarker = z.infer<typeof markerSchema>;
 export function digest(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
 export function databaseUrl(value: string): URL {
@@ -91,10 +92,16 @@ export class MaintenanceLease {
       const marker = await lease.marker();
       if (!inspect && marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect && marker && (marker.target.cluster !== identity.cluster || marker.target.database !== identity.database || marker.target.owner !== identity.owner || marker.target.oid !== identity.oid)) throw new Error("RECOVERY_REQUIRED");
+      if (!inspect) {
+        const { assertMigrationState, verifyExternalSchemaState } = await import("./migration-state");
+        const history=await assertMigrationState(target, configuration.tables);
+        if(!history.length&&configuration.tables?.length&&marker?.intent)throw new Error("MIGRATIONS_PENDING");
+        await verifyExternalSchemaState(target, marker);
+      }
       return lease;
     } catch (error) {
       await sql.close({ timeout: 0 });
-      if (error instanceof Error && ["CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(error.message)) throw error;
+      if (error instanceof Error && ["CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) throw error;
       throw new Error("PREREQUISITE_UNAVAILABLE");
     } finally { clearTimeout(timer); await target.close({ timeout: 0 }); }
   }
@@ -109,8 +116,11 @@ export class MaintenanceLease {
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new Error("RECOVERY_REQUIRED"); }
     try {
       const stat = await file.stat();
-      if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size > 65536) throw new Error("RECOVERY_REQUIRED");
-      return markerSchema.parse(JSON.parse(await file.readFile("utf8")));
+      if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size > 1048576) throw new Error("RECOVERY_REQUIRED");
+      const bytes=Buffer.alloc(1048577);let used=0;
+      while(used<bytes.length){const read=await file.read(bytes,used,bytes.length-used,used);if(!read.bytesRead)break;used+=read.bytesRead;}
+      if(used>1048576)throw new Error("RECOVERY_REQUIRED");
+      return markerSchema.parse(JSON.parse(bytes.subarray(0,used).toString("utf8")));
     } catch { throw new Error("RECOVERY_REQUIRED"); } finally { await file.close(); }
   }
   async persist(marker: MaintenanceMarker): Promise<void> {
@@ -120,6 +130,7 @@ export class MaintenanceLease {
     const log = [...previous?.log ?? [], { at: new Date().toISOString(), stage: marker.stage, planChecksum: marker.planChecksum }];
     const value = markerSchema.parse({ ...marker, log: log.slice(-200), logTruncated: previous?.logTruncated === true || log.length > 200 });
     if (JSON.stringify(value.target) !== JSON.stringify(this.target)) throw new Error("REQUEST_DENIED");
+    if(Buffer.byteLength(JSON.stringify(value))>1048576)throw new Error("RECOVERY_REQUIRED");
     const path = join(this.directory, `stage-${crypto.randomUUID()}.tmp`);
     const file = await open(path, "wx", 0o600);
     try { await file.writeFile(JSON.stringify(value)+"\n"); await file.sync(); } finally { await file.close(); }

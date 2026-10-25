@@ -47,3 +47,5 @@ The compatibility regression uses a real checksum-verified Bun 1.4.2 release exe
 ## Database inspection and backups
 
 `db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]` returns read-only bounded pages. `db backup --out <file>` creates a retained PostgreSQL archive only after full disposable restoration, integrity comparison and owned cleanup. `db recover --inspect` reports durable maintenance state without clearing it. See [maintenance configuration, safety and recovery](maintenance.md).
+
+`db migration generate`, `plan`, `status` and `apply [--grant <id>]` manage reviewed transactional schema artifacts. `db restore --from <file> [--grant <id>]` requires human replacement approval. JSON calls never manufacture destructive authority. See [reviewed migrations and interrupted recovery](maintenance.md#reviewed-migrations) for actual-state checks, grants, tool prerequisites and recovery outcomes.

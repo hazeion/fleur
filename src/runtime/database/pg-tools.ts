@@ -10,7 +10,7 @@ export async function fileDigest(path: string): Promise<{ bytes: number; sha256:
   return { bytes, sha256: hash.digest("hex") };
 }
 /** Trusted host tools only. No application handler receives these credentials or executable selection. */
-export async function pgTool(tool: "pg_dump" | "pg_restore", args: readonly string[], urlValue: string, io: { output?: string; input?: string; timeoutMs: number; directory?: string }): Promise<void> {
+export async function pgTool(tool: "pg_dump" | "pg_restore" | "psql", args: readonly string[], urlValue: string, io: { output?: string; input?: string; timeoutMs: number; directory?: string }): Promise<void> {
   const url = databaseUrl(urlValue);
   const output = io.output ? await open(io.output, "wx", 0o600) : undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;

@@ -4,6 +4,7 @@ import { link, lstat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { MaintenanceLease, databaseUrl, digest, syncDirectory, type MaintenanceConfiguration, type MaintenanceMarker } from "./maintenance";
 import { quote, publishFile } from "./inspection";
+import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { dataIntegrity } from "./integrity";
 import { fileDigest, pgTool } from "./pg-tools";
 
@@ -14,7 +15,7 @@ async function absent(path: string): Promise<void> {
   try { await lstat(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   throw new Error("DESTINATION_EXISTS");
 }
-export async function backupDatabase(urlValue: string, destination: string, config: BackupConfiguration = {}) {
+export async function backupDatabase(urlValue: string, destination: string, config: BackupConfiguration = {}, held?: { lease: MaintenanceLease; source: SQL; planChecksum: string; intent: NonNullable<MaintenanceMarker["intent"]> }) {
   const out = resolve(destination);
   await absent(out); await absent(out+".manifest.json");
   const started = performance.now(), deadline = config.timeoutMs ?? 60_000;
@@ -22,8 +23,8 @@ export async function backupDatabase(urlValue: string, destination: string, conf
   const tool = (name: "pg_dump" | "pg_restore", args: string[], url: string, io: { output?: string; input?: string } = {}) => pgTool(name, args, url, { ...io, timeoutMs: remaining(), ...(config.toolDirectory ? { directory: config.toolDirectory } : {}) });
   await tool("pg_dump", ["--version"], urlValue);
   await tool("pg_restore", ["--version"], urlValue);
-  const lease = await MaintenanceLease.acquire(urlValue, true, config);
-  const source = new SQL(urlValue, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
+  const lease = held?.lease ?? await MaintenanceLease.acquire(urlValue, true, config);
+  const source = held?.source ?? new SQL(urlValue, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const token = randomUUID().replaceAll("-", ""), name = `fleur_verify_${token}`;
   const tag = `fleur-verification-v1:${digest(JSON.stringify(lease.target))}:${token}`;
   const scratch = `${lease.directory}/${token}`;
@@ -61,7 +62,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     const activities = await source.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");
     const prepared = await source.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()");
     if (activities[0]?.active !== "0" || prepared.length) throw new Error("MAINTENANCE_BUSY");
-    marker = { formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: digest(JSON.stringify({ operation: "backup", target: lease.target, out })), backup: archive, verification: { database: name, role: name, token }, epoch: (await lease.marker())?.epoch ?? randomUUID() };
+    marker = { schemaState: (await lease.marker())?.schemaState, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: held?.planChecksum ?? digest(JSON.stringify({ operation: "backup", target: lease.target, out })), ...(held ? { intent: held.intent } : {}), backup: archive, verification: { database: name, role: name, token }, epoch: (await lease.marker())?.epoch ?? randomUUID() };
     await lease.persist(marker);
     await source.unsafe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await source.unsafe("SET LOCAL statement_timeout='30s'");
@@ -73,7 +74,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     sourceData = await dataIntegrity(source);
     await tool("pg_dump", [...schemaArgs, `--snapshot=${snapshotId}`], urlValue, { output: scratch+".source.sql" });
     sourceSchema = (await fileDigest(scratch+".source.sql")).sha256;
-    marker = { ...marker, planChecksum: digest(JSON.stringify({ operation: "backup", target: lease.target, out, sourceData, sourceSchema })) };
+    marker = { ...marker, planChecksum: held?.planChecksum ?? digest(JSON.stringify({ operation: "backup", target: lease.target, out, sourceData, sourceSchema })) };
     await lease.persist(marker);
     await tool("pg_dump", ["--format=custom", "--no-password", `--snapshot=${snapshotId}`], urlValue, { output: archive });
     const head = new Uint8Array(await Bun.file(archive).slice(0,5).arrayBuffer());
@@ -108,11 +109,11 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     await tool("pg_dump", schemaArgs, urlValue, { output: scratch+".current.sql" });
     if ((await fileDigest(scratch+".current.sql")).sha256 !== sourceSchema) throw new Error("RECOVERY_REQUIRED");
     await cleanupVerification();
-    const metadata = { formatVersion: 1, target: lease.target, ...archiveIntegrity, verified: true, complete: true, cleanupVerified: true, schemaSha256: sourceSchema, dataSha256: sourceData, planChecksum: marker.planChecksum };
+    const metadata = { catalogSha256: await catalogFingerprint(source), history: (await migrationHistory(source)).map(row=>row.checksum), formatVersion: 1, target: lease.target, ...archiveIntegrity, verified: true, complete: true, cleanupVerified: true, schemaSha256: sourceSchema, dataSha256: sourceData, planChecksum: marker.planChecksum };
     await link(archive, out); published = true; await syncDirectory(dirname(out));
     await publishFile(out+".manifest.json", JSON.stringify(metadata)+"\n");
-    marker = { ...marker, backup: out, stage: "backup verified" }; await lease.persist(marker);
-    await lease.persist({ ...marker, stage: "committed" });
+    marker = { ...marker, schemaState: { catalog: metadata.catalogSha256, history: metadata.history }, backup: out, stage: "backup verified" }; await lease.persist(marker);
+    if (!held) await lease.persist({ ...marker, stage: "committed" });
     return { ...metadata, destination: out };
   } catch (error) {
     try { if (!cleanupComplete) await cleanupVerification(); }
@@ -125,8 +126,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
   } finally {
     clearTimeout(timer);
     await verification?.close({ timeout: 0 });
-    await source.close({ timeout: 0 });
-    await lease.close();
+    if (!held) { await source.close({ timeout: 0 }); await lease.close(); }
     for (const path of [scratch+".source.sql", scratch+".restored.sql", scratch+".current.sql"]) await unlink(path).catch(() => {});
     // Verified archives remain at the explicit destination. Failed archives stay
     // referenced by maintenance state for deliberate inspection and disposal.

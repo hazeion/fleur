@@ -28,7 +28,7 @@ async function cli(...args: string[]) {
 }
 test("packed help works offline through Bun with Node poisoned and no checkout working directory", async () => {
   const response = await cli("--json", "--help");
-  expect(response.exit).toBe(0);
+  expect(response.exit, response.stderr).toBe(0);
   expect(response.stderr).toBe("");
   const value = JSON.parse(response.stdout);
   expect(value).toMatchObject({ formatVersion: 1, command: "help", ok: true, error: null, truncated: false });
@@ -40,6 +40,9 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "setup grants list", usage: "setup grants list", summary: "Inspect this OS user's setup grants." },
     { name: "setup", usage: "setup [--grant <id>]", summary: "Inspect authorized resumable prerequisite setup actions.", options: [{ name: "--grant", value: true }] },
     { name: "doctor", usage: "doctor", summary: "Inspect local prerequisites without installing software." },
+    { name: "db inspect", usage: "db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]", summary: "Inspect bounded application data or export it to a file.", options: [{ name: "--table", value: true }, { name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--export", value: true }] },
+    { name: "db backup", usage: "db backup --out <file>", summary: "Create and restore-verify a retained database backup.", options: [{ name: "--out", value: true }] },
+    { name: "db recover", usage: "db recover --inspect", summary: "Inspect durable maintenance state without clearing it.", options: [{ name: "--inspect", value: false }] },
   ]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });

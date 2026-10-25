@@ -34,7 +34,8 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`lost PostgreSQL COMMIT acknowl
     if (!address || typeof address === "string") throw new Error("Missing proxy address");
     target.port = String(address.port);
     const table = defineTable("commit_loss", { columns: { id: column.safeInteger().primaryKey(), name: column.string() } });
-    broker = new ReadBroker({ url: target.href, tables: [table] });
+    const controlUrl = new URL(fixture.url); controlUrl.pathname = "/postgres";
+    broker = new ReadBroker({ url: target.href, tables: [table], maintenance: { controlUrl: controlUrl.href } });
     await expect(broker.mutate(db => db.insert(table, { values: { id: repeat, name: "Committed once" }, returning: ["id"] }))).rejects.toThrow("OUTCOME_UNKNOWN");
     expect(commits).toBe(1);
     const observer = new ReadBroker({ url: fixture.url, tables: [table] });

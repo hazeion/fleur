@@ -26,6 +26,7 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
         "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'self'`,
       } });
     } catch (error) {
+      if (error instanceof Error && ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(error.message)) return new Response(`<!doctype html><html lang="en"><title>Database maintenance</title><h1>Database maintenance</h1><p>${error.message === "RECOVERY_REQUIRED" ? "Maintenance needs inspection before this application can resume." : "Database maintenance is in progress. Refresh after it completes."}</p></html>`, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
       if (error instanceof PublicOperationError) return Response.json({ error: { code: error.code, ...(error.details === undefined ? {} : { details: error.details }) } }, { status: error.code === "NOT_FOUND" ? 404 : error.code === "INPUT_INVALID" ? 400 : error.code.endsWith("CONFLICT") ? 409 : 422, headers: { "Cache-Control": "no-store" } });
       const code = error instanceof Error && ["ROUTE_INVALID", "ROUTE_NOT_FOUND", "QUERY_TIMEOUT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
       return Response.json({ error: { code } }, { status: code === "ROUTE_NOT_FOUND" ? 404 : code === "ROUTE_INVALID" ? 400 : 500, headers: { "Cache-Control": "no-store" } });
@@ -71,6 +72,7 @@ async function mutationResponse(app: ReadApplication, request: Request, url: URL
     const data = await app.mutate(mutation.name, mutation.input);
     return Response.json({ status: "success", data }, { headers });
   } catch (error) {
+    if (error instanceof Error && ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(error.message)) return fail(error.message, 503);
     if (error instanceof PublicOperationError) return Response.json({ status: "failure", error: { code: error.code, ...(error.details === undefined ? {} : { details: error.details }) } }, { status: 422, headers });
     if (error instanceof Error && error.message === "OUTCOME_UNKNOWN") return Response.json({ status: "outcome-unknown" }, { status: 503, headers });
     const code = error instanceof Error && ["REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";

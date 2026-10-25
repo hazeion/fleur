@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
+import { ownedPostgres } from "./owned-postgres";
 import { fileURLToPath } from "node:url";
 
 test("a static route wins before an overlapping dynamic route validates its parameters", async () => {
   // The subprocess isolates the native transport mock from other runtime tests.
-  // No database operation runs, and no native container is started.
+  // Startup now verifies real control authority; route rendering performs no reads.
+  const fixture = await ownedPostgres();
+  try {
   const child = Bun.spawn([process.execPath, "-e", `
     import { mock } from "bun:test";
     import { h } from "preact";
@@ -30,7 +33,7 @@ test("a static route wins before an overlapping dynamic route validates its para
       },
     }) }));
     const { ReadApplication } = await import("./src/runtime/application.ts");
-    const app = await ReadApplication.open({ worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" }, "postgres://unused:unused@127.0.0.1:1/unused");
+    const app = await ReadApplication.open({ worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" }, process.env.FLEUR_PRIVATE_DATABASE_URL);
     const observations = [];
     try {
       for (const path of ["/review-items/new", "/review-items/00000000-0000-4000-8000-000000000001", "/review-items/not-a-uuid"]) {
@@ -39,7 +42,7 @@ test("a static route wins before an overlapping dynamic route validates its para
       }
     } finally { await app.close(); }
     console.log(JSON.stringify(observations));
-  `], { cwd: fileURLToPath(new URL("../..", import.meta.url)), stdout: "pipe", stderr: "pipe" });
+  `], { env: { ...process.env, FLEUR_PRIVATE_DATABASE_URL: fixture.url }, cwd: fileURLToPath(new URL("../..", import.meta.url)), stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(stderr).toBe("");
   expect(exit).toBe(0);
@@ -48,4 +51,5 @@ test("a static route wins before an overlapping dynamic route validates its para
     { path: "/review-items/00000000-0000-4000-8000-000000000001", result: { html: "<h1>00000000-0000-4000-8000-000000000001</h1>", islands: [] } },
     { path: "/review-items/not-a-uuid", error: "ROUTE_INVALID" },
   ]);
-});
+  } finally { await fixture.cleanup(); }
+}, 180_000);

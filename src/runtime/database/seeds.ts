@@ -16,6 +16,12 @@ export function canonical(value: unknown): string {
   if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
   return JSON.stringify(value);
 }
+/** JSON numbers remain exact decimal text; PostgreSQL infers the declared key type. */
+function databaseKey(encoded: string): string {
+  const value: unknown = encoded.startsWith('"') ? JSON.parse(encoded) : encoded;
+  if (typeof value !== "string") throw new Error("SEED_CONFLICT");
+  return value;
+}
 export async function seedDatabase(url: string, project: string, declarations: readonly Seed[], config: MaintenanceConfiguration = {}, held?: { lease: MaintenanceLease; sql: SQL }) {
   const seeds = orderSeeds(declarations), plans = await readMigrations(project);
   const lease = held?.lease ?? await MaintenanceLease.acquire(url, true, config);
@@ -52,7 +58,7 @@ export async function seedDatabase(url: string, project: string, declarations: r
     }
     for (const owner of owned) {
       const exists = await sql.unsafe("SELECT to_regclass($1) AS relation", [`public.${quote(owner.table_name)}`]);
-      const row = exists[0]?.relation ? await sql.unsafe(`SELECT 1 FROM public.${quote(owner.table_name)} WHERE ${quote(owner.primary_field)}=$1`, [JSON.parse(owner.row_id)]) : [];
+      const row = exists[0]?.relation ? await sql.unsafe(`SELECT 1 FROM public.${quote(owner.table_name)} WHERE ${quote(owner.primary_field)}=$1`, [databaseKey(owner.row_id)]) : [];
       if (!row.length) await sql.unsafe("UPDATE fleur_internal.seed_ownership SET tombstone=true WHERE seed=$1 AND owner_key=$2", [owner.seed, owner.owner_key]);
     }
     marker = { ...marker, stage: "applying" }; await lease.persist(marker);
@@ -69,7 +75,7 @@ export async function seedDatabase(url: string, project: string, declarations: r
         const normalized = await sql.unsafe(`SELECT to_jsonb($1::${type})::text AS id`, [values[primary]]);
         if (normalized[0]?.id !== owner.row_id) throw new Error("SEED_CONFLICT");
       }
-      const id = owner ? JSON.parse(owner.row_id) : values[primary];
+      const id = owner ? databaseKey(owner.row_id) : values[primary];
       const current = id === undefined ? [] : await sql.unsafe(`SELECT encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') AS fingerprint, ${projection(quote(primary), spec.columns[primary]!)} AS primary_value, ${spec.versioned ? 'version::text' : 'NULL::text'} AS version FROM public.${quote(spec.name)} t WHERE ${quote(primary)}=$1 FOR UPDATE`, [id]);
       if (owner?.tombstone && current.length || !owner && current.length) throw new Error("SEED_CONFLICT");
       if (owner && (owner.tombstone || !current.length || current[0].fingerprint !== owner.fingerprint)) {

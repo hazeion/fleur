@@ -75,14 +75,15 @@ test("unversioned fingerprints preserve edits and a later ownership collision ro
 test("seed ownership uses database identity and preserves the public type of decimal and timestamp primary keys", async () => {
   const { schema } = await import("../../src/schema");
   const fixture = await ownedPostgres(), root = await mkdtemp(join(tmpdir(), "fleur-seed-identities-"));
-  const decimal = defineTable("seed_decimal_ids", { columns: { id: column.decimal({ precision: 8, scale: 2 }).primaryKey(), name: column.string() } });
+  const decimal = defineTable("seed_decimal_ids", { columns: { id: column.decimal({ precision: 30, scale: 2 }).primaryKey(), name: column.string() } });
   const timestamp = defineTable("seed_timestamp_ids", { columns: { id: column.timestamp().primaryKey(), name: column.string() } });
   try {
     const config = { stateRoot: root, toolDirectory: await fixture.pgTools(join(root, "tools")) };
     await generateMigration(root, [decimal, timestamp]); await applyMigrations(fixture.url, root, config);
-    const seeds = (name: string) => [defineSeed({ key: "decimal", table: decimal, rows: [{ ownerKey: "one", values: { id: schema.decimal({ maxScale: 2 }).parse("1.00"), name } }] }), defineSeed({ key: "timestamp", table: timestamp, rows: [{ ownerKey: "one", values: { id: schema.timestamp().parse("2026-10-24T12:34:56Z"), name } }] })];
+    const seeds = (name: string) => [defineSeed({ key: "decimal", table: decimal, rows: [{ ownerKey: "one", values: { id: schema.decimal({ maxScale: 2 }).parse("9007199254740993.00"), name } }] }), defineSeed({ key: "timestamp", table: timestamp, rows: [{ ownerKey: "one", values: { id: schema.timestamp().parse("2026-10-24T12:34:56Z"), name } }] })];
+    await fixture.sql.unsafe("INSERT INTO public.seed_decimal_ids VALUES(9007199254740992.00,'Unrelated user row',1)");
     await seedDatabase(fixture.url, root, seeds("First"), config);
-    expect(await seedDatabase(fixture.url, root, seeds("Second"), config)).toMatchObject({ updated: 2 });
+    expect(await seedDatabase(fixture.url, root, seeds("Second"), config)).toMatchObject({ updated: 2, skipped: [] });
     expect(await seedDatabase(fixture.url, root, seeds("Second"), config)).toMatchObject({ updated: 0 });
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 240_000);

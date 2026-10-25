@@ -9,6 +9,8 @@ test("uncertain cleanup discards reserved connections without starving healthy r
   try {
     await fixture.sql.unsafe("CREATE TABLE review_quarantine (id bigint PRIMARY KEY, version bigint NOT NULL DEFAULT 1)");
     await fixture.sql.unsafe("INSERT INTO review_quarantine (id) VALUES (1)");
+    const {column,defineTable}=await import("../../src/database");
+    await fixture.reviewSchema([defineTable("review_quarantine",{columns:{id:column.safeInteger().primaryKey()}})]);
     const running = Bun.spawn([process.execPath, "-e", `
       import { mock, spyOn } from "bun:test";
       import { CleanupLease } from "./src/runtime/database/cleanup.ts";

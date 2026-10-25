@@ -1,6 +1,6 @@
 import { column, defineTable, type ColumnReference, type Table, type DeleteAction } from "../database";
 import { validatePublicValue } from "../schema";
-import { definition, definitions, references, tableDefinitions } from "./declarations";
+import { rehydratingTable, definition, definitions, references, tableDefinitions } from "./declarations";
 
 interface ColumnBuilder extends ColumnReference {
   nullable(): ColumnBuilder;
@@ -94,7 +94,8 @@ export function restoreTables(input: unknown): readonly Table[] {
       columns[name] = value;
       if (field.reference !== undefined) links.push([name, record(field.reference)]);
     }
-    const table = defineTable(spec.name, { columns, versioned: spec.versioned });
+    const options={columns,versioned:spec.versioned,[rehydratingTable]:true};
+    const table = defineTable(spec.name,options);
     byName.set(spec.name, table);
     for (const [name, reference] of links) pending.push({ column: table[name]!, reference });
   }

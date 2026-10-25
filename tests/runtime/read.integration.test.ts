@@ -13,6 +13,7 @@ beforeAll(async () => {
   await fixture.sql.unsafe("INSERT INTO exercises (id,name) SELECT n, 'Exercise ' || n FROM generate_series(1, 502) n");
   await fixture.sql.unsafe("CREATE FUNCTION cancelled_read() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cancelled by server' USING ERRCODE = '57014'; END $$");
   await fixture.sql.unsafe("CREATE VIEW cancelled_reads AS SELECT 1::bigint AS id, cancelled_read() AS name");
+  await fixture.reviewSchema([exercises, cancelledReads]);
   broker = new ReadBroker({ url: fixture.url, tables: [exercises, cancelledReads] });
 }, 180_000);
 afterAll(async () => { await broker?.close(); await fixture?.cleanup(); });
@@ -70,6 +71,7 @@ test("timestamp projections preserve PostgreSQL microseconds", async () => {
   const events = defineTable("events", { columns: { id: column.safeInteger().primaryKey(), stamp: column.timestamp() } });
   await fixture.sql.unsafe("CREATE TABLE events (id bigint PRIMARY KEY, stamp timestamptz NOT NULL, version bigint NOT NULL DEFAULT 1)");
   await fixture.sql.unsafe("INSERT INTO events (id, stamp) VALUES (1, '2024-02-29T12:00:00.123456Z')");
+  await fixture.reviewSchema([events]);
   const reader = new ReadBroker({ url: fixture.url, tables: [events] });
   try {
     const result = await reader.read(db => db.select(events, { fields: ["stamp"] }));
@@ -82,6 +84,7 @@ test("left joins return typed projected rows with nullable missing matches", asy
   const tags = defineTable("tags", { columns: { id: column.safeInteger().primaryKey(), exerciseId: column.safeInteger().references(exercises.id, { onDelete: "restrict" }), label: column.string() } });
   await fixture.sql.unsafe("CREATE TABLE tags (id bigint PRIMARY KEY, \"exerciseId\" bigint REFERENCES exercises(id), label text NOT NULL, version bigint NOT NULL DEFAULT 1)");
   await fixture.sql.unsafe("INSERT INTO tags (id,\"exerciseId\",label) VALUES (1,2,'barbell'),(2,2,'strength')");
+  await fixture.reviewSchema([exercises, tags]);
   const reader = new ReadBroker({ url: fixture.url, tables: [exercises, tags] });
   try {
     const e = alias(exercises, "e"), t = alias(tags, "t");
@@ -98,6 +101,7 @@ test("read handlers cannot gain write authority through a database function", as
   await fixture.sql.unsafe("CREATE FUNCTION try_write() RETURNS text LANGUAGE plpgsql AS $$ BEGIN UPDATE exercises SET name='unauthorized' WHERE id=1; RETURN 'written'; END $$");
   await fixture.sql.unsafe("CREATE VIEW forbidden_reads AS SELECT 1::bigint AS id, try_write() AS name, 1::bigint AS version");
   const forbidden = defineTable("forbidden_reads", { columns: { id: column.safeInteger().primaryKey(), name: column.string() } });
+  await fixture.reviewSchema([forbidden, exercises]);
   const reader = new ReadBroker({ url: fixture.url, tables: [forbidden, exercises] });
   try {
     await expect(reader.read(db => db.select(forbidden, { fields: ["name"] }))).rejects.toThrow("INTERNAL_FAILURE");
@@ -117,6 +121,7 @@ test("sequential reads retain Read Committed semantics without an implicit share
 
 test("registered application tables cannot resolve through PostgreSQL's implicit catalog search path", async () => {
   const settings = defineTable("pg_settings", { columns: { name: column.string().primaryKey(), setting: column.string() }, versioned: false });
+  await fixture.reviewSchema([settings]);
   const reader = new ReadBroker({ url: fixture.url, tables: [settings] });
   try { await expect(reader.read(db => db.select(settings, { fields: ["name", "setting"], limit: 1 }))).rejects.toThrow("INTERNAL_FAILURE"); }
   finally { await reader.close(); }

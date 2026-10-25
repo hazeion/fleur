@@ -9,6 +9,7 @@ test("a caught oversized write result still rolls back the mutation", async () =
   const broker = new ReadBroker({ url: fixture.url, tables: [table] });
   try {
     await fixture.sql.unsafe("CREATE TABLE review_mutation_payload (id bigint PRIMARY KEY, payload text NOT NULL, version bigint NOT NULL DEFAULT 1)");
+    await fixture.reviewSchema([table]);
     await expect(broker.mutate(async db => {
       try {
         await db.insert(table, { values: { id: 1, payload: "a".repeat(1048576) }, returning: ["payload"] });

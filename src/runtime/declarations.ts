@@ -25,3 +25,6 @@ export function definition(column: ColumnReference): ColumnDefinition {
   if (!result) throw new Error("Invalid column");
   return result;
 }
+
+/** Host-side metadata reconstruction does not repeat source-declaration warnings. */
+export const rehydratingTable=Symbol();

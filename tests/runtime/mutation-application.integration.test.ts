@@ -14,6 +14,7 @@ test("restricted mutation validates both boundaries and rolls back invalid outpu
   let app: ReadApplication | undefined;
   try {
     await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL UNIQUE, version bigint NOT NULL DEFAULT 1)");
+    await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url);
     await expect(app.mutate("exercise.create", { name: "Squat", extra: true })).rejects.toThrow("INPUT_INVALID");
     await expect(app.mutate("exercise.create", { name: "   " })).rejects.toThrow("INPUT_INVALID");

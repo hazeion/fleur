@@ -1,4 +1,5 @@
-import { readdir, readFile, mkdir } from "node:fs/promises";
+import { readdir, open, lstat, mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
 import { join } from "node:path";
 import type { Table } from "../../database";
 import { describeTables, restoreTables } from "../table-wire";
@@ -58,6 +59,7 @@ export function migrationPlan(tables: readonly Table[], previous?: MigrationPlan
     }
   }
   const fullDDL=tableDDL(tables);
+  if(tableDDL(oldTables).some(statement=>statement.startsWith("CREATE FUNCTION"))&&!fullDDL.some(statement=>statement.startsWith("CREATE FUNCTION")))statements.push("DROP FUNCTION public.fleur_casefold_17(text)");
   for(const statement of fullDDL) {
     if(statement.startsWith("CREATE FUNCTION")&&!tableDDL(oldTables).some(old=>old.startsWith("CREATE FUNCTION")))statements.push(statement);
     else if(snapshot.filter(table=>!before.some(old=>old.name===table.name)).some(table=>statement.startsWith(`CREATE TABLE "public".${quote(table.name)} `)))statements.push(statement);
@@ -69,12 +71,18 @@ export function migrationPlan(tables: readonly Table[], previous?: MigrationPlan
 export async function readMigrations(project: string): Promise<readonly MigrationPlan[]> {
   const directory = join(project,"migrations");
   let files: string[];
-  try { files = await readdir(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  try { const info=await lstat(directory);if(!info.isDirectory()||info.isSymbolicLink())throw new Error("SOURCE_REJECTED");files = await readdir(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   if (files.length > 1000 || files.some(name => !/^[0-9]{4}\.json$/.test(name))) throw new Error("SOURCE_REJECTED");
   const plans: MigrationPlan[] = [];
   for (const name of files.sort()) {
-    const text = await readFile(join(directory,name),"utf8");
-    if (Buffer.byteLength(text)>1048576) throw new Error("SOURCE_REJECTED");
+    const file=await open(join(directory,name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    let text:string;
+    try {
+      const stat=await file.stat();if(!stat.isFile()||stat.size>1048576)throw new Error("SOURCE_REJECTED");
+      const bytes=Buffer.alloc(1048577);let used=0;
+      while(used<bytes.length){const read=await file.read(bytes,used,bytes.length-used,used);if(!read.bytesRead)break;used+=read.bytesRead;}
+      if(used>1048576)throw new Error("SOURCE_REJECTED");text=bytes.subarray(0,used).toString("utf8");
+    }finally{await file.close();}
     const raw = JSON.parse(text) as MigrationPlan;
     const expected = migrationPlan(restoreTables(raw.snapshot), plans.at(-1));
     if (name !== expected.id+".json" || JSON.stringify(raw) !== JSON.stringify(expected)) throw new Error("MIGRATION_EDITED");

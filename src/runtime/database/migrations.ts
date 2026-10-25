@@ -10,9 +10,11 @@ import { reconcileMaintenance } from "./recovery";
 import { dataIntegrity } from "./integrity";
 
 export async function migrationStatus(url: string, project: string, config: BackupConfiguration = {}) {
+  const started=performance.now(),remaining=()=>Math.max(1,(config.timeoutMs??60000)-(performance.now()-started));
   const plans = await readMigrations(project);
-  const lease = await MaintenanceLease.acquire(url,false,config,true);
+  const lease = await MaintenanceLease.acquire(url,false,{...config,timeoutMs:remaining()},true);
   const sql = new SQL(url,{max:1,connectionTimeout:2});
+  const timer=setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},remaining());
   try {
     const marker = await lease.marker();
     const history = await assertMigrationState(sql);
@@ -20,18 +22,19 @@ export async function migrationStatus(url: string, project: string, config: Back
     if (history.some((row,index) => row.checksum !== plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
     if (!history.length && !await emptyApplicationSchema(sql)) throw new Error("SCHEMA_DRIFT");
     return { compatible: !lease.busy && (!marker || ["committed","rollback verified"].includes(marker.stage)) && history.length===plans.length, applied: history.map(row=>row.id), pending: plans.slice(history.length).map(plan=>plan.id), maintenance: marker, busy: lease.busy };
-  } finally { await sql.close({timeout:0}); await lease.close(); }
+  } finally { clearTimeout(timer);await sql.close({timeout:0}); await lease.close(); }
 }
 export async function applyMigrations(url: string, project: string, config: BackupConfiguration & MaintenanceAuthority = {}) {
+  const started=performance.now(),remaining=()=>Math.max(1,(config.timeoutMs??60000)-(performance.now()-started));
   const plans = await readMigrations(project);
   if (plans.some(plan=>plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
   let lease: MaintenanceLease;
-  try {lease=await MaintenanceLease.acquire(url,true,config);}
+  try {lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()});}
   catch(error) {if(error instanceof Error&&error.message==="RECOVERY_REQUIRED")return reconcileMaintenance(url,project,config);throw error;}
   const sql = new SQL(url,{max:1,connectionTimeout:2,idleTimeout:0,maxLifetime:0});
   let marker: MaintenanceMarker | undefined;
   let transaction = false, commitAttempted = false;
-  const timer = setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},config.timeoutMs??60000);
+  const timer = setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},remaining());
   try {
     const fence=await sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]);
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
@@ -46,9 +49,11 @@ export async function applyMigrations(url: string, project: string, config: Back
       await authorizeMaintenance(lease,{action:"migration",target:lease.target,checksum:digest(JSON.stringify({planChecksum,intent})),replacesCurrentData:true},config);
       if(await catalogFingerprint(sql)!==intent.beforeSchema||await dataIntegrity(sql)!==intent.beforeData)throw new Error("AUTHORITY_REQUIRED");
     }
-    const backup=await backupDatabase(url,join(lease.directory,`before-${randomUUID()}.dump`),config,{lease,source:sql,planChecksum,intent});
+    if(JSON.stringify(await readMigrations(project))!==JSON.stringify(plans))throw new Error("MIGRATION_EDITED");
+    const backup=await backupDatabase(url,join(lease.directory,`before-${randomUUID()}.dump`),{...config,timeoutMs:remaining()},{lease,source:sql,planChecksum,intent});
     marker=await lease.marker() ?? undefined;
     if (!marker || marker.stage!=="backup verified") throw new Error("RECOVERY_REQUIRED");
+    if(JSON.stringify(await readMigrations(project))!==JSON.stringify(plans))throw new Error("MIGRATION_EDITED");
     marker={...marker,stage:"applying"}; await lease.persist(marker);
     await sql.unsafe("BEGIN ISOLATION LEVEL READ COMMITTED"); transaction=true;
     await sql.unsafe("SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='3s'");
@@ -60,6 +65,7 @@ export async function applyMigrations(url: string, project: string, config: Back
     }
     marker={...marker,intent:{...intent,afterSchema:await catalogFingerprint(sql),afterData:await dataIntegrity(sql)}};
     await lease.persist(marker); await lease.assertSession();
+    if(JSON.stringify(await readMigrations(project))!==JSON.stringify(plans))throw new Error("MIGRATION_EDITED");
     commitAttempted=true;
     await sql.unsafe("COMMIT"); transaction=false;
     await assertMigrationState(sql);
@@ -72,6 +78,7 @@ export async function applyMigrations(url: string, project: string, config: Back
       if(!commitAttempted) try { unchanged=await catalogFingerprint(sql)===marker.intent?.beforeSchema && await dataIntegrity(sql)===marker.intent?.beforeData; } catch { /* Uncertainty retains the durable fence. */ }
       await lease.persist({...marker,stage:unchanged?"rollback verified":"recovery required",...(unchanged?{schemaState:{catalog:marker.intent!.beforeSchema,history:marker.intent!.beforeHistory}}:{}),...(unchanged?{epoch:randomUUID()}: {})}).catch(()=>{});
     }
+    if(commitAttempted)throw new Error("RECOVERY_REQUIRED");
     throw error;
   } finally {clearTimeout(timer);await sql.close({timeout:0});await lease.close();}
 }

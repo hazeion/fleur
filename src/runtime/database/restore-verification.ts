@@ -31,6 +31,7 @@ export async function cleanupInterruptedVerification(lease: MaintenanceLease, ma
 }
 /** Re-verify the selected retained bytes using a new unprivileged, uniquely owned target. */
 export async function verifyRetainedArchive(url:string,archive:string,manifest:BackupManifest,lease:MaintenanceLease,marker:MaintenanceMarker,config:BackupConfiguration):Promise<MaintenanceMarker> {
+  const started=performance.now();
   const token=crypto.randomUUID().replaceAll("-",""),name=`fleur_verify_${token}`,password=crypto.randomUUID();
   const tag=`fleur-verification-v1:${digest(JSON.stringify(lease.target))}:${token}`;
   marker={...marker,verification:{database:name,role:name,token}};await lease.persist(marker);
@@ -46,7 +47,7 @@ export async function verifyRetainedArchive(url:string,archive:string,manifest:B
     sql=new SQL(target.toString(),{max:1,connectionTimeout:2});
     const identity=await sql.unsafe("SELECT current_database() AS database,current_user AS role,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolreplication,r.rolbypassrls FROM pg_roles r WHERE r.rolname=current_user");
     if(identity[0]?.database!==name||identity[0]?.role!==name||[identity[0]?.rolsuper,identity[0]?.rolcreatedb,identity[0]?.rolcreaterole,identity[0]?.rolreplication,identity[0]?.rolbypassrls].some(Boolean))throw new Error("BACKUP_VERIFICATION_FAILED");
-    await pgTool("pg_restore",["--no-owner","--no-acl","--exit-on-error","--single-transaction","--no-password",`--dbname=${name}`],target.toString(),{input:archive,timeoutMs:config.timeoutMs??60000,...(config.toolDirectory?{directory:config.toolDirectory}:{})});
+    await pgTool("pg_restore",["--no-owner","--no-acl","--exit-on-error","--single-transaction","--no-password",`--dbname=${name}`],target.toString(),{input:archive,timeoutMs:Math.max(1,(config.timeoutMs??60000)-(performance.now()-started)),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
     await sql.unsafe("SET timezone='UTC'; SET datestyle='ISO,YMD'");
     if(await catalogFingerprint(sql)!==manifest.catalogSha256||await dataIntegrity(sql)!==manifest.dataSha256||JSON.stringify((await migrationHistory(sql)).map(row=>row.checksum))!==JSON.stringify(manifest.history))throw new Error("BACKUP_VERIFICATION_FAILED");
     if(JSON.stringify(await fileDigest(archive))!==JSON.stringify({bytes:manifest.bytes,sha256:manifest.sha256}))throw new Error("BACKUP_VERIFICATION_FAILED");

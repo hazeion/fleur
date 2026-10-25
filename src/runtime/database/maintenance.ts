@@ -7,10 +7,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
-export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; }
+export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; readonly completeRegistry?: boolean; }
 const identitySchema = z.strictObject({ cluster: z.string().regex(/^\d+$/), database: z.string().min(1).max(63), oid: z.string().regex(/^\d+$/), owner: z.string().min(1), address: z.string(), port: z.number().int(), });
 export type DatabaseIdentity = z.infer<typeof identitySchema>;
-const markerSchema = z.strictObject({ formatVersion: z.literal(1), target: identitySchema, stage: z.enum(["preparing", "backup verified", "applying", "committed", "rollback verified", "recovery required"]), planChecksum: z.string().regex(/^[a-f0-9]{64}$/), backup: z.string().nullable(), verification: z.strictObject({ database: z.string(), role: z.string(), token: z.string() }).optional(), log: z.array(z.strictObject({ at: z.string(), stage: z.string(), planChecksum: z.string().regex(/^[a-f0-9]{64}$/) })).max(200).optional(), logTruncated: z.boolean().optional(), schemaState: z.strictObject({ catalog: z.string(), history: z.array(z.string()).max(1000) }).optional(), intent: z.strictObject({ operation: z.enum(["migration","restore"]), beforeSchema: z.string(), beforeData: z.string(), beforeHistory: z.array(z.string()), afterHistory: z.array(z.string()), afterSchema: z.string().nullable(), afterData: z.string().nullable().optional(), restoreFrom: z.string().optional(), preservedBackup: z.string().optional() }).optional(), epoch: z.string().uuid(), });
+const markerSchema = z.strictObject({ formatVersion: z.literal(1), target: identitySchema, stage: z.enum(["preparing", "backup verified", "applying", "committed", "rollback verified", "recovery required"]), planChecksum: z.string().regex(/^[a-f0-9]{64}$/), backup: z.string().nullable(), verification: z.strictObject({ database: z.string(), role: z.string(), token: z.string() }).optional(), log: z.array(z.strictObject({ at: z.string(), stage: z.string(), planChecksum: z.string().regex(/^[a-f0-9]{64}$/) })).max(200).optional(), logTruncated: z.boolean().optional(), schemaState: z.strictObject({ catalog: z.string(), history: z.array(z.string()).max(1000) }).optional(), intent: z.strictObject({ operation: z.enum(["migration","restore","backup"]), beforeSchema: z.string(), beforeData: z.string(), beforeHistory: z.array(z.string()), afterHistory: z.array(z.string()), afterSchema: z.string().nullable(), afterData: z.string().nullable().optional(), restoreFrom: z.string().optional(), preservedBackup: z.string().optional() }).optional(), epoch: z.string().uuid(), });
 export type MaintenanceMarker = z.infer<typeof markerSchema>;
 export function digest(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
 export function databaseUrl(value: string): URL {
@@ -94,9 +94,10 @@ export class MaintenanceLease {
       if (!inspect && marker && (marker.target.cluster !== identity.cluster || marker.target.database !== identity.database || marker.target.owner !== identity.owner || marker.target.oid !== identity.oid)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect) {
         const { assertMigrationState, verifyExternalSchemaState } = await import("./migration-state");
-        const history=await assertMigrationState(target, configuration.tables);
-        if(!history.length&&configuration.tables?.length&&marker?.intent)throw new Error("MIGRATIONS_PENDING");
+        const history=await assertMigrationState(target, configuration.tables,configuration.completeRegistry);
         await verifyExternalSchemaState(target, marker);
+        if(!history.length&&configuration.tables?.length)throw new Error("MIGRATIONS_PENDING");
+        if(!history.length&&configuration.completeRegistry){const {emptyApplicationSchema}=await import("./migration-state");if(!await emptyApplicationSchema(target))throw new Error("SCHEMA_DRIFT");}
       }
       return lease;
     } catch (error) {

@@ -4,6 +4,9 @@ import { quote } from "./inspection";
 
 /** Every base table, including Fleur history and metadata, all sequence states and large-object pages. */
 export async function dataIntegrity(sql: SQL): Promise<string> {
+  const settings=await sql.unsafe("SELECT current_setting('timezone') AS zone,current_setting('datestyle') AS dates");
+  await sql.unsafe("SET timezone='UTC'; SET datestyle='ISO,YMD'");
+  try {
   const hash = createHash("sha256");
   const relations = await sql.unsafe("SELECT n.nspname AS schema, c.relname AS name, c.relkind AS kind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE left(n.nspname,3) <> 'pg_' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','S','f','m') ORDER BY n.nspname COLLATE \"C\", c.relname COLLATE \"C\"");
   for (const relation of relations) {
@@ -31,4 +34,5 @@ export async function dataIntegrity(sql: SQL): Promise<string> {
     }
   }
   return hash.digest("hex");
+  }finally{await sql.unsafe("SELECT set_config('timezone',$1,false),set_config('datestyle',$2,false)",[String(settings[0].zone),String(settings[0].dates)]);}
 }

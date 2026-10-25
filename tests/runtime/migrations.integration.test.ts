@@ -139,14 +139,17 @@ test("confirmed restore replaces post-backup data and extra objects, verifies hi
   const fixture=await ownedPostgres(),root=await mkdtemp(join(tmpdir(),"fleur-migration-restore-"));
   try {
     await writeFile(join(root,"fleur.json"),JSON.stringify({formatVersion:1,fleurVersion:"0.1.0",contractVersion:1,compiler:"microsoft"}));
-    const table=defineTable("retained",{columns:{id:column.safeInteger().primaryKey(),name:column.string()}});
+    const table=defineTable("retained",{columns:{id:column.safeInteger().primaryKey(),name:column.string(),stamp:column.timestamp()}});
+    await fixture.sql.unsafe(`ALTER DATABASE "${new URL(fixture.url).pathname.slice(1)}" SET timezone TO 'America/Los_Angeles'`);
     const config={stateRoot:root,toolDirectory:await fixture.pgTools(join(root,"tools"))};
     await generateMigration(root,[table]);await applyMigrations(fixture.url,root,config);
-    await fixture.sql.unsafe("INSERT INTO public.retained VALUES(1,'backed up',1)");
+    await fixture.sql.unsafe("INSERT INTO public.retained(id,name,stamp) VALUES(1,'backed up','2026-10-24T12:34:56.123456Z')");
     const archive=join(root,"reviewed.dump");await backupDatabase(fixture.url,archive,config);
     const before=await MaintenanceLease.acquire(fixture.url,false,config,true);
     const epoch=(await before.marker())!.epoch;await before.close();
     await fixture.sql.unsafe("UPDATE public.retained SET name='post backup'; CREATE TABLE public.extra(id integer)");
+    const interrupted=await MaintenanceLease.acquire(fixture.url,true,config,true);
+    try{await interrupted.persist({...((await interrupted.marker())!),stage:"recovery required"});}finally{await interrupted.close();}
     const denied=await migrationCli(root,["db","restore","--from",archive],{FLEUR_PRIVATE_DATABASE_URL:fixture.url,FLEUR_PRIVATE_STATE_ROOT:root,FLEUR_PRIVATE_PG_TOOLS:config.toolDirectory});
     expect(denied.exit).toBe(3);
     const {restoreDatabase}=await import("../../src/runtime/database/migrations");
@@ -154,7 +157,7 @@ test("confirmed restore replaces post-backup data and extra objects, verifies hi
     const result=await restoreDatabase(fixture.url,root,archive,{...config,confirm:async request=>{requests.push(request);return true;}});
     expect(result.restored).toBe(true);
     expect(requests[0]).toMatchObject({action:"restore",replacesCurrentData:true,backup:archive});
-    expect(await fixture.sql.unsafe("SELECT name FROM public.retained")).toEqual([{name:"backed up"}]);
+    expect(await fixture.sql.unsafe("SELECT name,stamp::text AS stamp FROM public.retained")).toEqual([{name:"backed up",stamp:"2026-10-24 12:34:56.123456+00"}]);
     expect(await fixture.sql.unsafe("SELECT to_regclass('public.extra') AS extra")).toEqual([{extra:null}]);
     const after=await MaintenanceLease.acquire(fixture.url,false,config);
     try {expect((await after.marker())!.epoch).not.toBe(epoch);expect((await after.marker())!.stage).toBe("committed");}finally{await after.close();}

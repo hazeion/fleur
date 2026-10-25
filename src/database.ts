@@ -5,7 +5,7 @@ export interface ColumnReference<T = unknown, G extends boolean = boolean, P ext
 export type ColumnKind = "uuid" | "string" | "boolean" | "safeInteger" | "decimal" | "localDate" | "timestamp";
 type KindFor<T> = unknown extends T ? ColumnKind : NonNullable<T> extends UUID ? "uuid" : NonNullable<T> extends LocalDate ? "localDate" : NonNullable<T> extends Timestamp ? "timestamp" : NonNullable<T> extends DecimalString ? "decimal" : NonNullable<T> extends string ? "string" : NonNullable<T> extends number ? "safeInteger" : "boolean";
 export type DeleteAction = "restrict" | "cascade" | "set null";
-import { definitions, tableDefinitions, references, definition, type ColumnDefinition } from "./runtime/declarations";
+import { rehydratingTable, definitions, tableDefinitions, references, definition, type ColumnDefinition } from "./runtime/declarations";
 
 class Column<T = unknown, Generated extends boolean = boolean, Primary extends boolean = boolean, Managed extends boolean = false> {
   declare readonly managedValue: Managed;
@@ -82,7 +82,7 @@ export function defineTable<const C extends ColumnShape, V extends boolean = tru
   }
   if (primaryKeys !== 1) throw new Error("Exactly one primary key is required");
   const versioned = options.versioned !== false;
-  if (!versioned) console.warn(`Table "${name}" is unversioned. Updates and deletes have no lost-update guarantee.`);
+  if (!versioned && !Object.hasOwn(options,rehydratingTable)) console.warn(`Table "${name}" is unversioned. Updates and deletes have no lost-update guarantee.`);
   if (versioned) columns.version = value("safeInteger", schema.safeInteger()).generated();
   const table = Object.freeze(columns) as Table<C, V, Name>;
   tableDefinitions.set(table, Object.freeze({ name, columns: table, versioned }));

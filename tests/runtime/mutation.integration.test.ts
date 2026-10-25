@@ -9,6 +9,7 @@ let broker: ReadBroker;
 beforeAll(async () => {
   fixture = await ownedPostgres();
   await fixture.sql.unsafe('CREATE TABLE mutation_exercises (id bigint PRIMARY KEY, name text NOT NULL UNIQUE, version bigint NOT NULL DEFAULT 1)');
+  await fixture.reviewSchema([exercises]);
   broker = new ReadBroker({ url: fixture.url, tables: [exercises] });
 }, 180_000);
 afterAll(async () => { await broker?.close(); await fixture?.cleanup(); });
@@ -73,6 +74,7 @@ test("unawaited helpers cannot race a successful commit", async () => {
 test("foreign-key failures roll back all rows and explicit unversioned writes reject versioned tables", async () => {
   const notes = defineTable("mutation_notes", { versioned: false, columns: { id: column.safeInteger().primaryKey(), exerciseId: column.safeInteger().references(exercises.id, { onDelete: "restrict" }), note: column.string().default("Default note") } });
   await fixture.sql.unsafe('CREATE TABLE mutation_notes (id bigint PRIMARY KEY, "exerciseId" bigint NOT NULL REFERENCES mutation_exercises(id), note text NOT NULL DEFAULT \'Default note\')');
+  await fixture.reviewSchema([exercises, notes]);
   const writer = new ReadBroker({ url: fixture.url, tables: [exercises, notes] });
   try {
     await expect(writer.mutate(async db => {

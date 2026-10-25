@@ -62,7 +62,8 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     const activities = await source.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");
     const prepared = await source.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()");
     if (activities[0]?.active !== "0" || prepared.length) throw new Error("MAINTENANCE_BUSY");
-    marker = { schemaState: (await lease.marker())?.schemaState, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: held?.planChecksum ?? digest(JSON.stringify({ operation: "backup", target: lease.target, out })), ...(held ? { intent: held.intent } : {}), backup: archive, verification: { database: name, role: name, token }, epoch: (await lease.marker())?.epoch ?? randomUUID() };
+    const intent=held?.intent??{operation:"backup" as const,beforeSchema:await catalogFingerprint(source),beforeData:await dataIntegrity(source),beforeHistory:(await migrationHistory(source)).map(row=>row.checksum),afterHistory:(await migrationHistory(source)).map(row=>row.checksum),afterSchema:null,afterData:null};
+    marker = { schemaState: (await lease.marker())?.schemaState, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: held?.planChecksum ?? digest(JSON.stringify({ operation: "backup", target: lease.target, out })), intent, backup: archive, verification: { database: name, role: name, token }, epoch: (await lease.marker())?.epoch ?? randomUUID() };
     await lease.persist(marker);
     await source.unsafe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await source.unsafe("SET LOCAL statement_timeout='30s'");
@@ -112,7 +113,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     const metadata = { catalogSha256: await catalogFingerprint(source), history: (await migrationHistory(source)).map(row=>row.checksum), formatVersion: 1, target: lease.target, ...archiveIntegrity, verified: true, complete: true, cleanupVerified: true, schemaSha256: sourceSchema, dataSha256: sourceData, planChecksum: marker.planChecksum };
     await link(archive, out); published = true; await syncDirectory(dirname(out));
     await publishFile(out+".manifest.json", JSON.stringify(metadata)+"\n");
-    marker = { ...marker, schemaState: { catalog: metadata.catalogSha256, history: metadata.history }, backup: out, stage: "backup verified" }; await lease.persist(marker);
+    marker = { ...marker, intent:held?marker.intent:{...intent,afterSchema:metadata.catalogSha256,afterData:metadata.dataSha256}, schemaState: { catalog: metadata.catalogSha256, history: metadata.history }, backup: out, stage: "backup verified" }; await lease.persist(marker);
     if (!held) await lease.persist({ ...marker, stage: "committed" });
     return { ...metadata, destination: out };
   } catch (error) {

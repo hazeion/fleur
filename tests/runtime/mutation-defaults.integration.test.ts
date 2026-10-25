@@ -11,6 +11,7 @@ test("database defaults remain editable while generated columns stay managed", a
   const broker = new ReadBroker({ url: fixture.url, tables: [table] });
   try {
     for (const statement of tableDDL([table])) await fixture.sql.unsafe(statement);
+    await fixture.reviewSchema([table]);
     const row = await broker.mutate(db => db.insert(table, { values: {}, returning: ["id", "name", "version"] }));
     expect(row.name).toBe("Initial");
     const changed = schema.timestamp().parse("2026-10-24T12:34:56.123456Z");
@@ -27,6 +28,7 @@ test("an acknowledged deferred constraint rejection at COMMIT is a known failure
   try {
     await fixture.sql.unsafe('CREATE TABLE deferred_parents(id bigint PRIMARY KEY, version bigint NOT NULL DEFAULT 1)');
     await fixture.sql.unsafe('CREATE TABLE deferred_children(id bigint PRIMARY KEY, "parentId" bigint REFERENCES deferred_parents(id) DEFERRABLE INITIALLY DEFERRED, version bigint NOT NULL DEFAULT 1)');
+    await fixture.reviewSchema([parents,children]);
     await expect(broker.mutate(db => db.insert(children, { values: { id: 1, parentId: 99 }, returning: ["id"] }))).rejects.toMatchObject({ code: "CONSTRAINT_CONFLICT" });
     expect(await broker.read(db => db.select(children, { fields: ["id"] }))).toEqual([]);
   } finally { await broker.close(); await fixture.cleanup(); }

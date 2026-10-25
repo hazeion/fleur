@@ -50,6 +50,12 @@ export async function ownedPostgres() {
         await Bun.sleep(100);
       }
     }
-    return { sql, url, cleanup };
+    async function pgTools(directory: string) {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      for (const tool of ["pg_dump", "pg_restore"]) await writeFile(`${directory}/${tool}`, `#!/bin/sh\nexec docker exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGHOST=127.0.0.1 --env PGPORT=5432 ${id} ${tool} "$@"\n`, { mode: 0o700 });
+      return directory;
+    }
+    return { sql, url, cleanup, pgTools };
   } catch (error) { await cleanup(); throw error; }
 }

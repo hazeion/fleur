@@ -1,5 +1,6 @@
 import { queryIdentity } from "./query-identity";
 import { randomUUID } from "node:crypto";
+import { MaintenanceLease, type MaintenanceConfiguration } from "./database/maintenance";
 import { ReadBroker } from "./database/broker";
 import { startWorker } from "./native/host";
 import { restoreManifest, type Registry } from "./manifest-wire";
@@ -23,17 +24,22 @@ export class ReadApplication {
   readonly registry: Registry;
   readonly #images: Images;
   readonly #broker: ReadBroker;
-  private constructor(images: Images, registry: Registry, url: string) {
-    this.registry = registry; this.#images = images;
-    this.#broker = new ReadBroker({ url, tables: registry.tables });
+  readonly #maintenance: MaintenanceConfiguration;
+  readonly #url: string;
+  private constructor(images: Images, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
+    this.registry = registry; this.#images = images; this.#maintenance = maintenance; this.#url = url;
+    this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance });
   }
-  static async open(images: Images, url: string): Promise<ReadApplication> {
-    const worker = await startWorker(images), session = randomUUID();
+  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}): Promise<ReadApplication> {
+    const admission = await MaintenanceLease.acquire(url, false, maintenance);
+    let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
+    const session = randomUUID();
     try {
+      worker = await startWorker(images);
       const result = record(await worker.run({ mode: "register", session }, () => { throw new Error("REQUEST_DENIED"); }));
       if (result.kind !== "complete" || result.session !== session || result.sequence !== 0 || Object.keys(result).length !== 4) throw new Error("SOURCE_REJECTED");
-      return new ReadApplication(images, restoreManifest(result.value), url);
-    } finally { await worker.close(); }
+      return new ReadApplication(images, restoreManifest(result.value), url, maintenance);
+    } finally { try { await worker?.close(); } finally { await admission.close(); } }
   }
   async #execute(worker: Awaited<ReturnType<typeof startWorker>>, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000): Promise<unknown> {
     const session = randomUUID();
@@ -110,6 +116,10 @@ export class ReadApplication {
     }
   }
   async render(path: string): Promise<PageResult> {
+    const admission = await MaintenanceLease.acquire(this.#url, false, this.#maintenance);
+    try { return await this.#render(path); } finally { await admission.close(); }
+  }
+  async #render(path: string): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.
     try {
       if (!selectPage([...this.registry.pages.values()], path)) throw new Error("ROUTE_NOT_FOUND");

@@ -1,4 +1,5 @@
 import { SQL } from "bun";
+import { MaintenanceLease, type MaintenanceConfiguration } from "./maintenance";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { startOwnedControl, type ControlResult } from "./control-process";
@@ -36,9 +37,11 @@ function normalize<T extends Table, F extends readonly (keyof Row<T>)[]>(table: 
 export class ReadBroker {
   readonly #pool: SQL;
   readonly #url: string;
+  readonly #maintenance: MaintenanceConfiguration;
   readonly #cursorKey = randomBytes(32);
   readonly #tables: ReadonlySet<Table>;
-  constructor(options: { url: string; tables: readonly Table[] }) {
+  constructor(options: { url: string; tables: readonly Table[]; maintenance?: MaintenanceConfiguration }) {
+    this.#maintenance = options.maintenance ?? {};
     this.#url = options.url;
     this.#pool = new SQL(options.url, { max: 4, connectionTimeout: 5 });
     this.#tables = new Set(options.tables);
@@ -53,6 +56,7 @@ export class ReadBroker {
   }
   async #transaction<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity, writable: boolean): Promise<T> {
     const started = performance.now();
+    let admission: MaintenanceLease | undefined;
     let commitAttempted = false, committed = false;
     let fault: unknown;
     let outstanding = 0;
@@ -87,12 +91,18 @@ export class ReadBroker {
       finally { if (!abort.signal.aborted) active = undefined; }
     };
     try {
+      const admitted = MaintenanceLease.acquire(this.#url, false, this.#maintenance);
+      void admitted.then(lease => { if (abort.signal.aborted) void lease.close().catch(() => {}); }).catch(() => {});
+      admission = await Promise.race([admitted, expired]);
       connection = await this.#pool.reserve({ signal: abort.signal });
       check();
       const backendIdentity = await execute("SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()");
       if (!Array.isArray(backendIdentity) || backendIdentity.length !== 1 || !Number.isSafeInteger(backendIdentity[0]?.pid) || typeof backendIdentity[0]?.started !== "string") throw new Error("INTERNAL_FAILURE");
       backend = { pid: backendIdentity[0].pid as number, started: backendIdentity[0].started as string };
       await execute(writable ? "BEGIN ISOLATION LEVEL READ COMMITTED" : "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY");
+      const fence = await execute("SELECT pg_try_advisory_xact_lock_shared($1::bigint) AS acquired", [admission.key]);
+      if (!Array.isArray(fence) || fence[0]?.acquired !== true) throw new Error("MAINTENANCE_BUSY");
+      await Promise.race([admission.assertSession(), expired]);
       await execute("SELECT set_config('statement_timeout', $1, true)", [String(Math.max(1, Math.floor(5000 - (performance.now() - started))))]);
       let db: ReadDb = Object.freeze({
         cursorJoined: <const P extends Readonly<Record<string, ColumnReference>>, const J extends readonly Join[]>(options: Omit<JoinedOptions<P, J>, "cursor" | "limit"> & { readonly after: JoinedProjection<P, J> }) => {
@@ -152,6 +162,7 @@ export class ReadBroker {
         if (fault) throw fault;
         if (outstanding || active) throw new Error("REQUEST_DENIED");
         check();
+        await Promise.race([admission.assertSession(), expired]);
         commitAttempted = true;
         await execute("COMMIT");
         committed = true;
@@ -167,7 +178,7 @@ export class ReadBroker {
       if (abort.signal.aborted || performance.now() - started >= 5000
         || (error instanceof SQL.PostgresError && (error.errno === "57014" || error.code === "ERR_POSTGRES_CONNECTION_TIMEOUT"))) throw new Error("QUERY_TIMEOUT");
       if (error instanceof PublicOperationError) throw error;
-      if (error instanceof Error && ["QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED"].includes(error.message)) throw error;
+      if (error instanceof Error && ["QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(error.message)) throw error;
       throw new Error("INTERNAL_FAILURE");
     } finally {
       valid = false;
@@ -195,6 +206,7 @@ export class ReadBroker {
           else { try { await borrowed.close({ timeout: 0 }); } catch { /* Preserve the established primary outcome; never release an uncertain handle. */ } }
         } finally { clearTimeout(cleanupTimer); }
       }
+      await admission?.close();
     }
   }
   async close(): Promise<void> { await this.#pool.close({ timeout: 0 }); }

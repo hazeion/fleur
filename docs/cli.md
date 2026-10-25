@@ -43,3 +43,7 @@ The selected Fleur release requires the exact Bun version published in its packa
 Project pin resolution and exact local release delegation happen before the launcher's own compatibility check. A delegated release enforces its own requirements; a newer temporary launcher cannot impose its Bun requirement on that older selected release.
 
 The compatibility regression uses a real checksum-verified Bun 1.4.2 release executable in an owned temporary directory, rather than overriding the runtime-reported version. Its setup downloads only the fixed official asset and extracts its expected executable through `/usr/bin/unzip`; tests also require `/usr/bin/tar` for the packed CLI. This is explicit development-test acquisition, outside command startup/deadline measurements, and is cleaned afterward. Ordinary Fleur execution still requires only Bun. Asset identities are pinned for Linux/macOS x64/arm64; only platforms that actually run the test provide execution evidence, and the negative runtime is not admitted as supported.
+
+## Database inspection and backups
+
+`db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]` returns read-only bounded pages. `db backup --out <file>` creates a retained PostgreSQL archive only after full disposable restoration, integrity comparison and owned cleanup. `db recover --inspect` reports durable maintenance state without clearing it. See [maintenance configuration, safety and recovery](maintenance.md).

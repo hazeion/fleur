@@ -42,17 +42,13 @@ export async function executePage(pathname: string, read: (name: string, input: 
     current = entry;
     try {
       const content = await render();
-      const bound = `${id}/queries:${binding()}`;
-      Object.assign(entry, { id: bound });
-      return h(Fragment, null, h("template", { "data-fleur-region": bound }), content, h("template", { "data-fleur-end": bound }));
+      return h(Fragment, null, h("template", { "data-fleur-region": id }), content, h("template", { "data-fleur-end": id }));
     }
     catch (error) {
       descriptors.splice(descriptorStart); regions.splice(regionStart);
       const code = error instanceof Error && ["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
       Object.assign(entry, { error: code });
-      const bound = `${id}/queries:${binding()}`;
-      Object.assign(entry, { id: bound });
-      return h(Fragment, null, h("template", { "data-fleur-region": bound, "data-fleur-error": code, "data-fleur-stale": "true" }), h("template", { "data-fleur-end": bound }));
+      return h(Fragment, null, h("template", { "data-fleur-region": id, "data-fleur-error": code, "data-fleur-stale": "true" }), h("template", { "data-fleur-end": id }));
     } finally { current = previous; }
   };
   type Provider = { type: VNode["type"]; props: Record<string, unknown> };

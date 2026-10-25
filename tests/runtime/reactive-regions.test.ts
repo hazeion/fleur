@@ -58,3 +58,20 @@ test("region boundaries preserve table content models and class component render
   expect(result.html).not.toContain("<div");
   expect(result.regions.every(region => !region.error)).toBe(true);
 });
+
+test("a failure before later reads retains the stable boundary of the complete region", async () => {
+  const firstQuery = defineQuery({ name: "region.first", input: schema.object({}), output: schema.string() });
+  const secondQuery = defineQuery({ name: "region.second", input: schema.object({}), output: schema.string() });
+  handleQuery(firstQuery, async () => "first"); handleQuery(secondQuery, async () => "second");
+  const page = definePage({ path: "/partial-region", params: schema.object({}) });
+  const Region = async () => {
+    await readQuery(firstQuery, {});
+    return h("p", null, await readQuery(secondQuery, {}));
+  };
+  registerPage(page, { component: () => h(Region as never, { key: "stable" }) });
+  nameExports({ firstQuery, secondQuery, page });
+  const complete = await executePage("/partial-region", async () => "stored");
+  const failed = await executePage("/partial-region", async () => { throw new Error("QUERY_TIMEOUT"); });
+  const boundary = failed.regions.find(region => region.error === "QUERY_TIMEOUT")!;
+  expect(complete.regions.find(region => region.dependencies.length === 2)?.id).toBe(boundary.id);
+});

@@ -1,6 +1,3 @@
-import { backupDatabase } from "./backup";
-import { inspectDatabase } from "./inspection";
-import { MaintenanceLease } from "./maintenance";
 import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success } from "../../cli/result";
 
@@ -26,14 +23,17 @@ export const databaseCommands: readonly CommandDefinition[] = [
     const value = (flag: string) => args.includes(flag) ? args[args.indexOf(flag)+1] : undefined;
     try {
       if (definition.name === "db recover") {
+        const { MaintenanceLease } = await import("./maintenance");
         const lease = await MaintenanceLease.acquire(url, false, config, true);
         try { return success(definition.name, { target: lease.target, maintenance: await lease.marker(), busy: lease.busy }); } finally { await lease.close(); }
       }
       if (definition.name === "db inspect") {
+        const { inspectDatabase } = await import("./inspection");
         const result = await inspectDatabase(url, { ...(value("--table") ? { table: value("--table")! } : {}), ...(value("--limit") ? { limit: Number(value("--limit")) } : {}), ...(value("--cursor") ? { cursor: value("--cursor")! } : {}), ...(value("--export") ? { export: value("--export")! } : {}) }, config);
         const outcome = success(definition.name, result.data);
         return { ...outcome, result: { ...outcome.result, truncated: result.truncated } };
       }
+      const { backupDatabase } = await import("./backup");
       return success(definition.name, await backupDatabase(url, value("--out")!, { ...config, timeoutMs: timeoutSeconds*1000, ...(process.env.FLEUR_PRIVATE_PG_TOOLS ? { toolDirectory: process.env.FLEUR_PRIVATE_PG_TOOLS } : {}) }));
     } catch (error) {
       const code = error instanceof Error && ["ARGUMENT_INVALID", "CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "RESULT_TOO_LARGE", "UNSUPPORTED_CAPABILITY", "PREREQUISITE_UNAVAILABLE", "BACKUP_VERIFICATION_FAILED", "DESTINATION_EXISTS"].includes(error.message) ? error.message : "INTERNAL_FAILURE";

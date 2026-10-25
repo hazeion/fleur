@@ -1,3 +1,5 @@
+import { columnType } from "./table-ddl";
+import { projection, readValue } from "./selection";
 import { SQL } from "bun";
 import type { Seed } from "../../database";
 import { orderSeeds } from "../seed-declarations";
@@ -61,15 +63,20 @@ export async function seedDatabase(url: string, project: string, declarations: r
       const values = row.values as Record<string, unknown>, desired = canonical(values);
       const owners = await sql.unsafe("SELECT * FROM fleur_internal.seed_ownership WHERE seed=$1 AND owner_key=$2 FOR UPDATE", [seed.key, row.ownerKey]);
       const owner = owners[0];
-      if (owner && (owner.table_name !== spec.name || owner.primary_field !== primary || Object.hasOwn(values, primary) && canonical(values[primary]) !== owner.row_id)) throw new Error("SEED_CONFLICT");
+      if (owner && (owner.table_name !== spec.name || owner.primary_field !== primary)) throw new Error("SEED_CONFLICT");
+      if (owner && Object.hasOwn(values, primary)) {
+        const type = columnType(spec.columns[primary]!).replace(' COLLATE "C"', "");
+        const normalized = await sql.unsafe(`SELECT to_jsonb($1::${type})::text AS id`, [values[primary]]);
+        if (normalized[0]?.id !== owner.row_id) throw new Error("SEED_CONFLICT");
+      }
       const id = owner ? JSON.parse(owner.row_id) : values[primary];
-      const current = id === undefined ? [] : await sql.unsafe(`SELECT encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') AS fingerprint, ${spec.versioned ? 'version::text' : 'NULL::text'} AS version FROM public.${quote(spec.name)} t WHERE ${quote(primary)}=$1 FOR UPDATE`, [id]);
+      const current = id === undefined ? [] : await sql.unsafe(`SELECT encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') AS fingerprint, ${projection(quote(primary), spec.columns[primary]!)} AS primary_value, ${spec.versioned ? 'version::text' : 'NULL::text'} AS version FROM public.${quote(spec.name)} t WHERE ${quote(primary)}=$1 FOR UPDATE`, [id]);
       if (owner?.tombstone && current.length || !owner && current.length) throw new Error("SEED_CONFLICT");
       if (owner && (owner.tombstone || !current.length || current[0].fingerprint !== owner.fingerprint)) {
         result.skipped.push({ seed: seed.key, ownerKey: row.ownerKey, reason: owner.tombstone || !current.length ? "deleted" : "user-edited" }); continue;
       }
       if (owner?.desired === desired) continue;
-      let storedId = id;
+      let storedId = owner ? readValue(spec.columns[primary]!, current[0].primary_value, false) : id;
       if (!owner) {
         const inserted = await write.insert(seed.table, { values: row.values, returning: [primary] });
         storedId = (inserted as Record<string, unknown>)[primary]; result.inserted++;

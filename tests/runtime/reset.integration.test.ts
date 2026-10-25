@@ -53,7 +53,8 @@ test("reset excludes startup and competing reset and rejects plan changes made d
   } finally { await broker.close(); await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 240_000);
 
-for (const missing of [false, true]) test(`failed recreation retains its fence and explicitly restores the retained backup, missing target ${missing}`, async () => {
+for (const state of ["existing", "missing", "unrecorded", "unrecorded-recovery"] as const) test(`failed recreation retains its fence and explicitly restores the retained backup, state ${state}`, async () => {
+  const missing = state === "missing";
   const { restoreDatabase } = await import("../../src/runtime/database/migrations");
   const { inspectMaintenance } = await import("../../src/runtime/database/recovery");
   const fixture = await ownedPostgres(), root = await mkdtemp(join(tmpdir(), "fleur-reset-interrupted-"));
@@ -68,8 +69,18 @@ for (const missing of [false, true]) test(`failed recreation retains its fence a
       const owner = await MaintenanceLease.acquire(fixture.url, true, config, true);
       try { await owner.sql.unsafe(`DROP DATABASE "${owner.target.database}" WITH (FORCE)`); } finally { await owner.close(); }
     }
+    if (state.startsWith("unrecorded")) {
+      const { writeFile } = await import("node:fs/promises");
+      const owner = await MaintenanceLease.acquire(fixture.url, true, config, true);
+      try {
+        const marker = (await owner.marker())!;
+        // PostgreSQL CREATE has completed; this is the durable record from before CREATE.
+        const target = state === "unrecorded" ? marker.replacement!.target : { ...marker.target, oid: "0", owner: "missing" };
+        await writeFile(join(owner.directory, "maintenance.json"), JSON.stringify({ ...marker, target, stage: "applying" }), { mode: 0o600 });
+      } finally { await owner.close(); }
+    }
     const inspection = await inspectMaintenance(fixture.url, config);
-    expect(inspection.maintenance!.stage).toBe("recovery required");
+    expect(inspection.maintenance!.stage).toBe(state.startsWith("unrecorded") ? "applying" : "recovery required");
     expect(inspection.classification).toBe("uncertain");
     if (!missing) await expect(MaintenanceLease.acquire(fixture.url, false, config)).rejects.toThrow("RECOVERY_REQUIRED");
     if (!missing) await expect(resetDatabase(fixture.url, root, [], { ...config, confirm: async () => true })).rejects.toThrow("RECOVERY_REQUIRED");

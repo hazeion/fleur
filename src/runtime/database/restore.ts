@@ -34,12 +34,16 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
     const missingReset=lease.target.oid==="0" && previous?.intent?.operation==="reset" && previous.stage!=="committed" && previous.stage!=="rollback verified"
       && replacement && JSON.stringify(replacement.target)===JSON.stringify(manifest.target) && replacement.backup===archive && replacement.sha256===manifest.sha256
       && previous.target.cluster===lease.target.cluster && previous.target.database===lease.target.database && previous.target.address===lease.target.address && previous.target.port===lease.target.port;
-    if(JSON.stringify(lease.target)!==JSON.stringify(manifest.target)&&!retainedResetBackup&&!missingReset)throw new Error("BACKUP_VERIFICATION_FAILED");
+    const interruptedReset=previous?.intent?.operation==="reset" && previous.stage!=="committed" && previous.stage!=="rollback verified"
+      && replacement && JSON.stringify(replacement.target)===JSON.stringify(manifest.target) && replacement.backup===archive && replacement.sha256===manifest.sha256
+      && lease.target.oid!=="0" && ["cluster","database","owner","address","port"].every(key=>lease.target[key as keyof typeof lease.target]===replacement.target[key as keyof typeof replacement.target])
+      && ["cluster","database","address","port"].every(key=>previous.target[key as keyof typeof previous.target]===lease.target[key as keyof typeof lease.target]);
+    if(JSON.stringify(lease.target)!==JSON.stringify(manifest.target)&&!retainedResetBackup&&!missingReset&&!interruptedReset)throw new Error("BACKUP_VERIFICATION_FAILED");
     if(previous&&!["committed","rollback verified"].includes(previous.stage)&&previous.intent?.operation==="restore"&&previous.intent.restoreFrom===archive) {
       try {return {restored:false,...await reconcileMaintenance(url,project,config,{lease,sql})};}
       catch(error) {if(!(error instanceof Error)||error.message!=="RECOVERY_REQUIRED")throw error;}
     }
-    if(previous&&JSON.stringify(previous.target)!==JSON.stringify(lease.target)&&!missingReset)throw new Error("RECOVERY_REQUIRED");
+    if(previous&&JSON.stringify(previous.target)!==JSON.stringify(lease.target)&&!missingReset&&!interruptedReset)throw new Error("RECOVERY_REQUIRED");
     if(missingReset) {
       const input=await open(archive,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
       try {

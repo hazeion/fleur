@@ -2,6 +2,10 @@
 
 Fleur is a TypeScript application environment and a set of development tools for existing coding agents. It gives agents a consistent project layout, typed application APIs, and commands to develop and verify small full-stack browser applications.
 
+[Reactive database views](docs/reactivity.md) refresh server regions and island
+queries after managed commits, with explicit stale/error states, reconnect
+recovery and preservation of keyed drafts, focus and local state.
+
 Fleur is in early implementation. The unpublished Bun package currently provides help, safe project creation with `new` and `init`, prerequisite diagnosis and scoped setup grants. The read-page and mutation slices supply inferred contracts, restricted database reads, atomic versioned writes, server pages and validated islands. See [atomic mutations](docs/mutations.md) for form outcomes and concurrent-edit protection. Owned seed reconciliation and approved development reset now share maintenance ownership with reviewed migrations, drift detection and explicitly approved restore/reconciliation with database inspection and restore-verified backups; see [maintenance](docs/maintenance.md). Application lifecycle commands are still being built; see [read pages](docs/read-pages.md).
 
 The entry point is `bunx fleur`, with Bun installed beforehand. Until a release is published, run `bun bin/fleur.ts --help` from this checkout. Project creation uses exact release pins. An older project pin requires its matching project-local Fleur installation; the launcher never fetches a replacement automatically.

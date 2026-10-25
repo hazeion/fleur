@@ -2,7 +2,7 @@ import type { Table } from "../../database";
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, link, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -138,6 +138,27 @@ export class MaintenanceLease {
     try { await file.writeFile(JSON.stringify(value)+"\n"); await file.sync(); } finally { await file.close(); }
     await rename(path, join(this.directory, "maintenance.json"));
     await syncDirectory(this.directory);
+  }
+  async epoch(): Promise<string> {
+    await this.assertSession();
+    const marker = await this.marker();
+    if (marker) return marker.epoch;
+    const path = join(this.directory, "initial-epoch");
+    const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+    const candidate = await open(temporary, "wx", 0o600);
+    try { await candidate.writeFile(crypto.randomUUID()); await candidate.sync(); }
+    finally { await candidate.close(); }
+    try { await link(temporary, path); await syncDirectory(this.directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    finally { await unlink(temporary); }
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size !== 36) throw new Error("RECOVERY_REQUIRED");
+      const value = await file.readFile("utf8");
+      if (!z.string().uuid().safeParse(value).success) throw new Error("RECOVERY_REQUIRED");
+      return value;
+    } finally { await file.close(); }
   }
   /** Called only under the external exclusive lock after an approved database recreation. */
   async refreshReplacedTarget(expectedOwner = this.target.owner): Promise<void> {

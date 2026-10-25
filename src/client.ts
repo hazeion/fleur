@@ -17,6 +17,25 @@ export function defineIsland<P extends object>(options: { props: Schema<P>; comp
 }
 
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { observeQuery, queryKey, queryName, type QueryState, type QueryRefreshResult } from "./runtime/query-client";
+import type { Query } from "./schema";
+export type { QueryState, QueryRefreshResult };
+export function useQuery<I, O>(contract: Query<I, O>, input: NoInfer<I>): QueryState<O> {
+  const validated = contract.input.parse(input);
+  const key = queryKey(queryName(contract), validated);
+  const [state, setState] = useState<{ key: string; value: Omit<QueryState<O>, "refresh"> }>({ key, value: { status: "loading", connection: "connected", stale: true, refreshing: true } });
+  const current = useRef<ReturnType<typeof observeQuery> | undefined>(undefined);
+  useEffect(() => {
+    try {
+      const observed = observeQuery(contract, validated, () => setState({ key, value: observed.get() as Omit<QueryState<O>, "refresh"> }));
+      current.current = observed;
+      setState({ key, value: observed.get() as Omit<QueryState<O>, "refresh"> });
+      return () => { observed.dispose(); current.current = undefined; };
+    } catch (error) { setState({ key, value: { status: "error", connection: "connected", stale: true, refreshing: false, error: { code: error instanceof Error ? error.message : "INPUT_INVALID" } } }); }
+  }, [contract, key]);
+  const refresh = useCallback(() => current.current?.refresh() ?? Promise.resolve<QueryRefreshResult>({ status: "error", error: { code: "NOT_CONNECTED" } }), []);
+  return { ...(state.key === key ? state.value : { status: "loading" as const, connection: "connected" as const, stale: true, refreshing: true }), refresh };
+}
 import type { Mutation } from "./schema";
 import { runMutation, type MutationOutcome, type MutationError } from "./runtime/mutation-client";
 export type { MutationOutcome, MutationError };

@@ -1,3 +1,6 @@
+import { seedDefinitions } from "./seed-declarations";
+import { describeSeeds } from "./seed-wire";
+import type { Seed } from "../database";
 import type { Table } from "../database";
 import { tableDefinitions } from "./declarations";
 import { describeTables } from "./table-wire";
@@ -12,6 +15,7 @@ export function workerManifest(exports: Readonly<Record<string, unknown>>) {
   const tables = [...new Set(Object.values(exports).filter((value): value is Table => !!value && typeof value === "object" && tableDefinitions.has(value) && !tableDefinitions.get(value)?.alias))];
   return {
     version: 1,
+    seeds: describeSeeds(Object.values(exports).filter((value): value is Seed => !!value && typeof value === "object" && seedDefinitions.has(value))),
     tables: describeTables(tables),
     queries: [...queries.keys()].map(query => ({ id: queryNames.get(query)!, input: describeSchema(query.input), output: describeSchema(query.output) })),
     mutations: [...mutations.keys()].map(mutation => ({ id: mutationNames.get(mutation)!, input: describeSchema(mutation.input), output: describeSchema(mutation.output) })),

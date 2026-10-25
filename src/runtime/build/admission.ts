@@ -15,7 +15,8 @@ export async function admitProject(directory: string): Promise<AdmittedProject> 
   const resolutions = new Map<string, string>();
   const group = (path: string): keyof typeof groups => {
     const relativePath = relative(root, path);
-    const name = relativePath.split(/[\\/]/)[0];
+    const first = relativePath.split(/[\\/]/)[0];
+    const name = first === "seeds" ? "server" : first;
     if (isAbsolute(relativePath) || !["server", "shared", "client"].includes(name ?? "")) return denied();
     return name as keyof typeof groups;
   };
@@ -33,7 +34,7 @@ export async function admitProject(directory: string): Promise<AdmittedProject> 
       if (files.size > 2000) return denied();
     }
   };
-  for (const name of Object.keys(groups)) {
+  for (const name of [...Object.keys(groups), "seeds"]) {
     try { await visit(join(root, name)); }
     catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error; }
   }

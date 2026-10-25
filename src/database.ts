@@ -207,3 +207,5 @@ export interface WriteDb extends ReadDb {
   /** Unversioned writes have no lost-update guarantee. */
   delete<T extends Table<ColumnShape, false>>(table: T, options: { id: PrimaryKey<NoInfer<T>> }): Promise<{ deleted: true }>;
 }
+
+export { defineSeed, type Seed } from "./runtime/seed-declarations";

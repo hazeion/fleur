@@ -127,3 +127,12 @@ function mutationTypes(db: WriteDb) {
   db.update(unversioned, { id, set: { name: "Allowed" }, returning: ["id"] });
 }
 void mutationTypes;
+
+import { defineSeed } from "../../src/database";
+const typedSeed = defineSeed({ key: "exercises", table: exercises, rows: [{ ownerKey: "squat", values: { name: "Squat", note: null } }] });
+const seedName: string = typedSeed.rows[0]!.values.name;
+void seedName;
+// @ts-expect-error Seed values retain the table's inferred insert types.
+defineSeed({ key: "invalid", table: exercises, rows: [{ ownerKey: "bad", values: { name: 4, note: null } }] });
+// @ts-expect-error Seed values cannot assign a managed version.
+defineSeed({ key: "invalid", table: exercises, rows: [{ ownerKey: "bad", values: { name: "Squat", note: null, version: 4 } }] });

@@ -26,13 +26,35 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
   const io=()=>({timeoutMs:remaining(),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
   try {
     if(lease.busy)throw new Error("MAINTENANCE_BUSY");
-    if(JSON.stringify(lease.target)!==JSON.stringify(manifest.target))throw new Error("BACKUP_VERIFICATION_FAILED");
     const previous=await lease.marker();
+    const replacement=previous?.replacement;
+    const retainedResetBackup=replacement && JSON.stringify(previous.target)===JSON.stringify(lease.target)
+      && JSON.stringify(replacement.target)===JSON.stringify(manifest.target)
+      && replacement.backup===archive && replacement.sha256===manifest.sha256;
+    const missingReset=lease.target.oid==="0" && previous?.intent?.operation==="reset" && previous.stage!=="committed" && previous.stage!=="rollback verified"
+      && replacement && JSON.stringify(replacement.target)===JSON.stringify(manifest.target) && replacement.backup===archive && replacement.sha256===manifest.sha256
+      && previous.target.cluster===lease.target.cluster && previous.target.database===lease.target.database && previous.target.address===lease.target.address && previous.target.port===lease.target.port;
+    const interruptedReset=previous?.intent?.operation==="reset" && previous.stage!=="committed" && previous.stage!=="rollback verified"
+      && replacement && JSON.stringify(replacement.target)===JSON.stringify(manifest.target) && replacement.backup===archive && replacement.sha256===manifest.sha256
+      && lease.target.oid!=="0" && ["cluster","database","owner","address","port"].every(key=>lease.target[key as keyof typeof lease.target]===replacement.target[key as keyof typeof replacement.target])
+      && ["cluster","database","address","port"].every(key=>previous.target[key as keyof typeof previous.target]===lease.target[key as keyof typeof lease.target]);
+    if(JSON.stringify(lease.target)!==JSON.stringify(manifest.target)&&!retainedResetBackup&&!missingReset&&!interruptedReset)throw new Error("BACKUP_VERIFICATION_FAILED");
     if(previous&&!["committed","rollback verified"].includes(previous.stage)&&previous.intent?.operation==="restore"&&previous.intent.restoreFrom===archive) {
       try {return {restored:false,...await reconcileMaintenance(url,project,config,{lease,sql})};}
       catch(error) {if(!(error instanceof Error)||error.message!=="RECOVERY_REQUIRED")throw error;}
     }
-    if(previous&&JSON.stringify(previous.target)!==JSON.stringify(lease.target))throw new Error("RECOVERY_REQUIRED");
+    if(previous&&JSON.stringify(previous.target)!==JSON.stringify(lease.target)&&!missingReset&&!interruptedReset)throw new Error("RECOVERY_REQUIRED");
+    if(missingReset) {
+      const input=await open(archive,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      try {
+        const stat=await input.stat();if(!stat.isFile()||stat.nlink!==1||stat.uid!==process.getuid?.()||(stat.mode&0o077)!==0||stat.size!==manifest.bytes)throw new Error("BACKUP_VERIFICATION_FAILED");
+        const output=await open(frozen,"wx",0o600);try{for await(const chunk of input.createReadStream({autoClose:false}))await output.writeFile(chunk);await output.sync();}finally{await output.close();}
+      }finally{await input.close();}
+      if((await fileDigest(frozen)).sha256!==manifest.sha256)throw new Error("BACKUP_VERIFICATION_FAILED");
+      const {restoreMissingReset}=await import("./reset-recovery");
+      const restored=await restoreMissingReset(url,frozen,archive,manifest,lease,previous!,{...config,timeoutMs:remaining()});
+      return {...restored,pending:plans.slice(manifest.history?.length??0).map(plan=>plan.id)};
+    }
     const fence=await sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]);
     if(!fence[0]?.acquired)throw new Error("MAINTENANCE_BUSY");
     const active=await sql.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");

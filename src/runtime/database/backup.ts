@@ -63,7 +63,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     const prepared = await source.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()");
     if (activities[0]?.active !== "0" || prepared.length) throw new Error("MAINTENANCE_BUSY");
     const intent=held?.intent??{operation:"backup" as const,beforeSchema:await catalogFingerprint(source),beforeData:await dataIntegrity(source),beforeHistory:(await migrationHistory(source)).map(row=>row.checksum),afterHistory:(await migrationHistory(source)).map(row=>row.checksum),afterSchema:null,afterData:null};
-    marker = { schemaState: (await lease.marker())?.schemaState, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: held?.planChecksum ?? digest(JSON.stringify({ operation: "backup", target: lease.target, out })), intent, backup: archive, verification: { database: name, role: name, token }, epoch: (await lease.marker())?.epoch ?? randomUUID() };
+    marker = { replacement: (await lease.marker())?.replacement, schemaState: (await lease.marker())?.schemaState, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: held?.planChecksum ?? digest(JSON.stringify({ operation: "backup", target: lease.target, out })), intent, backup: archive, verification: { database: name, role: name, token }, epoch: (await lease.marker())?.epoch ?? randomUUID() };
     await lease.persist(marker);
     await source.unsafe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await source.unsafe("SET LOCAL statement_timeout='30s'");

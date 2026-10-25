@@ -6,7 +6,7 @@ import { MaintenanceLease, digest, syncDirectory } from "./maintenance";
 import { publishFile } from "./inspection";
 
 export interface MaintenanceApproval {
-  readonly action: "migration" | "restore" | "reconcile";
+  readonly action: "migration" | "restore" | "reconcile" | "reset";
   readonly target: MaintenanceLease["target"];
   readonly checksum: string;
   readonly replacesCurrentData: boolean;

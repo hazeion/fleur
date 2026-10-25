@@ -10,7 +10,7 @@ import { z } from "zod";
 export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; readonly completeRegistry?: boolean; }
 const identitySchema = z.strictObject({ cluster: z.string().regex(/^\d+$/), database: z.string().min(1).max(63), oid: z.string().regex(/^\d+$/), owner: z.string().min(1), address: z.string(), port: z.number().int(), });
 export type DatabaseIdentity = z.infer<typeof identitySchema>;
-const markerSchema = z.strictObject({ formatVersion: z.literal(1), target: identitySchema, stage: z.enum(["preparing", "backup verified", "applying", "committed", "rollback verified", "recovery required"]), planChecksum: z.string().regex(/^[a-f0-9]{64}$/), backup: z.string().nullable(), verification: z.strictObject({ database: z.string(), role: z.string(), token: z.string() }).optional(), log: z.array(z.strictObject({ at: z.string(), stage: z.string(), planChecksum: z.string().regex(/^[a-f0-9]{64}$/) })).max(200).optional(), logTruncated: z.boolean().optional(), schemaState: z.strictObject({ catalog: z.string(), history: z.array(z.string()).max(1000) }).optional(), intent: z.strictObject({ operation: z.enum(["migration","restore","backup"]), beforeSchema: z.string(), beforeData: z.string(), beforeHistory: z.array(z.string()), afterHistory: z.array(z.string()).nullable(), afterSchema: z.string().nullable(), afterData: z.string().nullable().optional(), restoreFrom: z.string().optional(), preservedBackup: z.string().optional() }).optional(), epoch: z.string().uuid(), });
+const markerSchema = z.strictObject({ formatVersion: z.literal(1), target: identitySchema, replacement: z.strictObject({ target: identitySchema, backup: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).optional(), stage: z.enum(["preparing", "backup verified", "applying", "committed", "rollback verified", "recovery required"]), planChecksum: z.string().regex(/^[a-f0-9]{64}$/), backup: z.string().nullable(), verification: z.strictObject({ database: z.string(), role: z.string(), token: z.string() }).optional(), log: z.array(z.strictObject({ at: z.string(), stage: z.string(), planChecksum: z.string().regex(/^[a-f0-9]{64}$/) })).max(200).optional(), logTruncated: z.boolean().optional(), schemaState: z.strictObject({ catalog: z.string(), history: z.array(z.string()).max(1000) }).optional(), intent: z.strictObject({ operation: z.enum(["migration","restore","backup","seed","reset"]), beforeSchema: z.string(), beforeData: z.string(), beforeHistory: z.array(z.string()), afterHistory: z.array(z.string()).nullable(), afterSchema: z.string().nullable(), afterData: z.string().nullable().optional(), restoreFrom: z.string().optional(), preservedBackup: z.string().optional() }).optional(), epoch: z.string().uuid(), });
 export type MaintenanceMarker = z.infer<typeof markerSchema>;
 export function digest(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
 export function databaseUrl(value: string): URL {
@@ -48,7 +48,8 @@ export async function syncDirectory(path: string): Promise<void> {
 }
 export class MaintenanceLease {
   readonly sql: SQL;
-  readonly target: DatabaseIdentity;
+  #target: DatabaseIdentity;
+  get target(): DatabaseIdentity { return this.#target; }
   readonly key: string;
   readonly directory: string;
   readonly #pid: number;
@@ -56,7 +57,7 @@ export class MaintenanceLease {
   readonly #exclusive: boolean;
   readonly busy: boolean;
   private constructor(sql: SQL, target: DatabaseIdentity, key: string, directory: string, pid: number, exclusive: boolean, nonce: string, busy = false) {
-    this.sql = sql; this.target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy;
+    this.sql = sql; this.#target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy;
   }
   static async acquire(urlValue: string, exclusive: boolean, configuration: MaintenanceConfiguration = {}, inspect = false): Promise<MaintenanceLease> {
     const targetUrl = databaseUrl(urlValue);
@@ -137,6 +138,14 @@ export class MaintenanceLease {
     try { await file.writeFile(JSON.stringify(value)+"\n"); await file.sync(); } finally { await file.close(); }
     await rename(path, join(this.directory, "maintenance.json"));
     await syncDirectory(this.directory);
+  }
+  /** Called only under the external exclusive lock after an approved database recreation. */
+  async refreshReplacedTarget(expectedOwner = this.target.owner): Promise<void> {
+    if (!this.#exclusive) throw new Error("REQUEST_DENIED");
+    await this.assertSession();
+    const rows = await this.sql.unsafe("SELECT oid::text AS oid,pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname=$1", [this.target.database]);
+    if (rows.length !== 1 || rows[0].owner !== expectedOwner) throw new Error("RECOVERY_REQUIRED");
+    this.#target = identitySchema.parse({ ...this.target, oid: rows[0].oid, owner: expectedOwner });
   }
   async close(): Promise<void> { await this.sql.close({ timeout: 0 }); }
 }

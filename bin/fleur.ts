@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { seedCommands } from "../src/runtime/database/seed-commands.ts";
 import { renderHelp } from "../src/cli/catalog.ts";
 import { parseInvocation, runCli } from "../src/cli/main.ts";
 import { migrationCommands } from "../src/runtime/database/migration-commands.ts";
@@ -7,7 +8,7 @@ import { projectCommands } from "../src/project/commands.ts";
 import { setupCommands } from "../src/setup/commands.ts";
 import type { CliOutcome } from "../src/cli/result.ts";
 const argv = process.argv.slice(2);
-const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...migrationCommands];
+const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...seedCommands, ...migrationCommands];
 const context = { cwd: process.cwd(), handlers };
 const parsed = parseInvocation(argv, context);
 let outcome: CliOutcome | undefined;

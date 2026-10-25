@@ -45,6 +45,9 @@ export async function executePage(pathname: string, read: (name: string, input: 
       return h(Fragment, null, h("template", { "data-fleur-region": id }), content, h("template", { "data-fleur-end": id }));
     }
     catch (error) {
+      // The page operation retains its declared error contract. Nested regions
+      // isolate failures so refresh can retain their previous complete subtree.
+      if (id === "page") throw error;
       descriptors.splice(descriptorStart); regions.splice(regionStart);
       const code = error instanceof Error && ["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
       Object.assign(entry, { error: code });

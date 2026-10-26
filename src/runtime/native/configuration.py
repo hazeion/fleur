@@ -26,7 +26,13 @@ def host_environment():
     return environment
 
 
-def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_LABEL, *, kernel_private=False, kernel_proof=None):
+# A retained application container's init is an idle trusted process. Each
+# operation's application process is a separate audited exec; IPC is disabled
+# so no shared-memory mount can carry state between operations.
+RETAINED_PROFILE = {'entrypoint':['/bin/sleep'],'command':['infinity'],'ipc':('none',)}
+
+
+def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_LABEL, *, kernel_private=False, kernel_proof=None, retained=False):
     def require(condition, label):
         if not condition: raise ValueError('owned worker configuration rejected: '+label)
     require(owner_label in (OWNER_LABEL,NATIVE_DATABASE_OWNER_LABEL,'fleur.compatibility.vfs-owner'), 'owner-binding')
@@ -42,8 +48,12 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
     require(type(config.get('Labels')) is dict and config['Labels'].get(owner_label) == owner, 'ownership')
     require(config.get('Image') == image_id, 'configured-image-identity')
     require(config.get('User') == '65534:65534', 'unprivileged-user')
-    require(config.get('Entrypoint') == ['bun', '/probe/bootstrap.js'] and config.get('Cmd') in (None, [])
-            and config.get('WorkingDir') == '/probe' and config.get('Volumes') in (None, {}), 'fixed-bootstrap')
+    if retained:
+        require(config.get('Entrypoint') == RETAINED_PROFILE['entrypoint'] and config.get('Cmd') == RETAINED_PROFILE['command']
+                and config.get('WorkingDir') == '/probe' and config.get('Volumes') in (None, {}), 'fixed-retained-init')
+    else:
+        require(config.get('Entrypoint') == ['bun', '/probe/bootstrap.js'] and config.get('Cmd') in (None, [])
+                and config.get('WorkingDir') == '/probe' and config.get('Volumes') in (None, {}), 'fixed-bootstrap')
     require(host.get('ReadonlyRootfs') is True and host.get('Privileged') is False, 'readonly-unprivileged')
     require(host.get('CapDrop') == ['ALL'] and host.get('CapAdd') in (None,[]), 'capabilities')
     require(type(host.get('SecurityOpt')) is list and all(type(item) is str for item in host['SecurityOpt']) and sorted(host['SecurityOpt']) == ['no-new-privileges','seccomp=unconfined'], 'security-options')
@@ -66,7 +76,7 @@ def audit_configuration(metadata, owner, container, image_id, owner_label=OWNER_
         require(all(networks['none'].get(key) == '' for key in ('IPAddress','Gateway','GlobalIPv6Address','IPv6Gateway')), 'network-addresses')
     require(metadata.get('Mounts') == [] and all(host.get(key) in (None,[]) for key in
             ('Binds','Mounts','VolumesFrom','Devices','DeviceRequests')), 'mount-device-exclusion')
-    require(host.get('PidMode') in ('','private') and host.get('IpcMode') in ('private','none'), 'private-namespaces')
+    require(host.get('PidMode') in ('','private') and host.get('IpcMode') in (RETAINED_PROFILE['ipc'] if retained else ('private','none')), 'private-namespaces')
     require(type(host.get('RestartPolicy')) is dict and host['RestartPolicy'].get('Name') == 'no', 'restart-policy')
     require(state.get('Running') is True, 'running-worker')
     require(type(state.get('Pid')) is int and 0 < state['Pid'] <= 2**31-1, 'init-host-pid')

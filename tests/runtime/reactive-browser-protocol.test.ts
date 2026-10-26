@@ -67,3 +67,51 @@ test("two browser views discard obsolete responses, recover missed wakeups and h
     }
   } finally { await browser.close(); await server.stop(true); await project.close(); }
 }, 45_000);
+
+test("the first refresh reconciles a page beginning with a region anchor in place, retaining island state", async () => {
+  const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url))));
+  const project = new ReactiveProject({
+    revision: async () => ({ epoch: "00000000-0000-4000-8000-000000000000", revision: "0" }), validate: (_name, input) => input, query: async () => "Stored",
+    render: async (_path, read) => {
+      const name = String(await read("value", {}));
+      return { html: `<template data-fleur-region="page"></template><main><div data-fleur-island="island-0" data-fleur-identity="counter"><button>${name}: 0</button></div></main><template data-fleur-end="page"></template>`, islands: [{ key: "island-0", id: "client/Counter.tsx#Counter", props: { name } }], regions: [{ id: "page", dependencies: [{ name: "value", input: {} }] }] };
+    },
+  });
+  let release!: () => void;
+  let held = Promise.resolve();
+  let refreshes = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const url = new URL(request.url), asset = bundle.files.get(url.pathname);
+    if (asset) return new Response(typeof asset.body === "string" ? asset.body : new Uint8Array(asset.body).buffer, { headers: { "Content-Type": asset.type } });
+    if (url.pathname === "/__fleur/view") {
+      const command = await request.json() as RefreshRequest & { action: string };
+      if (command.action === "dispose") return Response.json({ disposed: true });
+      if (refreshes++ === 0) await held;
+      return Response.json(await project.refresh(command));
+    }
+    const initial = await project.open("/");
+    const identity = { connection: initial.connection, page: initial.page, generation: 0, sequence: 0, epoch: initial.epoch, revision: initial.revision, status: initial.status };
+    return new Response(`<!doctype html><html><body><div id="fleur-page">${initial.rendered.html}</div><script id="fleur-islands" type="application/json">${JSON.stringify(initial.rendered.islands)}</script><script id="fleur-view" type="application/json">${JSON.stringify(identity)}</script><script type="module" src="${bundle.entry}"></script></body></html>`, { headers: { "Content-Type": "text/html" } });
+  } });
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (let repeat = 1; repeat <= 2; repeat++) {
+      refreshes = 0;
+      held = new Promise<void>(resolve => { release = resolve; });
+      const page = await browser.newPage();
+      await page.goto(server.url.href);
+      await page.waitForFunction(() => document.documentElement.dataset.fleurHydrated === "true");
+      await page.getByRole("button").click();
+      await browserExpect(page.getByRole("button")).toHaveText("Stored: 1");
+      await page.evaluate(() => { (document.querySelector("[data-fleur-island]") as unknown as { original: boolean }).original = true; });
+      const responded = page.waitForResponse(response => response.url().endsWith("/__fleur/view"));
+      release();
+      await responded;
+      await page.waitForFunction(() => document.documentElement.dataset.fleurRefresh === "current");
+      expect(await page.evaluate(() => (document.querySelector("[data-fleur-island]") as unknown as { original?: boolean } | null)?.original === true)).toBe(true);
+      await browserExpect(page.getByRole("button")).toHaveText("Stored: 1");
+      expect(await page.locator("#fleur-page > template[data-fleur-region='page']").count()).toBe(1);
+      await page.close();
+    }
+  } finally { await browser.close(); await server.stop(true); await project.close(); }
+}, 45_000);

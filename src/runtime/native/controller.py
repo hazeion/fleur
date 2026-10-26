@@ -102,7 +102,7 @@ def main():
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         worker_created = True
         audit = json.loads(line(worker.stdout, 16384, deadline))
-        if type(audit) is not dict or set(audit) != {'kind', 'inventory'} or audit['kind'] != 'startup-audit':
+        if type(audit) is not dict or set(audit) != {'kind', 'inventory', 'pid'} or audit['kind'] != 'startup-audit' or audit['pid'] != 1:
             raise RuntimeError('STARTUP_REJECTED')
         configuration = inspect_worker_configuration(worker_name, owner, worker_image)
         rows = inspect_threads(worker_name)

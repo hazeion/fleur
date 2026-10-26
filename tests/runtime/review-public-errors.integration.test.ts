@@ -24,7 +24,7 @@ test("declared errors survive query and nested page boundaries while unexpected 
       registerPage(page, { component: async ({ params }) => h("main", null, await readQuery(query, params)) });
       const declarations = { query, page };
       const manifest = workerManifest(declarations);
-      mock.module("./src/runtime/native/host.ts", () => ({ startWorker: async () => ({
+      const fakeWorker = async () => ({
         close: async () => {},
         run: async (command, exchange) => {
           if (command.mode === "register") return makeRunner(declarations)(command, () => { throw new Error("unexpected exchange"); });
@@ -37,7 +37,11 @@ test("declared errors survive query and nested page boundaries while unexpected 
             throw new Error("unexpected exchange");
           });
         },
-      }) }));
+      });
+      mock.module("./src/runtime/native/host.ts", () => ({ startWorker: fakeWorker }));
+      mock.module("./src/runtime/native/execution.ts", () => ({ NativeExecution: { open: () => ({ warm() {}, async close() {},
+        async reserve() { const worker = await fakeWorker(); return { run: async (command, exchange) => ({ value: await worker.run(command, exchange) }), release() {} }; } }) } }));
+
       const { ReadApplication } = await import("./src/runtime/application.ts");
       const app = await ReadApplication.open({ worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" }, process.env.FLEUR_REVIEW_PG_URL);
       const observations = [];

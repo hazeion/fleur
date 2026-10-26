@@ -5,7 +5,9 @@ const send = globalThis.fetch.bind(globalThis);
 const parse = DOMParser.prototype.parseFromString;
 export const reactiveSend = send;
 export function parseServerHTML(html: string): Document {
-  const document = Reflect.apply(parse, new DOMParser(), [html, "text/html"]) as Document;
+  // An explicit body context keeps leading region anchors in place; a bare
+  // fragment would hoist a leading <template> into the parsed head.
+  const document = Reflect.apply(parse, new DOMParser(), [`<!doctype html><html><head></head><body>${html}`, "text/html"]) as Document;
   if (document.querySelector("iframe,frame,frameset,object,embed,script,portal,fencedframe")) throw new Error("Invalid server document");
   return document;
 }

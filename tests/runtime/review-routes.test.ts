@@ -21,7 +21,7 @@ test("a static route wins before an overlapping dynamic route validates its para
     registerPage(fixed, { component: () => h("h1", null, "New item") });
     const declarations = { dynamic, fixed };
     const manifest = workerManifest(declarations);
-    mock.module("./src/runtime/native/host.ts", () => ({ startWorker: async () => ({
+    const fakeWorker = async () => ({
       close: async () => {},
       run: async (command, exchange) => {
         if (command.mode === "register") return makeRunner(declarations)(command, () => { throw new Error("unexpected exchange"); });
@@ -31,7 +31,11 @@ test("a static route wins before an overlapping dynamic route validates its para
           throw new Error("unexpected exchange");
         });
       },
-    }) }));
+    });
+    mock.module("./src/runtime/native/host.ts", () => ({ startWorker: fakeWorker }));
+    mock.module("./src/runtime/native/execution.ts", () => ({ NativeExecution: { open: () => ({ warm() {}, async close() {},
+      async reserve() { const worker = await fakeWorker(); return { run: async (command, exchange) => ({ value: await worker.run(command, exchange) }), release() {} }; } }) } }));
+
     const { ReadApplication } = await import("./src/runtime/application.ts");
     const app = await ReadApplication.open({ worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" }, process.env.FLEUR_PRIVATE_DATABASE_URL);
     const observations = [];

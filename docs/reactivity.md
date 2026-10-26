@@ -67,25 +67,51 @@ The internal build/render adapter and
 commands and full reference-workload performance qualification remain their own
 slices. External retrieval is separate from database subscriptions.
 
-The runtime prepares at most four standby operation workers, including workers
-being retired. They execute one operation each and keep the existing native
-restrictions and physical deadlines. Idle workers retire before the controller's
-30-second admission deadline; active views replenish that bounded reserve.
-This trades bounded idle resource use for lower refresh startup latency.
+## Native execution
+
+Application operations run in retained execution slots, as recorded in
+[ADR 0001](adr/0001-reuse-application-containers.md). Each slot owns one
+restricted application container whose init is an idle trusted process, plus one
+guard host container. The application container keeps the one-CPU, 512-MiB,
+64-PID ceilings, shared by its idle init, the operation process and trusted
+inspection. It has a read-only root, no network, no shared-memory mount, no
+mounts and no Docker socket. The guard host container has its own one-CPU,
+256-MiB, 32-PID ceilings. A trusted controller owns the slot; application processes never
+receive its channel.
+
+Every operation starts a fresh operating-system process, so heap and module
+state never carry over. A slot runs at most one operation at a time; up to four
+slots provide independent capacity. Before application code evaluates, the
+process installs its irreversible restrictions on every thread and closes
+unrelated descriptors. The controller then independently inspects that exact
+process's threads and descriptors. Before admission, a one-shot guard binds one
+immutable operation, container, boot, process start identity and pidfd. No input
+extends its deadline or selects another target. The five-second operation
+deadline and 250-ms physical-exit tolerance are unchanged.
+
+An operation completes only after its guard observes physical exit and the
+container's cgroup again holds only its idle init. Mutation output validation
+and that retirement precede commit. A busy, malformed or cancelled operation
+fails only itself. Any uncertain ownership, admission, retirement or cleanup
+quarantines the whole slot: its containers are removed, and it keeps occupying
+capacity until that removal is verified. Controller loss closes the guard's control channel, which
+kills the bound process. Shutdown closes admission, drains for up to 30 seconds
+and verifies removal of every owned container.
+
+While views are active, each idle slot keeps one prepared process waiting at its
+admission gate. The scheduler replaces a prepared process 20 seconds after its
+preparation completed, and the controller refuses admission 30 seconds after its
+preparation began, preserving the original startup/admission bound. Waiting for
+a slot and preparing a process precede an operation's five-second deadline, as
+worker startup did before; that deadline starts when the guard is armed. This trades
+bounded idle resource use for lower refresh latency.
 
 ## Qualification status
 
-This implementation has not met the approved native refresh timing gate and
-must not be treated as release-qualified. On Intel macOS with pinned Bun 1.4.3,
-the full suite's two-view native test failed to deliver the new client query
-within five seconds after mutation success. Earlier exploratory runs on host
-Bun 1.4.4 also failed: one delivered the query after approximately 5.4 seconds;
-another delivered the query but did not update server props within the following
-five seconds. Diagnostic operation times were approximately 4–5 seconds per query
-and 4–5 seconds per server render, despite prepared one-shot workers. The fast
-browser protocol tests pass against a controlled backend; they do not establish
-native database performance.
-
-The native execution/refresh mechanism requires further work or a live decision
-under the approved specification's compatibility rule. Deadlines, physical
-retirement, cleanup verification and freshness assertions remain unchanged.
+On Intel macOS with pinned Bun 1.4.3 and Docker Desktop, the retained-execution
+qualification gates, the real two-view browser test, and the mutation and
+maintenance browser tests pass. In those local runs a warm operation's guard
+arming, execution and retirement took approximately 260 ms. Preparation took
+another 300–350 ms when no prepared process was available. Cold slot creation
+took approximately 2.3 seconds. These are local measurements, not performance
+guarantees. Required platform qualification comes from the full CI matrix.

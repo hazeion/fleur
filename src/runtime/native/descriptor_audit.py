@@ -7,6 +7,8 @@ actual descriptor classes after descriptor creation/duplication are denied.
 import re
 import subprocess
 
+from threads import docker_exec
+
 INVENTORY_LIMIT = 192
 OUTPUT_LIMIT = 16384
 KINDS = {'eventfd', 'eventpoll', 'timerfd'}
@@ -16,7 +18,7 @@ LINE = re.compile(r'(0|[1-9][0-9]{0,9}) (eventfd|eventpoll|timerfd|unadmitted|mi
 # overflow cannot be accepted as a successful full-set audit.
 AUDIT_COMMAND = r'''set -eu
 count=0
-for descriptor in /proc/1/fd/[0-9]*; do
+for descriptor in /proc/"$1"/fd/[0-9]*; do
     count=$((count + 1))
     if [ "$count" -gt 195 ]; then printf 'overflow\n'; exit 0; fi
     number=${descriptor##*/}
@@ -66,20 +68,20 @@ def parse_descriptor_inventory(output):
     return actual
 
 
-def inspect_event_inventory(container, inventory):
+def inspect_event_inventory(container, inventory, pid=1, runner=None):
     try:
         expected = _expected_inventory(inventory)
     except ValueError:
         return {'passed': False, 'category': 'invalid-inventory'}
     if type(container) is not str or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', container) is None:
         return {'passed': False, 'category': 'inspection-failed'}
+    if type(pid) is not int or not 0 < pid <= 2**22:
+        return {'passed': False, 'category': 'inspection-failed'}
     try:
-        result = subprocess.run(['docker', 'exec', '--user', '65534:65534', container,
-                                 '/bin/sh', '-c', AUDIT_COMMAND], capture_output=True,
-                                text=True, timeout=5, check=False)
-        if result.returncode:
+        returncode, output = (runner or (lambda command: docker_exec(container, command)))(['/bin/sh', '-c', AUDIT_COMMAND, 'sh', str(pid)])
+        if returncode:
             return {'passed': False, 'category': 'inspection-failed'}
-        actual = parse_descriptor_inventory(result.stdout)
+        actual = parse_descriptor_inventory(output)
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return {'passed': False, 'category': 'inspection-failed'}
     except ValueError:

@@ -30,7 +30,9 @@ const count = native.event_inventory_count();
 if (count < 2 || count > 192) process.exit(14);
 const kinds = ["eventfd", "eventpoll", "timerfd"];
 const inventory = Array.from({ length: count }, (_, i) => ({ fd: native.event_inventory_fd(i), kind: kinds[native.event_inventory_kind(i) - 1] }));
-console.log(JSON.stringify({ kind: "startup-audit", inventory }));
+// The namespace pid lets the trusted host inspect this exact process. Before
+// application entry this report comes only from trusted bootstrap code.
+console.log(JSON.stringify({ kind: "startup-audit", inventory, pid: process.pid }));
 if (native.event_audit_ack() !== 0) process.exit(15);
 if (native.event_probe() !== 0 || Array.from({ length: 12 }, (_, i) => native.event_negative(i)).some(result => result !== -1)
   || Array.from({ length: 24 }, (_, i) => native.negative(i)).some(result => result !== -1)

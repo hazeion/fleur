@@ -1,6 +1,6 @@
 import { queryIdentity } from "./query-identity";
 import type { DatabaseRevision } from "./database/revision";
-import { PreparedWorkers } from "./native/prepared-workers";
+import { NativeExecution, type Reservation } from "./native/execution";
 import { randomUUID } from "node:crypto";
 import { MaintenanceLease, type MaintenanceConfiguration } from "./database/maintenance";
 import { ReadBroker } from "./database/broker";
@@ -27,11 +27,11 @@ export class ReadApplication {
   readonly #broker: ReadBroker;
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
-  readonly #workers: PreparedWorkers;
+  readonly #execution: NativeExecution;
   private constructor(images: Images, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
     this.registry = registry; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
     this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance: this.#maintenance });
-    this.#workers = new PreparedWorkers(images);
+    this.#execution = NativeExecution.open(images);
   }
   static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}): Promise<ReadApplication> {
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
@@ -47,11 +47,11 @@ export class ReadApplication {
       return new ReadApplication(images, registry, url, maintenance);
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
   }
-  async #execute(worker: Awaited<ReturnType<typeof startWorker>>, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read = (name: string, input: unknown) => this.query(name, input)): Promise<unknown> {
+  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read = (name: string, input: unknown) => this.query(name, input)): Promise<unknown> {
     const session = randomUUID();
     let sequence = 0, admitted = false;
     let operationFault: unknown;
-    const result = record(await worker.run({ ...command, session }, async input => {
+    const result = record((await reservation.run({ ...command, session }, async input => {
       const request = record(input);
       if (Object.keys(request).length !== 4 || request.session !== session || request.sequence !== sequence++ || typeof request.kind !== "string") throw new Error("REQUEST_DENIED");
       let value: unknown;
@@ -79,7 +79,7 @@ export class ReadApplication {
         const code = error instanceof Error && ["QUERY_PENDING", "REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
         return { session, sequence: request.sequence, error: code };
       }
-    }, budgetMs));
+    }, budgetMs)).value);
     if (operationFault) throw operationFault;
     if (!admitted || result.session !== session || result.sequence !== sequence || Object.keys(result).some(key => !["kind", "session", "sequence", "value", "code", "details"].includes(key))) throw new Error("REQUEST_DENIED");
     if (result.kind === "failure") {
@@ -96,47 +96,46 @@ export class ReadApplication {
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const worker = await this.#workers.acquire();
+    const reservation = await this.#execution.reserve();
     try {
-      return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(worker, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input));
-    } finally { await this.#workers.retire(worker); }
+      return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(reservation, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input));
+    } finally { reservation.release(); }
   }
   async mutate(name: string, rawInput: unknown): Promise<unknown> {
     const operation = this.registry.mutations.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const worker = await this.#workers.acquire();
-    // Worker retirement is verified before output reaches COMMIT. Close cannot
-    // change a confirmed commit's outcome.
-    let retired = false;
+    const reservation = await this.#execution.reserve();
+    // A run returns only after its guard confirmed physical exit and that only
+    // the container's idle init remains, so retirement precedes COMMIT.
     try {
-      return await this.#broker.mutate(async (db, remaining) => {
-        const result = operation.output.parse(await this.#execute(worker, { mode: "mutation", operation: name, input }, db, remaining()));
-        await worker.close();
-        retired = true;
-        return result;
-      }, { operation: name, input });
+      return await this.#broker.mutate(async (db, remaining) =>
+        operation.output.parse(await this.#execute(reservation, { mode: "mutation", operation: name, input }, db, remaining())), { operation: name, input });
     } finally {
-      if (retired) await this.#workers.retire(worker);
-      else await this.#workers.retire(worker).catch(() => { /* The durable worker lease retains cleanup evidence; preserve the transaction outcome. */ });
+      // Release is scheduling bookkeeping; it must never replace a transaction outcome.
+      try { reservation.release(); } catch { /* Preserve the committed or unknown outcome. */ }
     }
   }
   revision(): Promise<DatabaseRevision> { return this.#broker.revision(); }
-  prepareWorkers(): void { this.#workers.warm(); }
+  prepareWorkers(): void { this.#execution.warm(); }
   watch(wakeup: () => void): Promise<() => Promise<void>> { return this.#broker.watch(wakeup); }
   async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
-    const admission = await MaintenanceLease.acquire(this.#url, false, this.#maintenance);
-    try { return await this.#render(path, read); } finally { await admission.close(); }
-  }
-  async #render(path: string, read?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.
     try {
       if (!selectPage([...this.registry.pages.values()], path)) throw new Error("ROUTE_NOT_FOUND");
     } catch (error) { throw new Error(error instanceof Error && error.message === "ROUTE_NOT_FOUND" ? error.message : "ROUTE_INVALID"); }
-    const worker = await this.#workers.acquire();
+    // Reserve before admission, like queries and mutations: waiting for a
+    // slot never holds the shared maintenance lock that maintenance drains.
+    const reservation = await this.#execution.reserve();
     try {
-      const result = record(await this.#execute(worker, { mode: "render", path }, undefined, 5000, read));
+      const admission = await MaintenanceLease.acquire(this.#url, false, this.#maintenance);
+      try { return await this.#render(reservation, read, path); } finally { await admission.close(); }
+    } finally { reservation.release(); }
+  }
+  async #render(reservation: Reservation, read: ((name: string, input: unknown) => Promise<unknown>) | undefined, path: string): Promise<PageResult> {
+    {
+      const result = record(await this.#execute(reservation, { mode: "render", path }, undefined, 5000, read));
       if (Object.keys(result).length !== 3 || typeof result.html !== "string" || !Array.isArray(result.islands) || result.islands.length > 500 || !Array.isArray(result.regions) || result.regions.length > 500) throw new Error("INTERNAL_FAILURE");
       const regionIds = new Set<string>();
       for (const raw of result.regions) {
@@ -161,7 +160,7 @@ export class ReadApplication {
         schema.parse(island.props);
       }
       return result as unknown as PageResult;
-    } finally { await this.#workers.retire(worker); }
+    }
   }
-  async close(): Promise<void> { try { await this.#workers.close(); } finally { await this.#broker.close(); } }
+  async close(): Promise<void> { try { await this.#execution.close(); } finally { await this.#broker.close(); } }
 }

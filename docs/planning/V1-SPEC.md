@@ -280,6 +280,68 @@ Seeds declare stable ownership keys and desired validated row values; no arbitra
 
 User-deleted seed records retain an ownership tombstone and are not silently recreated by repetition. Recreated records with conflicting identity are ownership conflicts. Removing a seed declaration does not delete its existing row. A skipped parent does not authorize child writes that violate integrity; fail atomically when the declared seed graph cannot be satisfied. Explicit reset followed by requested seed creates a fresh ownership state.
 
+## Database tooling for application agents
+
+This section consolidates the database rules above for agent-facing tooling and guidance. The [database agent tooling amendment](https://github.com/hazeion/fleur/issues/61) is open; only its resolved tickets change this behavior.
+
+Fleur owns database orchestration, including:
+
+- development PostgreSQL and storage identity
+- maintenance locking
+- migration generation, review and application
+- seed reconciliation
+- inspection, backup, restore, reset and recovery
+
+Applications own their table and relation declarations, reviewed migration and seed content, operations and business rules. They express these only through `fleur/schema`, `fleur/database` and `fleur/server`. Drizzle, Bun SQL and raw SQL remain non-application imports. Fleur's database tooling reads PostgreSQL catalogs and Fleur metadata, not an ORM's model, so an internal library choice cannot change tooling behavior. Applications run on Fleur's pinned runtime; the October 26, 2026 review kept a Fleur-independent application runtime and an application-selected ORM outside v1.
+
+Each database capability is one named operation in Fleur's shared core. The CLI exposes it through the operation catalog with JSON version 1 output, stable error codes and exit categories. A later interface, such as an MCP adapter, must invoke the same operations. It cannot add authority, skip grants or bypass bounds. Do not introduce a second database-management mechanism.
+
+Safety is enforced by code and PostgreSQL authority, never by instructions alone:
+
+- Typed operations bind values and never accept SQL strings or interpolated identifiers.
+- Inspection is read-only and bounded.
+- Persistent schema changes go only through reviewed, immutable migrations.
+- Destructive operations require target- and content-bound human approval.
+- Credentials stay in the trusted host and never appear in output, logs, workers or browser bundles.
+- Development data persists across stop and restart.
+- Production targets admit fewer operations than development: production reset is unavailable, and production startup refuses pending migrations.
+
+The amendment is still deciding four questions. Until each resolves, the current rules above govern:
+
+- [Whether `fleur dev` initializes a database it just created](https://github.com/hazeion/fleur/issues/66): startup otherwise never applies migrations implicitly, and seeding remains explicit.
+- [Agent-facing schema inspection and database health diagnostics](https://github.com/hazeion/fleur/issues/65).
+- [Whether inspection runs under a dedicated read-only role](https://github.com/hazeion/fleur/issues/63): inspection currently relies on a read-only transaction.
+- [Whether agents get a development-only read-only SQL operation](https://github.com/hazeion/fleur/issues/64): inspection otherwise accepts no SQL.
+
+### Generated database guidance
+
+Generated AGENTS.md has a dedicated database section, referenced from CLAUDE.md, covering:
+
+- tables, relations, versioning and the typed query and mutation APIs as the only data access path
+- why raw SQL and ORM imports are unavailable, and how to suggest a missing capability by describing the need and existing alternatives
+- the generate, plan review, apply and status workflow for migrations, including immutability of applied files
+- declarative seeds, and reset only with approval
+- inferred types and runtime validation at every boundary
+- credential, disposable-test-data and destructive-authority rules
+- the checks to run after a schema change: types, database tests against disposable PostgreSQL, migration status free of drift or pending entries, and persistence across restart
+
+The guidance names only operations present in the pinned release and marks later ones unavailable.
+
+### Database tooling acceptance
+
+Release evidence must show each of the following:
+
+- Typed operations reject invalid filter values and query writes at compile time and runtime.
+- Migration generation leaves the database unchanged.
+- Apply commits schema and history together, and a failed apply leaves verified rollback with readiness blocked.
+- Drift and pending migrations block readiness and production start.
+- Inspection cannot write and stays within its row and byte bounds.
+- No credential appears in any command output or log.
+- Development data survives stop and restart.
+- A generated project passes types, lint and tests with only its pinned dependencies.
+
+Accepted amendment tickets add their own acceptance criteria here.
+
 ## Setup and compatibility
 
 Entry is `bunx fleur`, with Bun installed beforehand. The package executable must actually run through Bun without hidden Node; merely using bunx on a Node shebang is insufficient. Honor the project's exact Fleur pin. Missing pins stop with an explicit action, never latest fallback.

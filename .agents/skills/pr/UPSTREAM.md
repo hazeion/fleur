@@ -1,8 +1,8 @@
 # Upstream source
 
-Vendored from [Matt Pocock's PR skill](https://github.com/mattpocock/skills/tree/49dd158d1076134a641b33efb035946536778336/skills/engineering/pr).
+Vendored from [Matt Pocock's PR skill](https://github.com/mattpocock/skills/tree/5beb35b040e3de97e54fa9e386d7e42d15c295c2/skills/engineering/pr).
 
-Pinned commit: `49dd158d1076134a641b33efb035946536778336`.
+Pinned commit: `5beb35b040e3de97e54fa9e386d7e42d15c295c2`.
 
 The skill and its agent metadata are unchanged. LICENSE is copied from the upstream repository root. CREDITS.md preserves attribution to Dex Horthy and Humanlayer.
 

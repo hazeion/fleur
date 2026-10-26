@@ -326,9 +326,38 @@ Acceptance:
 - A retry succeeds after the cause is corrected.
 - An empty chain leaves the database new.
 
-The amendment is still deciding three questions. Until each resolves, the current rules above govern:
+### Schema inspection and database health
 
-- [Agent-facing schema inspection and database health diagnostics](https://github.com/hazeion/fleur/issues/65).
+The [inspection and health resolution](https://github.com/hazeion/fleur/issues/65#issuecomment-6427697170) extends existing operations and adds no new command.
+
+- **Schema overview.** `db inspect` without `--table` returns a schema overview of application tables, with no rows:
+  - columns with PostgreSQL type, Fleur column kind, nullability and default
+  - primary key
+  - foreign keys with `onDelete` actions
+  - unique constraints and indexes
+  - whether the table is versioned
+
+  Fleur-owned metadata tables are excluded, and Fleur-managed columns are marked as managed. The overview paginates by table with `--limit` and `--cursor`, enforces the encoded byte cap and reports truncation. `--table <name>` returns that table's structure plus a bounded page of rows.
+- **One owner of migration state.** `db migration status` alone computes applied, pending and drift state. It reports drift as a bounded list of differences, each with the object, expected definition and actual definition. `db inspect` and `status` embed a migration summary from that same operation.
+- **Health in `status`.** Whether or not the app is running, `status` reports a `database` object: connectivity, target kind, database name, server version, target fingerprint, maintenance or recovery stage, and the migration summary. `doctor` never connects to the database, and `status` never re-runs prerequisite probes; a prerequisite-caused reason carries an action that points to `doctor`.
+- **Findings are data.** A diagnostic that can produce its result reports drift, pending migrations, maintenance, recovery state and an unreachable database as data with exit 0. Exits 4 and 5 apply only when the command cannot produce its result. Drift and active maintenance do not block read-only inspection; output carries the stage.
+- **Probe deadline.** The `status` database probe has its own 5-second default deadline, adjusted by `--timeout`. A timeout or refusal reports `unreachable` with a reason.
+- **Reasons and codes.** Readiness reasons use a stable vocabulary: `DATABASE_UNAVAILABLE`, `MIGRATION_PENDING`, `SCHEMA_DRIFT`, `MAINTENANCE_ACTIVE`, `RECOVERY_REQUIRED` and `PREREQUISITE_UNAVAILABLE`. Each carries one structured action. `DATABASE_UNAVAILABLE` is also the exit-4 error when a command needs data from a database it cannot reach.
+- **Identity.** Output identifies the target by kind, database name, server version and a non-reversible fingerprint of the verified target identity. It never shows host, port, user or URL.
+- **Production.** `status` and `db inspect` default to the development target and select production through one shared option that reads the configuration `start` uses. The schema overview and health are available against production with explicit credentials; otherwise they return `CONFIGURATION_MISSING`. Neither adds production authority. Against production, `status` reports app state only when a production `start` for that artifact is registered on the machine.
+
+Acceptance:
+
+- The overview reports every listed structural element for the workout fixture and never returns rows.
+- An overview larger than one page reports truncation and resumes from its cursor.
+- Drift, a pending migration and an active maintenance stage appear in `db inspect`, `status` and `db migration status` with the same summary.
+- `status` against a stopped or unreachable database exits 0 within its probe deadline and reports the reason and action.
+- `db inspect --table` against an unreachable database returns `DATABASE_UNAVAILABLE` with exit 4.
+- A production target without explicit credentials returns `CONFIGURATION_MISSING`.
+- No host, port, user or URL appears in either output.
+
+The amendment is still deciding two questions. Until each resolves, the current rules above govern:
+
 - [Whether inspection runs under a dedicated read-only role](https://github.com/hazeion/fleur/issues/63): inspection currently relies on a read-only transaction.
 - [Whether agents get a development-only read-only SQL operation](https://github.com/hazeion/fleur/issues/64): inspection otherwise accepts no SQL.
 
@@ -409,7 +438,7 @@ The following grammar is the target catalog, not an existing CLI. Common options
 | Production | `start --artifact <dir> [--host <address>] [--port <number>]` |
 | Compatibility | `upgrade --to <exact-version> [--preview]` |
 
-Inspect/export are read-only named operations; never arbitrary SQL. `db recover --inspect` reports actual state/actions but does not silently clear a maintenance marker. Grants are established through an interactive human confirmation workflow, never generic `--yes`. Destructive approval identifies target and migration/restore contents. Public CLI options cannot manufacture or broaden grants noninteractively.
+Inspect/export are read-only named operations; never arbitrary SQL. `db inspect` without `--table` returns the schema overview, and `status` includes database health (see Schema inspection and database health). `db recover --inspect` reports actual state/actions but does not silently clear a maintenance marker. Grants are established through an interactive human confirmation workflow, never generic `--yes`. Destructive approval identifies target and migration/restore contents. Public CLI options cannot manufacture or broaden grants noninteractively.
 
 Noninteractive commands return promptly if authority/human action is missing. Default readiness timeout is 60 seconds; explicit options adjust waits. Snapshot logs/inspection are bounded and expose truncation/cursors; follow is opt-in. Exports write to an explicit destination with completion/integrity metadata, not unbounded stdout. Project creation preflights collisions, preserves README/LICENSE/hidden files/user instructions, marks generated sections and never nests Git or commits automatically. Roll back only newly created files and modified generated guidance on partial failure; report incomplete restoration.
 
@@ -426,7 +455,7 @@ Long-running commands emit newline-delimited events with `formatVersion: 1`, `co
 
 Exit codes: 0 command succeeded; 1 failed; 2 invalid invocation; 3 human authority/action required; 4 environment unavailable/incompatible/not ready; 5 contention/drift/recovery blocking. Successful inspection of a failed app is exit 0. Graceful user stop is completion, not application failure; unexpected crash is failure. Preserve standard signal-derived exit status when force-terminated.
 
-Stable code families include `ARGUMENT_INVALID`, `AUTHORITY_REQUIRED`, `HUMAN_ACTION_REQUIRED`, `VERSION_MISMATCH`, `PREREQUISITE_UNAVAILABLE`, `READINESS_TIMEOUT`, `MAINTENANCE_BUSY`, `SCHEMA_DRIFT`, `RECOVERY_REQUIRED`, `SOURCE_REJECTED`, `CONFIGURATION_MISSING`, `QUERY_LIMIT`, `QUERY_TIMEOUT`, `RESULT_TOO_LARGE`, `RETRIEVAL_DESTINATION_DENIED`, `RETRIEVAL_REDIRECT_DENIED`, `RETRIEVAL_TIMEOUT`, `RETRIEVAL_HTTP_FAILURE`, `RETRIEVAL_INVALID_OUTPUT`, `INTERNAL_FAILURE`. Application validation/record/version errors follow the operation schemas. Release code catalogs must map each to its exit and recovery action.
+Stable code families include `ARGUMENT_INVALID`, `AUTHORITY_REQUIRED`, `HUMAN_ACTION_REQUIRED`, `VERSION_MISMATCH`, `PREREQUISITE_UNAVAILABLE`, `DATABASE_UNAVAILABLE`, `READINESS_TIMEOUT`, `MAINTENANCE_BUSY`, `SCHEMA_DRIFT`, `RECOVERY_REQUIRED`, `SOURCE_REJECTED`, `CONFIGURATION_MISSING`, `QUERY_LIMIT`, `QUERY_TIMEOUT`, `RESULT_TOO_LARGE`, `RETRIEVAL_DESTINATION_DENIED`, `RETRIEVAL_REDIRECT_DENIED`, `RETRIEVAL_TIMEOUT`, `RETRIEVAL_HTTP_FAILURE`, `RETRIEVAL_INVALID_OUTPUT`, `INTERNAL_FAILURE`. Application validation/record/version errors follow the operation schemas. Release code catalogs must map each to its exit and recovery action.
 
 Breaking machine format changes require a new formatVersion. Compatible new fields are allowed; consumers ignore unknown fields and reject unsupported versions. Human text may change without changing stable semantics.
 

@@ -23,10 +23,21 @@ test("browser reports maintenance, resumes after verified completion and startup
   let app: ReadApplication | undefined, server: ReturnType<typeof serveReadApplication> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   let owner: MaintenanceLease | undefined;
+  // Bounded failure trail: which operation failed, when, and with which code.
+  const trace: unknown[] = [];
+  const started = performance.now();
+  let complete = false;
   try {
     await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY,name text NOT NULL,note text,version bigint NOT NULL DEFAULT 1)");
     await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url, config);
+    for (const name of ["revision", "render", "query"] as const) {
+      const real = (app[name] as (...args: unknown[]) => Promise<unknown>).bind(app);
+      (app as unknown as Record<string, unknown>)[name] = async (...args: unknown[]) => {
+        try { return await real(...args); }
+        catch (error) { if (trace.length < 200) trace.push({ at: Math.round(performance.now() - started), op: name, error: error instanceof Error ? error.message : "non-error" }); throw error; }
+      };
+    }
     server = serveReadApplication(app, bundle);
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
@@ -36,6 +47,7 @@ test("browser reports maintenance, resumes after verified completion and startup
       expect(response?.status()).toBe(503);
       await browserExpect(page.getByRole("heading", { name: "Database maintenance" })).toBeVisible();
       await owner.close(); owner = undefined;
+      trace.push({ at: Math.round(performance.now() - started), released: repeat });
       await page.reload();
       await browserExpect(page.getByRole("heading", { name: "Exercises", exact: true })).toBeVisible();
     }
@@ -45,5 +57,7 @@ test("browser reports maintenance, resumes after verified completion and startup
     await expect(ReadApplication.open(images, fixture.url, config)).rejects.toThrow("RECOVERY_REQUIRED");
     await page.reload();
     await browserExpect(page.getByText("Maintenance needs inspection before this application can resume.")).toBeVisible();
-  } finally { await owner?.close(); await browser?.close(); await server?.stop(true); await app?.close(); await fixture.cleanup(); await images.dispose(); await rm(root, { recursive: true, force: true }); }
+    complete = true;
+  } finally {
+    if (!complete) console.info("[maintenance-browser-diagnostics]", JSON.stringify({ trace, execution: app?.diagnostics() })); await owner?.close(); await browser?.close(); await server?.stop(true); await app?.close(); await fixture.cleanup(); await images.dispose(); await rm(root, { recursive: true, force: true }); }
 }, 300_000);

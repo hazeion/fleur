@@ -119,6 +119,7 @@ jobs:
           python3 tests/runtime/review-native-controller.test.py
           python3 tests/runtime/review-native-races.test.py
           python3 tests/runtime/review-retained-native.test.py
+          python3 tests/runtime/retained-guard-binding.test.py
 
   verification:
     name: CLI verification

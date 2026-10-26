@@ -12,6 +12,8 @@ export interface ExecutionResult {
 export type SlotState = "starting" | "idle" | "preparing" | "running" | "quarantined" | "closing" | "closed";
 type Exchange = (request: unknown) => Promise<unknown> | unknown;
 export interface Reservation {
+  /** Absolute `performance.now()` deadline shared by every phase of the operation. */
+  readonly deadline: number;
   run(command: unknown, exchange: Exchange, budgetMs?: number): Promise<ExecutionResult>;
   release(): void;
 }
@@ -22,7 +24,11 @@ function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INTERNAL_FAILURE");
   return value as Record<string, unknown>;
 }
-const ADMISSION_MS = 20_000, STARTUP_MS = 30_000;
+const ADMISSION_MS = 20_000, STARTUP_MS = 30_000, OPERATION_MS = 5000;
+// Guard arming must finish inside the run budget, or the controller treats the
+// expired arming as uncertainty and quarantines the slot. Too little remaining
+// time therefore fails the caller, not healthy capacity.
+const ARMING_MARGIN_MS = 500;
 
 /** Host view of one retained slot. Its controller serializes every operation. */
 class Slot {
@@ -36,7 +42,10 @@ class Slot {
   binding!: SlotBinding;
   private constructor(lease: RetainedLease, child: ReturnType<typeof Bun.spawn<"pipe", "pipe", "ignore">>) {
     this.lease = lease; this.#child = child; this.#reader = new FrameReader(child.stdout);
+    void child.exited.then(() => { this.lost = true; });
   }
+  /** The controller client exited: this slot can never serve another operation. */
+  lost = false;
   static async start(images: NativeImages): Promise<Slot> {
     const owner = randomUUID();
     const lease = await RetainedLease.create(owner, images);
@@ -62,6 +71,8 @@ class Slot {
     } catch (error) { slot.state = "quarantined"; throw Object.assign(error as Error, { slot }); }
   }
   get owner(): string { return this.lease.owner; }
+  /** Settles when the controller client exits, for any reason. */
+  get exited(): Promise<unknown> { return this.#child.exited; }
   async #read(timeoutMs: number): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try { return await Promise.race([this.#reader.read(), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("CONTROL_TIMEOUT")), timeoutMs); })]); }
@@ -203,47 +214,88 @@ export class NativeExecution {
   readonly #failures: unknown[] = [];
   #recovering = 0;
   #growAfter = 0;
+  #lossBackoff = 0;
+  #drained = false;
   #warmUntil = 0;
   #closed = false;
   #refresh: ReturnType<typeof setInterval> | undefined;
   private constructor(images: NativeImages, capacity: number) { this.#images = images; this.#capacity = capacity; }
-  static open(images: NativeImages, options: { capacity?: number } = {}): NativeExecution {
+  /**
+   * Opening is cold startup: it returns once one retained slot is ready, so
+   * container creation is reported separately and never consumed from an
+   * operation deadline. Quarantined capacity is replaced in the background.
+   */
+  static async open(images: NativeImages, options: { capacity?: number } = {}): Promise<NativeExecution> {
     if ([images.worker, images.controller].some(value => !/^sha256:[a-f0-9]{64}$/.test(value))) throw new Error("Immutable images required");
     validateEndpoint(images.endpoint);
     const capacity = options.capacity ?? 4;
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 8) throw new Error("REQUEST_DENIED");
-    return new NativeExecution(images, capacity);
+    const execution = new NativeExecution(images, capacity);
+    try {
+      execution.#grow();
+      await Promise.allSettled(execution.#starting);
+      if (!execution.#slots.size) throw new Error("PREREQUISITE_UNAVAILABLE");
+    } catch (error) {
+      // Unverified cleanup outranks the startup failure itself.
+      await execution.close();
+      throw error;
+    }
+    return execution;
   }
   diagnostics(): { slot: string; state: SlotState; container?: string; prepared: boolean }[] {
     return [...this.#slots].map(slot => ({ slot: slot.owner, state: slot.state, ...(slot.binding ? { container: slot.binding.worker } : {}), prepared: slot.fresh }));
   }
   #track(work: Promise<void>): void {
-    const tracked = work.catch(error => { this.#failures.push(error); });
+    const tracked = work.catch(error => { if (this.#failures.length < 100) this.#failures.push(error); else this.#failures[99] = error; });
     this.#background.add(tracked);
     void tracked.finally(() => this.#background.delete(tracked));
   }
   #notify(): void { for (const wake of this.#waiters.splice(0)) wake(); }
-  // A quarantined slot keeps counting toward capacity until its removal is
-  // verified, so replacement never outruns recovery.
   #retire(slot: Slot): void {
     if (!this.#slots.delete(slot)) return;
-    this.#recovering++;
-    this.#track(slot.recover().finally(() => { this.#recovering--; this.#notify(); }));
+    this.#recover(slot, true);
   }
+  // A quarantined slot keeps counting toward capacity until its removal is
+  // verified, so replacement never outruns recovery. Unverified removal keeps
+  // that capacity occupied permanently and is reported by close().
+  #recover(slot: Slot, replace: boolean): void {
+    this.#recovering++;
+    this.#track(slot.recover().then(() => { this.#recovering--; if (replace) this.#replace(); }).finally(() => this.#notify()));
+  }
+  /** Keep one retained slot available after verified recovery, retrying after any backoff. */
+  #replace(): void {
+    if (this.#closed || this.#slots.size || this.#starting.size || this.#occupied >= this.#capacity) return;
+    const wait = this.#growAfter - performance.now();
+    if (wait <= 0) { this.#grow(); return; }
+    clearTimeout(this.#replacement);
+    this.#replacement = setTimeout(() => { this.#replacement = undefined; this.#replace(); }, wait);
+    this.#replacement.unref?.();
+  }
+  #replacement: ReturnType<typeof setTimeout> | undefined;
   get #occupied(): number { return this.#slots.size + this.#starting.size + this.#recovering; }
   #grow(): void {
     if (performance.now() < this.#growAfter) return;
     const work = Slot.start(this.#images).then(slot => {
-      if (this.#closed) { this.#retire(slot); return undefined; }
+      // A start that outlived close()'s drain was already reported there.
+      if (this.#drained) { void slot.recover().catch(() => {}); return undefined; }
+      // A slot that becomes ready during close is still owned: close() waits
+      // for every start before its verified close of all slots.
       this.#slots.add(slot);
+      // Controller loss while idle: retire now rather than at the next use,
+      // backing off so a controller that keeps dying cannot churn containers.
+      // A reserved slot is checked when its reservation settles.
+      void slot.exited.then(() => {
+        if (slot.state !== "idle" || slot.reserved || this.#closed) return;
+        this.#lossBackoff = Math.min(30_000, Math.max(1000, this.#lossBackoff * 2));
+        this.#growAfter = performance.now() + this.#lossBackoff;
+        slot.state = "quarantined";
+        this.#retire(slot);
+      });
       return slot;
     }, (error: Error & { slot?: Slot }) => {
       // Back off after a failed start instead of retrying on every wakeup.
       this.#growAfter = performance.now() + 1000;
-      if (error.slot) {
-        this.#recovering++;
-        this.#track(error.slot.recover().finally(() => { this.#recovering--; this.#notify(); }));
-      }
+      if (error.slot) this.#recover(error.slot, false);
       else if (this.#failures.length < 100) this.#failures.push(error);
       return undefined;
     });
@@ -282,6 +334,7 @@ export class NativeExecution {
   async #acquire(deadline: number): Promise<Slot> {
     for (;;) {
       if (this.#closed) throw new Error("APPLICATION_CLOSED");
+      for (const slot of this.#slots) if (slot.state === "idle" && !slot.reserved && slot.lost) { slot.state = "quarantined"; this.#retire(slot); }
       const idle = [...this.#slots].filter(slot => slot.state === "idle" && !slot.reserved);
       const slot = idle.find(candidate => candidate.fresh) ?? idle[0];
       if (slot) { slot.reserved = true; return slot; }
@@ -294,17 +347,20 @@ export class NativeExecution {
     }
   }
   /**
-   * Reserve one slot holding a fresh prepared process. Startup and admission
-   * keep their original 30-second bound; an operation's own deadline begins
-   * when its bound guard is armed. The reservation runs at most once.
+   * Reserve one slot holding a fresh prepared process. One operation deadline
+   * covers queueing, discard, preparation and execution: the run receives only
+   * the time remaining. Slot startup and recovery are background capacity work
+   * with their own bounds. The reservation runs at most once.
    */
-  async reserve(): Promise<Reservation> {
+  async reserve(deadline = performance.now() + OPERATION_MS): Promise<Reservation> {
     const queued = performance.now();
-    const slot = await this.#acquire(queued + STARTUP_MS);
+    if (!Number.isFinite(deadline) || deadline > queued + OPERATION_MS) throw new Error("REQUEST_DENIED");
+    const slot = await this.#acquire(deadline);
     let used = false, released = false;
     let running: Promise<unknown> | undefined;
     const settle = () => {
       slot.reserved = false;
+      if (slot.state === "idle" && slot.lost) slot.state = "quarantined";
       if (slot.state === "idle") { this.#notify(); if (performance.now() <= this.#warmUntil) this.#replenish(slot); }
       else if (slot.state === "quarantined") this.#retire(slot);
     };
@@ -317,38 +373,49 @@ export class NativeExecution {
       else settle();
     };
     try {
-      // Acquisition, discard and preparation share one 30-second bound.
       if (!slot.fresh) {
-        if (slot.prepared) await slot.discard();
-        const remaining = queued + STARTUP_MS - performance.now();
-        if (remaining <= 0) throw new Error("QUERY_TIMEOUT");
-        await slot.prepare(remaining);
+        // Preparation keeps its own bound: a caller that reaches its deadline
+        // gives up, but the slot stays reserved until preparation settles, so
+        // a caller deadline never quarantines healthy capacity.
+        const preparing = (async () => { if (slot.prepared) await slot.discard(); await slot.prepare(); })();
+        running = preparing;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([preparing, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("QUERY_TIMEOUT")), Math.max(0, deadline - performance.now())); })]);
+        } finally { clearTimeout(timer); }
+        running = undefined;
       }
     } catch (error) { release(); throw error; }
     return {
+      deadline,
       run: async (command, exchange, budgetMs = 5000) => {
         if (used || released) throw new Error("REQUEST_DENIED");
         if (this.#closed) throw new Error("APPLICATION_CLOSED");
         used = true;
-        const work = slot.run(command, exchange, budgetMs);
+        const left = Math.floor(deadline - performance.now());
+        if (left < ARMING_MARGIN_MS) throw new Error("QUERY_TIMEOUT");
+        const work = slot.run(command, exchange, Math.min(budgetMs, left));
         running = work;
         const result = await work;
+        this.#lossBackoff = 0;
         return { ...result, timings: { ...result.timings, total: Math.round(performance.now() - queued) } };
       },
       release,
     };
   }
-  async execute(command: unknown, exchange: Exchange, budgetMs = 5000): Promise<ExecutionResult> {
-    const reservation = await this.reserve();
+  async execute(command: unknown, exchange: Exchange, budgetMs = OPERATION_MS): Promise<ExecutionResult> {
+    const reservation = await this.reserve(performance.now() + OPERATION_MS);
     try { return await reservation.run(command, exchange, budgetMs); } finally { reservation.release(); }
   }
   async close(): Promise<void> {
     this.#closed = true;
     clearInterval(this.#refresh);
+    clearTimeout(this.#replacement);
     this.#notify();
     // One bounded drain covers starting slots and running or preparing operations.
     const drain = performance.now() + 30_000;
     await Promise.race([Promise.allSettled(this.#starting), new Promise(resolve => setTimeout(resolve, 30_000))]);
+    if (this.#starting.size) { this.#drained = true; this.#failures.push(new Error("STARTUP_UNSETTLED")); }
     while ([...this.#slots].some(slot => slot.reserved || (slot.state !== "idle" && slot.state !== "quarantined")) && performance.now() < drain) await new Promise(resolve => setTimeout(resolve, 20));
     while (this.#background.size) await Promise.allSettled(this.#background);
     await Promise.all([...this.#slots].map(async slot => {

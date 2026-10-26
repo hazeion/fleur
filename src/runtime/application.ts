@@ -28,26 +28,30 @@ export class ReadApplication {
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
   readonly #execution: NativeExecution;
-  private constructor(images: Images, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
+  private constructor(execution: NativeExecution, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
     this.registry = registry; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
     this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance: this.#maintenance });
-    this.#execution = NativeExecution.open(images);
+    this.#execution = execution;
   }
   static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}): Promise<ReadApplication> {
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
     let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
     const session = randomUUID();
+    let registry: Registry;
     try {
       worker = await startWorker(images);
       const result = record(await worker.run({ mode: "register", session }, () => { throw new Error("REQUEST_DENIED"); }));
       if (result.kind !== "complete" || result.session !== session || result.sequence !== 0 || Object.keys(result).length !== 4) throw new Error("SOURCE_REJECTED");
-      const registry=restoreManifest(result.value);
+      registry=restoreManifest(result.value);
       const checked=await MaintenanceLease.acquire(url,false,{...maintenance,tables:registry.tables,completeRegistry:true});
       await checked.close();
-      return new ReadApplication(images, registry, url, maintenance);
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
+    // Cold slot creation is startup work and never holds maintenance admission.
+    const execution = await NativeExecution.open(images);
+    try { return new ReadApplication(execution, registry, url, maintenance); }
+    catch (error) { await execution.close(); throw error; }
   }
-  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read = (name: string, input: unknown) => this.query(name, input)): Promise<unknown> {
+  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: (name: string, input: unknown) => Promise<unknown> = (name, input) => this.query(name, input)): Promise<unknown> {
     const session = randomUUID();
     let sequence = 0, admitted = false;
     let operationFault: unknown;
@@ -65,7 +69,11 @@ export class ReadApplication {
         else if (request.kind === "query" && command.mode === "render" && !db) {
           const query = record(request.value);
           if (Object.keys(query).length !== 2 || typeof query.name !== "string") throw new Error("REQUEST_DENIED");
-          value = await read(query.name, query.input);
+          // A nested query never outlives the render that requested it.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            value = await Promise.race([read(query.name, query.input), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("QUERY_TIMEOUT")), Math.max(0, reservation.deadline - performance.now())); })]);
+          } finally { clearTimeout(timer); }
         } else if (request.kind === "log" && (command.mode === "query" || command.mode === "mutation")) {
           const log = record(request.value);
           if (Object.keys(log).length !== 2 || !["info", "warn"].includes(String(log.level)) || typeof log.message !== "string" || log.message.length > 1024) throw new Error("REQUEST_DENIED");
@@ -91,14 +99,18 @@ export class ReadApplication {
     publicBound(result.value);
     return result.value;
   }
-  async query(name: string, rawInput: unknown): Promise<unknown> {
+  query(name: string, rawInput: unknown): Promise<unknown> { return this.#query(name, rawInput); }
+  /** `limit` caps a nested query by its enclosing render's deadline. */
+  async #query(name: string, rawInput: unknown, limit = Infinity): Promise<unknown> {
     const operation = this.registry.queries.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const reservation = await this.#execution.reserve();
+    // One deadline covers queueing, preparation, the transaction and execution.
+    const started = Math.min(performance.now(), limit - 5000);
+    const reservation = await this.#execution.reserve(started + 5000);
     try {
-      return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(reservation, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input));
+      return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(reservation, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input), started);
     } finally { reservation.release(); }
   }
   async mutate(name: string, rawInput: unknown): Promise<unknown> {
@@ -106,12 +118,13 @@ export class ReadApplication {
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const reservation = await this.#execution.reserve();
+    const started = performance.now();
+    const reservation = await this.#execution.reserve(started + 5000);
     // A run returns only after its guard confirmed physical exit and that only
     // the container's idle init remains, so retirement precedes COMMIT.
     try {
       return await this.#broker.mutate(async (db, remaining) =>
-        operation.output.parse(await this.#execute(reservation, { mode: "mutation", operation: name, input }, db, remaining())), { operation: name, input });
+        operation.output.parse(await this.#execute(reservation, { mode: "mutation", operation: name, input }, db, remaining())), { operation: name, input }, started);
     } finally {
       // Release is scheduling bookkeeping; it must never replace a transaction outcome.
       try { reservation.release(); } catch { /* Preserve the committed or unknown outcome. */ }
@@ -129,10 +142,15 @@ export class ReadApplication {
     } catch (error) { throw new Error(error instanceof Error && error.message === "ROUTE_NOT_FOUND" ? error.message : "ROUTE_INVALID"); }
     // Reserve before admission, like queries and mutations: waiting for a
     // slot never holds the shared maintenance lock that maintenance drains.
-    const reservation = await this.#execution.reserve();
+    // One deadline bounds slot queueing, admission, the render run and every
+    // nested query it requests.
+    const deadline = performance.now() + 5000;
+    const reservation = await this.#execution.reserve(deadline);
     try {
-      const admission = await MaintenanceLease.acquire(this.#url, false, this.#maintenance);
-      try { return await this.#render(reservation, read, path); } finally { await admission.close(); }
+      const remaining = deadline - performance.now();
+      if (remaining < 1) throw new Error("QUERY_TIMEOUT");
+      const admission = await MaintenanceLease.acquire(this.#url, false, { ...this.#maintenance, timeoutMs: Math.floor(remaining) });
+      try { return await this.#render(reservation, read ?? ((name, input) => this.#query(name, input, deadline)), path); } finally { await admission.close(); }
     } finally { reservation.release(); }
   }
   async #render(reservation: Reservation, read: ((name: string, input: unknown) => Promise<unknown>) | undefined, path: string): Promise<PageResult> {

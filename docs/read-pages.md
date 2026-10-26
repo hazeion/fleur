@@ -55,7 +55,7 @@ They receive no writes, transactions, raw SQL, connections or render dispatch.
 Each select uses one PostgreSQL statement under Read Committed. Separate reads
 may see newer committed data. Results default to 100 rows, permit at most 500,
 and fail if encoded public JSON exceeds 1 MiB. The five-second database budget
-includes pool queueing; cold Docker startup precedes that database budget. Cancellation
+includes slot queueing, process preparation and pool queueing; the first slot's cold Docker startup precedes that budget, while later on-demand slot creation consumes it. Cancellation
 starts at expiry, and cleanup verifies transaction state before reusing a
 connection. If cleanup and backend termination cannot be confirmed, the reserved
 connection is closed and discarded; it is never returned for reuse.

@@ -92,7 +92,7 @@ void relationAndCursorContract;
 
 import { defineMutation } from "../../src/schema";
 import { handleMutation } from "../../src/server";
-import { useMutation } from "../../src/client";
+import { useMutation, useQuery } from "../../src/client";
 import type { WriteDb } from "../../src/database";
 const saveContract = defineMutation({ input: schema.object({ name: schema.string() }), output: schema.boolean() });
 handleMutation(saveContract, async ({ input }) => input.name.length > 0);
@@ -127,6 +127,20 @@ function mutationTypes(db: WriteDb) {
   db.update(unversioned, { id, set: { name: "Allowed" }, returning: ["id"] });
 }
 void mutationTypes;
+function reactiveTypes() {
+  const result = useQuery(list, { count: 10 });
+  const data: readonly Exercise[] | undefined = result.data;
+  const refreshing: boolean = result.refreshing;
+  void data; void refreshing;
+  // @ts-expect-error Query input derives from its contract.
+  useQuery(list, { count: "10" });
+  // @ts-expect-error Mutation contracts are not reactive read contracts.
+  useQuery(saveContract, { name: "test" });
+  // @ts-expect-error Output remains the inferred public exercise array.
+  const wrong: number = result.data;
+  void wrong;
+}
+void reactiveTypes;
 
 import { defineSeed } from "../../src/database";
 const typedSeed = defineSeed({ key: "exercises", table: exercises, rows: [{ ownerKey: "squat", values: { name: "Squat", note: null } }] });

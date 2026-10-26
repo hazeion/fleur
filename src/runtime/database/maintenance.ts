@@ -2,7 +2,7 @@ import type { Table } from "../../database";
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, link, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -67,7 +67,14 @@ export class MaintenanceLease {
     if (controlUrl.pathname === targetUrl.pathname) throw new Error("CONFIGURATION_MISSING");
     const sql = new SQL(controlUrl.toString(), { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
     const target = new SQL(targetUrl.toString(), { max: 1, connectionTimeout: 2 });
-    const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void target.close({ timeout: 0 }).catch(() => {}); }, Math.min(configuration.timeoutMs ?? 5000, 5000));
+    // Maintenance drains in-flight application admissions for a bounded
+    // interval. A queued exclusive request makes PostgreSQL refuse new shared
+    // admissions meanwhile; competing maintenance still returns contention.
+    // The drain extends the acquisition bound, so a granted lock keeps the
+    // full interval for its remaining checks.
+    const limit = Math.min(configuration.timeoutMs ?? 5000, 5000);
+    const drainMs = exclusive && !inspect ? Math.max(0, limit - 1000) : 0;
+    const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void target.close({ timeout: 0 }).catch(() => {}); }, limit + drainMs);
     try {
       const control = await sql.unsafe("SELECT system_identifier::text AS cluster, pg_backend_pid() AS pid, current_database() AS database, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system()");
       const current = control[0];
@@ -83,7 +90,21 @@ export class MaintenanceLease {
       await sql.unsafe("BEGIN");
       await sql.unsafe("SELECT set_config('fleur.maintenance_session',$1,false)", [nonce]);
       await sql.unsafe("COMMIT");
-      const lock = await sql.unsafe(`SELECT pg_try_advisory_lock${exclusive ? "" : "_shared"}($1::bigint) AS acquired, pg_backend_pid() AS pid`, [key]);
+      let lock: { acquired?: unknown; pid?: unknown }[];
+      if (drainMs > 0) {
+        // Only application admissions are drained. Another maintenance owner,
+        // held or queued, is contention: never run after it without a new command.
+        const unsigned = BigInt.asUintN(64, BigInt(key));
+        const competing = await sql.unsafe("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid<>pg_backend_pid() AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND classid=$1::oid AND objid=$2::oid AND objsubid=1 AND mode='ExclusiveLock') AS busy", [(unsigned >> 32n).toString(), (unsigned & 0xffffffffn).toString()]);
+        if (competing[0]?.busy !== false) throw new Error("MAINTENANCE_BUSY");
+        await sql.unsafe(`SET lock_timeout = '${drainMs}ms'`);
+        try { lock = (await sql.unsafe("SELECT true AS acquired, pg_backend_pid() AS pid FROM (SELECT pg_advisory_lock($1::bigint)) AS waited", [key])) as typeof lock; }
+        catch (error) {
+          if ((error as { errno?: unknown }).errno === "55P03") throw new Error("MAINTENANCE_BUSY");
+          throw error;
+        }
+        await sql.unsafe("SET lock_timeout = 0");
+      } else lock = await sql.unsafe(`SELECT pg_try_advisory_lock${exclusive ? "" : "_shared"}($1::bigint) AS acquired, pg_backend_pid() AS pid`, [key]);
       if (lock[0]?.pid !== current.pid) throw new Error("CONFIGURATION_MISSING");
       if (lock[0]?.acquired !== true && !inspect) throw new Error("MAINTENANCE_BUSY");
       const directory = join(configuration.stateRoot ?? process.env.FLEUR_PRIVATE_STATE_ROOT ?? join(homedir(), ".local", "state", "fleur", "databases"), hash);
@@ -138,6 +159,27 @@ export class MaintenanceLease {
     try { await file.writeFile(JSON.stringify(value)+"\n"); await file.sync(); } finally { await file.close(); }
     await rename(path, join(this.directory, "maintenance.json"));
     await syncDirectory(this.directory);
+  }
+  async epoch(): Promise<string> {
+    await this.assertSession();
+    const marker = await this.marker();
+    if (marker) return marker.epoch;
+    const path = join(this.directory, "initial-epoch");
+    const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+    const candidate = await open(temporary, "wx", 0o600);
+    try { await candidate.writeFile(crypto.randomUUID()); await candidate.sync(); }
+    finally { await candidate.close(); }
+    try { await link(temporary, path); await syncDirectory(this.directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    finally { await unlink(temporary); }
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size !== 36) throw new Error("RECOVERY_REQUIRED");
+      const value = await file.readFile("utf8");
+      if (!z.string().uuid().safeParse(value).success) throw new Error("RECOVERY_REQUIRED");
+      return value;
+    } finally { await file.close(); }
   }
   /** Called only under the external exclusive lock after an approved database recreation. */
   async refreshReplacedTarget(expectedOwner = this.target.owner): Promise<void> {

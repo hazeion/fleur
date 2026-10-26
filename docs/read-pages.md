@@ -89,7 +89,10 @@ The internal build/render adapters support this slice's verified fixture. They
 do not add `dev`, `build` or `start` CLI commands, automatic migrations or a
 production deployment lifecycle. Those commands retain their existing catalog
 behavior until their slices land. Creating a project does not start an app.
-Styling policy and reactive delivery remain separate slices. [Atomic mutations](mutations.md) now supply validated writes and client mutation outcomes.
+Styling policy remains a separate slice. [Atomic mutations](mutations.md) supply
+validated writes and client mutation outcomes. [Reactive views](reactivity.md)
+refresh server regions and island queries after managed commits while preserving
+keyed local state.
 
 Run `bun run types`, `bun run lint`, `bun run build:reference`, and `bun run test`.
 Tests require local Docker and create uniquely owned disposable PostgreSQL

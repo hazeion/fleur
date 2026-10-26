@@ -21,7 +21,7 @@ test("a static route wins before an overlapping dynamic route validates its para
     registerPage(fixed, { component: () => h("h1", null, "New item") });
     const declarations = { dynamic, fixed };
     const manifest = workerManifest(declarations);
-    mock.module("./src/runtime/native/host.ts", () => ({ startWorker: async () => ({
+    const fakeWorker = async () => ({
       close: async () => {},
       run: async (command, exchange) => {
         if (command.mode === "register") return makeRunner(declarations)(command, () => { throw new Error("unexpected exchange"); });
@@ -31,7 +31,11 @@ test("a static route wins before an overlapping dynamic route validates its para
           throw new Error("unexpected exchange");
         });
       },
-    }) }));
+    });
+    mock.module("./src/runtime/native/host.ts", () => ({ startWorker: fakeWorker }));
+    mock.module("./src/runtime/native/execution.ts", () => ({ NativeExecution: { open: () => ({ warm() {}, async close() {},
+      async reserve() { const worker = await fakeWorker(); return { run: async (command, exchange) => ({ value: await worker.run(command, exchange) }), release() {} }; } }) } }));
+
     const { ReadApplication } = await import("./src/runtime/application.ts");
     const app = await ReadApplication.open({ worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" }, process.env.FLEUR_PRIVATE_DATABASE_URL);
     const observations = [];
@@ -47,8 +51,8 @@ test("a static route wins before an overlapping dynamic route validates its para
   expect(stderr).toBe("");
   expect(exit).toBe(0);
   expect(JSON.parse(stdout)).toEqual([
-    { path: "/review-items/new", result: { html: "<h1>New item</h1>", islands: [] } },
-    { path: "/review-items/00000000-0000-4000-8000-000000000001", result: { html: "<h1>00000000-0000-4000-8000-000000000001</h1>", islands: [] } },
+    { path: "/review-items/new", result: { html: '<template data-fleur-region="page"></template><h1>New item</h1><template data-fleur-end="page"></template>', islands: [], regions: [{ id: "page", dependencies: [] }] } },
+    { path: "/review-items/00000000-0000-4000-8000-000000000001", result: { html: '<template data-fleur-region="page"></template><h1>00000000-0000-4000-8000-000000000001</h1><template data-fleur-end="page"></template>', islands: [], regions: [{ id: "page", dependencies: [] }] } },
     { path: "/review-items/not-a-uuid", error: "ROUTE_INVALID" },
   ]);
   } finally { await fixture.cleanup(); }

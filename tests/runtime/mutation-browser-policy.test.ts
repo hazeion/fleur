@@ -8,7 +8,13 @@ import type { ReadApplication } from "../../src/runtime/application";
 
 test("production browser entry denies fresh realms and alternate browser data transports", async () => {
   const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/saves", import.meta.url))));
-  const app = { async render() { return { html: "<main>Browser policy</main>", islands: [] }; } } as unknown as ReadApplication;
+  const fixtureApplication = (html: string) => ({
+    prepareWorkers() {}, registry: { queries: new Map() },
+    async revision() { return { epoch: "00000000-0000-4000-8000-000000000000", revision: "0" }; },
+    async watch() { return async () => {}; },
+    async render() { return { html, islands: [], regions: [] }; },
+  }) as unknown as ReadApplication;
+  const app = fixtureApplication("<main>Browser policy</main>");
   const server = serveReadApplication(app, bundle);
   const browser = await chromium.launch({ headless: true });
   try {
@@ -28,7 +34,7 @@ test("production browser entry denies fresh realms and alternate browser data tr
       ];
     });
     expect(results).toEqual(Array(7).fill("denied"));
-    const dangerous = serveReadApplication({ async render() { return { html: '<iframe src="about:blank"></iframe>', islands: [] }; } } as unknown as ReadApplication, bundle);
+    const dangerous = serveReadApplication(fixtureApplication('<iframe src="about:blank"></iframe>'), bundle);
     try { expect((await fetch(dangerous.url.origin)).status).toBe(500); }
     finally { await dangerous.stop(true); }
   } finally { await browser.close(); await server.stop(true); }

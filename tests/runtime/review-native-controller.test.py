@@ -52,7 +52,7 @@ class DescriptorAdmission(unittest.TestCase):
              patch.object(controller, 'inspect_event_inventory', return_value={'passed': False, 'category': 'class-mismatch'}), \
              patch.object(controller, 'owned_remove'), \
              patch.object(controller, 'line', side_effect=[
-                 '{"kind":"startup-audit","inventory":' + controller.json.dumps(inventory) + '}',
+                 '{"kind":"startup-audit","pid":1,"inventory":' + controller.json.dumps(inventory) + '}',
                  '{"kind":"armed"}',
                  '{"physical_exit_confirmed":true,"outcome":"cancelled"}',
              ]), \
@@ -81,7 +81,7 @@ class DescriptorAdmission(unittest.TestCase):
              patch.object(controller, 'audit_guard', return_value='d' * 64), \
              patch.object(controller, 'owned_remove'), \
              patch.object(controller, 'line', side_effect=[
-                 '{"kind":"startup-audit","inventory":' + controller.json.dumps(inventory) + '}',
+                 '{"kind":"startup-audit","pid":1,"inventory":' + controller.json.dumps(inventory) + '}',
                  '{"kind":"armed"}',
                  '{"physical_exit_confirmed":true,"outcome":"premature-exit","kill_lateness_ms":0,"physical_exit_lateness_ms":0}',
              ]), \
@@ -111,7 +111,7 @@ class DescriptorAdmission(unittest.TestCase):
              patch.object(controller, 'audit_guard', return_value='d' * 64), \
              patch.object(controller, 'owned_remove'), \
              patch.object(controller, 'line', side_effect=[
-                 '{"kind":"startup-audit","inventory":' + controller.json.dumps(inventory) + '}',
+                 '{"kind":"startup-audit","pid":1,"inventory":' + controller.json.dumps(inventory) + '}',
                  '{"kind":"armed"}',
                  '{"physical_exit_confirmed":true,"outcome":"premature-exit","kill_lateness_ms":0,"physical_exit_lateness_ms":0}',
              ]), \

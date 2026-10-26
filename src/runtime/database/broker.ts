@@ -1,4 +1,5 @@
 import { SQL } from "bun";
+import { ensureRevision, type DatabaseRevision } from "./revision";
 import { MaintenanceLease, type MaintenanceConfiguration } from "./maintenance";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -40,6 +41,7 @@ export class ReadBroker {
   readonly #maintenance: MaintenanceConfiguration;
   readonly #cursorKey = randomBytes(32);
   readonly #tables: ReadonlySet<Table>;
+  #revisionEpoch: string | undefined;
   constructor(options: { url: string; tables: readonly Table[]; maintenance?: MaintenanceConfiguration }) {
     this.#maintenance = options.maintenance ?? {};
     this.#url = options.url;
@@ -53,6 +55,28 @@ export class ReadBroker {
   }
   async mutate<T>(trustedDispatch: (db: WriteDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }): Promise<T> {
     return this.#transaction((db, remaining) => trustedDispatch(db as WriteDb, remaining), identity, true);
+  }
+  async revision(): Promise<DatabaseRevision> {
+    const lease = await MaintenanceLease.acquire(this.#url, false, { ...this.#maintenance, tables: [...this.#tables] });
+    const sql = new SQL(this.#url, { max: 1, connectionTimeout: 2 });
+    const timer = setTimeout(() => { void sql.close({ timeout: 0 }); }, 5000);
+    try {
+      const epoch = await lease.epoch();
+      await sql.unsafe("SET statement_timeout='3s'; SET lock_timeout='2s'");
+      if (this.#revisionEpoch !== epoch) {
+        await sql.begin(async connection => ensureRevision((text, values = []) => connection.unsafe(text, values)));
+        this.#revisionEpoch = epoch;
+      }
+      await lease.assertSession();
+      const rows = await sql.unsafe("SELECT revision::text AS revision FROM fleur_internal.revision WHERE singleton");
+      const revision: unknown = rows[0]?.revision;
+      if (typeof revision !== "string" || !/^(0|[1-9][0-9]*)$/.test(revision)) throw new Error("RECOVERY_REQUIRED");
+      return { epoch, revision };
+    } finally { clearTimeout(timer); await sql.close({ timeout: 0 }); await lease.close(); }
+  }
+  async watch(wakeup: () => void): Promise<() => Promise<void>> {
+    const subscription = await this.#pool.listen("fleur_revision", () => wakeup());
+    return () => subscription.unlisten();
   }
   async #transaction<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity, writable: boolean): Promise<T> {
     const started = performance.now();
@@ -163,6 +187,9 @@ export class ReadBroker {
         if (outstanding || active) throw new Error("REQUEST_DENIED");
         check();
         await Promise.race([admission.assertSession(), expired]);
+        await ensureRevision(execute);
+        await execute("UPDATE fleur_internal.revision SET revision=revision+1 WHERE singleton");
+        await execute("SELECT pg_notify('fleur_revision','')");
         commitAttempted = true;
         await execute("COMMIT");
         committed = true;

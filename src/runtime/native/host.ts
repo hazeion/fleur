@@ -29,7 +29,7 @@ export class FrameReader {
     return value;
   }
 }
-function framed(value: unknown): Uint8Array {
+export function framed(value: unknown): Uint8Array {
   validatePublicValue(value);
   const data = new TextEncoder().encode(JSON.stringify(value));
   if (!data.length || data.length > maximum) throw new Error("FRAME_BOUND");

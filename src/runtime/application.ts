@@ -1,4 +1,6 @@
 import { queryIdentity } from "./query-identity";
+import type { DatabaseRevision } from "./database/revision";
+import { NativeExecution, type Reservation } from "./native/execution";
 import { randomUUID } from "node:crypto";
 import { MaintenanceLease, type MaintenanceConfiguration } from "./database/maintenance";
 import { ReadBroker } from "./database/broker";
@@ -22,13 +24,14 @@ function publicBound(value: unknown): void {
 }
 export class ReadApplication {
   readonly registry: Registry;
-  readonly #images: Images;
   readonly #broker: ReadBroker;
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
+  readonly #execution: NativeExecution;
   private constructor(images: Images, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
-    this.registry = registry; this.#images = images; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
+    this.registry = registry; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
     this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance: this.#maintenance });
+    this.#execution = NativeExecution.open(images);
   }
   static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}): Promise<ReadApplication> {
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
@@ -44,11 +47,11 @@ export class ReadApplication {
       return new ReadApplication(images, registry, url, maintenance);
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
   }
-  async #execute(worker: Awaited<ReturnType<typeof startWorker>>, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000): Promise<unknown> {
+  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read = (name: string, input: unknown) => this.query(name, input)): Promise<unknown> {
     const session = randomUUID();
     let sequence = 0, admitted = false;
     let operationFault: unknown;
-    const result = record(await worker.run({ ...command, session }, async input => {
+    const result = record((await reservation.run({ ...command, session }, async input => {
       const request = record(input);
       if (Object.keys(request).length !== 4 || request.session !== session || request.sequence !== sequence++ || typeof request.kind !== "string") throw new Error("REQUEST_DENIED");
       let value: unknown;
@@ -62,7 +65,7 @@ export class ReadApplication {
         else if (request.kind === "query" && command.mode === "render" && !db) {
           const query = record(request.value);
           if (Object.keys(query).length !== 2 || typeof query.name !== "string") throw new Error("REQUEST_DENIED");
-          value = await this.query(query.name, query.input);
+          value = await read(query.name, query.input);
         } else if (request.kind === "log" && (command.mode === "query" || command.mode === "mutation")) {
           const log = record(request.value);
           if (Object.keys(log).length !== 2 || !["info", "warn"].includes(String(log.level)) || typeof log.message !== "string" || log.message.length > 1024) throw new Error("REQUEST_DENIED");
@@ -73,10 +76,10 @@ export class ReadApplication {
       } catch (error) {
         if (command.mode === "mutation") operationFault ??= error;
         if (error instanceof PublicOperationError) return { session, sequence: request.sequence, error: error.code, ...(error.details === undefined ? {} : { details: error.details }) };
-        const code = error instanceof Error && ["REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+        const code = error instanceof Error && ["QUERY_PENDING", "REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
         return { session, sequence: request.sequence, error: code };
       }
-    }, budgetMs));
+    }, budgetMs)).value);
     if (operationFault) throw operationFault;
     if (!admitted || result.session !== session || result.sequence !== sequence || Object.keys(result).some(key => !["kind", "session", "sequence", "value", "code", "details"].includes(key))) throw new Error("REQUEST_DENIED");
     if (result.kind === "failure") {
@@ -93,44 +96,60 @@ export class ReadApplication {
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const worker = await startWorker(this.#images);
+    const reservation = await this.#execution.reserve();
     try {
-      return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(worker, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input));
-    } finally { await worker.close(); }
+      return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(reservation, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input));
+    } finally { reservation.release(); }
   }
   async mutate(name: string, rawInput: unknown): Promise<unknown> {
     const operation = this.registry.mutations.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const worker = await startWorker(this.#images);
-    // Worker retirement is verified before output reaches COMMIT. Close cannot
-    // change a confirmed commit's outcome.
-    let retired = false;
+    const reservation = await this.#execution.reserve();
+    // A run returns only after its guard confirmed physical exit and that only
+    // the container's idle init remains, so retirement precedes COMMIT.
     try {
-      return await this.#broker.mutate(async (db, remaining) => {
-        const result = operation.output.parse(await this.#execute(worker, { mode: "mutation", operation: name, input }, db, remaining()));
-        await worker.close();
-        retired = true;
-        return result;
-      }, { operation: name, input });
+      return await this.#broker.mutate(async (db, remaining) =>
+        operation.output.parse(await this.#execute(reservation, { mode: "mutation", operation: name, input }, db, remaining())), { operation: name, input });
     } finally {
-      if (!retired) await worker.close().catch(() => { /* The durable worker lease retains cleanup evidence; preserve the transaction outcome. */ });
+      // Release is scheduling bookkeeping; it must never replace a transaction outcome.
+      try { reservation.release(); } catch { /* Preserve the committed or unknown outcome. */ }
     }
   }
-  async render(path: string): Promise<PageResult> {
-    const admission = await MaintenanceLease.acquire(this.#url, false, this.#maintenance);
-    try { return await this.#render(path); } finally { await admission.close(); }
-  }
-  async #render(path: string): Promise<PageResult> {
+  revision(): Promise<DatabaseRevision> { return this.#broker.revision(); }
+  prepareWorkers(): void { this.#execution.warm(); }
+  watch(wakeup: () => void): Promise<() => Promise<void>> { return this.#broker.watch(wakeup); }
+  async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.
     try {
       if (!selectPage([...this.registry.pages.values()], path)) throw new Error("ROUTE_NOT_FOUND");
     } catch (error) { throw new Error(error instanceof Error && error.message === "ROUTE_NOT_FOUND" ? error.message : "ROUTE_INVALID"); }
-    const worker = await startWorker(this.#images);
+    // Reserve before admission, like queries and mutations: waiting for a
+    // slot never holds the shared maintenance lock that maintenance drains.
+    const reservation = await this.#execution.reserve();
     try {
-      const result = record(await this.#execute(worker, { mode: "render", path }));
-      if (Object.keys(result).length !== 2 || typeof result.html !== "string" || !Array.isArray(result.islands) || result.islands.length > 500) throw new Error("INTERNAL_FAILURE");
+      const admission = await MaintenanceLease.acquire(this.#url, false, this.#maintenance);
+      try { return await this.#render(reservation, read, path); } finally { await admission.close(); }
+    } finally { reservation.release(); }
+  }
+  async #render(reservation: Reservation, read: ((name: string, input: unknown) => Promise<unknown>) | undefined, path: string): Promise<PageResult> {
+    {
+      const result = record(await this.#execute(reservation, { mode: "render", path }, undefined, 5000, read));
+      if (Object.keys(result).length !== 3 || typeof result.html !== "string" || !Array.isArray(result.islands) || result.islands.length > 500 || !Array.isArray(result.regions) || result.regions.length > 500) throw new Error("INTERNAL_FAILURE");
+      const regionIds = new Set<string>();
+      for (const raw of result.regions) {
+        const region = record(raw);
+        if (Object.keys(region).some(key => !["id", "dependencies", "error"].includes(key)) || typeof region.id !== "string" || region.id.length > 8192 || regionIds.has(region.id) || !Array.isArray(region.dependencies) || region.dependencies.length > 100 || (region.error !== undefined && !["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND", "INTERNAL_FAILURE"].includes(String(region.error)))) throw new Error("INTERNAL_FAILURE");
+        regionIds.add(region.id);
+        for (const rawDependency of region.dependencies) {
+          const dependency = record(rawDependency);
+          if (Object.keys(dependency).length !== 2 || typeof dependency.name !== "string") throw new Error("INTERNAL_FAILURE");
+          const operation = this.registry.queries.get(dependency.name);
+          if (!operation) throw new Error("REQUEST_DENIED");
+          operation.input.parse(dependency.input);
+        }
+      }
       const keys = new Set<string>();
       for (const raw of result.islands) {
         const island = record(raw);
@@ -141,7 +160,7 @@ export class ReadApplication {
         schema.parse(island.props);
       }
       return result as unknown as PageResult;
-    } finally { await worker.close(); }
+    }
   }
-  async close(): Promise<void> { await this.#broker.close(); }
+  async close(): Promise<void> { try { await this.#execution.close(); } finally { await this.#broker.close(); } }
 }

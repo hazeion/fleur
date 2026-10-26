@@ -16,6 +16,7 @@
     "docs/setup-artifact-evidence.md",
     "dist/reference",
     "docs/read-pages.md",
+    "docs/reactivity.md",
     "docs/mutations.md",
     "docs/maintenance.md"
   ],
@@ -23,7 +24,7 @@
     "bun": "1.4.3"
   },
   "scripts": {
-    "test": "bun test tests/cli tests/ci tests/runtime && python3 tests/runtime/review-native-controller.test.py && python3 tests/runtime/review-native-races.test.py",
+    "test": "bun test tests/cli tests/ci tests/runtime && python3 tests/runtime/review-native-controller.test.py && python3 tests/runtime/review-native-races.test.py && python3 tests/runtime/review-retained-native.test.py",
     "types": "bun ./node_modules/typescript/bin/tsc --noEmit && bun ./node_modules/typescript/bin/tsc --noEmit -p tests/runtime/tsconfig.json",
     "lint": "bun ./node_modules/oxlint/bin/oxlint bin src tests/cli tests/ci tests/runtime scripts && bun ./lint/node_modules/eslint/bin/eslint.js --config lint/eslint.config.mjs bin src tests/cli tests/ci tests/runtime scripts",
     "build:reference": "bun ./node_modules/typescript/bin/tsc -p tsconfig.declarations.json && bun scripts/verify-read-reference.ts",

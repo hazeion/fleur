@@ -32,7 +32,7 @@ class RetirementRaces(unittest.TestCase):
             nonlocal line_count
             line_count += 1
             if line_count == 1:
-                return controller.json.dumps({'kind': 'startup-audit', 'inventory': inventory})
+                return controller.json.dumps({'kind': 'startup-audit', 'inventory': inventory, 'pid': 1})
             if line_count == 2:
                 return '{"kind":"armed"}'
             # The worker has emitted its final bytes but has not yet executed

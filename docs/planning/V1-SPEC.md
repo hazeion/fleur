@@ -356,10 +356,22 @@ Acceptance:
 - A production target without explicit credentials returns `CONFIGURATION_MISSING`.
 - No host, port, user or URL appears in either output.
 
-The amendment is still deciding two questions. Until each resolves, the current rules above govern:
+### Inspection authority
 
-- [Whether inspection runs under a dedicated read-only role](https://github.com/hazeion/fleur/issues/63): inspection currently relies on a read-only transaction.
-- [Whether agents get a development-only read-only SQL operation](https://github.com/hazeion/fleur/issues/64): inspection otherwise accepts no SQL.
+The [inspection authority resolution](https://github.com/hazeion/fleur/issues/63#issuecomment-6428012384) draws the PostgreSQL privilege boundary by who authored the SQL.
+
+- **Fleur-generated SQL.** `db inspect`, the schema overview, `status` database health and `db migration status` execute only Fleur-generated statements. They use the configured database credential inside a host-opened `READ ONLY` transaction, which cannot become read-write after its first query. No dedicated role is provisioned for them.
+- **Agent-authored SQL.** Any operation that executes SQL written by an agent must run under a Fleur-provisioned, verified PostgreSQL role without write privileges, in addition to a host-opened read-only transaction, a fresh connection per request and a host-owned deadline.
+- **Minimum-privilege profile.** Read-only operations need `CONNECT` on the application and control databases, `USAGE` and `SELECT` on `public` and `fleur_internal`, `EXECUTE` on `pg_control_system()` and session advisory locks on the control database. Backup, migration apply, restore and reset need more, including role and database creation and write authority. Operators may supply a credential limited to this profile; Fleur does not reject broader credentials.
+- **Insufficient authority.** A command whose credential lacks the authority it needs detects this before changing anything and returns `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4, outside any maintenance stage. The error names the missing capability category and points to the documented profile. It never names the role, host, port or URL.
+
+Acceptance:
+
+- The schema overview, `db inspect --table` and `status` health succeed under a credential limited to the profile, against a disposable PostgreSQL database.
+- `db backup` and `db migration apply` under that credential return `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4, change nothing and leave no maintenance stage.
+- Neither output names the role, host, port or URL.
+
+The amendment is still deciding [whether agents get a development-only read-only SQL operation](https://github.com/hazeion/fleur/issues/64). Until it resolves, inspection accepts no SQL.
 
 ### Generated database guidance
 

@@ -31,5 +31,8 @@ A validated server operation that retrieves external API data through Fleur's ap
 **Fleur island**:
 A browser-safe interactive component within a server-rendered Fleur page. It owns local interaction state and receives validated public data through Fleur.
 
+**New development database**:
+A development database Fleur created for a storage binding that has provably never been initialized. It stays new across development startups until initialization succeeds. A database that merely contains no data, or that held data before, is not new.
+
 **Fleur setup grant**:
 A human authorization for a named prerequisite setup action and installation method, valid once or remembered for one OS user on one machine. It grants no authority to application handlers.

@@ -306,9 +306,28 @@ Safety is enforced by code and PostgreSQL authority, never by instructions alone
 - Development data persists across stop and restart.
 - Production targets admit fewer operations than development: production reset is unavailable, and production startup refuses pending migrations.
 
-The amendment is still deciding four questions. Until each resolves, the current rules above govern:
+### New development database initialization
 
-- [Whether `fleur dev` initializes a database it just created](https://github.com/hazeion/fleur/issues/66): startup otherwise never applies migrations implicitly, and seeding remains explicit.
+The [fresh-database resolution](https://github.com/hazeion/fleur/issues/66#issuecomment-6426073167) adds one exception to "startup never applies migrations implicitly". A `fleur dev` startup initializes a **new development database**: a database Fleur created for a storage binding that has provably never been initialized. Every other database keeps the explicit `db migration apply` and `db seed` flow.
+
+- **Newness proof.** Fleur writes a durable private creation record, bound to cluster and database identity, before creating the database. At initialization the catalog must show that identity, no application relations and no Fleur migration history. Emptiness alone never qualifies.
+- **Contents.** Initialization applies the whole plan-validated committed migration chain, including removals, then runs the declared seeds. Migrations, history and seeds commit in one transaction.
+- **Authority.** No backup or human approval is required. The maintenance lock is held, and the expected catalog is recorded for drift detection.
+- **Empty chain.** Initialization waits for a non-empty committed migration chain and runs only at startup, never during reload.
+- **Failure.** Failure rolls back, reports failed with an action and never reports ready. Later startups may retry while the database remains provably uninitialized.
+- **Boundaries.** Adopted volumes are never new. A copied checkout's new binding is new and copies no data. Reset, production `start` and test databases are unchanged.
+- **Reporting.** `dev` reports initialization in human output and JSON: migrations applied, seed rows applied and the resulting migration status.
+
+Acceptance:
+
+- A new binding becomes ready with the chain and seeds applied.
+- An empty-but-previously-initialized database and an adopted volume are not initialized automatically.
+- A failing seed or migration leaves the database new and blocked.
+- A retry succeeds after the cause is corrected.
+- An empty chain leaves the database new.
+
+The amendment is still deciding three questions. Until each resolves, the current rules above govern:
+
 - [Agent-facing schema inspection and database health diagnostics](https://github.com/hazeion/fleur/issues/65).
 - [Whether inspection runs under a dedicated read-only role](https://github.com/hazeion/fleur/issues/63): inspection currently relies on a read-only transaction.
 - [Whether agents get a development-only read-only SQL operation](https://github.com/hazeion/fleur/issues/64): inspection otherwise accepts no SQL.

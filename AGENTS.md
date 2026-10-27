@@ -10,6 +10,17 @@ Read README.md, docs/planning/V1-SCOPE.md, CONTEXT.md, and the Wayfinder map bef
 - Preserve runtime validation, inferred client/server/database types, and server-only secret boundaries.
 - Auth and hosted deployment are outside v1.
 
+## Database development
+
+Follow the database sections of docs/planning/V1-SPEC.md, including "Database tooling for application agents".
+
+- Fleur owns database orchestration. Applications own their declarations, reviewed migrations, seeds and operations, expressed through `fleur/database`. Drizzle, Bun SQL and raw SQL are not application imports, and Fleur's database tooling must not depend on any ORM's model.
+- Implement each database capability once, in the shared core, as a named operation. Expose it through the CLI catalog with JSON version 1 output. Never accept arbitrary SQL or shell input unless a resolved amendment ticket admits it.
+- Enforce read-only, bounded and destructive-approval rules in executable code and PostgreSQL authority, not only in guidance. Keep credentials out of logs, command output, workers and browser bundles.
+- Persistent schema changes go through reviewed, immutable migrations. Preserve development data; never reset it to make a test pass.
+- New database capabilities need tests against a real disposable PostgreSQL database covering migration behavior, persistence across restart, read-only enforcement and failure handling. Update the generated database guidance and docs in the same change.
+- Do not add a competing database-management mechanism or duplicate an existing operation.
+
 ## Development process after specification approval
 
 For nontrivial changes, define observable behavior, acceptance criteria, failure cases, and appropriate tests before implementation. Tests must derive from requirements, not simply mirror code.

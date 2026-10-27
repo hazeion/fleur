@@ -280,6 +280,164 @@ Seeds declare stable ownership keys and desired validated row values; no arbitra
 
 User-deleted seed records retain an ownership tombstone and are not silently recreated by repetition. Recreated records with conflicting identity are ownership conflicts. Removing a seed declaration does not delete its existing row. A skipped parent does not authorize child writes that violate integrity; fail atomically when the declared seed graph cannot be satisfied. Explicit reset followed by requested seed creates a fresh ownership state.
 
+## Database tooling for application agents
+
+This section consolidates the database rules above for agent-facing tooling and guidance. The [database agent tooling amendment](https://github.com/hazeion/fleur/issues/61) is open; only its resolved tickets change this behavior.
+
+Fleur owns database orchestration, including:
+
+- development PostgreSQL and storage identity
+- maintenance locking
+- migration generation, review and application
+- seed reconciliation
+- inspection, backup, restore, reset and recovery
+
+Applications own their table and relation declarations, reviewed migration and seed content, operations and business rules. They express these only through `fleur/schema`, `fleur/database` and `fleur/server`. Drizzle, Bun SQL and raw SQL remain non-application imports. Fleur's database tooling reads PostgreSQL catalogs and Fleur metadata, not an ORM's model, so an internal library choice cannot change tooling behavior. Applications run on Fleur's pinned runtime; the October 26, 2026 review kept a Fleur-independent application runtime and an application-selected ORM outside v1.
+
+Each database capability is one named operation in Fleur's shared core. The CLI exposes it through the operation catalog with JSON version 1 output, stable error codes and exit categories. A later interface, such as an MCP adapter, must invoke the same operations. It cannot add authority, skip grants or bypass bounds. Do not introduce a second database-management mechanism.
+
+Safety is enforced by code and PostgreSQL authority, never by instructions alone:
+
+- Typed operations bind values and never accept SQL strings or interpolated identifiers.
+- Inspection is read-only and bounded.
+- Persistent schema changes go only through reviewed, immutable migrations.
+- Destructive operations require target- and content-bound human approval.
+- Credentials stay in the trusted host and never appear in output, logs, workers or browser bundles.
+- Development data persists across stop and restart.
+- Production targets admit fewer operations than development: production reset is unavailable, and production startup refuses pending migrations.
+
+### New development database initialization
+
+The [fresh-database resolution](https://github.com/hazeion/fleur/issues/66#issuecomment-6426073167) adds one exception to "startup never applies migrations implicitly". A `fleur dev` startup initializes a **new development database**: a database Fleur created for a storage binding that has provably never been initialized. Every other database keeps the explicit `db migration apply` and `db seed` flow.
+
+- **Newness proof.** Fleur writes a durable private creation record, bound to cluster and database identity, before creating the database. At initialization the catalog must show that identity, no application relations and no Fleur migration history. Emptiness alone never qualifies.
+- **Contents.** Initialization applies the whole plan-validated committed migration chain, including removals, then runs the declared seeds. Migrations, history and seeds commit in one transaction.
+- **Authority.** No backup or human approval is required. The maintenance lock is held, and the expected catalog is recorded for drift detection.
+- **Empty chain.** Initialization waits for a non-empty committed migration chain and runs only at startup, never during reload.
+- **Failure.** Failure rolls back, reports failed with an action and never reports ready. Later startups may retry while the database remains provably uninitialized.
+- **Boundaries.** Adopted volumes are never new. A copied checkout's new binding is new and copies no data. Reset, production `start` and test databases are unchanged.
+- **Reporting.** `dev` reports initialization in human output and JSON: migrations applied, seed rows applied and the resulting migration status.
+
+Acceptance:
+
+- A new binding becomes ready with the chain and seeds applied.
+- An empty-but-previously-initialized database and an adopted volume are not initialized automatically.
+- A failing seed or migration leaves the database new and blocked.
+- A retry succeeds after the cause is corrected.
+- An empty chain leaves the database new.
+
+### Schema inspection and database health
+
+The [inspection and health resolution](https://github.com/hazeion/fleur/issues/65#issuecomment-6427697170) extends existing operations and adds no new command.
+
+- **Schema overview.** `db inspect` without `--table` returns a schema overview of application tables, with no rows:
+  - columns with PostgreSQL type, Fleur column kind, nullability and default
+  - primary key
+  - foreign keys with `onDelete` actions
+  - unique constraints and indexes
+  - whether the table is versioned
+
+  Fleur-owned metadata tables are excluded, and Fleur-managed columns are marked as managed. The overview paginates by table with `--limit` and `--cursor`, enforces the encoded byte cap and reports truncation. `--table <name>` returns that table's structure plus a bounded page of rows.
+- **One owner of migration state.** `db migration status` alone computes applied, pending and drift state. It reports drift as a bounded list of differences, each with the object, expected definition and actual definition. `db inspect` and `status` embed a migration summary from that same operation.
+- **Health in `status`.** Whether or not the app is running, `status` reports a `database` object: connectivity, target kind, database name, server version, target fingerprint, maintenance or recovery stage, and the migration summary. `doctor` never connects to the database, and `status` never re-runs prerequisite probes; a prerequisite-caused reason carries an action that points to `doctor`.
+- **Findings are data.** A diagnostic that can produce its result reports drift, pending migrations, maintenance, recovery state and an unreachable database as data with exit 0. Exits 4 and 5 apply only when the command cannot produce its result. Drift and active maintenance do not block read-only inspection; output carries the stage.
+- **Probe deadline.** The `status` database probe has its own 5-second default deadline, adjusted by `--timeout`. A timeout or refusal reports `unreachable` with a reason.
+- **Reasons and codes.** Readiness reasons use a stable vocabulary: `DATABASE_UNAVAILABLE`, `MIGRATION_PENDING`, `SCHEMA_DRIFT`, `MAINTENANCE_ACTIVE`, `RECOVERY_REQUIRED` and `PREREQUISITE_UNAVAILABLE`. Each carries one structured action. `DATABASE_UNAVAILABLE` is also the exit-4 error when a command needs data from a database it cannot reach.
+- **Identity.** Output identifies the target by kind, database name, server version and a non-reversible fingerprint of the verified target identity. It never shows host, port, user or URL.
+- **Production.** `status` and `db inspect` default to the development target and select production through one shared option that reads the configuration `start` uses. The schema overview and health are available against production with explicit credentials; otherwise they return `CONFIGURATION_MISSING`. Neither adds production authority. Against production, `status` reports app state only when a production `start` for that artifact is registered on the machine.
+
+Acceptance:
+
+- The overview reports every listed structural element for the workout fixture and never returns rows.
+- An overview larger than one page reports truncation and resumes from its cursor.
+- Drift, a pending migration and an active maintenance stage appear in `db inspect`, `status` and `db migration status` with the same summary.
+- `status` against a stopped or unreachable database exits 0 within its probe deadline and reports the reason and action.
+- `db inspect --table` against an unreachable database returns `DATABASE_UNAVAILABLE` with exit 4.
+- A production target without explicit credentials returns `CONFIGURATION_MISSING`.
+- No host, port, user or URL appears in either output.
+
+### Inspection authority
+
+The [inspection authority resolution](https://github.com/hazeion/fleur/issues/63#issuecomment-6428012384) draws the PostgreSQL privilege boundary by who authored the SQL.
+
+- **Fleur-generated SQL.** `db inspect`, the schema overview, `status` database health and `db migration status` execute only Fleur-generated statements. They use the configured database credential inside a host-opened `READ ONLY` transaction, which cannot become read-write after its first query. No dedicated role is provisioned for them.
+- **Agent-authored SQL.** Any operation that executes SQL written by an agent must run under a Fleur-provisioned, verified PostgreSQL role without write privileges, in addition to a host-opened read-only transaction, a fresh connection per request and a host-owned deadline.
+- **Minimum-privilege profile.** Read-only operations need `CONNECT` on the application and control databases, `USAGE` and `SELECT` on `public` and `fleur_internal`, `EXECUTE` on `pg_control_system()` and session advisory locks on the control database. Backup, migration apply, restore and reset need more, including role and database creation and write authority. Operators may supply a credential limited to this profile; Fleur does not reject broader credentials.
+- **Insufficient authority.** A command whose credential lacks the authority it needs detects this before changing anything and returns `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4, outside any maintenance stage. The error names the missing capability category and points to the documented profile. It never names the role, host, port or URL.
+
+Acceptance:
+
+- The schema overview, `db inspect --table` and `status` health succeed under a credential limited to the profile, against a disposable PostgreSQL database.
+- `db backup` and `db migration apply` under that credential return `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4, change nothing and leave no maintenance stage.
+- Neither output names the role, host, port or URL.
+
+### Development read-only SQL
+
+The [development SQL resolution](https://github.com/hazeion/fleur/issues/64) adds one named operation, `db query`, that runs a single read-only SQL statement written by an agent against the development database. It is a development diagnostic only. Application code still cannot import or send SQL, and every other inspection operation still accepts no SQL.
+
+- **Target.** `db query` connects only to the PostgreSQL cluster owned by the project's `fleur dev` instance. It accepts no URL, credential or production-target option and never reads production configuration; the shared production-target option returns `ARGUMENT_INVALID` (exit 2). Before connecting, Fleur verifies the cluster and database identity recorded for the development storage binding. If development PostgreSQL is not running, it returns `DATABASE_UNAVAILABLE` (exit 4); it never starts PostgreSQL.
+- **Input.** `--sql <text>` or `--sql-file <path>`, at most 64 KiB, plus repeatable `--param <text>` values bound in order as `$1…$n`. Every parameter is sent as text; casts belong in the SQL. There is no null parameter, and parameters are never interpolated into SQL text.
+- **Accepted statements.** Fleur wraps the statement as a subquery with a bound row limit and always sends it through the extended protocol with at least one bound parameter. Only one `SELECT`, `WITH` without data-modifying parts, `VALUES` or `TABLE` statement can execute. `EXPLAIN` is unavailable in v1.
+- **Execution.** Each request uses a fresh connection under the agent query role and a host-opened `READ ONLY` transaction with `SET LOCAL` `statement_timeout`, `lock_timeout = 1s`, `row_security = off` and a fixed `search_path`. It always ends with `ROLLBACK` and closes the connection.
+- **Output.** Columns carry names, in order and including duplicates, and PostgreSQL type names. Values are exact text strings, with `null` for SQL null. `--limit` defaults to 100 rows and allows at most 500; encoded output shares the `db inspect` byte cap. Exceeding either bound returns the rows that fit with `truncated: true` and exit 0. There is no cursor. Output includes the migration summary from `db migration status`.
+- **Deadline.** The default statement deadline is 5 seconds, adjustable by `--timeout` up to 30 seconds. On expiry, the host closes the connection and returns `QUERY_TIMEOUT`. Role-level timeouts are defense in depth only.
+- **Errors.** PostgreSQL errors return `DATABASE_QUERY_REJECTED` (exit 1) with SQLSTATE, message and, when present, position, detail and hint. Its action states the accepted statement form. This covers permission, read-only, syntax and cast errors. Error output never names the role, host, port or URL. `DATABASE_PRIVILEGE_INSUFFICIENT` remains reserved for Fleur's own credential.
+- **Maintenance.** While a maintenance stage or recovery is active, `db query` returns `MAINTENANCE_BUSY` (exit 5). Pending migrations and drift do not block it.
+
+**Agent query role.** Fleur provisions one login role in its development cluster:
+
+- `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`, `CONNECTION LIMIT 4`, and a superuser-set `temp_file_limit` the role cannot override.
+- A random password kept only in trusted host private state and regenerated at every development PostgreSQL start.
+- Explicit grants only: `USAGE` on `public`, `SELECT` on its tables, and default privileges from the role that owns migrated tables. No `pg_read_all_data`, `fleur_internal` access or sequence privileges.
+- `PUBLIC` loses `CONNECT` and `TEMP` on the application, control, `template1` and verification databases, with explicit re-grants to Fleur's own roles, so the role cannot reach the control database or Fleur's maintenance locks. Advisory-lock functions stay executable in the application database; no Fleur lock may live there.
+- Before every request, Fleur verifies the role's attributes and grants and re-applies anything missing with its administrative credential, so restore, reset and new-database initialization end verified. A verification that still fails returns `DATABASE_PRIVILEGE_INSUFFICIENT`.
+- Supported and tested on PostgreSQL 18, the pinned development image.
+
+Accepted residual risks, bounded by the deadline and per-request connection: catalog metadata is readable, advisory locks in the application database, CPU and memory use, and one agent query cancelling another under the same role.
+
+Acceptance:
+
+- `INSERT`, `UPDATE`, `DELETE`, DDL, data-modifying `WITH`, multiple statements, `SET`, `SET TRANSACTION READ WRITE`, `SELECT … FOR UPDATE`, `nextval` and temporary table creation are each rejected with `DATABASE_QUERY_REJECTED`, and the database is unchanged.
+- Reads of `fleur_internal`, connections to the control database and attempts to raise `temp_file_limit` fail.
+- Bound parameters round-trip exactly, and a parameter containing SQL is treated as data.
+- Row and byte bounds report truncation with exit 0; a statement past its deadline returns `QUERY_TIMEOUT` and leaves no session behind.
+- A table with row-level security enabled returns an error rather than zero rows.
+- The production-target option returns `ARGUMENT_INVALID`, and a stopped development database returns `DATABASE_UNAVAILABLE`.
+- An active maintenance stage returns `MAINTENANCE_BUSY`.
+- After restore, reset and new-database initialization, `db query` succeeds with the role verified.
+- Backup verification and restore still pass with the `PUBLIC` revocations in place.
+- No output names the role, password, host, port or URL.
+
+### Generated database guidance
+
+Generated AGENTS.md has a dedicated database section, referenced from CLAUDE.md, covering:
+
+- tables, relations, versioning and the typed query and mutation APIs as the only data access path
+- `db query` as a development-only diagnostic, never a data access path for application code
+- why raw SQL and ORM imports are unavailable, and how to suggest a missing capability by describing the need and existing alternatives
+- the generate, plan review, apply and status workflow for migrations, including immutability of applied files
+- declarative seeds, and reset only with approval
+- inferred types and runtime validation at every boundary
+- credential, disposable-test-data and destructive-authority rules
+- the checks to run after a schema change: types, database tests against disposable PostgreSQL, migration status free of drift or pending entries, and persistence across restart
+
+The guidance names only operations present in the pinned release and marks later ones unavailable.
+
+### Database tooling acceptance
+
+Release evidence must show each of the following:
+
+- Typed operations reject invalid filter values and query writes at compile time and runtime.
+- Migration generation leaves the database unchanged.
+- Apply commits schema and history together, and a failed apply leaves verified rollback with readiness blocked.
+- Drift and pending migrations block readiness and production start.
+- Inspection cannot write and stays within its row and byte bounds.
+- No credential appears in any command output or log.
+- Development data survives stop and restart.
+- A generated project passes types, lint and tests with only its pinned dependencies.
+
+Accepted amendment tickets add their own acceptance criteria here.
+
 ## Setup and compatibility
 
 Entry is `bunx fleur`, with Bun installed beforehand. The package executable must actually run through Bun without hidden Node; merely using bunx on a Node shebang is insufficient. Honor the project's exact Fleur pin. Missing pins stop with an explicit action, never latest fallback.
@@ -320,6 +478,7 @@ The following grammar is the target catalog, not an existing CLI. Common options
 | Development | `dev [--background] [--host <address>] [--port <number>]` |
 | Runtime | `stop`; `status`; `logs [--limit 200] [--cursor <token>] [--follow]` |
 | Inspection/export | `db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]` |
+| Development SQL | `db query (--sql <text> | --sql-file <path>) [--param <text>]... [--limit 100]` |
 | Seed/backup | `db seed`; `db backup --out <file>` |
 | Restore/reset | `db restore --from <file> [--grant <id>]`; `db reset [--seed] [--grant <id>]` |
 | Migrations | `db migration generate`; `db migration plan`; `db migration apply [--grant <id>]`; `db migration status` |
@@ -328,7 +487,7 @@ The following grammar is the target catalog, not an existing CLI. Common options
 | Production | `start --artifact <dir> [--host <address>] [--port <number>]` |
 | Compatibility | `upgrade --to <exact-version> [--preview]` |
 
-Inspect/export are read-only named operations; never arbitrary SQL. `db recover --inspect` reports actual state/actions but does not silently clear a maintenance marker. Grants are established through an interactive human confirmation workflow, never generic `--yes`. Destructive approval identifies target and migration/restore contents. Public CLI options cannot manufacture or broaden grants noninteractively.
+Inspect/export are read-only named operations; never arbitrary SQL. The only exception is the development-only `db query` (see Development read-only SQL). `db inspect` without `--table` returns the schema overview, and `status` includes database health (see Schema inspection and database health). `db recover --inspect` reports actual state/actions but does not silently clear a maintenance marker. Grants are established through an interactive human confirmation workflow, never generic `--yes`. Destructive approval identifies target and migration/restore contents. Public CLI options cannot manufacture or broaden grants noninteractively.
 
 Noninteractive commands return promptly if authority/human action is missing. Default readiness timeout is 60 seconds; explicit options adjust waits. Snapshot logs/inspection are bounded and expose truncation/cursors; follow is opt-in. Exports write to an explicit destination with completion/integrity metadata, not unbounded stdout. Project creation preflights collisions, preserves README/LICENSE/hidden files/user instructions, marks generated sections and never nests Git or commits automatically. Roll back only newly created files and modified generated guidance on partial failure; report incomplete restoration.
 
@@ -345,7 +504,7 @@ Long-running commands emit newline-delimited events with `formatVersion: 1`, `co
 
 Exit codes: 0 command succeeded; 1 failed; 2 invalid invocation; 3 human authority/action required; 4 environment unavailable/incompatible/not ready; 5 contention/drift/recovery blocking. Successful inspection of a failed app is exit 0. Graceful user stop is completion, not application failure; unexpected crash is failure. Preserve standard signal-derived exit status when force-terminated.
 
-Stable code families include `ARGUMENT_INVALID`, `AUTHORITY_REQUIRED`, `HUMAN_ACTION_REQUIRED`, `VERSION_MISMATCH`, `PREREQUISITE_UNAVAILABLE`, `READINESS_TIMEOUT`, `MAINTENANCE_BUSY`, `SCHEMA_DRIFT`, `RECOVERY_REQUIRED`, `SOURCE_REJECTED`, `CONFIGURATION_MISSING`, `QUERY_LIMIT`, `QUERY_TIMEOUT`, `RESULT_TOO_LARGE`, `RETRIEVAL_DESTINATION_DENIED`, `RETRIEVAL_REDIRECT_DENIED`, `RETRIEVAL_TIMEOUT`, `RETRIEVAL_HTTP_FAILURE`, `RETRIEVAL_INVALID_OUTPUT`, `INTERNAL_FAILURE`. Application validation/record/version errors follow the operation schemas. Release code catalogs must map each to its exit and recovery action.
+Stable code families include `ARGUMENT_INVALID`, `AUTHORITY_REQUIRED`, `HUMAN_ACTION_REQUIRED`, `VERSION_MISMATCH`, `PREREQUISITE_UNAVAILABLE`, `DATABASE_UNAVAILABLE`, `DATABASE_PRIVILEGE_INSUFFICIENT`, `DATABASE_QUERY_REJECTED`, `READINESS_TIMEOUT`, `MAINTENANCE_BUSY`, `SCHEMA_DRIFT`, `RECOVERY_REQUIRED`, `SOURCE_REJECTED`, `CONFIGURATION_MISSING`, `QUERY_LIMIT`, `QUERY_TIMEOUT`, `RESULT_TOO_LARGE`, `RETRIEVAL_DESTINATION_DENIED`, `RETRIEVAL_REDIRECT_DENIED`, `RETRIEVAL_TIMEOUT`, `RETRIEVAL_HTTP_FAILURE`, `RETRIEVAL_INVALID_OUTPUT`, `INTERNAL_FAILURE`. Application validation/record/version errors follow the operation schemas. Release code catalogs must map each to its exit and recovery action.
 
 Breaking machine format changes require a new formatVersion. Compatible new fields are allowed; consumers ignore unknown fields and reject unsupported versions. Human text may change without changing stable semantics.
 

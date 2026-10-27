@@ -13,10 +13,11 @@ test("an uncertain commit remains uncertain when releasing its execution reserva
       async close() {}
     } }));
     mock.module(${JSON.stringify(execution)}, () => ({ NativeExecution: { open: () => ({
-      async reserve() { return { run: async () => { throw new Error("unexpected run"); }, release() { throw new Error("ATTACH_EXIT_UNCONFIRMED"); } }; },
+      async reserve() { return { deadline: performance.now() + 5000, run: async () => { throw new Error("unexpected run"); }, release() { throw new Error("ATTACH_EXIT_UNCONFIRMED"); } }; },
     }) } }));
     const { ReadApplication } = await import(${JSON.stringify(application)});
-    const app = new ReadApplication({}, { tables: [], mutations: new Map([["save", { input: { parse: value => value } }]]) }, "unused");
+    const { NativeExecution } = await import(${JSON.stringify(execution)});
+    const app = new ReadApplication(NativeExecution.open(), { tables: [], mutations: new Map([["save", { input: { parse: value => value } }]]) }, "unused");
     try { await app.mutate("save", {}); process.exitCode = 1; }
     catch (error) { console.log(error.message); }
   `;

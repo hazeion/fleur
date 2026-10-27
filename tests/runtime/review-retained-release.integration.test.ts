@@ -16,7 +16,7 @@ beforeAll(async () => { images = await prepareNativeImages(source); }, 300_000);
 afterAll(async () => { await images?.dispose(); }, 60_000);
 
 test("a reservation released while its operation runs still retires a quarantined slot and restores capacity", async () => {
-  const execution = NativeExecution.open(images, { capacity: 1 });
+  const execution = await NativeExecution.open(images, { capacity: 1 });
   try {
     const reservation = await execution.reserve();
     let answer!: (value: unknown) => void;
@@ -31,6 +31,11 @@ test("a reservation released while its operation runs still retires a quarantine
     const deadline = performance.now() + 10_000;
     while (performance.now() < deadline && execution.diagnostics().some(slot => slot.state === "quarantined")) await new Promise(resolve => setTimeout(resolve, 50));
     expect(execution.diagnostics().filter(slot => slot.state === "quarantined")).toEqual([]);
+    // Verified removal is followed by background replacement, which restores
+    // capacity without any request having to wait for cold slot creation.
+    const replaced = performance.now() + 30_000;
+    while (performance.now() < replaced && !execution.diagnostics().some(slot => slot.state === "idle")) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(execution.diagnostics().some(slot => slot.state === "idle")).toBe(true);
     const started = performance.now();
     expect((await execution.execute({}, () => null)).value).toEqual({ kind: "complete", value: { ok: true } });
     expect(performance.now() - started).toBeLessThan(10_000);
@@ -38,7 +43,7 @@ test("a reservation released while its operation runs still retires a quarantine
 }, 120_000);
 
 test("a reservation released while its operation runs wakes a queued caller when the slot becomes idle", async () => {
-  const execution = NativeExecution.open(images, { capacity: 1 });
+  const execution = await NativeExecution.open(images, { capacity: 1 });
   try {
     const reservation = await execution.reserve();
     let answer!: (value: unknown) => void;

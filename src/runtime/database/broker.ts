@@ -50,11 +50,12 @@ export class ReadBroker {
     const names = options.tables.map(table => tableDefinitions.get(table)?.name);
     if (names.includes(undefined) || new Set(names).size !== names.length) throw new Error("Invalid table registry");
   }
-  async read<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }): Promise<T> {
-    return this.#transaction(trustedDispatch, identity, false);
+  /** `started` is when the operation entered the runtime: queueing consumes its deadline. */
+  async read<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }, started = performance.now()): Promise<T> {
+    return this.#transaction(trustedDispatch, identity, false, started);
   }
-  async mutate<T>(trustedDispatch: (db: WriteDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }): Promise<T> {
-    return this.#transaction((db, remaining) => trustedDispatch(db as WriteDb, remaining), identity, true);
+  async mutate<T>(trustedDispatch: (db: WriteDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity = { operation: "internal", input: {} }, started = performance.now()): Promise<T> {
+    return this.#transaction((db, remaining) => trustedDispatch(db as WriteDb, remaining), identity, true, started);
   }
   async revision(): Promise<DatabaseRevision> {
     const lease = await MaintenanceLease.acquire(this.#url, false, { ...this.#maintenance, tables: [...this.#tables] });
@@ -78,8 +79,8 @@ export class ReadBroker {
     const subscription = await this.#pool.listen("fleur_revision", () => wakeup());
     return () => subscription.unlisten();
   }
-  async #transaction<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity, writable: boolean): Promise<T> {
-    const started = performance.now();
+  async #transaction<T>(trustedDispatch: (db: ReadDb, remainingMs: () => number) => Promise<T>, identity: QueryIdentity, writable: boolean, started: number): Promise<T> {
+    if (!Number.isFinite(started) || started > performance.now()) throw new Error("REQUEST_DENIED");
     let admission: MaintenanceLease | undefined;
     let commitAttempted = false, committed = false;
     let fault: unknown;
@@ -88,7 +89,7 @@ export class ReadBroker {
     let expire: () => void = () => {};
     const expired = new Promise<never>((_resolve, reject) => { expire = () => { abort.abort(); reject(new Error("QUERY_TIMEOUT")); }; });
     void expired.catch(() => {});
-    const timer = setTimeout(expire, 5000);
+    const timer = setTimeout(expire, Math.max(0, 5000 - (performance.now() - started)));
     let connection: Awaited<ReturnType<SQL["reserve"]>> | undefined;
     let active: ReturnType<SQL["unsafe"]> | undefined;
     let pending: Promise<unknown> | undefined;

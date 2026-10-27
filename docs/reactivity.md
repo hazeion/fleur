@@ -94,17 +94,35 @@ container's cgroup again holds only its idle init. Mutation output validation
 and that retirement precede commit. A busy, malformed or cancelled operation
 fails only itself. Any uncertain ownership, admission, retirement or cleanup
 quarantines the whole slot: its containers are removed, and it keeps occupying
-capacity until that removal is verified. Controller loss closes the guard's control channel, which
-kills the bound process. Shutdown closes admission, drains for up to 30 seconds
-and verifies removal of every owned container.
+capacity until that removal is verified; unverified removal keeps that capacity
+occupied and is reported at shutdown. Verified removal is followed by background
+replacement, so one retained slot stays available. An idle slot whose
+controller exits is retired at once, with backoff if replacements keep failing. Controller loss
+closes the guard's control channel, which kills the bound process before its
+container is removed.
+Guard loss quarantines the slot, and removing its application container retires
+every process in it. Shutdown closes admission, drains for up to 30 seconds
+and verifies removal of every owned container. A slot still starting when that drain ends is reported
+as requiring recovery.
 
 While views are active, each idle slot keeps one prepared process waiting at its
 admission gate. The scheduler replaces a prepared process 20 seconds after its
 preparation completed, and the controller refuses admission 30 seconds after its
-preparation began, preserving the original startup/admission bound. Waiting for
-a slot and preparing a process precede an operation's five-second deadline, as
-worker startup did before; that deadline starts when the guard is armed. This trades
+preparation began, preserving the original startup/admission bound. This trades
 bounded idle resource use for lower refresh latency.
+
+One five-second deadline starts when a query, mutation or render enters the
+runtime. Waiting for a slot, discarding an aged process, preparation, the
+database transaction and execution all consume it; an admitted operation runs
+only for the time remaining, and a request that cannot be admitted in time fails
+with `QUERY_TIMEOUT`. Render admission and every nested query a render requests
+share the render's deadline. A caller that gives up during preparation leaves
+the slot reserved until preparation settles, so a caller deadline never
+quarantines healthy capacity. Opening the application waits until one retained
+slot is ready and does not hold maintenance admission meanwhile, so the first
+slot's cold creation precedes every operation budget. A request that arrives
+while no slot is ready, during on-demand growth or after a quarantine, waits for
+cold creation inside its own deadline.
 
 ## Qualification status
 

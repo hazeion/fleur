@@ -40,7 +40,7 @@ test("declared errors survive query and nested page boundaries while unexpected 
       });
       mock.module("./src/runtime/native/host.ts", () => ({ startWorker: fakeWorker }));
       mock.module("./src/runtime/native/execution.ts", () => ({ NativeExecution: { open: () => ({ warm() {}, async close() {},
-        async reserve() { const worker = await fakeWorker(); return { run: async (command, exchange) => ({ value: await worker.run(command, exchange) }), release() {} }; } }) } }));
+        async reserve() { const worker = await fakeWorker(); return { deadline: performance.now() + 5000, run: async (command, exchange) => ({ value: await worker.run(command, exchange) }), release() {} }; } }) } }));
 
       const { ReadApplication } = await import("./src/runtime/application.ts");
       const app = await ReadApplication.open({ worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" }, process.env.FLEUR_REVIEW_PG_URL);

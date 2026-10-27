@@ -4,6 +4,10 @@ Arguments bind one immutable operation, container, init, boot, process and
 deadline. No input can extend the deadline or select another target: any
 control byte or EOF cancels this operation's process. Retirement requires the
 pidfd exit plus a container cgroup containing only its idle init again.
+
+The controller admits a process only after this guard reports it armed. If the
+deadline expires before arming, the process is still waiting at its startup
+gate: the guard retires it as unadmitted instead of failing.
 """
 import json
 import os
@@ -67,6 +71,26 @@ def retired(directory, init_pid, end):
         time.sleep(.002)
 
 
+def retire_unadmitted(container_id, pid, deadline, bind):
+    """Retire a process whose deadline expired before this guard armed.
+
+    Binding re-verifies its start identity; any failure stays uncertain.
+    Lateness is measured from the operation deadline, like every retirement.
+    """
+    fd = bind(container_id, pid)
+    try:
+        requested = time.monotonic()
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+        bound = deadline+TERMINATION_TOLERANCE
+        exited = bool(select.select([fd], [], [], max(0, bound-time.monotonic()))[0])
+        stopped = time.monotonic()
+    finally:
+        os.close(fd)
+    return {'kind': 'result', 'outcome': 'unadmitted' if exited and stopped <= bound else 'late-termination',
+            'physical_exit_confirmed': exited, 'kill_lateness_ms': max(0, round(1000*(requested-deadline))),
+            'physical_exit_lateness_ms': max(0, round(1000*(stopped-deadline)))}
+
+
 def main():
     def write(record):
         data = json.dumps(record, separators=(',', ':')).encode()+b'\n'
@@ -97,9 +121,21 @@ def main():
                 os.close(fd)
                 raise
             return fd
-        records = []
-        supervise(container_id, host_pid, deadline, bind, lambda fd: signal.pidfd_send_signal(fd, signal.SIGKILL), os.close, 0,
-                  lambda record: write(dict(record, operation=operation, start=start)) if record['kind'] == 'armed' else records.append(record))
+        records, armed = [], []
+        def emit(record):
+            if record['kind'] == 'armed':
+                armed.append(record)
+                write(dict(record, operation=operation, start=start))
+            else:
+                records.append(record)
+        try:
+            supervise(container_id, host_pid, deadline, bind, lambda fd: signal.pidfd_send_signal(fd, signal.SIGKILL), os.close, 0, emit)
+        except RuntimeError as error:
+            # Only a deadline that expired before binding leaves the process
+            # untouched at its startup gate; anything else stays uncertain.
+            if armed or str(error) != 'worker deadline expired before binding':
+                raise
+            records.append(retire_unadmitted(container_id, host_pid, deadline, bind))
         if len(records) != 1:
             raise RuntimeError('guard result missing')
         record = records[0]

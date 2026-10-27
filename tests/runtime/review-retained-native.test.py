@@ -355,6 +355,88 @@ class ControllerRun(unittest.TestCase):
             with patched, self.assertRaises(retained.Quarantine):
                 slot.run(self.request(budget), host.input, host.output)
 
+    # #67: arming that outlives the budget is a timeout, never silent uncertainty.
+    def expired_arming(self, record):
+        def late():
+            time.sleep(.03)
+            raise docker_api.DockerError('QUERY_TIMEOUT')
+        application = Stream()
+        guard_stream = Stream(lines=[late, record])
+        slot, patched = self.slot(application, guard_stream)
+        host = Host([])
+        return application, guard_stream, slot, patched, host
+
+    def test_arming_expiry_with_a_verified_unadmitted_retirement_is_a_timeout(self):
+        record = json.dumps({'kind': 'result', 'outcome': 'unadmitted', 'physical_exit_confirmed': True, 'kill_lateness_ms': 10,
+                             'physical_exit_lateness_ms': 12, 'operation': OPERATION, 'start': '4242', 'retired': True}).encode()
+        application, _, slot, patched, host = self.expired_arming(record)
+        with patched:
+            reply = slot.run(self.request(10), host.input, host.output)
+        self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'unadmitted'))
+        self.assertEqual(host.sent(), [])
+        self.assertEqual(bytes(application.written), b'')
+        self.assertIn(OPERATION, slot.retired)
+
+    def test_arming_expiry_without_a_verified_start_or_in_time_quarantines(self):
+        base = {'kind': 'result', 'outcome': 'unadmitted', 'physical_exit_confirmed': True, 'kill_lateness_ms': 10,
+                'physical_exit_lateness_ms': 12, 'operation': OPERATION, 'retired': True}
+        for record in (base, dict(base, start=None), dict(base, start='4242', kill_lateness_ms=300, physical_exit_lateness_ms=310)):
+            application, _, slot, patched, host = self.expired_arming(json.dumps(record).encode())
+            with patched, self.assertRaises(retained.Quarantine):
+                slot.run(self.request(10), host.input, host.output)
+            self.assertEqual(bytes(application.written), b'')
+
+    def test_host_admission_after_the_deadline_is_a_timeout_retired_by_the_armed_guard(self):
+        application = Stream(frames=[{'kind': 'complete', 'value': 1}])
+        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('deadline')])
+        slot, patched = self.slot(application, guard_stream)
+        # The host channel stays open and silent past the run's deadline.
+        read, write = os.pipe()
+        host_in = os.fdopen(read, 'rb', buffering=0)
+        OPEN.append(host_in)
+        output = io.BytesIO()
+        try:
+            with patched:
+                reply = slot.run(self.request(50), host_in, output)
+        finally:
+            os.close(write)
+        self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'deadline'))
+        self.assertEqual(bytes(application.written), b'')
+        self.assertIn(OPERATION, slot.retired)
+
+    def test_a_stale_admission_for_a_timed_out_operation_is_ignored(self):
+        failure = {'kind': 'failure', 'operation': OPERATION, 'code': 'QUERY_TIMEOUT'}
+        class Retained:
+            def __init__(self, *arguments):
+                self.retired, self.closed = [], False
+            def create(self):
+                return {}
+            def run(self, request, host_in, host_out):
+                self.retired.append(request['operation'])
+                return failure
+            def close(self):
+                self.closed = True
+            def remove(self):
+                pass
+        def controller(frames):
+            host = Host(frames)
+            stdout = type('Out', (), {'buffer': host.output})()
+            argv = ['controller', 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64, OPERATION]
+            # The idle wait is effectively unbounded; macOS select rejects such timeouts.
+            frame = retained.frame
+            bounded = lambda stream, deadline: frame(stream, min(deadline, time.monotonic() + 5))
+            with patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', type('In', (), {'buffer': host.input})()), \
+                    patch.object(sys, 'stdout', stdout), patch.object(retained, 'Slot', Retained), patch.object(retained, 'frame', bounded):
+                try:
+                    retained.main()
+                except SystemExit:
+                    pass
+            return [value['kind'] for value in host.sent()]
+        admit = {'kind': 'admit', 'value': None, 'operation': OPERATION}
+        self.assertEqual(controller([{'kind': 'run', 'operation': OPERATION}, admit]), ['ready', 'failure', 'closed'])
+        # An admission for an operation that never timed out remains a protocol violation.
+        self.assertEqual(controller([admit]), ['ready', 'quarantined'])
+
 
 if __name__ == '__main__':
     unittest.main()

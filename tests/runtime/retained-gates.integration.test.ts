@@ -132,3 +132,30 @@ for (const stage of ["controller", "worker"] as const) test(`controller loss dur
     for (const id of (await owned(owner!)).split("\n").filter(Boolean)) await docker("rm", "--force", id).catch(() => "");
   }
 }, 120_000);
+
+// #67: capacity held by a slot whose removal could not be verified is visible,
+// not hidden until shutdown.
+test("a slot whose removal cannot be verified stays visible while it occupies capacity", async () => {
+  const execution = await NativeExecution.open(images, { capacity: 1 });
+  let owner: string | undefined;
+  try {
+    owner = (await execution.execute({}, () => null)).operation.slot;
+    const guard = `fleur-exec-${owner}-guard`;
+    // A foreign container takes the guard host's name, so recovery cannot
+    // verify ownership of what it would remove.
+    await docker("rm", "--force", guard);
+    await docker("create", "--name", guard, "--label", `dev.fleur.execution-owner=${owner}`, "--entrypoint", "/bin/true", images.worker);
+    await docker("kill", `fleur-exec-controller-${owner}`);
+    const visible = () => execution.diagnostics().some(slot => slot.slot === owner && slot.state === "quarantined");
+    expect(await until(visible, 15_000)).toBe(true);
+    // Recovery has failed by now; the slot stays listed for as long as it holds capacity.
+    await pause(3000);
+    expect(execution.diagnostics()).toEqual([expect.objectContaining({ slot: owner, state: "quarantined" })]);
+    expect(await execution.execute({}, () => null).then(() => "served", (error: Error) => error.message)).toBe("QUERY_TIMEOUT");
+    expect(execution.diagnostics()).toEqual([expect.objectContaining({ slot: owner, state: "quarantined" })]);
+    expect(await execution.close().then(() => "closed", (error: Error) => error.message)).toBe("EXECUTION_RECOVERY_REQUIRED");
+  } finally {
+    await execution.close().catch(() => {});
+    if (owner) for (const id of (await owned(owner)).split("\n").filter(Boolean)) await docker("rm", "--force", id).catch(() => "");
+  }
+}, 120_000);

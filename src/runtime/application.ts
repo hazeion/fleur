@@ -149,7 +149,20 @@ export class ReadApplication {
     try {
       const remaining = deadline - performance.now();
       if (remaining < 1) throw new Error("QUERY_TIMEOUT");
-      const admission = await MaintenanceLease.acquire(this.#url, false, { ...this.#maintenance, timeoutMs: Math.floor(remaining) });
+      // Admission is bounded by the render deadline itself: a stalled control
+      // connection need not settle when the lease's own bound closes it. The
+      // deadline timer is registered first and fires no later than that bound.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("QUERY_TIMEOUT")), Math.max(0, deadline - performance.now())); });
+      const acquiring = MaintenanceLease.acquire(this.#url, false, { ...this.#maintenance, timeoutMs: Math.ceil(remaining) });
+      let admission: MaintenanceLease;
+      try { admission = await Promise.race([acquiring, expired]); }
+      catch (error) {
+        // An admission granted after the deadline is closed, never used.
+        // Closing it is best effort: the caller's outcome is already decided.
+        void acquiring.then(lease => lease.close()).catch(() => {});
+        throw error;
+      } finally { clearTimeout(timer); }
       try { return await this.#render(reservation, read ?? ((name, input) => this.#query(name, input, deadline)), path); } finally { await admission.close(); }
     } finally { reservation.release(); }
   }

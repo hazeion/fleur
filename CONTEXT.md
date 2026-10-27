@@ -34,5 +34,8 @@ A browser-safe interactive component within a server-rendered Fleur page. It own
 **New development database**:
 A development database Fleur created for a storage binding that has provably never been initialized. It stays new across development startups until initialization succeeds. A database that merely contains no data, or that held data before, is not new.
 
+**Agent query role**:
+The PostgreSQL role, provisioned by Fleur in its development cluster, under which agent-written SQL runs. It can read application tables and nothing else. Fleur-generated SQL never runs under it.
+
 **Fleur setup grant**:
 A human authorization for a named prerequisite setup action and installation method, valid once or remembered for one OS user on one machine. It grants no authority to application handlers.

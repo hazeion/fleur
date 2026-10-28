@@ -36,7 +36,11 @@ export const migrationCommands: readonly CommandDefinition[] = [
       const grant=args.includes("--grant")?args[args.indexOf("--grant")+1]:undefined;
       const config={...(grant?{grant}:{}),...(!json?{confirm:(request:import("./maintenance-authority").MaintenanceApproval)=>terminalApproval(request,timeoutSeconds*1000)}:{}),timeoutMs:timeoutSeconds*1000,...(process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL?{controlUrl:process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL}:{}),...(process.env.FLEUR_PRIVATE_PG_TOOLS?{toolDirectory:process.env.FLEUR_PRIVATE_PG_TOOLS}:{})};
       if(definition.name==="db restore") return success(definition.name,JSON.parse(JSON.stringify(await restoreDatabase(url,project,args[args.indexOf("--from")+1]!,config))));
-      if(definition.name==="db migration status") return success(definition.name,JSON.parse(JSON.stringify(await migrationStatus(url,project,{...config,kind}))));
+      if(definition.name==="db migration status") {
+        const report=await migrationStatus(url,project,{...config,kind});
+        const outcome=success(definition.name,JSON.parse(JSON.stringify(report)));
+        return {...outcome,result:{...outcome.result,truncated:report.differencesTruncated}};
+      }
       if(definition.name==="db migration apply") return success(definition.name,JSON.parse(JSON.stringify(await applyMigrations(url,project,config))));
     }
     return failure(definition.name, 4, { code: "CONFIGURATION_MISSING", message: "Explicit private database configuration is required.", actions: [] });

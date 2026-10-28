@@ -10,6 +10,7 @@ export function databaseFailure(command: string, error: unknown, codes: readonly
   if (code === "DATABASE_UNAVAILABLE") return failure(command, 4, { code, message: "The database could not be reached or refused the connection.", actions: [unavailableAction] });
   return failure(command, code === "ARGUMENT_INVALID" ? 2 : ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code) ? 5 : ["CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(code) ? 4 : 1, { code, message: "The database operation could not complete safely.", actions: [action] });
 }
+const configurationAction: RecoveryAction = { command: "fleur status", description: "Correct FLEUR_PRIVATE_DATABASE_URL and FLEUR_PRIVATE_CONTROL_DATABASE_URL so both reach the same PostgreSQL cluster, then check status again." };
 const configurationMissing = (command: string) => failure(command, 4, { code: "CONFIGURATION_MISSING", message: "Explicit private database configuration for the selected target is required.", actions: [] });
 
 /** `status`: application state plus database health. Findings are exit-0 data; nothing is changed. */
@@ -33,12 +34,15 @@ export const statusCommand: CommandDefinition = {
       // production, application state is reported only for a registered production start, which this release cannot register.
       return success("status", JSON.parse(JSON.stringify({ state: production ? null : "stopped", ready: false, reasons: health.reasons.map(code => ({ code, ...readinessReasons[code] })), database: health.database })));
     } catch (error) {
-      return databaseFailure("status", error, ["CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE", "MAINTENANCE_BUSY", "SOURCE_REJECTED"], { command: "fleur db recover --inspect", description: "Inspect maintenance state before retrying." });
+      // The control and target connections reached different servers or databases: only configuration can fix that.
+      if (error instanceof Error && error.message === "CONFIGURATION_MISSING") return failure("status", 4, { code: "CONFIGURATION_MISSING", message: "The configured database and control database do not identify the same PostgreSQL target.", actions: [configurationAction] });
+      if (error instanceof Error && error.message === "SOURCE_REJECTED") return failure("status", 1, { code: "SOURCE_REJECTED", message: "The committed migration files could not be read.", actions: [{ command: "fleur db migration plan", description: "Inspect the committed migration files." }] });
+      return databaseFailure("status", error, [], { command: "fleur status", description: "Retry status; the failure did not change anything." });
     }
   },
 };
 
-export const databaseCommands: readonly CommandDefinition[] = [
+const databaseOperations: readonly CommandDefinition[] = [
   { name: "db inspect", usage: "db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>] [--production]", options: [...["--table", "--limit", "--cursor", "--export"].map(name => ({ name, value: true })), productionOption] },
   { name: "db backup", usage: "db backup --out <file>", options: [{ name: "--out", value: true }] },
   { name: "db recover", usage: "db recover --inspect", options: [{ name: "--inspect", value: false }] },
@@ -80,3 +84,5 @@ export const databaseCommands: readonly CommandDefinition[] = [
     }
   },
 }));
+/** Catalogued database commands; `status` leads so the release entry point's handler list stays unchanged. */
+export const databaseCommands: readonly CommandDefinition[] = [statusCommand, ...databaseOperations];

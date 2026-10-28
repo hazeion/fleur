@@ -47,7 +47,18 @@ The package includes this document, project creation guidance and prerequisite s
 | `SCHEMA_DRIFT` | The schema or history differs from Fleur's record. | `fleur db migration status`; never reset or rewrite history |
 | `MAINTENANCE_ACTIVE` | A maintenance operation holds the target. | `fleur db recover --inspect` and wait |
 | `RECOVERY_REQUIRED` | Interrupted maintenance needs explicit recovery. | `fleur db recover --inspect` |
-| `PREREQUISITE_UNAVAILABLE` | A local prerequisite is unavailable. Reserved for the development lifecycle, which is not in this release. | `fleur doctor` |
+| `PREREQUISITE_UNAVAILABLE` | A local prerequisite, such as Fleur's private state directory, stopped the probe. | `fleur doctor` |
+
+When the target is unreachable but Fleur's control record shows active maintenance or interrupted recovery, `status` reports `MAINTENANCE_ACTIVE` or `RECOVERY_REQUIRED` with the recorded stage instead of `DATABASE_UNAVAILABLE`, because a restore or reset can replace the target.
+
+### Migration note: `db migration status` output
+
+This pre-1.0 release changes the `db migration status` JSON version 1 data. Update consumers as follows:
+
+- `compatible`, `applied` and `pending` moved from the top level of `data` to `data.migrations`, the same summary that `db inspect` and `status` embed.
+- `busy` and the raw `maintenance` marker were removed, because the marker names the host, port and owner. Read `data.migrations.maintenance.state` (`idle`, `active` or `recovery required`) and `data.migrations.maintenance.stage` instead. `fleur db recover --inspect` still reports the full durable record.
+- Drift is no longer `SCHEMA_DRIFT` with exit 5. It is `data.migrations.drift`, `data.migrations.differenceCount` and the `data.differences` list, with exit 0. `data.differencesTruncated` and the envelope's `truncated` report a list cut at its count or byte bound.
+- `data.target` identifies the target. An unreachable database returns `DATABASE_UNAVAILABLE` with exit 4.
 
 Doctor and setup may return documented partial diagnostic data on failure, including component states, resumable plans and completed setup actions. A nonzero readiness result never claims a verified native release profile. Per-user grant inspection and revocation do not install or remove software. Interrupted APT setup may propose a separately scoped once-only `recovery-inspect` action for a read-only privileged inspection of retained cache directories. JSON setup reports the plan without creating authority. See [setup recovery](setup.md) for its evidence, consent and preservation requirements.
 

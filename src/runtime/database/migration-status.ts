@@ -1,16 +1,14 @@
-import type { ColumnReference } from "../../database";
+import type { ColumnReference, Table } from "../../database";
 import { definition, references, tableDefinitions } from "../declarations";
 import { restoreTables } from "../table-wire";
 import { caseFoldedKey, catalogTables, type CatalogTable } from "./catalog";
-import type { MaintenanceMarker } from "./maintenance";
 import { readMigrations, type MigrationPlan } from "./migration-plan";
 import { catalogFingerprint, emptyApplicationSchema, migrationHistory } from "./migration-state";
 import { columnDefault, constraintName, tableConstraints } from "./table-ddl";
-import type { InspectionSession } from "./target";
+import { maintenanceSummary, type InspectionSession, type MaintenanceSummary } from "./target";
 
 /** One observed difference from Fleur's recorded expectation. `null` means the object is absent on that side. */
 export type Difference = { readonly object: string; readonly expected: string | null; readonly actual: string | null };
-export type MaintenanceState = "idle" | "active" | "recovery required";
 /** The migration summary that `db migration status` computes and `db inspect` and `status` embed unchanged. */
 export type MigrationSummary = {
   readonly compatible: boolean;
@@ -18,16 +16,18 @@ export type MigrationSummary = {
   readonly pending: readonly string[];
   readonly drift: boolean;
   readonly differenceCount: number;
-  readonly maintenance: { readonly state: MaintenanceState; readonly stage: MaintenanceMarker["stage"] | null };
+  readonly maintenance: MaintenanceSummary;
 };
 export interface MigrationReport {
   readonly summary: MigrationSummary;
   readonly differences: readonly Difference[];
   readonly differencesTruncated: boolean;
-  /** Declaration snapshot of the last applied migration when history is intact; Fleur metadata for the overview. */
-  readonly snapshot: unknown;
+  /** Validated declarations recorded with the last applied migration when history is intact; Fleur metadata for the overview. */
+  readonly declarations: readonly Table[];
 }
 export const differenceLimit = 100;
+/** Encoded bytes for the difference list, inside the page cap shared with `db inspect`. */
+export const differenceBytes = 786432;
 
 const kindTypes = { uuid: "uuid", string: "text", boolean: "boolean", safeInteger: "bigint", localDate: "date", timestamp: "timestamp with time zone" } as const;
 function expectedColumn(reference: ColumnReference, managedVersion: boolean): string {
@@ -50,8 +50,7 @@ function actualIndex(index: CatalogTable["indexes"][number]): string {
   return `${index.unique ? "unique" : "index"} (${folded ?? index.keys.join(", ")})${folded ? " case-folded" : ""}`;
 }
 interface Expected { readonly columns: Map<string, string>; readonly constraints: Map<string, { readonly definition: string; readonly structural: boolean }>; readonly indexes: Map<string, string> }
-function expectedTables(snapshot: unknown): Map<string, Expected> {
-  const tables = restoreTables(snapshot ?? []);
+function expectedTables(tables: readonly Table[]): Map<string, Expected> {
   const result = new Map<string, Expected>();
   const checks = new Map(tableConstraints(tables).filter(item => item.kind === "constraint").map(item => [`${item.table}\0${item.name}`, item.sql.slice(item.sql.indexOf(`"${item.name}" `) + item.name.length + 3)]));
   for (const table of tables) {
@@ -79,8 +78,8 @@ function expectedTables(snapshot: unknown): Map<string, Expected> {
  * tables, column types, collations, nullability and identity, primary and foreign keys, unique indexes and the presence
  * of Fleur's check constraints. Other catalog changes are reported by the caller through the catalog fingerprint.
  */
-export async function schemaDifferences(sql: InspectionSession["sql"], snapshot: unknown): Promise<Difference[]> {
-  const expected = expectedTables(snapshot);
+export async function schemaDifferences(sql: InspectionSession["sql"], declarations: readonly Table[]): Promise<Difference[]> {
+  const expected = expectedTables(declarations);
   const actual = new Map((await catalogTables(sql, null)).map(table => [table.name, table]));
   const differences: Difference[] = [];
   const compare = (object: string, want: string | undefined, have: string | undefined) => { if (want !== have) differences.push({ object, expected: want ?? null, actual: have ?? null }); };
@@ -121,30 +120,38 @@ export async function readMigrationStatus(session: InspectionSession, project: s
     if (!(error instanceof Error) || error.message !== "SCHEMA_DRIFT") throw error;
     differences.push({ object: "migration history", expected: "an ordered chain of reviewed migration checksums", actual: "an altered or unreadable migration history" });
   }
-  let snapshot: unknown = null;
+  let declarations: readonly Table[] = [];
   if (history) {
     if (plans) for (const [index, row] of history.entries()) if (row.checksum !== plans[index]?.checksum) differences.push({ object: `migration ${row.id}`, expected: `applied checksum ${row.checksum}`, actual: plans[index] ? `file checksum ${plans[index].checksum}` : "no migration file" });
     const recorded = marker?.schemaState, checksums = history.map(row => row.checksum);
     if (recorded && JSON.stringify(recorded.history) !== JSON.stringify(checksums)) differences.push({ object: "migration history", expected: historyDescription(recorded.history), actual: historyDescription(checksums) });
     const last = history.at(-1);
-    snapshot = last?.snapshot ?? null;
+    // migrationHistory verified this snapshot against its checksum chain; restore it once through the validated path.
+    declarations = restoreTables(last?.snapshot ?? []);
     const catalog = await catalogFingerprint(sql);
     const expectedCatalog = [last?.catalog, recorded?.catalog].find(value => value !== undefined && value !== catalog);
     const unrecordedObjects = !last && !recorded && !await emptyApplicationSchema(sql);
     if (expectedCatalog !== undefined || unrecordedObjects) {
-      const structural = await schemaDifferences(sql, last?.snapshot ?? []);
+      const structural = await schemaDifferences(sql, declarations);
       differences.push(...structural);
       if (!structural.length) differences.push({ object: "schema catalog", expected: expectedCatalog === undefined ? "an empty application schema before the first migration" : `catalog fingerprint ${expectedCatalog}`, actual: `catalog fingerprint ${catalog}` });
     }
   }
   const applied = history?.map(row => row.id) ?? [];
   const pending = history && plans ? plans.slice(history.length).map(plan => plan.id) : [];
-  const stage = marker?.stage ?? null;
-  const state: MaintenanceState = lease.busy ? "active" : stage !== null && stage !== "committed" && stage !== "rollback verified" ? "recovery required" : "idle";
+  const maintenance = maintenanceSummary(lease.busy, marker);
+  // Bounded by count and by encoded bytes; the count in the summary is always complete.
+  const listed: Difference[] = [];
+  let bytes = 2;
+  for (const difference of differences.slice(0, differenceLimit)) {
+    bytes += Buffer.byteLength(JSON.stringify(difference)) + 1;
+    if (bytes > differenceBytes) break;
+    listed.push(difference);
+  }
   return {
-    summary: { compatible: !differences.length && !pending.length && state === "idle", applied, pending, drift: differences.length > 0, differenceCount: differences.length, maintenance: { state, stage } },
-    differences: differences.slice(0, differenceLimit),
-    differencesTruncated: differences.length > differenceLimit,
-    snapshot,
+    summary: { compatible: !differences.length && !pending.length && maintenance.state === "idle", applied, pending, drift: differences.length > 0, differenceCount: differences.length, maintenance },
+    differences: listed,
+    differencesTruncated: listed.length < differences.length,
+    declarations,
   };
 }

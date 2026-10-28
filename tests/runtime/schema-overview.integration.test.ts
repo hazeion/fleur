@@ -292,8 +292,130 @@ test("the status probe stops at its own 5 s default deadline, adjusted by --time
         expect(elapsed).toBeGreaterThanOrEqual(deadline - 250);
         expect(elapsed).toBeLessThan(deadline + 3_000);
       }
+      // A statement timeout in db inspect is the same timeout finding, not an internal failure.
+      const inspected = await cli(root, ["db", "inspect", "--table", "held", "--timeout", "30"], env);
+      expect(inspected.exit).toBe(4);
+      expect(inspected.result.error?.code).toBe("DATABASE_UNAVAILABLE");
     } finally { await holder.unsafe("ROLLBACK").catch(() => {}); holder.release(); }
     const answered = await cli(root, ["status"], env);
     expect(answered.result.data).toMatchObject({ database: { connectivity: "connected", migrations: { compatible: true } } });
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 300_000);
+
+test("the inspection transaction is read-only in PostgreSQL, and a failed inspection never publishes its export", async () => {
+  const { withInspection } = await import("../../src/runtime/database/target");
+  const { inspectDatabase } = await import("../../src/runtime/database/inspection");
+  const fixture = await ownedPostgres();
+  const root = await project("fleur-overview-readonly-");
+  try {
+    await fixture.sql.unsafe("CREATE TABLE guarded(id bigint PRIMARY KEY); INSERT INTO guarded VALUES (1)");
+    // PostgreSQL, not Fleur code, refuses writes inside the host-opened transaction, and it cannot become read-write.
+    const refused = await withInspection(fixture.url, "development", { stateRoot: root }, async ({ sql }) => {
+      const codes: Record<string, unknown> = {};
+      for (const statement of ["INSERT INTO public.guarded VALUES (2)", "UPDATE public.guarded SET id = 3", "DELETE FROM public.guarded", "CREATE TABLE public.written(id integer)", "SET TRANSACTION READ WRITE"]) {
+        await sql.unsafe("SAVEPOINT attempt");
+        codes[statement] = await sql.unsafe(statement).then(() => "accepted", (error: { errno?: unknown }) => error.errno);
+        await sql.unsafe("ROLLBACK TO SAVEPOINT attempt");
+      }
+      return codes;
+    });
+    expect(refused).toEqual({ "INSERT INTO public.guarded VALUES (2)": "25006", "UPDATE public.guarded SET id = 3": "25006", "DELETE FROM public.guarded": "25006", "CREATE TABLE public.written(id integer)": "25006", "SET TRANSACTION READ WRITE": "25001" });
+    expect(await fixture.sql.unsafe("SELECT id::text AS id, to_regclass('public.written') IS NULL AS absent FROM guarded")).toEqual([{ id: "1", absent: true }]);
+
+    // An inspection that fails at its deadline publishes nothing, even after the blocked statement ends.
+    const blocked = join(root, "blocked-page.json");
+    const holder = await fixture.sql.reserve();
+    try {
+      await holder.unsafe("BEGIN");
+      await holder.unsafe("LOCK TABLE guarded IN ACCESS EXCLUSIVE MODE");
+      await expect(inspectDatabase(fixture.url, { project: root, table: "guarded", export: blocked }, { stateRoot: root, timeoutMs: 1500 })).rejects.toThrow("DATABASE_UNAVAILABLE");
+    } finally { await holder.unsafe("ROLLBACK").catch(() => {}); holder.release(); }
+    await Bun.sleep(6_000);
+    expect(await Bun.file(blocked).exists()).toBe(false);
+
+    // Publication slower than the deadline: either the command reports success with the published file, or it reports
+    // failure and leaves no file. Isolate the filesystem boundary injection in a child process.
+    const slow = join(root, "slow-page.json");
+    const child = Bun.spawn([process.execPath, "--eval", `
+      import { mock } from "bun:test";
+      import * as filesystem from "node:fs/promises";
+      const destination = process.env.REVIEW_DESTINATION;
+      mock.module("node:fs/promises", () => ({ ...filesystem, link: async (from, to) => {
+        if (String(to) === destination) await Bun.sleep(3000);
+        return filesystem.link(from, to);
+      }}));
+      const { inspectDatabase } = await import(${JSON.stringify(resolve("src/runtime/database/inspection.ts"))});
+      const outcome = await inspectDatabase(process.env.REVIEW_DATABASE_URL, { project: process.env.REVIEW_ROOT, table: "guarded", export: destination }, { stateRoot: process.env.REVIEW_ROOT, timeoutMs: 1500 })
+        .then(result => ({ ok: true, sha256: result.data.export.sha256 }), error => ({ ok: false, error: error.message }));
+      await Bun.sleep(4000);
+      console.log(JSON.stringify(outcome));
+    `], { env: { ...process.env, REVIEW_DATABASE_URL: fixture.url, REVIEW_ROOT: root, REVIEW_DESTINATION: slow }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, , exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit).toBe(0);
+    const outcome = JSON.parse(stdout.trim().split("\n").at(-1)!) as { ok: boolean; sha256?: string; error?: string };
+    const published = await Bun.file(slow).exists();
+    expect({ ok: outcome.ok, published }).toEqual({ ok: outcome.ok, published: outcome.ok });
+    if (outcome.ok) expect(new Bun.CryptoHasher("sha256").update(await Bun.file(slow).text()).digest("hex")).toBe(outcome.sha256!);
+  } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 300_000);
+
+test("status keeps the maintenance stage of a replaced target, points prerequisites to doctor, and drift differences stay within their byte bound", async () => {
+  const fixture = await ownedPostgres();
+  const root = await project("fleur-overview-replaced-");
+  try {
+    const target = await applicationDatabase(fixture, "replaced_app");
+    const config = { stateRoot: root, toolDirectory: await fixture.pgTools(join(root, "tools")) };
+    await generateMigration(root, [defineTable("bounded", { columns: { id: column.uuid().primaryKey(), label: column.string() } })]);
+    await applyMigrations(target.url, root, config);
+    const env = { FLEUR_PRIVATE_DATABASE_URL: target.url };
+    for (let index = 0; index < 120; index++) await target.sql.unsafe(`ALTER TABLE bounded ADD CONSTRAINT wide_${index} CHECK (label <> '${"w".repeat(9000)}')`);
+    const migration = await cli(root, ["db", "migration", "status"], env);
+    expect(migration.exit).toBe(0);
+    expect(Buffer.byteLength(migration.stdout)).toBeLessThanOrEqual(1024 * 1024);
+    expect(migration.result.truncated).toBe(true);
+    expect(migration.result.data.differencesTruncated).toBe(true);
+    expect((migration.result.data.migrations as Record<string, Json>).differenceCount).toBe(120);
+    const listed = (migration.result.data.differences as Json[]).length;
+    expect(listed).toBeGreaterThan(0);
+    expect(listed).toBeLessThan(120);
+
+    // A local prerequisite, here an unusable private state directory, is a finding whose action points to doctor.
+    await writeFile(join(root, "not-a-directory"), "");
+    const prerequisite = await cli(root, ["status"], { ...env, FLEUR_PRIVATE_STATE_ROOT: join(root, "not-a-directory", "state") });
+    expect(prerequisite.exit).toBe(0);
+    expect(prerequisite.result.data).toMatchObject({ database: { connectivity: "unknown", maintenance: null, migrations: null }, reasons: [{ code: "PREREQUISITE_UNAVAILABLE", action: { command: "fleur doctor" } }] });
+
+    // A target replaced by maintenance is reported through the maintenance record, not as a stopped server.
+    const lease = await MaintenanceLease.acquire(target.url, true, config, true);
+    try {
+      await lease.persist({ ...(await lease.marker())!, stage: "applying" });
+      await target.sql.close({ timeout: 0 });
+      await fixture.sql.unsafe("DROP DATABASE replaced_app WITH (FORCE)");
+      const active = await cli(root, ["status"], env);
+      expect(active.exit).toBe(0);
+      expect(active.result.data).toMatchObject({ database: { connectivity: "unreachable", failure: "rejected", maintenance: { state: "active", stage: "applying" }, migrations: null } });
+      expect((active.result.data.reasons as { code: string }[]).map(reason => reason.code)).toEqual(["MAINTENANCE_ACTIVE"]);
+    } finally { await lease.close(); }
+    const interrupted = await cli(root, ["status"], env);
+    expect(interrupted.result.data).toMatchObject({ database: { connectivity: "unreachable", maintenance: { state: "recovery required", stage: "applying" } } });
+    expect((interrupted.result.data.reasons as { code: string }[]).map(reason => reason.code)).toEqual(["RECOVERY_REQUIRED"]);
+    expectNoEndpoint(interrupted, target);
+  } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 300_000);
+
+test("status reports a control database in another cluster as configuration to correct, not as maintenance", async () => {
+  const [application, control] = [await ownedPostgres(), await ownedPostgres()];
+  const root = await project("fleur-overview-mismatch-");
+  try {
+    const controlUrl = new URL(control.url);
+    controlUrl.pathname = "/postgres";
+    const status = await cli(root, ["status"], { FLEUR_PRIVATE_DATABASE_URL: application.url, FLEUR_PRIVATE_CONTROL_DATABASE_URL: controlUrl.toString() });
+    expect(status.exit).toBe(4);
+    expect(status.result.error?.code).toBe("CONFIGURATION_MISSING");
+    const actions = (status.result.error as unknown as { actions: { command: string; description: string }[] }).actions;
+    expect(actions).toHaveLength(1);
+    expect(actions[0]!.command).toBe("fleur status");
+    expect(actions[0]!.description).toContain("FLEUR_PRIVATE_CONTROL_DATABASE_URL");
+    for (const secret of [application.url, control.url, "127.0.0.1"]) expect(status.stdout).not.toContain(secret);
+  } finally { await application.cleanup(); await control.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 300_000);

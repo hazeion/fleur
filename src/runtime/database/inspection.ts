@@ -9,6 +9,8 @@ import { MaintenanceLease, digest, syncDirectory, type MaintenanceConfiguration 
 import { caseFoldedKey, catalogTables, tableNames, type CatalogTable } from "./catalog";
 import { readMigrationStatus } from "./migration-status";
 import { withInspection, type TargetKind } from "./target";
+import type { Table } from "../../database";
+import { definition, tableDefinitions } from "../declarations";
 
 export interface InspectionOptions { readonly table?: string; readonly limit?: number; readonly cursor?: string; readonly export?: string; }
 export function quote(name: string): string { return '"'+name.replaceAll('"', '""')+'"'; }
@@ -48,16 +50,16 @@ export async function publishFile(pathValue: string, data: string | Uint8Array):
   } finally { await file.close(); await unlink(temp); }
 }
 const pageBytes = 1044480;
-/** Overview of one catalog table, with Fleur column kinds, versioning and managed columns from the applied snapshot. */
-export function describeTable(table: CatalogTable, snapshot: unknown): Json {
-  const declared = Array.isArray(snapshot) ? (snapshot as { name?: unknown; versioned?: unknown; columns?: Record<string, { kind?: unknown; managed?: unknown }> }[]).find(entry => entry?.name === table.name) : undefined;
-  const versioned = typeof declared?.versioned === "boolean" ? declared.versioned : null;
-  const field = (name: string) => versioned && name === "version" ? { kind: "safeInteger", managed: true } : declared?.columns && Object.hasOwn(declared.columns, name) ? declared.columns[name] : undefined;
+/** Overview of one catalog table, with Fleur column kinds, versioning and managed columns from the applied declarations. */
+export function describeTable(table: CatalogTable, declarations: readonly Table[]): Json {
+  const declared = declarations.map(item => tableDefinitions.get(item)!).find(spec => spec.name === table.name);
+  const versioned = declared?.versioned ?? null;
+  const field = (name: string) => declared && Object.hasOwn(declared.columns, name) ? definition(declared.columns[name]!) : undefined;
   const primary = table.constraints.find(constraint => constraint.type === "p");
   return {
     name: table.name,
     versioned,
-    columns: table.columns.map(column => ({ name: column.name, type: column.type, kind: typeof field(column.name)?.kind === "string" ? field(column.name)!.kind as string : null, nullable: column.nullable, default: column.default, identity: column.identity !== "", managed: field(column.name)?.managed === true })),
+    columns: table.columns.map(column => ({ name: column.name, type: column.type, kind: field(column.name)?.kind ?? null, nullable: column.nullable, default: column.default, identity: column.identity !== "", managed: field(column.name)?.managed === true })),
     primaryKey: primary ? { name: primary.name, columns: [...primary.columns] } : null,
     foreignKeys: table.constraints.filter(constraint => constraint.type === "f").map(constraint => ({ name: constraint.name, columns: [...constraint.columns], references: { table: constraint.references!.table, columns: [...constraint.references!.columns] }, onDelete: constraint.onDelete })),
     uniqueConstraints: table.constraints.filter(constraint => constraint.type === "u").map(constraint => ({ name: constraint.name, columns: [...constraint.columns] })),
@@ -74,7 +76,7 @@ export function describeTable(table: CatalogTable, snapshot: unknown): Json {
 export async function inspectDatabase(url: string, options: InspectionOptions & { readonly project: string }, config: MaintenanceConfiguration & { readonly kind?: TargetKind } = {}): Promise<{ readonly data: Json; readonly truncated: boolean }> {
   const limit = options.limit ?? 100;
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("ARGUMENT_INVALID");
-  return withInspection(url, config.kind ?? "development", config, async ({ sql, lease, target, ...session }) => {
+  const inspected = await withInspection(url, config.kind ?? "development", config, async ({ sql, lease, target, ...session }) => {
     const report = await readMigrationStatus({ sql, lease, target, ...session }, options.project);
     const key = await cursorKey(lease);
     let after: string[] | undefined;
@@ -117,7 +119,7 @@ export async function inspectDatabase(url: string, options: InspectionOptions & 
       let full = false;
       for (let index = 0; index < Math.min(names.length, limit) && !full; index += 25) {
         for (const described of await catalogTables(sql, names.slice(index, Math.min(index+25, limit)))) {
-          const entry = describeTable(described, report.snapshot), bytes = Buffer.byteLength(JSON.stringify(entry)) + 1;
+          const entry = describeTable(described, report.declarations), bytes = Buffer.byteLength(JSON.stringify(entry)) + 1;
           if (size + bytes > pageBytes) { if (!tables.length) throw new Error("RESULT_TOO_LARGE"); full = true; break; }
           tables.push(entry); size += bytes;
         }
@@ -141,14 +143,17 @@ export async function inspectDatabase(url: string, options: InspectionOptions & 
       truncated = page.length > rows.length;
       const last = rows.at(-1) as Record<string, string> | undefined;
       const cursor = truncated && last ? continuation(primary.map(name => last[name]!)) : null;
-      const structure = describeTable((await catalogTables(sql, [table]))[0]!, report.snapshot);
+      const structure = describeTable((await catalogTables(sql, [table]))[0]!, report.declarations);
       result = { view: "table", target, migrations: report.summary, table, structure, columns, rows, cursor, truncated };
     }
     if (Buffer.byteLength(JSON.stringify(result)) > pageBytes) throw new Error("RESULT_TOO_LARGE");
-    if (options.export) {
-      const metadata = await publishFile(options.export, JSON.stringify(result)+"\n");
-      return { data: { ...result, ...(table ? { rows: [] } : { tables: [] }), export: metadata }, truncated };
-    }
-    return { data: result, truncated };
+    return { result, truncated };
   });
+  // Publish only after the inspection succeeded, so a reported failure never leaves an export behind.
+  const { result, truncated } = inspected;
+  if (options.export) {
+    const metadata = await publishFile(options.export, JSON.stringify(result)+"\n");
+    return { data: { ...result, ...(options.table ? { rows: [] } : { tables: [] }), export: metadata }, truncated };
+  }
+  return { data: result, truncated };
 }

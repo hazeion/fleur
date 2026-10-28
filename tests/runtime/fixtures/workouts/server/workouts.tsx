@@ -2,7 +2,7 @@ import { column, defineTable, eq, inArray, type ReadDb, type WriteDb } from "fle
 import { handleMutation, handleQuery, inputError, readQuery, registerPage } from "fleur/server";
 import { Link } from "fleur/routing";
 import type { Infer, UUID } from "fleur/schema";
-import { createExercise, createTemplate, deleteExercise, listExercises, listTemplates, rejectTemplateOutput, template, templateEntry, templateEntryInput, templateEntryLimit, templatePageSize, updateTemplate } from "../shared/contracts";
+import { createExercise, createTemplate, deleteExercise, deleteTemplate, listExercises, listTemplates, rejectTemplateOutput, template, templateEntry, templateEntryInput, templateEntryLimit, templatePageSize, updateTemplate } from "../shared/contracts";
 import { laterTemplatesPage, templatesPage } from "../shared/pages";
 import { TemplateEditor } from "../client/TemplateEditor";
 
@@ -23,7 +23,7 @@ export const templateEntries = defineTable("workout_template_entries", { columns
   targetRepetitions: column.safeInteger(),
 } });
 
-function trimmedName(value: string) {
+export function trimmedName(value: string) {
   const name = value.trim();
   const length = Array.from(name).length;
   if (length < 1 || length > 100) throw inputError({ name: "Use 1–100 characters after trimming." });
@@ -113,6 +113,7 @@ async function replaceTemplate(db: WriteDb, input: Infer<typeof updateTemplate.i
   return readTemplate(db, input.id);
 }
 handleMutation(updateTemplate, async ({ input, db }) => replaceTemplate(db, input));
+handleMutation(deleteTemplate, async ({ input, db }) => db.deleteVersioned(templates, input));
 handleMutation(rejectTemplateOutput, async ({ input, db }) => {
   await replaceTemplate(db, input);
   return "server-private-canary" as unknown as boolean;

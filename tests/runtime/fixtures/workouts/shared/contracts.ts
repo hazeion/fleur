@@ -20,5 +20,7 @@ export const listTemplates = defineQuery({ name: "template.list", input: schema.
 export const createTemplate = defineMutation({ name: "template.create", input: schema.object({ name: schema.string(), entries }), output: template });
 /** Replaces the header and the whole ordered entry list under one expected aggregate version. */
 export const updateTemplate = defineMutation({ name: "template.update", input: schema.object({ id: schema.uuid(), expectedVersion: schema.safeInteger(), name: schema.string(), entries }), output: template });
+/** Deletes a template and its entries. Recorded sessions keep their own copies and are unaffected. */
+export const deleteTemplate = defineMutation({ name: "template.delete", input: schema.object({ id: schema.uuid(), expectedVersion: schema.safeInteger() }), output: schema.object({ deleted: schema.boolean() }) });
 /** Verification fixture: performs a complete update, then returns invalid output that must roll it back. */
 export const rejectTemplateOutput = defineMutation({ name: "template.rejectOutput", input: schema.object({ id: schema.uuid(), expectedVersion: schema.safeInteger(), name: schema.string(), entries }), output: schema.boolean() });

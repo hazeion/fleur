@@ -96,4 +96,31 @@ Recovery:
 
 `tests/runtime/fixtures/workouts` demonstrates this for workout templates. Each has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered entries. Entries may repeat an exercise and have positive safe-integer target sets and repetitions. The listing shows 10 templates per page with a link to later pages; its cursors last for the broker's lifetime. PostgreSQL tests cover position-ordered reads, paging past one bounded read, saves and reorders, malformed input, child and output rollback, two writers released together from a held row lock, and restricted exercise deletion. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes. A stale draft reports a conflict without losing its edits, and is then deliberately reapplied and saved.
 
+## Recorded snapshots
+
+A record that must keep its history copies the values it shows instead of referencing records that can change. The fixture records workout sessions as a three-level aggregate of session, exercises and sets. Its only references point to each row's own parent, with `cascade`:
+
+```ts
+// server/sessions.tsx: the session header carries the aggregate version.
+export const sessions = defineTable("workout_sessions", { columns: {
+  id: column.uuid().primaryKey().generated(),
+  date: column.localDate(),
+  templateName: column.string().max(100).nullable(),
+} });
+export const sessionSets = defineTable("workout_session_sets", { columns: {
+  id: column.uuid().primaryKey().generated(),
+  sessionExerciseId: column.uuid().references(sessionExercises.id, { onDelete: "cascade" }),
+  position: column.safeInteger(), repetitions: column.safeInteger(),
+  weight: column.decimal({ precision: 7, scale: 2 }).nullable(), unit: column.string().max(2).nullable(),
+} });
+// shared/sessions.ts: a weight always carries its unit, and omitting it omits both.
+export const weight = schema.object({ value: schema.decimal({ maxScale: 2, nonnegative: true }), unit: schema.enum(["kg", "lb"]) });
+```
+
+Each session has a `LocalDate`, an optional source-template name and 1–50 exercises of 1–50 sets each, with at most 50 sets in total, so one bounded joined read returns it whole. Exercise and template names are copied as trimmed text of 1–100 code points. Renaming, editing or deleting an exercise or template, including through `template.delete`, leaves recorded sessions unchanged, and sessions never restrict those deletions. A session can still be edited after its exercises are gone. A `LocalDate` is a calendar date in a `date` column: it has no time zone and does not shift with the server's or database's zone. Take it from the person's own calendar, for example a date input, never from a UTC instant.
+
+Weight values are exact decimal text, never JavaScript numbers. Validation rejects `0.1 + 0.2` artefacts, exponents, signs, nonfinite text and a third decimal place instead of rounding them. The handler removes leading and trailing zeroes from the text without numeric conversion, so `080.50` becomes `80.5` and `0.00` remains an explicit `0`. It rejects values above the column's 99999.99 with `INPUT_INVALID`. Units never convert. PostgreSQL does not enforce that weight and unit are both present or both absent: the operation writes them together from one validated weight.
+
+Session saves and deletes follow the ordered-collection rules above, with the same recovery. An update replaces the date, template name and every exercise and set under one expected version. A delete takes the same version and removes every child. When an edit and a delete compete, the loser reports `VERSION_CONFLICT` if the edit won, or `NOT_FOUND` if the delete won. The history lists 20 whole sessions per page, newest date first, and reads their sets in bounded batches of 500 rows. A new session can start from a template on the first listing page: its entries become that many sets of the target repetitions, which the person can then change. PostgreSQL tests cover exact and normalized weights, dates under a database time zone 14 hours ahead of UTC, position-ordered reads, paging, malformed input, child and output rollback, two writers and an edit racing a delete released from a held row lock, and unchanged sessions after exercise and template edits and deletion. A two-view browser test covers client- and server-side rejection with unchanged drafts, refreshes that keep drafts and focus, a conflict that is deliberately reapplied, and deletion.
+
 Run `bun run types`, `bun run lint`, `bun run build:reference` and `bun run test`. Database/browser tests use the same owned PostgreSQL, native isolation and explicit Playwright prerequisites described in [read pages](read-pages.md). Lifecycle commands, reactive subscriptions, migrations and the full workout proof remain later slices.

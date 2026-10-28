@@ -104,7 +104,7 @@ export async function createProject(command: string, target: string, git: boolea
         await verifyFile(path, identity);
       } finally { await handle.close(); }
     }
-    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    for (const name of ["AGENTS.md", "CLAUDE.md"] as const) {
       const path = resolve(target, name);
       await guard();
       const existing = await stat(path);
@@ -117,7 +117,7 @@ export async function createProject(command: string, target: string, git: boolea
         const before = await handle.readFile();
         if (owned && before.length !== 0) throw new Error("New guidance changed concurrently");
         if (before.includes(Buffer.from("<!-- fleur:generated:"))) throw new Error("Guidance changed concurrently");
-        const appended = Buffer.from((before.length && before[before.length - 1] !== 10 ? "\n" : "") + generatedGuidance);
+        const appended = Buffer.from((before.length && before[before.length - 1] !== 10 ? "\n" : "") + generatedGuidance(name));
         const after = Buffer.concat([before, appended]);
         if (existing) modified.push({ path, ino: identity.ino, dev: identity.dev, before, after });
         await verifyFile(path, identity);

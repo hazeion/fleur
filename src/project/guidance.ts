@@ -1,5 +1,5 @@
 import { releaseVersion } from "./release.ts";
-export const generatedGuidance = `<!-- fleur:generated:start version=${releaseVersion} -->
+const sharedGuidance = `<!-- fleur:generated:start version=${releaseVersion} -->
 # Fleur ${releaseVersion} project
 
 Fleur prepares an environment for an existing coding agent. It does not launch or manage agents.
@@ -7,9 +7,76 @@ Use client/ for interactive Preact islands, server/ for server code and shared/ 
 The approved application imports are fleur/schema, fleur/database, fleur/server, fleur/client, fleur/routing, preact, preact/hooks and compiler-managed Preact JSX entry points. The read-page and mutation slices supply schemas, tables/relations, read-only queries, atomic versioned writes, routes and validated islands; see the package docs/read-pages.md and generated dist/reference declarations. Use only these imports and fixed dependencies. Suggest additional packages with the need and existing alternatives; do not install them or edit protected manifests, locks or tooling. Use Tailwind utilities and documented inline styles/CSS variables. Do not author stylesheets or load external JavaScript.
 Server components and operations are the default. Validate public inputs and outputs. Browser data requests must use Fleur operations. Database changes require reviewed migrations and explicit destructive authority; never reset development data to fix a test.
 Read docs/fleur.md for offline pinned guidance and .agents/skills/fleur-tdd/SKILL.md before changing testable behavior. Use disposable test data and independent review for substantial work.
-This creation release supplies the project layout and pinned tooling. Application lifecycle commands are not implemented by this slice; do not invent working APIs or claim a running application.
-<!-- fleur:generated:end -->
+This creation release supplies the project layout and pinned tooling. Application lifecycle commands are not implemented by this slice, except the database operations named in the Database section of AGENTS.md; do not invent working APIs or claim a running application.
 `;
+const generatedEnd = "<!-- fleur:generated:end -->\n";
+const databaseGuidance = `
+## Database
+
+Fleur owns database orchestration: development PostgreSQL, maintenance locking, migrations, seed reconciliation, inspection, backup, restore, reset and recovery. This application owns its table and relation declarations, reviewed migration and seed content, operations and business rules, and expresses them only through \`fleur/schema\`, \`fleur/database\` and \`fleur/server\`. Safety is enforced by Fleur code and PostgreSQL authority, not by these instructions alone.
+
+### Data access
+
+- Declare tables with \`defineTable\` and relations with \`defineRelations\` from \`fleur/database\` in server/. Tables are versioned by default: writes use \`updateVersioned\` and \`deleteVersioned\` with the expected version and report version conflicts. Declare \`versioned: false\` only when lost concurrent updates are acceptable.
+- Fleur queries (\`defineQuery\` with \`handleQuery\`) and Fleur mutations (\`defineMutation\` with \`handleMutation\`) are the only data access path for application code. A Fleur query only reads. Each Fleur mutation runs in one transaction that commits only after its output validates.
+- Raw SQL, Drizzle, Bun SQL, PostgreSQL clients and other ORMs are not application imports. The trusted broker holds the database credential and binds every value, so application code never receives a connection, and typed operations keep inferred types, validation and maintenance checks intact. When an operation needs something the typed APIs cannot express, do not work around them: suggest the missing capability to the user by describing the need and the existing alternatives you considered.
+- Use inferred types from schemas and table declarations instead of hand-written copies or casts. Fleur applies runtime validation at every boundary, including operation inputs and outputs, inserts, seed values and island props.
+
+### Migrations
+
+1. Change the table declarations in server/.
+2. Run \`fleur db migration generate\`. It writes the next numbered file in migrations/ from the declarations and the last committed snapshot, and never changes the database.
+3. Run \`fleur db migration plan\` and review its SQL, removals, incompatibilities and required backfills. Fix refused plans by changing declarations before applying. Removing columns or tables needs separate human approval.
+4. Run \`fleur db migration apply\`. It verifies a backup before applying; destructive plans need human approval.
+5. Run \`fleur db migration status\` to see applied, pending and drift state.
+
+Commit migration files with the application. Never edit or remove an applied migration: applied files are immutable, and a changed file blocks the database. Never resolve drift by resetting data or rewriting history.
+
+### Seeds and reset
+
+- Seeds are declarative. Export \`defineSeed\` declarations from seeds/ with stable ownership keys and validated row values, and declare \`dependsOn\` for foreign-key ordering. \`fleur db seed\` reconciles them: it skips user-edited rows, keeps tombstones for deleted rows and rolls back the whole run on any conflict. Seeds never run shell commands or SQL.
+- \`fleur db reset\` recreates only the explicitly bound development database, and only with human approval after a verified backup. It leaves tables empty unless \`--seed\` is given. Never reset development data to make a test pass.
+
+### Credentials, test data and destructive authority
+
+- Database credentials stay in the trusted host. Never read, print, log or commit them, and never pass them to application code, workers or browser bundles.
+- Database tests need a uniquely owned disposable PostgreSQL database. This release supplies no approved way for application tests to create one, so do not build your own harness or connect to PostgreSQL directly. Never use development data as test data, and never point tests at the development or production database.
+- Destructive operations, including \`fleur db reset\`, \`fleur db restore --from <file>\` and destructive migrations, need human approval bound to the exact target and content. JSON output and a generic --yes never grant it, and an agent never approves on the user's behalf.
+- Read data with \`fleur db inspect --table <name>\`, which is read-only and bounded. Take retained backups with \`fleur db backup --out <file>\`. After an interrupted operation, run \`fleur db recover --inspect\` and keep its maintenance marker and backups; never delete Fleur state to force access.
+
+### After a schema change
+
+Run these checks and report which ones actually ran:
+
+1. \`bun run types\`.
+2. Database tests against disposable PostgreSQL covering the changed tables, constraints and operations. This release has no approved disposable test database for applications, so report this check as not run.
+3. \`fleur db migration status\`, which must show no drift and no pending entries after apply.
+4. Persistence across restart: data written before a development restart is still present afterwards. The development lifecycle is not in this release, so report this check as not run.
+
+### Not available in this release
+
+Fleur ${releaseVersion} does not include the operations below. Do not call, simulate or claim them; later releases update this section.
+
+- The \`db inspect\` schema overview. Without --table, \`fleur db inspect\` currently lists application tables only.
+- \`fleur status\` database health.
+- \`fleur dev\`, including automatic initialization of a new development database. Apply migrations and seeds explicitly.
+- \`fleur db query\`. \`db query\` is a development-only diagnostic for reading development data, never a data access path for application code.
+`;
+const instructionGuidance = {
+  "AGENTS.md": sharedGuidance + databaseGuidance + generatedEnd,
+  "CLAUDE.md": sharedGuidance + "Read the Database section of AGENTS.md before changing tables, relations, migrations, seeds or data access.\n" + generatedEnd,
+} as const;
+export type InstructionFile = keyof typeof instructionGuidance;
+export const generatedGuidance = (name: InstructionFile): string => instructionGuidance[name];
+/** Replaces the one marked generated section and keeps every byte outside it. */
+export function regenerateGuidance(name: InstructionFile, text: string): string {
+  const markers = [...text.matchAll(/<!-- fleur:generated:/g)];
+  const start = text.indexOf("<!-- fleur:generated:start version=");
+  const end = text.indexOf(generatedEnd.trimEnd());
+  if (markers.length !== 2 || start === -1 || end < start) throw new Error("Generated guidance markers are missing, duplicated or out of order");
+  const after = end + generatedEnd.trimEnd().length;
+  return text.slice(0, start) + instructionGuidance[name] + text.slice(text[after] === "\n" ? after + 1 : after);
+}
 export const tddGuidance = `---
 name: fleur-tdd
 fleur-version: ${releaseVersion}
@@ -42,7 +109,7 @@ The approved imports are fleur/schema, fleur/database, fleur/server, fleur/clien
 
 Use Tailwind utilities and documented inline styles/CSS variables; application-authored stylesheets, external stylesheets and external JavaScript are rejected by the approved application contract. Presentation assets may use approved CDN sources. Suggest unsupported dependencies by describing the need and existing Fleur alternatives; do not install them or edit manifests, locks or protected tooling. This creation slice records these rules and does not claim to implement their later runtime admission enforcement.
 
-Use db inspect for bounded read-only pages or explicit file exports, db backup --out <file> for restore-verified retained backups and db recover --inspect for read-only maintenance diagnosis. See package docs/maintenance.md. Direct PostgreSQL control authority and shared private durable state are required. Never delete a maintenance marker or retry an unknown operation automatically. Use reviewed db migration generate/plan/status/apply and explicitly approved db restore for maintenance recovery. Use db seed for declarative owned data and db reset only for the explicitly bound development target after approval and verified backup. Reset leaves empty data unless --seed is explicit. Seed files export defineSeed from fleur/database; declare dependsOn for foreign-key seed ordering. User-edited rows are skipped, deleted rows retain tombstones and conflicts roll back the run. See package docs/maintenance.md. Future database operations require runtime validation, transactions and explicit authority for destructive actions. Use uniquely owned disposable test databases, never development data. Unknown mutation outcomes require reconciliation, not automatic replay. Keep secret values and machine-local runtime state out of tracked configuration. Runtime files under .fleur are ignored without editing the user's root ignore rules.
+The Database section of AGENTS.md summarizes the database workflow and lists operations that are not available in this release. Use db inspect for bounded read-only pages or explicit file exports, db backup --out <file> for restore-verified retained backups and db recover --inspect for read-only maintenance diagnosis. See package docs/maintenance.md. Direct PostgreSQL control authority and shared private durable state are required. Never delete a maintenance marker or retry an unknown operation automatically. Use reviewed db migration generate/plan/status/apply and explicitly approved db restore for maintenance recovery. Use db seed for declarative owned data and db reset only for the explicitly bound development target after approval and verified backup. Reset leaves empty data unless --seed is explicit. Seed files export defineSeed from fleur/database; declare dependsOn for foreign-key seed ordering. User-edited rows are skipped, deleted rows retain tombstones and conflicts roll back the run. See package docs/maintenance.md. Future database operations require runtime validation, transactions and explicit authority for destructive actions. Use uniquely owned disposable test databases, never development data. Unknown mutation outcomes require reconciliation, not automatic replay. Keep secret values and machine-local runtime state out of tracked configuration. Runtime files under .fleur are ignored without editing the user's root ignore rules.
 
 ## Development and recovery
 

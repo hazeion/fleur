@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/main.ts";
 import { projectCommands } from "../../src/project/commands.ts";
+import { regenerateGuidance } from "../../src/project/guidance.ts";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function root() { const value = await realpath(await mkdtemp(join(tmpdir(), "fleur-creation-"))); roots.push(value); return value; }
@@ -333,4 +334,78 @@ test("generated compiler accepts ordinary explicit TypeScript and TSX module imp
   const child = Bun.spawn([process.execPath, "run", "types"], { cwd, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ exit, stdout, stderr }).toMatchObject({ exit: 0 });
+});
+async function databaseSection(cwd: string) {
+  const text = await readFile(join(cwd, "AGENTS.md"), "utf8");
+  const start = text.indexOf("\n## Database\n");
+  const end = text.indexOf("<!-- fleur:generated:end -->");
+  expect(start).toBeGreaterThan(text.indexOf("<!-- fleur:generated:start"));
+  expect(end).toBeGreaterThan(start);
+  return text.slice(start, end);
+}
+async function releaseCommands(): Promise<string[]> {
+  const cwd = await root();
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../../bin/fleur.ts"), "help", "--json"], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, , exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit).toBe(0);
+  return (JSON.parse(stdout).data.commands as { name: string }[]).map(({ name }) => name);
+}
+/** Every backticked `fleur ...` mention, reduced to its command path: the words before the first option or placeholder argument. */
+function namedCommands(text: string): string[] {
+  return [...text.matchAll(/`fleur ([^`]+)`/g)].map((match) => {
+    const words = match[1]!.split(/\s+/);
+    const end = words.findIndex((word) => word.startsWith("-") || word.startsWith("<"));
+    return words.slice(0, end === -1 ? words.length : end).join(" ");
+  });
+}
+test("generated AGENTS.md has a dedicated database section covering every specified topic and CLAUDE.md references it", async () => {
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  const section = (await databaseSection(cwd)).toLowerCase();
+  const topics: Record<string, string[]> = {
+    "tables, relations, versioning and typed data access": ["definetable", "definerelations", "versioned", "definequery", "definemutation", "only data access path"],
+    "raw SQL and ORM imports unavailable, suggesting capabilities": ["raw sql", "drizzle", "bun sql", "suggest", "existing alternatives"],
+    "migration workflow and immutability": ["fleur db migration generate", "fleur db migration plan", "fleur db migration apply", "fleur db migration status", "never edit or remove an applied migration"],
+    "declarative seeds and approved reset": ["defineseed", "fleur db seed", "fleur db reset", "approval"],
+    "inferred types and runtime validation": ["inferred types", "runtime validation at every boundary"],
+    "credentials, disposable test data and destructive authority": ["credential", "disposable", "development data", "destructive"],
+    "checks after a schema change": ["bun run types", "disposable postgresql", "drift", "pending", "restart"],
+  };
+  for (const [topic, phrases] of Object.entries(topics)) for (const phrase of phrases) expect({ topic, present: section.includes(phrase) }).toEqual({ topic, present: true });
+  expect(section).toMatch(/`db query` is a development-only diagnostic[^.]*never a data access path for application code/);
+  const claude = await readFile(join(cwd, "CLAUDE.md"), "utf8");
+  expect(claude).toContain("Database section of AGENTS.md");
+  expect(claude).not.toContain("\n## Database\n");
+});
+test("the database section names only operations in the pinned release and marks later ones unavailable", async () => {
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  const section = await databaseSection(cwd);
+  const split = section.indexOf("\n### Not available in this release\n");
+  expect(split).toBeGreaterThan(0);
+  const available = section.slice(0, split), unavailable = section.slice(split);
+  const released = await releaseCommands();
+  const resolves = (command: string) => released.includes(command);
+  const named = namedCommands(available);
+  expect(named.length).toBeGreaterThan(0);
+  for (const command of named) expect({ command, released: resolves(command) }).toEqual({ command, released: true });
+  for (const command of released.filter((name) => name.startsWith("db "))) expect({ command, named: named.includes(command) }).toEqual({ command, named: true });
+  for (const later of ["db query", "status", "dev"]) {
+    expect(resolves(later)).toBe(false);
+    expect(named).not.toContain(later);
+    expect(namedCommands(unavailable)).toContain(later);
+  }
+  for (const capability of ["schema overview", "database health", "`db query`"]) expect(unavailable).toContain(capability);
+});
+test("regenerating guidance replaces only the marked generated section and preserves user content around it", async () => {
+  for (const name of ["AGENTS.md", "CLAUDE.md"] as const) {
+    const cwd = await root();
+    await writeFile(join(cwd, name), "User preface\n");
+    expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+    const current = (await readFile(join(cwd, name), "utf8")).slice("User preface\n".length);
+    const stale = "User preface\n<!-- fleur:generated:start version=0.0.9 -->\n# Old guidance\nOld database rules\n<!-- fleur:generated:end -->\nUser notes after the section\n";
+    expect(regenerateGuidance(name, stale)).toBe(`User preface\n${current}User notes after the section\n`);
+    expect(regenerateGuidance(name, `User preface\n${current}`)).toBe(`User preface\n${current}`);
+    for (const malformed of ["User only\n", `${current}${current}`, "<!-- fleur:generated:end -->\n<!-- fleur:generated:start version=0.1.0 -->\n", "<!-- fleur:generated:start version=0.1.0 -->\nunterminated\n"]) expect(() => regenerateGuidance(name, malformed)).toThrow();
+  }
 });

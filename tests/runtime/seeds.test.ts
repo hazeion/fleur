@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { column, defineTable, defineSeed } from "../../src/database";
 
 const table = defineTable("seed_names", { columns: { id: column.safeInteger().primaryKey(), name: column.string().max(8) } });
@@ -15,13 +16,25 @@ test("seed declarations validate ownership keys and values and freeze the declar
 });
 
 test("seed declarations cross registration as validated data with table identity and dependency ordering", async () => {
-  const { makeRunner } = await import("../../src/runtime/worker-entry");
+  // Registration reads process-wide registries, which earlier files in the same
+  // `bun test` process populate. A fresh process registers only these exports,
+  // as the real registration worker does.
   const { restoreManifest } = await import("../../src/runtime/manifest-wire");
-  const seed = defineSeed({ key: "names", table, rows: [{ ownerKey: "first", values: { id: 1, name: "Squat" } }] });
-  const runner = makeRunner({ table, seed });
-  const result = await runner({ mode: "register", session: crypto.randomUUID() }, () => { throw new Error("No capability dispatch"); });
+  const rows = [{ ownerKey: "first", values: { id: 1, name: "Squat" } }];
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { column, defineTable, defineSeed } from "./src/database.ts";
+    import { makeRunner } from "./src/runtime/worker-entry.ts";
+    const table = defineTable("seed_names", { columns: { id: column.safeInteger().primaryKey(), name: column.string().max(8) } });
+    const seed = defineSeed({ key: "names", table, rows: ${JSON.stringify(rows)} });
+    const result = await makeRunner({ table, seed })({ mode: "register", session: crypto.randomUUID() }, () => { throw new Error("No capability dispatch"); });
+    console.log(JSON.stringify(result));
+  `], { cwd: fileURLToPath(new URL("../..", import.meta.url)), stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(stderr).toBe("");
+  expect(exit).toBe(0);
+  const result = JSON.parse(stdout) as { kind: string; value: unknown };
   expect(result.kind).toBe("complete");
-  const registry = restoreManifest((result as { value: unknown }).value);
+  const registry = restoreManifest(result.value);
   expect(registry.seeds[0]!.table).toBe(registry.tables[0]!);
-  expect(registry.seeds[0]!.rows).toEqual(seed.rows);
+  expect(registry.seeds[0]!.rows).toEqual(rows);
 });

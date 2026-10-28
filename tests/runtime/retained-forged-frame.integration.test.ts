@@ -5,8 +5,11 @@ import { NativeExecution, type ExecutionResult } from "../../src/runtime/native/
 
 // #58: application code is untrusted and shares stdout with the trusted
 // bootstrap, so it can write any exchange frame, including one that looks like
-// the bootstrap's final result. Such a frame must fail only its own operation
-// after verified retirement; it never succeeds and never quarantines the slot.
+// the bootstrap's final result. Unless the process then exits by itself with
+// code 0, such a frame fails only its own operation after verified retirement,
+// with INTERNAL_FAILURE, and never quarantines the slot. (A forged result
+// followed by a clean exit is returned by NativeExecution like any application
+// result; ReadApplication denies it through its per-operation session check.)
 const source = `
 const raw = text => {
   const body = new TextEncoder().encode(text);
@@ -74,7 +77,7 @@ const cases: [string, Record<string, unknown>, string, number?][] = [
   ["a forged terminal frame written to stdout while application code keeps running", { forge: "spin" }, "deadline", 1500],
   // A full budget: the controller's answer arrives only after the deadline kill.
   ["a forged terminal frame with the full operation budget", { forge: "exchange" }, "deadline"],
-  // It exits by itself, but not cleanly: the forged value is still never a result.
+  // It exits by itself, but not cleanly: the forged value is not returned.
   ["a forged terminal frame followed by a non-zero exit", { forge: "exit" }, "premature-exit"],
   ["a malformed array frame", { malformed: "array" }, "cancelled"],
   ["a malformed null frame", { malformed: "null" }, "cancelled"],

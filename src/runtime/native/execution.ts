@@ -32,6 +32,10 @@ const ADMISSION_MS = 20_000, STARTUP_MS = 30_000, OPERATION_MS = 5000;
 // tolerance. On a host where arming takes longer than this margin plus that
 // tolerance, the slot is deliberately quarantined and replaced (ADR 0001).
 const ARMING_MARGIN_MS = 500;
+// After a run's budget, the controller waits up to 750 ms for the guard's
+// record, then up to one second each for the application and guard exec exits
+// (2.75 s). Replies that can follow a deadline retirement allow that plus margin.
+const RETIREMENT_MS = 5000;
 
 /** Host view of one retained slot. Its controller serializes every operation. */
 class Slot {
@@ -131,7 +135,7 @@ class Slot {
     try {
       await this.#send({ kind: "run", operation: prepared.id, budgetMs, command });
       // The controller's arming grace and exit checks follow an expired budget.
-      const guard = record(await this.#read(budgetMs + 5000));
+      const guard = record(await this.#read(budgetMs + RETIREMENT_MS));
       if (guard.kind === "failure" && Object.keys(guard).length === 6 && guard.operation === prepared.id && guard.code === "QUERY_TIMEOUT" && guard.physicalExitConfirmed === true) {
         // Arming outlived the budget: the process never passed its startup gate.
         const evidence = this.#acceptRetirement(guard.deadline, prepared.id, undefined, ["unadmitted", "cancelled", "deadline", "premature-exit"]);
@@ -160,8 +164,9 @@ class Slot {
           // Application code can forge these bytes. A process that then fails
           // to exit cleanly by itself is retired by its guard, at the latest at
           // its deadline, and fails only this operation.
-          const completion = record(await this.#read(budgetMs + 2000));
-          if (completion.kind === "failure" && completion.operation === prepared.id && completion.physicalExitConfirmed === true) {
+          const completion = record(await this.#read(budgetMs + RETIREMENT_MS));
+          if (completion.kind === "failure" && Object.keys(completion).length === 6 && completion.operation === prepared.id
+            && completion.code === "INTERNAL_FAILURE" && completion.physicalExitConfirmed === true) {
             const evidence = this.#acceptRetirement(completion.deadline, prepared.id, operation.process.start, ["deadline", "premature-exit"]);
             await this.lease.endOperation(prepared.id);
             this.state = "idle";

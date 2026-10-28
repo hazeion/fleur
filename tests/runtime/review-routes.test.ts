@@ -33,7 +33,7 @@ test("a static route wins before an overlapping dynamic route validates its para
       },
     });
     mock.module("./src/runtime/native/host.ts", () => ({ startWorker: fakeWorker }));
-    mock.module("./src/runtime/native/execution.ts", () => ({ NativeExecution: { open: () => ({ warm() {}, async close() {},
+    mock.module("./src/runtime/native/execution.ts", () => ({ ARMING_MARGIN_MS: 500, NativeExecution: { open: () => ({ warm() {}, async close() {},
       async reserve() { const worker = await fakeWorker(); return { run: async (command, exchange) => ({ value: await worker.run(command, exchange) }), release() {} }; } }) } }));
 
     const { ReadApplication } = await import("./src/runtime/application.ts");

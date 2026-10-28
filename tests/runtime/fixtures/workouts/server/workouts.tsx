@@ -87,14 +87,15 @@ async function readEntries(db: ReadDb, ids: readonly UUID[]) {
 }
 // Headers and their entries are separate statements. A save committed between them can pair a
 // header with newer entries; editing from that view then fails with VERSION_CONFLICT rather than
-// overwriting, and the committed save triggers a refresh that shows the consistent result.
+// overwriting, and the committed save triggers a refresh that shows the consistent result. A
+// delete committed between them leaves a header without entries; omit it, since a template needs one.
 handleQuery(listTemplates, async ({ input, db }) => {
   const orderBy = [{ field: "name", direction: "asc" }] as const;
   const headers = await db.select(templates, { fields: ["id", "name", "version"], orderBy, limit: templatePageSize + 1, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
   const page = headers.slice(0, templatePageSize), last = page.at(-1);
   const entries = page.length ? await readEntries(db, page.map(header => header.id)) : new Map<UUID, Infer<typeof templateEntry>[]>();
   return {
-    templates: page.map(header => ({ ...header, entries: entries.get(header.id) ?? [] })),
+    templates: page.flatMap(header => { const rows = entries.get(header.id); return rows ? [{ ...header, entries: rows }] : []; }),
     ...(headers.length > templatePageSize && last ? { cursor: db.cursor(templates, { orderBy, after: last }) } : {}),
   };
 });

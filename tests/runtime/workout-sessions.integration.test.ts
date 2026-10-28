@@ -31,7 +31,8 @@ async function pages(): Promise<Listing[]> {
     const page = await app.query("session.list", cursor === undefined ? {} : { cursor }) as Listing;
     result.push(page);
     cursor = page.cursor;
-  } while (cursor !== undefined && result.length < 100);
+    if (result.length > 100) throw new Error("History did not end within 100 pages");
+  } while (cursor !== undefined);
   return result;
 }
 const list = async () => (await pages()).flatMap(page => page.sessions);
@@ -191,8 +192,12 @@ test("edits and deletes advance or check one aggregate version and replace every
   expect(await childRows()).toEqual({ exercises: before.exercises, sets: before.sets + 1 });
   await expect(app.mutate("session.update", { ...valid(), id: created.id, expectedVersion: 1 })).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
   await expect(app.mutate("session.update", { ...valid(), id: randomUUID(), expectedVersion: 1 })).rejects.toMatchObject({ code: "NOT_FOUND" });
-  await expect(app.mutate("session.update", { ...valid(), id: created.id, expectedVersion: 2, exercises: [{ name: " ", sets: [set(1)] }] })).rejects.toMatchObject({ code: "INPUT_INVALID" });
-  await expect(app.mutate("session.update", { ...valid(), id: created.id, expectedVersion: 2, exercises: [{ name: "Squat", sets: [set(1, "100000", "kg")] }] })).rejects.toMatchObject({ code: "INPUT_INVALID" });
+  // Server-side rejections name the offending field by its path in the input.
+  const rejected = (exercises: unknown[], extra: object = {}) => app.mutate("session.update", { ...valid(), id: created.id, expectedVersion: 2, exercises, ...extra });
+  await expect(rejected([{ name: "Squat", sets: [set(1)] }, { name: " ", sets: [set(1)] }])).rejects.toMatchObject({ code: "INPUT_INVALID", details: { "exercises.1.name": expect.any(String) } });
+  await expect(rejected([{ name: "Squat", sets: [set(1), set(1, "100000", "kg")] }])).rejects.toMatchObject({ code: "INPUT_INVALID", details: { "exercises.0.sets.1.weight": expect.any(String) } });
+  await expect(rejected(valid().exercises, { templateName: " " })).rejects.toMatchObject({ code: "INPUT_INVALID", details: { templateName: expect.any(String) } });
+  await expect(rejected([{ name: "Squat", sets: Array.from({ length: 26 }, () => set(1)) }, { name: "Row", sets: Array.from({ length: 25 }, () => set(1)) }])).rejects.toMatchObject({ code: "INPUT_INVALID", details: { exercises: expect.any(String) } });
   await expect(app.mutate("session.delete", { id: created.id, expectedVersion: 1 })).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
   expect(await stored(created.id)).toEqual(edited);
   expect(await app.mutate("session.delete", { id: created.id, expectedVersion: 2 })).toEqual({ deleted: true });
@@ -283,4 +288,39 @@ test("later exercise and template edits or deletion leave recorded sessions unch
   // Structurally, session rows reference only their own aggregate, never the catalog or templates.
   const references = await fixture!.sql.unsafe("SELECT conrelid::regclass::text AS source, confrelid::regclass::text AS target FROM pg_constraint WHERE contype='f' AND conrelid::regclass::text LIKE 'workout_session%' ORDER BY 1");
   expect(references.map((row: { source: string; target: string }) => `${row.source}->${row.target}`)).toEqual(["workout_session_exercises->workout_sessions", "workout_session_sets->workout_session_exercises"]);
+}, 60_000);
+
+test("a delete committed between the history's header and set reads omits that session instead of failing the list", async () => {
+  const doomed = await app.mutate("session.create", { date: "9999-12-31", exercises: [{ name: "Doomed", sets: [set(1)] }] }) as Session;
+  const kept = await app.mutate("session.create", { date: "9999-12-31", exercises: [{ name: "Kept", sets: [set(2)] }] }) as Session;
+  // REINDEX holds the set table's primary-key index exclusively. Planning any statement that
+  // reads the table opens its indexes, so the list's set read waits; the schema drift check and
+  // the header read do not open it and proceed. The delete commits before the set read starts.
+  const lock = await fixture!.sql.reserve();
+  let reading: Promise<unknown> | undefined;
+  try {
+    await lock.unsafe("BEGIN");
+    const [index] = await lock.unsafe("SELECT indexrelid::regclass::text AS name FROM pg_index WHERE indrelid='workout_session_sets'::regclass AND indisprimary");
+    await lock.unsafe(`REINDEX INDEX "${String(index?.name).replaceAll('"', '""')}"`);
+    reading = app.query("session.list", {});
+    reading.catch(() => {}); // Observed below; keep an early failure from going unhandled.
+    let committed = false;
+    try {
+      // The query's own five-second budget includes this wait, so the delete must follow promptly.
+      const deadline = Date.now() + 4000;
+      for (;;) {
+        const [row] = await fixture!.sql.unsafe("SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%workout_session_sets%'");
+        if (row?.waiting >= 1) break;
+        if (Date.now() > deadline) throw new Error(`The history's set read did not reach the held table lock: ${JSON.stringify(await fixture!.sql.unsafe("SELECT state, wait_event_type, left(query, 120) AS query FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()"))}`);
+        await Bun.sleep(10);
+      }
+      await lock.unsafe("DELETE FROM workout_sessions WHERE id=$1", [doomed.id]);
+      await lock.unsafe("COMMIT");
+      committed = true;
+    } finally { if (!committed) await lock.unsafe("ROLLBACK"); }
+  } finally { lock.release(); }
+  const listing = await reading as Listing;
+  expect(listing.sessions.map(item => item.id)).not.toContain(doomed.id);
+  expect(listing.sessions.find(item => item.id === kept.id)).toEqual(kept);
+  expect(await stored(doomed.id)).toBeUndefined();
 }, 60_000);

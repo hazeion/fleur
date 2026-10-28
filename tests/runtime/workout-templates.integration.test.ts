@@ -27,7 +27,8 @@ async function pages(): Promise<Listing[]> {
     const page = await app.query("template.list", cursor === undefined ? {} : { cursor }) as Listing;
     result.push(page);
     cursor = page.cursor;
-  } while (cursor !== undefined && result.length < 100);
+    if (result.length > 100) throw new Error("Listing did not end within 100 pages");
+  } while (cursor !== undefined);
   return result;
 }
 const list = async () => (await pages()).flatMap(page => page.templates);
@@ -190,4 +191,40 @@ test("current template entries restrict exercise deletion until the template sto
   expect(await stored(created.id)).toEqual(created);
   await app.mutate("template.update", { id: created.id, expectedVersion: 1, name: "Squats", entries: [entry("Squat", 3, 5)] });
   expect(await app.mutate("exercise.delete", { id: lunge.id, expectedVersion: lunge.version })).toEqual({ deleted: true });
+}, 60_000);
+
+test("a delete committed between the listing's header and entry reads omits that template instead of failing the list", async () => {
+  // "!" sorts before every other fixture name, so both templates are on the first page.
+  const doomed = await app.mutate("template.create", { name: "!doomed", entries: [entry("Row", 1, 1)] }) as Template;
+  const kept = await app.mutate("template.create", { name: "!kept", entries: [entry("Squat", 2, 2)] }) as Template;
+  // REINDEX holds the entry table's primary-key index exclusively. Planning any statement that
+  // reads the table opens its indexes, so the list's entry read waits; the schema drift check and
+  // the header read do not open it and proceed. The delete commits before the entry read starts.
+  const lock = await fixture!.sql.reserve();
+  let reading: Promise<unknown> | undefined;
+  try {
+    await lock.unsafe("BEGIN");
+    const [index] = await lock.unsafe("SELECT indexrelid::regclass::text AS name FROM pg_index WHERE indrelid='workout_template_entries'::regclass AND indisprimary");
+    await lock.unsafe(`REINDEX INDEX "${String(index?.name).replaceAll('"', '""')}"`);
+    reading = app.query("template.list", {});
+    reading.catch(() => {}); // Observed below; keep an early failure from going unhandled.
+    let committed = false;
+    try {
+      // The query's own five-second budget includes this wait, so the delete must follow promptly.
+      const deadline = Date.now() + 4000;
+      for (;;) {
+        const [row] = await fixture!.sql.unsafe("SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%workout_template_entries%'");
+        if (row?.waiting >= 1) break;
+        if (Date.now() > deadline) throw new Error(`The listing's entry read did not reach the held table lock: ${JSON.stringify(await fixture!.sql.unsafe("SELECT state, wait_event_type, left(query, 120) AS query FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()"))}`);
+        await Bun.sleep(10);
+      }
+      await lock.unsafe("DELETE FROM workout_templates WHERE id=$1", [doomed.id]);
+      await lock.unsafe("COMMIT");
+      committed = true;
+    } finally { if (!committed) await lock.unsafe("ROLLBACK"); }
+  } finally { lock.release(); }
+  const listing = await reading as Listing;
+  expect(listing.templates.map(item => item.id)).not.toContain(doomed.id);
+  expect(listing.templates.find(item => item.id === kept.id)).toEqual(kept);
+  expect(await stored(doomed.id)).toBeUndefined();
 }, 60_000);

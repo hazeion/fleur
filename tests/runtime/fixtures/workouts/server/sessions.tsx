@@ -111,14 +111,15 @@ async function readSets(db: ReadDb, ids: readonly UUID[]) {
 }
 // Headers and their sets are separate statements. A save committed between them can pair a
 // header with newer sets; editing from that view then fails with VERSION_CONFLICT rather than
-// overwriting, and the committed save triggers a refresh that shows the consistent result.
+// overwriting, and the committed save triggers a refresh that shows the consistent result. A
+// delete committed between them leaves a header without sets; omit it, since a session needs one.
 handleQuery(listSessions, async ({ input, db }) => {
   const orderBy = [{ field: "date", direction: "desc" }] as const;
   const headers = await db.select(sessions, { fields: ["id", "date", "templateName", "version"], orderBy, limit: sessionPageSize + 1, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
   const page = headers.slice(0, sessionPageSize), last = page.at(-1);
   const sets = page.length ? await readSets(db, page.map(header => header.id)) : new Map<UUID, SetRow[]>();
   return {
-    sessions: page.map(header => assemble(header, sets.get(header.id) ?? [])),
+    sessions: page.flatMap(header => { const rows = sets.get(header.id); return rows ? [assemble(header, rows)] : []; }),
     ...(headers.length > sessionPageSize && last ? { cursor: db.cursor(sessions, { orderBy, after: last }) } : {}),
   };
 });

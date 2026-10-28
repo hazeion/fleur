@@ -1,4 +1,4 @@
-import { activeQueries, installQueryRefresh, publishQueries, queryConnectionState, type QueryRefreshResult } from "./query-client";
+import { activeQueries, installQueryRefresh, installRetrievalRefresh, publishQueries, queryConnectionState, queryKey, type QueryRefreshResult } from "./query-client";
 import { viewIdentity, viewResponse, type ViewIdentity } from "./reactive-wire";
 import { validatePublicValue } from "../schema";
 import { reactiveSend } from "./browser-transport";
@@ -28,6 +28,8 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
   let active: Promise<QueryRefreshResult> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: AbortController | undefined;
+  // Explicit external refreshes wait for the next view refresh request.
+  const retrievals = new Map<string, { name: string; input: unknown; waiters: ((result: QueryRefreshResult) => void)[] }>();
   const regions = (state: string) => {
     document.documentElement.dataset.fleurRefresh = state;
     for (const region of document.querySelectorAll("[data-fleur-region]")) region.setAttribute("data-fleur-stale", state === "current" && !region.hasAttribute("data-fleur-error") ? "false" : "true");
@@ -41,12 +43,16 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
     const sent = { connection: identity.connection, page: identity.page, generation, sequence: ++sequence };
     const refreshAll = force;
     force = false;
+    const asked = reopen ? [] : [...retrievals.values()].slice(0, 20);
+    for (const item of asked) retrievals.delete(queryKey(item.name, item.input));
+    const answer = (result: (item: (typeof asked)[number]) => QueryRefreshResult) => { for (const item of asked) for (const waiter of item.waiters) waiter(result(item)); };
     abort = new AbortController();
-    const deadline = setTimeout(() => abort?.abort(), 15_000);
+    // A retrieval refresh may use the server's whole external deadline.
+    const deadline = setTimeout(() => abort?.abort(), asked.length ? 45_000 : 15_000);
     active = (async (): Promise<QueryRefreshResult> => {
       try {
         const response = await reactiveSend("/__fleur/view", { method: "POST", headers: { "Content-Type": "application/json", "X-Fleur-Request": "view" }, credentials: "same-origin", redirect: "error", cache: "no-store", signal: abort!.signal,
-          body: JSON.stringify(reopen ? { action: "open", path: location.pathname } : { action: "refresh", ...sent, force: refreshAll, queries: activeQueries() }) });
+          body: JSON.stringify(reopen ? { action: "open", path: location.pathname } : { action: "refresh", ...sent, force: refreshAll, queries: activeQueries(), ...(asked.length ? { retrievals: asked.map(({ name, input }) => ({ name, input })) } : {}) }) });
         const rawResult = await boundedJSON(response);
         if (!response.ok) {
           const code = rawResult && typeof rawResult === "object" && "error" in rawResult && rawResult.error && typeof rawResult.error === "object" && "code" in rawResult.error ? String(rawResult.error.code) : "INTERNAL_FAILURE";
@@ -55,7 +61,7 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
         }
         validatePublicValue(rawResult);
         const result = viewResponse.parse(rawResult);
-        if (!current || generation !== sent.generation || sequence !== sent.sequence) return { status: "error", error: { code: "RESPONSE_OBSOLETE" } };
+        if (!current || generation !== sent.generation || sequence !== sent.sequence) { answer(() => ({ status: "error", error: { code: "RESPONSE_OBSOLETE" } })); return { status: "error", error: { code: "RESPONSE_OBSOLETE" } }; }
         if (!reopen && (result.connection !== sent.connection || result.page !== sent.page || result.generation !== sent.generation || result.sequence !== sent.sequence)) throw new Error("RESPONSE_OBSOLETE");
         if (!reopen && result.epoch === identity.epoch && BigInt(result.revision) < BigInt(identity.revision)) throw new Error("RESPONSE_OBSOLETE");
         if (reopen) { generation++; sequence = result.sequence; force = true; trailing = true; }
@@ -66,10 +72,15 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
         reconcile(result.rendered);
         regions(result.renderError ? "error" : result.status);
         if (result.status === "stale") trailing = true;
+        answer(item => {
+          const outcome = result.retrievals?.find(entry => queryKey(entry.name, entry.input) === queryKey(item.name, item.input));
+          return !outcome ? { status: "error", error: { code: "INTERNAL_FAILURE" } } : outcome.status === "current" ? { status: "success" } : { status: "error", error: { code: outcome.error ?? "INTERNAL_FAILURE" } };
+        });
         return { status: "success" };
       } catch (error) {
-        if (!current) return { status: "error", error: { code: "NOT_CONNECTED" } };
+        if (!current) { answer(() => ({ status: "error", error: { code: "NOT_CONNECTED" } })); return { status: "error", error: { code: "NOT_CONNECTED" } }; }
         const code = error instanceof Error ? error.message : "INTERNAL_FAILURE";
+        answer(() => ({ status: "error", error: { code } }));
         const maintenance = ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code);
         queryConnectionState(maintenance ? "maintenance" : "reconnecting");
         regions(maintenance ? "maintenance" : "reconnecting");
@@ -88,6 +99,14 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
     if (requested && pending) { trailing = true; return active!.then(() => refresh()); }
     return refresh();
   });
+  installRetrievalRefresh((name, input) => new Promise<QueryRefreshResult>(resolve => {
+    const key = queryKey(name, input);
+    const entry = retrievals.get(key) ?? { name, input, waiters: [] };
+    entry.waiters.push(resolve);
+    retrievals.set(key, entry);
+    if (pending) trailing = true;
+    else void refresh();
+  }));
   window.addEventListener("offline", () => { generation++; force = true; abort?.abort(); queryConnectionState("reconnecting"); regions("reconnecting"); });
   window.addEventListener("online", () => { generation++; force = true; void refresh(); });
   window.addEventListener("pagehide", () => {

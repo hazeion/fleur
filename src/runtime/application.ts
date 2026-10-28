@@ -12,12 +12,22 @@ import { validatePublicValue } from "../schema";
 import type { ReadDb, WriteDb } from "../database";
 import type { PageResult } from "./worker-execution";
 import { PublicOperationError, type DeclaredErrorCode } from "../server";
+import { OutboundBroker, type RetrievalConfiguration } from "./retrieval/outbound";
+import { RetrievalError, retrievalFailureCodes, type RetrievalFailureCode } from "./retrieval/destinations";
+import { canonical } from "./canonical";
 
 import type { NativeImages as Images } from "./native/endpoint";
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("REQUEST_DENIED");
   return value as Record<string, unknown>;
 }
+const isRetrievalCode = (code: unknown): code is RetrievalFailureCode => retrievalFailureCodes.includes(code as RetrievalFailureCode);
+function retrievalFailure(code: RetrievalFailureCode, details: unknown): RetrievalError {
+  const status = details && typeof details === "object" && "status" in details ? details.status : undefined;
+  return new RetrievalError(code, typeof status === "number" ? status : undefined);
+}
+/** Distinct external requests one retrieval operation may make; not a concurrency cap. */
+const RETRIEVAL_REQUESTS = 20;
 function publicBound(value: unknown): void {
   validatePublicValue(value);
   if (new TextEncoder().encode(JSON.stringify(value)).length > 1048576) throw new Error("RESULT_TOO_LARGE");
@@ -28,12 +38,14 @@ export class ReadApplication {
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
   readonly #execution: NativeExecution;
-  private constructor(execution: NativeExecution, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
-    this.registry = registry; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
+  readonly #outbound: OutboundBroker;
+  private constructor(execution: NativeExecution, registry: Registry, url: string, maintenance: MaintenanceConfiguration, outbound: OutboundBroker) {
+    this.registry = registry; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url; this.#outbound = outbound;
     this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance: this.#maintenance });
     this.#execution = execution;
   }
-  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}): Promise<ReadApplication> {
+  /** `retrieval` is trusted startup configuration: limits, credential bindings and local-service exceptions. */
+  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}, retrieval: RetrievalConfiguration = {}): Promise<ReadApplication> {
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
     let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
     const session = randomUUID();
@@ -46,12 +58,14 @@ export class ReadApplication {
       const checked=await MaintenanceLease.acquire(url,false,{...maintenance,tables:registry.tables,completeRegistry:true});
       await checked.close();
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
+    // Declared credentials must be configured and bound before any worker starts.
+    const outbound = new OutboundBroker(registry.destinations, retrieval);
     // Cold slot creation is startup work and never holds maintenance admission.
     const execution = await NativeExecution.open(images);
-    try { return new ReadApplication(execution, registry, url, maintenance); }
+    try { return new ReadApplication(execution, registry, url, maintenance, outbound); }
     catch (error) { await execution.close(); throw error; }
   }
-  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: (name: string, input: unknown) => Promise<unknown> = (name, input) => this.query(name, input)): Promise<unknown> {
+  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: (name: string, input: unknown) => Promise<unknown> = (name, input) => this.query(name, input), retrieve: (name: string, input: unknown) => Promise<unknown> = (name, input) => this.retrieve(name, input), external?: (request: unknown) => Promise<unknown>): Promise<unknown> {
     const session = randomUUID();
     let sequence = 0, admitted = false;
     let operationFault: unknown;
@@ -66,15 +80,16 @@ export class ReadApplication {
         } else if (!admitted) throw new Error("REQUEST_DENIED");
         else if (request.kind === "read" && command.mode === "query" && db) value = await dispatchRead(request.value, db, this.registry.tables);
         else if (request.kind === "write" && command.mode === "mutation" && db) value = await dispatchWrite(request.value, db as WriteDb, this.registry.tables);
-        else if (request.kind === "query" && command.mode === "render" && !db) {
+        else if (request.kind === "external" && command.mode === "retrieval" && !db && external) value = await external(request.value);
+        else if ((request.kind === "query" || request.kind === "retrieval") && command.mode === "render" && !db) {
           const query = record(request.value);
           if (Object.keys(query).length !== 2 || typeof query.name !== "string") throw new Error("REQUEST_DENIED");
-          // A nested query never outlives the render that requested it.
+          // A nested query or retrieval never outlives the render that requested it.
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
-            value = await Promise.race([read(query.name, query.input), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("QUERY_TIMEOUT")), Math.max(0, reservation.deadline - performance.now())); })]);
+            value = await Promise.race([(request.kind === "query" ? read : retrieve)(query.name, query.input), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("QUERY_TIMEOUT")), Math.max(0, reservation.deadline - performance.now())); })]);
           } finally { clearTimeout(timer); }
-        } else if (request.kind === "log" && (command.mode === "query" || command.mode === "mutation")) {
+        } else if (request.kind === "log" && (command.mode === "query" || command.mode === "mutation" || command.mode === "retrieval")) {
           const log = record(request.value);
           if (Object.keys(log).length !== 2 || !["info", "warn"].includes(String(log.level)) || typeof log.message !== "string" || log.message.length > 1024) throw new Error("REQUEST_DENIED");
           value = null;
@@ -83,8 +98,8 @@ export class ReadApplication {
         return { session, sequence: request.sequence, value };
       } catch (error) {
         if (command.mode === "mutation") operationFault ??= error;
-        if (error instanceof PublicOperationError) return { session, sequence: request.sequence, error: error.code, ...(error.details === undefined ? {} : { details: error.details }) };
-        const code = error instanceof Error && ["QUERY_PENDING", "REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+        if (error instanceof PublicOperationError || error instanceof RetrievalError) return { session, sequence: request.sequence, error: error.code, ...(error.details === undefined ? {} : { details: error.details }) };
+        const code = error instanceof Error && ["QUERY_PENDING", "REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "RETRIEVAL_PENDING"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
         return { session, sequence: request.sequence, error: code };
       }
     }, budgetMs)).value);
@@ -92,6 +107,8 @@ export class ReadApplication {
     if (!admitted || result.session !== session || result.sequence !== sequence || Object.keys(result).some(key => !["kind", "session", "sequence", "value", "code", "details"].includes(key))) throw new Error("REQUEST_DENIED");
     if (result.kind === "failure") {
       if (["INPUT_INVALID", "NOT_FOUND", "CONSTRAINT_CONFLICT", "VERSION_CONFLICT", "UNSUPPORTED_CAPABILITY"].includes(String(result.code))) throw new PublicOperationError(result.code as DeclaredErrorCode, result.details);
+      if (command.mode !== "query" && command.mode !== "mutation" && isRetrievalCode(result.code)) throw retrievalFailure(result.code, result.details);
+      if (command.mode === "retrieval" && result.code === "RETRIEVAL_PENDING") throw new Error("RETRIEVAL_PENDING");
       const code = typeof result.code === "string" && ["REQUEST_DENIED", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "ROUTE_INVALID", "ROUTE_NOT_FOUND", "UNSUPPORTED_CAPABILITY"].includes(result.code) ? result.code : "INTERNAL_FAILURE";
       throw new Error(code);
     }
@@ -130,12 +147,60 @@ export class ReadApplication {
       try { reservation.release(); } catch { /* Preserve the committed or unknown outcome. */ }
     }
   }
+  /**
+   * Runs a registered retrieval under one whole-operation deadline covering
+   * worker queueing, handler execution, DNS, connection and body reads.
+   * Handlers run in fresh isolated workers with no network. Each new external
+   * request ends that worker run; the trusted broker performs it outside the
+   * worker deadline, then a fresh run replays the handler with the recorded
+   * outcomes. A run that requested nothing new is the result.
+   */
+  async retrieve(name: string, rawInput: unknown): Promise<unknown> {
+    const operation = this.registry.retrievals.get(name);
+    if (!operation) throw new Error("REQUEST_DENIED");
+    let input: unknown;
+    try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
+    const deadline = this.#outbound.deadline();
+    const outcomes = new Map<string, { value: unknown } | { error: unknown }>();
+    const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
+    for (;;) {
+      if (deadline - performance.now() < 1) throw new RetrievalError("RETRIEVAL_TIMEOUT");
+      const pending = new Map<string, unknown>();
+      const external = async (request: unknown): Promise<unknown> => {
+        let key: string;
+        try { key = canonical(request); } catch { throw new RetrievalError("RETRIEVAL_DESTINATION_DENIED"); }
+        const outcome = outcomes.get(key);
+        if (outcome) { if ("error" in outcome) throw outcome.error; return outcome.value; }
+        if (!pending.has(key) && outcomes.size + pending.size >= RETRIEVAL_REQUESTS) throw new Error("QUERY_LIMIT");
+        pending.set(key, request);
+        throw new Error("RETRIEVAL_PENDING");
+      };
+      let result: { value: unknown } | { error: unknown };
+      let reservation: Reservation;
+      try { reservation = await this.#execution.reserve(Math.min(deadline, performance.now() + 5000)); }
+      catch (error) { throw expired(error); }
+      try {
+        const budget = Math.min(5000, Math.floor(deadline - performance.now()));
+        if (budget < 1) throw new Error("QUERY_TIMEOUT");
+        result = { value: await this.#execute(reservation, { mode: "retrieval", operation: name, input }, undefined, budget, undefined, undefined, external) };
+      } catch (error) { result = { error }; }
+      finally { reservation.release(); }
+      if (!pending.size) {
+        if ("error" in result) throw expired(result.error);
+        try { return operation.output.parse(result.value); } catch { throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT"); }
+      }
+      await Promise.all([...pending].map(async ([key, request]) => {
+        try { outcomes.set(key, { value: await this.#outbound.request(request, deadline) }); }
+        catch (error) { outcomes.set(key, { error: error instanceof RetrievalError ? error : new RetrievalError("RETRIEVAL_TRANSPORT_FAILURE") }); }
+      }));
+    }
+  }
   revision(): Promise<DatabaseRevision> { return this.#broker.revision(); }
   prepareWorkers(): void { this.#execution.warm(); }
   /** Slot states for operator visibility; no secrets or application data. */
   diagnostics(): ReturnType<NativeExecution["diagnostics"]> { return this.#execution.diagnostics(); }
   watch(wakeup: () => void): Promise<() => Promise<void>> { return this.#broker.watch(wakeup); }
-  async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
+  async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>, retrieve?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.
     try {
       if (!selectPage([...this.registry.pages.values()], path)) throw new Error("ROUTE_NOT_FOUND");
@@ -163,17 +228,17 @@ export class ReadApplication {
         void acquiring.then(lease => lease.close()).catch(() => {});
         throw error;
       } finally { clearTimeout(timer); }
-      try { return await this.#render(reservation, read ?? ((name, input) => this.#query(name, input, deadline)), path); } finally { await admission.close(); }
+      try { return await this.#render(reservation, read ?? ((name, input) => this.#query(name, input, deadline)), retrieve ?? ((name, input) => this.retrieve(name, input)), path); } finally { await admission.close(); }
     } finally { reservation.release(); }
   }
-  async #render(reservation: Reservation, read: ((name: string, input: unknown) => Promise<unknown>) | undefined, path: string): Promise<PageResult> {
+  async #render(reservation: Reservation, read: (name: string, input: unknown) => Promise<unknown>, retrieve: (name: string, input: unknown) => Promise<unknown>, path: string): Promise<PageResult> {
     {
-      const result = record(await this.#execute(reservation, { mode: "render", path }, undefined, 5000, read));
+      const result = record(await this.#execute(reservation, { mode: "render", path }, undefined, 5000, read, retrieve));
       if (Object.keys(result).length !== 3 || typeof result.html !== "string" || !Array.isArray(result.islands) || result.islands.length > 500 || !Array.isArray(result.regions) || result.regions.length > 500) throw new Error("INTERNAL_FAILURE");
       const regionIds = new Set<string>();
       for (const raw of result.regions) {
         const region = record(raw);
-        if (Object.keys(region).some(key => !["id", "dependencies", "error"].includes(key)) || typeof region.id !== "string" || region.id.length > 8192 || regionIds.has(region.id) || !Array.isArray(region.dependencies) || region.dependencies.length > 100 || (region.error !== undefined && !["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND", "INTERNAL_FAILURE"].includes(String(region.error)))) throw new Error("INTERNAL_FAILURE");
+        if (Object.keys(region).some(key => !["id", "dependencies", "error"].includes(key)) || typeof region.id !== "string" || region.id.length > 8192 || regionIds.has(region.id) || !Array.isArray(region.dependencies) || region.dependencies.length > 100 || (region.error !== undefined && !["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND", "INTERNAL_FAILURE", ...retrievalFailureCodes].includes(String(region.error)))) throw new Error("INTERNAL_FAILURE");
         regionIds.add(region.id);
         for (const rawDependency of region.dependencies) {
           const dependency = record(rawDependency);

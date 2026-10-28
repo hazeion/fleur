@@ -150,3 +150,45 @@ void seedName;
 defineSeed({ key: "invalid", table: exercises, rows: [{ ownerKey: "bad", values: { name: 4, note: null } }] });
 // @ts-expect-error Seed values cannot assign a managed version.
 defineSeed({ key: "invalid", table: exercises, rows: [{ ownerKey: "bad", values: { name: "Squat", note: null, version: 4 } }] });
+
+import { defineRetrieval } from "../../src/schema";
+import { defineDestination, handleRetrieval, readRetrieval, RetrievalError } from "../../src/server";
+import { refreshRetrieval } from "../../src/client";
+const forecastContract = defineRetrieval({ input: schema.object({ city: schema.string() }), output: schema.object({ temperature: schema.number().nullable() }) });
+const forecastApi = defineDestination({ origin: "https://api.weather.example", path: "/v1/forecast/:city", response: schema.object({ temperature: schema.number() }) });
+const statusApi = defineDestination({ origin: "https://status.example", path: "/health", response: schema.object({ ok: schema.boolean() }) });
+handleRetrieval(forecastContract, async ({ input, external }) => {
+  const response = await external.get(forecastApi, { params: { city: input.city } });
+  const temperature: number = response.body.temperature;
+  const health = await external.get(statusApi);
+  const ok: boolean = health.body.ok;
+  const metadata = await external.head(statusApi);
+  // @ts-expect-error HEAD returns declared metadata without a body.
+  void metadata.body;
+  // @ts-expect-error A templated path requires its parameters.
+  await external.get(forecastApi);
+  // @ts-expect-error Parameter names follow the declared path template.
+  await external.get(forecastApi, { params: { town: "x" } });
+  // @ts-expect-error The response body is the declared schema, not an arbitrary value.
+  const wrongBody: string = response.body.temperature;
+  void [ok, wrongBody];
+  return { temperature };
+});
+// @ts-expect-error Retrieval handlers receive no database authority.
+handleRetrieval(forecastContract, async ({ db }) => { void db; return { temperature: null }; });
+// @ts-expect-error Retrieval output follows its contract.
+handleRetrieval(forecastContract, async () => ({ temperature: "warm" }));
+async function retrievalReaders() {
+  const value = await readRetrieval(forecastContract, { city: "Paris" });
+  const temperature: number | null = value.temperature;
+  // @ts-expect-error Retrieval input derives from its contract.
+  await readRetrieval(forecastContract, { town: "Paris" });
+  const refreshed = await refreshRetrieval(forecastContract, { city: "Paris" });
+  const status: "success" | "error" = refreshed.status;
+  // @ts-expect-error Client refresh input derives from the contract.
+  await refreshRetrieval(forecastContract, { city: 1 });
+  const failure = new RetrievalError("RETRIEVAL_HTTP_FAILURE", 503);
+  const code: "RETRIEVAL_DESTINATION_DENIED" | "RETRIEVAL_REDIRECT_DENIED" | "RETRIEVAL_TIMEOUT" | "RETRIEVAL_HTTP_FAILURE" | "RETRIEVAL_TRANSPORT_FAILURE" | "RETRIEVAL_TOO_LARGE" | "RETRIEVAL_INVALID_OUTPUT" = failure.code;
+  void [temperature, status, code];
+}
+void retrievalReaders;

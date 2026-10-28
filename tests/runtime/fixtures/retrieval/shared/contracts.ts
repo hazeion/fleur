@@ -1,0 +1,10 @@
+import { defineMutation, defineQuery, defineRetrieval, schema } from "fleur/schema";
+const city = schema.string().min(1).max(64);
+export const reading = schema.object({ city, temperature: schema.safeInteger().min(-100).max(100) });
+export const forecast = defineRetrieval({ name: "weather.forecast", input: schema.object({ city }), output: schema.object({ city: schema.string(), temperature: schema.safeInteger().nullable(), available: schema.boolean() }) });
+export const strictForecast = defineRetrieval({ name: "weather.strict", input: schema.object({ city }), output: reading });
+export const rebound = defineRetrieval({ name: "weather.rebound", input: schema.object({}), output: schema.boolean() });
+export const directNetwork = defineRetrieval({ name: "network.direct", input: schema.object({ network: schema.boolean() }), output: schema.object({ network: schema.array(schema.string()), environment: schema.boolean() }) });
+export const listReadings = defineQuery({ name: "readings.list", input: schema.object({ city }), output: schema.safeInteger() });
+export const saveReading = defineMutation({ name: "readings.save", input: reading, output: schema.object({ id: schema.uuid(), city: schema.string(), temperature: schema.safeInteger() }) });
+export const retrieveInMutation = defineMutation({ name: "readings.retrieve-inside", input: schema.object({}), output: schema.string() });

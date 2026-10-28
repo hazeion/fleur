@@ -391,12 +391,19 @@ test("the database section names only operations in the pinned release and marks
   expect(named.length).toBeGreaterThan(0);
   for (const command of named) expect({ command, released: resolves(command) }).toEqual({ command, released: true });
   for (const command of released.filter((name) => name.startsWith("db "))) expect({ command, named: named.includes(command) }).toEqual({ command, named: true });
-  for (const later of ["db query", "status", "dev"]) {
+  for (const later of ["db query", "dev"]) {
     expect(resolves(later)).toBe(false);
     expect(named).not.toContain(later);
     expect(namedCommands(unavailable)).toContain(later);
   }
-  for (const capability of ["schema overview", "database health", "`db query`"]) expect(unavailable).toContain(capability);
+  expect(unavailable).toContain("`db query`");
+  // The schema overview and status database health are in this release (#72).
+  expect(named).toContain("status");
+  expect(namedCommands(unavailable)).not.toContain("status");
+  for (const capability of ["schema overview", "database health"]) {
+    expect(available).toContain(capability);
+    expect(unavailable).not.toContain(capability);
+  }
 });
 test("regenerating guidance replaces only the marked generated section and preserves user content around it", async () => {
   for (const name of ["AGENTS.md", "CLAUDE.md"] as const) {

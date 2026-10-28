@@ -4,7 +4,7 @@ import { restoreTables } from "../table-wire";
 import { caseFoldedKey, catalogTables, type CatalogTable } from "./catalog";
 import { readMigrations, type MigrationPlan } from "./migration-plan";
 import { catalogFingerprint, emptyApplicationSchema, migrationHistory } from "./migration-state";
-import { columnDefault, constraintName, tableConstraints } from "./table-ddl";
+import { columnDefault, constraintName, indexKeys, tableConstraints } from "./table-ddl";
 import { maintenanceSummary, type InspectionSession, type MaintenanceSummary } from "./target";
 
 /** One observed difference from Fleur's recorded expectation. `null` means the object is absent on that side. */
@@ -47,7 +47,9 @@ function actualConstraint(constraint: CatalogTable["constraints"][number]): stri
 }
 function actualIndex(index: CatalogTable["indexes"][number]): string {
   const folded = index.keys.length === 1 ? caseFoldedKey(index.keys[0]!) : null;
-  return `${index.unique ? "unique" : "index"} (${folded ?? index.keys.join(", ")})${folded ? " case-folded" : ""}`;
+  // Fleur's keys sort nulls last in both directions, so only descending keys and nulls-first keys are annotated.
+  const keys = index.keys.map((key, position) => `${key}${index.descending[position] ? " desc" : ""}${index.nullsFirst[position] ? " nulls first" : ""}`);
+  return `${index.unique ? "unique" : "index"} (${folded ?? keys.join(", ")})${folded ? " case-folded" : ""}`;
 }
 interface Expected { readonly columns: Map<string, string>; readonly constraints: Map<string, { readonly definition: string; readonly structural: boolean }>; readonly indexes: Map<string, string> }
 function expectedTables(tables: readonly Table[]): Map<string, Expected> {
@@ -69,13 +71,15 @@ function expectedTables(tables: readonly Table[]): Map<string, Expected> {
         expected.constraints.set(constraintName(spec.name, field, "fk"), { definition: `foreign key (${field}) references ${tableDefinitions.get(target.table)!.name} (${target.field}) on delete ${column.reference.onDelete}`, structural: true });
       }
     }
+    for (const fields of spec.indexes) expected.indexes.set(constraintName(spec.name, indexKeys(fields), "index"), `index (${indexKeys(fields, ", ")})`);
     result.set(spec.name, expected);
   }
   return result;
 }
 /**
  * Structural differences between the declarations recorded with the last applied migration and the live catalog:
- * tables, column types, collations, nullability and identity, primary and foreign keys, unique indexes and the presence
+ * tables, column types, collations, nullability and identity, primary and foreign keys, unique and declared indexes with
+ * their key order and the presence
  * of Fleur's check constraints. Other catalog changes are reported by the caller through the catalog fingerprint.
  */
 export async function schemaDifferences(sql: InspectionSession["sql"], declarations: readonly Table[]): Promise<Difference[]> {

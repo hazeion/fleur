@@ -22,7 +22,20 @@ const missingColumn: Insert<typeof exercises> = { name: "Squat" };
 column.safeInteger().references(exercises.id, { onDelete: "restrict" });
 // @ts-expect-error Set-null requires a nullable source.
 column.uuid().references(exercises.id, { onDelete: "set null" });
-void [accepted, missingNullable, arbitraryId, instant, row, insert, badInsert, missingColumn];
+// Index keys name the table's own declared columns, with an optional asc/desc direction.
+const indexed = defineTable("indexed", { columns: { id: column.uuid().primaryKey(), parentId: column.uuid(), position: column.safeInteger() }, indexes: [{ fields: ["parentId", { field: "position", direction: "desc" }] }] });
+const indexedRow: Row<typeof indexed> = { id, parentId: id, position: 1, version: 1 };
+// @ts-expect-error Index keys must be declared columns of the same table.
+defineTable("indexed_unknown", { columns: { id: column.uuid().primaryKey(), position: column.safeInteger() }, indexes: [{ fields: ["missing"] }] });
+// @ts-expect-error The managed version column is not an index key.
+defineTable("indexed_version", { columns: { id: column.uuid().primaryKey(), position: column.safeInteger() }, indexes: [{ fields: ["version"] }] });
+// @ts-expect-error Directions are asc or desc.
+defineTable("indexed_direction", { columns: { id: column.uuid().primaryKey(), position: column.safeInteger() }, indexes: [{ fields: [{ field: "position", direction: "down" }] }] });
+// @ts-expect-error An index needs at least one key.
+defineTable("indexed_empty", { columns: { id: column.uuid().primaryKey(), position: column.safeInteger() }, indexes: [{ fields: [] }] });
+// @ts-expect-error Indexes declare keys only; partial and expression indexes are not part of the surface.
+defineTable("indexed_partial", { columns: { id: column.uuid().primaryKey(), position: column.safeInteger() }, indexes: [{ fields: ["position"], where: "position > 0" }] });
+void [accepted, missingNullable, arbitraryId, instant, row, insert, badInsert, missingColumn, indexed, indexedRow];
 
 import { defineQuery } from "../../src/schema";
 import { eq, defineRelations } from "../../src/database";

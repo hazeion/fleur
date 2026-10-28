@@ -534,6 +534,11 @@ def _default_identity(timeout=5):
 DEFAULT_DAEMON_READY_SECONDS = 30
 DEFAULT_DAEMON_ATTEMPT_SECONDS = 5
 
+# Aggregate owned-daemon cleanup fence. Stop and anchored VFS data-root removal
+# (90.8k files, 12.0k directories) took up to an estimated 23 s on hosted runners,
+# so the former 15 s fence left roots behind (#99). The probe reserves the same window.
+CLEANUP_SECONDS = 60
+
 
 def wait_for_default_daemon(window, attempt_timeout, interval=.5):
     """Return the default daemon identity once it answers, or fail at the window deadline."""
@@ -597,7 +602,7 @@ def isolated_vfs_daemon(lifetime=540):
         raise
     finally:
         cleanup_error = None
-        cleanup_deadline = min(endpoint.deadline, time.monotonic()+15)
+        cleanup_deadline = min(endpoint.deadline, time.monotonic()+CLEANUP_SECONDS)
         empty = False
         output = b''
         observations=endpoint.cleanup_observations

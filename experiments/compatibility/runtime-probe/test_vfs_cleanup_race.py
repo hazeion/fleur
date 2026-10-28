@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from isolated_daemon import Endpoint, IsolatedDaemonError, isolated_vfs_daemon
+from isolated_daemon import CLEANUP_SECONDS, Endpoint, IsolatedDaemonError, isolated_vfs_daemon
 
 
 class SupervisorExitRace(unittest.TestCase):
@@ -72,7 +72,7 @@ sys.stdout.write(sys.argv[3]);sys.stdout.flush();raise SystemExit(int(sys.argv[2
                 return process
             def retire(endpoint, budget):
                 retirement_calls.append(budget)
-                self.assertGreater(budget,0);self.assertLessEqual(budget,15)
+                self.assertGreater(budget,0);self.assertLessEqual(budget,CLEANUP_SECONDS)
                 if handoff=='during-retire':release_and_exit(processes[0])
                 raise IsolatedDaemonError('controlled supervisor identity unavailable')
             def verified(endpoint):endpoint.facts = {'driver': 'vfs'}

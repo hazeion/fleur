@@ -34,7 +34,9 @@ test("isolated retrieval handlers obtain declared external data only through the
     if (path === "/v1/forecast/moved") return new Response(null, { status: 302, headers: { location: "/v1/forecast/elsewhere" } });
     return Response.json({ temperature: 20 + count, internal: "provider-internal-field" });
   } });
-  // Direct worker requests would land here; it listens on every interface.
+  // Direct worker requests would land here. It binds 0.0.0.0 so that a worker
+  // with any network path to the host (loopback, bridge gateway or
+  // host.docker.internal) would reach it; zero hits is the isolation proof.
   let directHits = 0;
   const canary = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch() { directHits++; return new Response("reached"); } });
   const origin = `http://weather.fixture.test:${provider.port}`;
@@ -42,6 +44,8 @@ test("isolated retrieval handlers obtain declared external data only through the
   let images: Awaited<ReturnType<typeof prepareNativeImages>> | undefined, fixture: Awaited<ReturnType<typeof ownedPostgres>> | undefined;
   let app: ReadApplication | undefined, server: ReturnType<typeof serveReadApplication> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  const savedCredentials = process.env.FLEUR_RETRIEVAL_CREDENTIALS;
+  delete process.env.FLEUR_RETRIEVAL_CREDENTIALS;
   try {
     expect((await fetch(`http://127.0.0.1:${canary.port}/control`)).status).toBe(200);
     directHits = 0;
@@ -61,10 +65,10 @@ test("isolated retrieval handlers obtain declared external data only through the
     await fixture.reviewApplication(images, true);
     // A declared credential binding must be configured before the application opens.
     expect((await failure(ReadApplication.open(images, fixture.url))).message).toBe("CONFIGURATION_MISSING");
-    const retrieval: RetrievalConfiguration = {
-      localServices: [origin], resolveHost: async () => ["127.0.0.1"],
-      credentials: { weather: { origin, header: "authorization", value: `Bearer ${secret}` } },
-    };
+    // The credential comes from the trusted startup environment, not configuration
+    // objects or source; the worker probe below checks it never reaches workers.
+    process.env.FLEUR_RETRIEVAL_CREDENTIALS = JSON.stringify({ weather: { origin, header: "authorization", value: `Bearer ${secret}` } });
+    const retrieval: RetrievalConfiguration = { localServices: [origin], resolveHost: async () => ["127.0.0.1"] };
     app = await ReadApplication.open(images, fixture.url, {}, retrieval);
 
     const paris = await app.retrieve("weather.forecast", { city: "paris" });
@@ -81,10 +85,17 @@ test("isolated retrieval handlers obtain declared external data only through the
     const before = hits.get("/v1/forecast/paris");
     expect((await failure(app.retrieve("weather.rebound", {}))).message).toBe("RETRIEVAL_DESTINATION_DENIED");
     expect(hits.get("/v1/forecast/paris")).toBe(before);
-    const started = performance.now();
-    expect((await failure(app.retrieve("weather.strict", { city: "slow" }))).message).toBe("RETRIEVAL_TIMEOUT");
-    expect(performance.now() - started).toBeGreaterThanOrEqual(9_900);
-    expect(performance.now() - started).toBeLessThan(13_000);
+    for (let repeat = 1; repeat <= 2; repeat++) {
+      // The handler still runs after an external timeout and handles it explicitly.
+      let started = performance.now();
+      expect(await app.retrieve("weather.forecast", { city: "slow" })).toEqual({ city: "slow", temperature: null, available: false });
+      expect(performance.now() - started).toBeLessThan(10_500);
+      // Unhandled, the timeout is the retrieval's failure within the whole deadline.
+      started = performance.now();
+      expect((await failure(app.retrieve("weather.strict", { city: "slow" }))).message).toBe("RETRIEVAL_TIMEOUT");
+      expect(performance.now() - started).toBeGreaterThanOrEqual(7_000);
+      expect(performance.now() - started).toBeLessThan(13_000);
+    }
     for (const error of [http]) expect(JSON.stringify([error.message, error.stack, Object.entries(error)])).not.toContain(secret);
 
     // The isolated worker has no general network access or host secrets.
@@ -126,9 +137,9 @@ test("isolated retrieval handlers obtain declared external data only through the
     expect(requests.every(url => url.startsWith(server!.url.origin))).toBe(true);
     expect(errors).toEqual([]);
   } finally {
-    await browser?.close(); await server?.stop(true); await app?.close();
-    await fixture?.cleanup(); await images?.dispose();
-    await provider.stop(true); await canary.stop(true);
-    await rm(directory, { recursive: true, force: true });
+    if (savedCredentials === undefined) delete process.env.FLEUR_RETRIEVAL_CREDENTIALS; else process.env.FLEUR_RETRIEVAL_CREDENTIALS = savedCredentials;
+    // Each resource closes independently so one failure cannot leak the others.
+    const cleanups: (() => unknown)[] = [() => browser?.close(), () => server?.stop(true), () => app?.close(), () => fixture?.cleanup(), () => images?.dispose(), () => provider.stop(true), () => canary.stop(true), () => rm(directory, { recursive: true, force: true })];
+    for (const cleanup of cleanups) { try { await cleanup(); } catch (error) { console.error("retrieval fixture cleanup failed", error); } }
   }
 }, 600_000);

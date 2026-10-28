@@ -81,6 +81,8 @@ Results and failures are cached per view, retrieval name and canonical input:
   that read it. The browser never contacts the destination.
 - A new navigation or view has its own initial load. Nothing is cached across
   views, and no cache holds secrets.
+- One view caches at most 20 distinct retrieval inputs; reading more fails with
+  `QUERY_LIMIT` instead of evicting a cached entry.
 
 A cached failure stays a failure: it is never presented as empty data. An
 unhandled failure marks the reading server region with its code and leaves
@@ -102,6 +104,12 @@ page component to render a fallback explicitly.
 Failures carry no URL, header, body or secret; `RetrievalError.status` is the
 only detail.
 
+The broker shares one deadline between the external request and the handler.
+Each external request ends early enough to leave a reserve (two seconds, or a
+quarter of a shorter configured deadline) so the handler can still run, catch
+`RETRIEVAL_TIMEOUT` and return a fallback. An unhandled timeout fails the
+retrieval within the whole-operation deadline.
+
 ## Enforcement
 
 The trusted host broker resolves the destination's hostname once, rejects the
@@ -109,6 +117,8 @@ request if any answer is loopback, private, link-local, metadata or otherwise
 reserved, and connects to the admitted address with the declared `Host` and TLS
 server name. The hostname is never resolved again, so DNS rebinding cannot move
 the connection. HTTPS certificates are verified against the declared hostname.
+Proxy environment variables such as `HTTP_PROXY` and `HTTPS_PROXY` are ignored:
+no proxy selects the peer or receives a credential.
 
 One deadline covers worker queueing, handler execution, DNS, connection, headers
 and body. Decoded body bytes are counted while streaming, before parsing;
@@ -130,18 +140,25 @@ Credentials, local-service exceptions and limits are host configuration supplied
 at startup, never application source:
 
 - `credentials` maps a binding name to an origin, a request header or query
-  parameter, and the secret value. A destination naming the binding receives the
-  secret only if its origin is exactly the bound origin. A declared binding that
-  is not configured fails startup with `CONFIGURATION_MISSING`; a binding for a
-  different origin fails with `CONFIGURATION_INVALID`. Handlers cannot read the
-  secret or set the reserved query parameter, and a response that echoes the
-  secret is rejected as invalid output.
+  parameter, and the secret value. By default the broker reads them at startup
+  from the `FLEUR_RETRIEVAL_CREDENTIALS` environment variable, a JSON object such
+  as `{"weather":{"origin":"https://api.weather.example","header":"authorization","value":"Bearer ..."}}`.
+  A destination naming the binding receives the secret only if its origin is
+  exactly the bound origin. A declared binding that is not configured fails
+  startup with `CONFIGURATION_MISSING`; a binding for a different origin, or a
+  destination declaring the binding's own header as readable, fails with
+  `CONFIGURATION_INVALID`. Handlers cannot read the secret or set the reserved
+  query parameter. A response whose body or declared header echoes the secret is
+  rejected as `RETRIEVAL_INVALID_OUTPUT`. Only literal and JSON-escaped copies are
+  detected; an encoded copy, such as base64, is not.
 - `localServices` lists exact local development or test origins. Only these may
   use plain HTTP, and only they may reach loopback or private addresses.
   Link-local and metadata addresses are never admitted.
 - `timeoutMs` and `maxBytes` raise or lower the limits within the maximums above.
 
 The internal adapter accepts this configuration through
-`ReadApplication.open(images, url, maintenance, retrieval)`. The development and
+`ReadApplication.open(images, url, maintenance, retrieval)`; explicit
+`credentials` replace the environment bindings. Application workers never
+receive the host environment. The development and
 production lifecycle commands that will read it from the startup environment are
 later slices. `tests/runtime/fixtures/retrieval` demonstrates the contract.

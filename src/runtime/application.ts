@@ -12,7 +12,7 @@ import { validatePublicValue } from "../schema";
 import type { ReadDb, WriteDb } from "../database";
 import type { PageResult } from "./worker-execution";
 import { PublicOperationError, type DeclaredErrorCode } from "../server";
-import { OutboundBroker, type RetrievalConfiguration } from "./retrieval/outbound";
+import { OutboundBroker, credentialsFromEnvironment, type RetrievalConfiguration } from "./retrieval/outbound";
 import { RetrievalError, retrievalFailureCodes, type RetrievalFailureCode } from "./retrieval/destinations";
 import { canonical } from "./canonical";
 
@@ -28,6 +28,8 @@ function retrievalFailure(code: RetrievalFailureCode, details: unknown): Retriev
 }
 /** Distinct external requests one retrieval operation may make; not a concurrency cap. */
 const RETRIEVAL_REQUESTS = 20;
+/** Time kept from an external request for the handler to handle its failure. */
+const RETRIEVAL_HANDLER_RESERVE_MS = 2000;
 function publicBound(value: unknown): void {
   validatePublicValue(value);
   if (new TextEncoder().encode(JSON.stringify(value)).length > 1048576) throw new Error("RESULT_TOO_LARGE");
@@ -59,7 +61,8 @@ export class ReadApplication {
       await checked.close();
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
     // Declared credentials must be configured and bound before any worker starts.
-    const outbound = new OutboundBroker(registry.destinations, retrieval);
+    // Bindings come from the trusted startup environment unless supplied explicitly.
+    const outbound = new OutboundBroker(registry.destinations, { ...retrieval, credentials: retrieval.credentials ?? credentialsFromEnvironment(process.env) });
     // Cold slot creation is startup work and never holds maintenance admission.
     const execution = await NativeExecution.open(images);
     try { return new ReadApplication(execution, registry, url, maintenance, outbound); }
@@ -161,6 +164,9 @@ export class ReadApplication {
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
     const deadline = this.#outbound.deadline();
+    // External requests end early enough that the handler still runs after a
+    // timeout and can handle RETRIEVAL_TIMEOUT explicitly.
+    const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.floor(this.#outbound.timeoutMs / 4));
     const outcomes = new Map<string, { value: unknown } | { error: unknown }>();
     const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
     for (;;) {
@@ -190,7 +196,7 @@ export class ReadApplication {
         try { return operation.output.parse(result.value); } catch { throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT"); }
       }
       await Promise.all([...pending].map(async ([key, request]) => {
-        try { outcomes.set(key, { value: await this.#outbound.request(request, deadline) }); }
+        try { outcomes.set(key, { value: await this.#outbound.request(request, requestDeadline) }); }
         catch (error) { outcomes.set(key, { error: error instanceof RetrievalError ? error : new RetrievalError("RETRIEVAL_TRANSPORT_FAILURE") }); }
       }));
     }

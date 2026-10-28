@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { schema } from "../../src/schema";
 import { classifyAddress, type AddressClass } from "../../src/runtime/retrieval/addresses";
 import { RetrievalError, type DestinationDefinition } from "../../src/runtime/retrieval/destinations";
-import { OutboundBroker, type RetrievalConfiguration } from "../../src/runtime/retrieval/outbound";
+import { OutboundBroker, credentialsFromEnvironment, type RetrievalConfiguration } from "../../src/runtime/retrieval/outbound";
 
 // Controlled local fixtures stand in for external providers; no test reaches the internet.
 const secret = "fixture-credential-7f3a9c";
@@ -31,6 +31,7 @@ beforeAll(async () => {
     if (url.pathname === "/text") return new Response("<html>not json</html>");
     if (url.pathname === "/missing") return Response.json({ id: "1" });
     if (url.pathname === "/echo") return Response.json({ id: "1", name: request.headers.get("authorization") ?? url.searchParams.get("appid") ?? "none" });
+    if (url.pathname === "/echo-header") return Response.json({ id: "1", name: "n" }, { headers: { "x-echo": request.headers.get("authorization") ?? "none" } });
     if (url.pathname === "/large-ok") return Response.json({ id: "1", name: "small", internal: "n".repeat(1_500_000) });
     if (url.pathname === "/large-selected") return Response.json({ id: "1", name: "n".repeat(1_500_000) });
     return new Response("not found", { status: 404 });
@@ -208,4 +209,52 @@ test("credential bindings and limits are trusted startup configuration", () => {
   expect([defaults.timeoutMs, defaults.maxBytes]).toEqual([10_000, 1048576]);
   const raised = broker({}, { timeoutMs: 30_000, maxBytes: 10 * 1048576 });
   expect([raised.timeoutMs, raised.maxBytes]).toEqual([30_000, 10 * 1048576]);
+});
+
+test("a declared response header that echoes the bound secret fails like an echoing body", async () => {
+  const bound = { origin: local(), header: "authorization", value: `Bearer ${secret}` };
+  const outbound = broker({ echo: destination(local(), "/echo-header", { headers: ["x-echo"], credential: "fixture" }) }, { credentials: { fixture: bound } });
+  for (const method of ["GET", "HEAD"]) {
+    const error = await failure(outbound.request({ ...get("echo"), method }, outbound.deadline()));
+    expect(error.code).toBe("RETRIEVAL_INVALID_OUTPUT");
+    expect(JSON.stringify([error.message, error.details, Object.entries(error)])).not.toContain(secret);
+  }
+  // Without a bound credential the same header is ordinary declared metadata.
+  const plain = broker({ echo: destination(local(), "/echo-header", { headers: ["x-echo"] }) });
+  expect((await plain.request(get("echo"), plain.deadline())).headers).toEqual({ "x-echo": "none" });
+  // Credential-bearing names, including the binding's own header, are never readable.
+  for (const name of ["authorization", "proxy-authorization", "cookie", "set-cookie"]) expect(() => broker({ bad: destination(local(), "/", { headers: [name] }) })).toThrow();
+  const custom = { origin: local(), header: "x-api-key", value: secret };
+  expect(() => broker({ keyed: destination(local(), "/", { headers: ["x-api-key"], credential: "key" }) }, { credentials: { key: custom } })).toThrow("CONFIGURATION_INVALID");
+});
+
+test("proxy environment variables never route broker requests or credentials", async () => {
+  let proxied = 0;
+  const proxy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { proxied++; return Response.json({ id: "proxy", name: "proxy" }); } });
+  const saved = Object.fromEntries(["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"].map(name => [name, process.env[name]]));
+  try {
+    for (const name of Object.keys(saved)) process.env[name] = `http://127.0.0.1:${proxy.port}`;
+    const bound = { origin: local(), header: "authorization", value: `Bearer ${secret}` };
+    const outbound = broker({ items: destination(local(), "/v1/items/:id", { credential: "fixture" }) }, { credentials: { fixture: bound } });
+    expect((await outbound.request(get("items", { id: "proxy-check" }), outbound.deadline())).body).toMatchObject({ id: "proxy-check" });
+    expect(proxied).toBe(0);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await proxy.stop(true);
+  }
+});
+
+test("credential bindings are read from the trusted startup environment", () => {
+  expect(credentialsFromEnvironment({})).toEqual({});
+  const value = JSON.stringify({ weather: { origin: "https://api.weather.example", header: "authorization", value: `Bearer ${secret}` } });
+  expect(credentialsFromEnvironment({ FLEUR_RETRIEVAL_CREDENTIALS: value })).toEqual({ weather: { origin: "https://api.weather.example", header: "authorization", value: `Bearer ${secret}` } });
+  for (const invalid of ["not json", "[]", JSON.stringify({ weather: "Bearer x" })]) {
+    let message = "";
+    try { credentialsFromEnvironment({ FLEUR_RETRIEVAL_CREDENTIALS: invalid }); } catch (error) { message = (error as Error).message; }
+    expect(message).toBe("CONFIGURATION_INVALID");
+  }
+  // A malformed variable never echoes its content in the failure.
+  let thrown = "";
+  try { credentialsFromEnvironment({ FLEUR_RETRIEVAL_CREDENTIALS: `{"weather":"${secret}"` }); } catch (error) { thrown = JSON.stringify([(error as Error).message, (error as Error).stack]); }
+  expect(thrown).not.toContain(secret);
 });

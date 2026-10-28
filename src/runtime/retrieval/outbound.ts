@@ -72,8 +72,9 @@ export class OutboundBroker {
       if (destination.credential === undefined) continue;
       const binding = credentials.get(destination.credential);
       if (!binding) throw new Error("CONFIGURATION_MISSING");
-      // An application names a binding; it cannot carry the secret to another origin.
-      if (binding.origin !== destination.origin) invalid();
+      // An application names a binding; it cannot carry the secret to another origin
+      // or read back the header that carries it.
+      if (binding.origin !== destination.origin || (binding.header !== undefined && destination.headers.includes(binding.header))) invalid();
     }
     this.#destinations = destinations; this.#credentials = credentials; this.#local = local;
     this.#ca = configuration.certificateAuthorities?.length ? [...configuration.certificateAuthorities] : undefined;
@@ -134,15 +135,20 @@ export class OutboundBroker {
       if (binding?.header !== undefined) headers[binding.header] = binding.value;
       try {
         response = await Promise.race([fetch(target, {
-          method, headers, redirect: "manual", signal: controller.signal, keepalive: false,
+          // Proxy environment variables never select the peer or receive credentials.
+          method, headers, redirect: "manual", signal: controller.signal, keepalive: false, proxy: false,
           ...(origin.protocol === "https:" ? { tls: { ...(literal ? {} : { serverName: hostname }), ...(this.#ca ? { ca: this.#ca } : {}) } } : {}),
         }), timeout]);
       } catch (error) { return failed(error); }
       if (response.status >= 300 && response.status < 400) throw new RetrievalError("RETRIEVAL_REDIRECT_DENIED", response.status);
       if (response.status < 200 || response.status >= 300) throw new RetrievalError("RETRIEVAL_HTTP_FAILURE", response.status);
+      // A provider echoing the bound secret cannot pass it to application code,
+      // through a declared header or the body. Only literal copies are detected.
+      const echoes = (text: string) => binding !== undefined && (text.includes(binding.value) || text.includes(JSON.stringify(binding.value).slice(1, -1)));
       const exposed: Record<string, string> = {};
       for (const name of destination.headers) {
         const value = response.headers.get(name);
+        if (value !== null && echoes(value)) throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT");
         if (value !== null && value.length <= 1024) exposed[name] = value;
       }
       if (method === "HEAD") return Object.freeze({ status: response.status, headers: exposed });
@@ -157,8 +163,7 @@ export class OutboundBroker {
       try { body = destination.response.parse(selectDeclared(description(destination.response), parsed)); }
       catch { throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT"); }
       const encoded = JSON.stringify(body);
-      // A provider echoing the bound secret cannot pass it to application code.
-      if (binding && (encoded.includes(binding.value) || encoded.includes(JSON.stringify(binding.value).slice(1, -1)))) throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT");
+      if (echoes(encoded)) throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT");
       // Retrieved data crosses the worker channel under the public value limit.
       validatePublicValue(body);
       if (new TextEncoder().encode(encoded).byteLength > 1048576) throw new RetrievalError("RETRIEVAL_TOO_LARGE");
@@ -189,4 +194,18 @@ export class OutboundBroker {
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
     return bytes;
   }
+}
+/**
+ * Reads credential bindings from the trusted startup environment:
+ * FLEUR_RETRIEVAL_CREDENTIALS holds a JSON object mapping each binding name to
+ * `{ origin, header | query, value }`. Failures never include the content.
+ */
+export function credentialsFromEnvironment(environment: Readonly<Record<string, string | undefined>>): Record<string, CredentialBinding> {
+  const text = environment.FLEUR_RETRIEVAL_CREDENTIALS;
+  if (text === undefined || text === "") return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return invalid(); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return invalid();
+  for (const binding of Object.values(parsed)) if (!binding || typeof binding !== "object" || Array.isArray(binding)) return invalid();
+  return parsed as Record<string, CredentialBinding>;
 }

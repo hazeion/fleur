@@ -157,7 +157,16 @@ class Slot {
         const value = record(envelope.value);
         if (value.kind === "complete" || value.kind === "failure") {
           await this.#send({ kind: "finish", value: null, operation: prepared.id });
-          const completion = record(await this.#read(3000));
+          // Application code can forge these bytes. A process that then fails
+          // to exit cleanly by itself is retired by its guard, at the latest at
+          // its deadline, and fails only this operation.
+          const completion = record(await this.#read(budgetMs + 2000));
+          if (completion.kind === "failure" && completion.operation === prepared.id && completion.physicalExitConfirmed === true) {
+            const evidence = this.#acceptRetirement(completion.deadline, prepared.id, operation.process.start, ["deadline", "premature-exit"]);
+            await this.lease.endOperation(prepared.id);
+            this.state = "idle";
+            throw new ExecutionFailure("INTERNAL_FAILURE", evidence, operation);
+          }
           if (completion.kind !== "retired" || completion.operation !== prepared.id || completion.physicalExitConfirmed !== true) this.#quarantine(completion);
           const evidence = this.#acceptRetirement(completion.deadline, prepared.id, operation.process.start, ["premature-exit"]);
           await this.lease.endOperation(prepared.id);

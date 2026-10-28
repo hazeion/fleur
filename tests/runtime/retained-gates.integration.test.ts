@@ -170,9 +170,11 @@ test("a slot whose removal cannot be verified stays visible while it occupies ca
  * that `race` decides kill and forced removal. "concurrent" first performs the
  * same kill or `rm --force` once, as a slot's own controller does when it exits
  * after removing its application and guard containers while host recovery
- * runs. "refuse" fails a kill without performing it.
+ * runs. "refuse" fails a kill without performing it. "replace" removes the
+ * kill's target and creates `impostor` (docker create arguments) in its place
+ * before the kill, which then fails.
  */
-async function withDockerRace<T>(race: "concurrent" | "refuse", work: () => Promise<T>): Promise<T> {
+async function withDockerRace<T>(race: "concurrent" | "refuse" | "replace", work: () => Promise<T>, impostor: readonly string[] = []): Promise<T> {
   const real = Bun.which("docker");
   if (!real) throw new Error("Docker CLI required");
   const directory = await mkdtemp(join(tmpdir(), "fleur-docker-race-"));
@@ -180,6 +182,8 @@ async function withDockerRace<T>(race: "concurrent" | "refuse", work: () => Prom
 case "${race}:$3:$4" in
   concurrent:kill:*|concurrent:rm:--force) ${JSON.stringify(real)} "$@" >/dev/null 2>&1 ;;
   refuse:kill:*) echo "refused by test" >&2; exit 1 ;;
+  replace:kill:*) ${JSON.stringify(real)} "$1" "$2" rm --force "$6" >/dev/null 2>&1
+    ${JSON.stringify(real)} "$1" "$2" create ${impostor.map(value => JSON.stringify(value)).join(" ")} >/dev/null 2>&1 ;;
 esac
 exec ${JSON.stringify(real)} "$@"
 `, { mode: 0o755 });
@@ -192,8 +196,8 @@ exec ${JSON.stringify(real)} "$@"
 // still removing its own containers; the controller then exits by itself
 // between recovery's inspection and its kill. That kill failing must not leave
 // the slot unrecoverable, and recovery is still verified by inspection alone.
-test("quarantine recovery verifies a controller that stopped itself and its removed containers, and still refuses a controller it could not stop", async () => {
-  for (const race of ["concurrent", "refuse"] as const) {
+test("quarantine recovery verifies a controller that stopped itself and its removed containers, and still refuses a controller it could not stop or no longer identifies", async () => {
+  for (const race of ["concurrent", "refuse", "replace"] as const) {
     const owner = randomUUID();
     const lease = await RetainedLease.create(owner, images);
     try {
@@ -202,15 +206,22 @@ test("quarantine recovery verifies a controller that stopped itself and its remo
       await start(lease.controllerName, images.controller);
       const worker = await start(lease.workerName, images.worker), guard = await start(lease.guardName, images.controller);
       await lease.bindSlot({ worker, init: 2, guard, boot: randomUUID() });
-      const recovery = await withDockerRace(race, () => lease.cleanup()).then(() => "recovered", (error: Error) => error.message);
+      // A stopped container with the controller's name, label and image, but not its identity.
+      const impostor = ["--name", lease.controllerName, "--label", `dev.fleur.execution-owner=${owner}`, "--network=none", "--pull=never", "--entrypoint", "/bin/true", images.controller];
+      const recovery = await withDockerRace(race, () => lease.cleanup(), impostor).then(() => "recovered", (error: Error) => error.message);
       const running = (await docker("ps", "--quiet", "--no-trunc", "--filter", `label=dev.fleur.execution-owner=${owner}`)).split("\n").filter(Boolean);
       if (race === "concurrent") {
         expect(recovery).toBe("recovered");
         expect(await owned(owner)).toBe("");
-      } else {
+      } else if (race === "refuse") {
         // Creation authority that is still running is never reported as stopped.
         expect(recovery).toBe("CREATION_AUTHORITY_UNCONFIRMED");
         expect(running).toHaveLength(3);
+      } else {
+        // Another container under the controller's name never verifies that the
+        // controller stopped, so no child is touched.
+        expect(recovery).toBe("CLEANUP_OWNERSHIP_UNCONFIRMED");
+        expect(running.sort()).toEqual([worker, guard].sort());
       }
     } finally {
       for (const id of (await owned(owner)).split("\n").filter(Boolean)) await docker("rm", "--force", id).catch(() => "");

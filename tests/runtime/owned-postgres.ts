@@ -29,7 +29,9 @@ export async function ownedPostgres() {
     id = undefined;
   }
   try {
-    await docker(["pull", image], 180_000);
+    // The digest pin is the identity: reuse it when already present, pull only when absent.
+    const present = await docker(["image", "inspect", "--format", "{{.Id}}", image]).then(() => true, () => false);
+    if (!present) await docker(["pull", image], 180_000);
     id = await docker(["run", "--detach", "--name", name, "--label", `${label}=${owner}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", "--tmpfs", "/var/lib/postgresql:rw,size=384m", "--publish", "127.0.0.1::5432", "--env", `POSTGRES_USER=${database}`, "--env", `POSTGRES_DB=${database}`, "--env", `POSTGRES_PASSWORD=${password}`, image]);
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Missing owned container identity");
     const metadata = JSON.parse(await docker(["inspect", id])) as { Mounts: { Type: string; Destination: string }[]; NetworkSettings: { Ports: Record<string, { HostIp: string; HostPort: string }[]> } }[];

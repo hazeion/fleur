@@ -31,6 +31,10 @@ export function columnDDL(field: string, reference: ColumnReference, managedVers
   else if(column.generated)throw new Error("Unsupported generated column");
   return sql;
 }
+/** Deterministic name of a Fleur-generated constraint or index; drift detection uses the same names. */
+export function constraintName(table: string, field: string, tag: string): string {
+  return `fleur_${tag}_${createHash("sha256").update(`${table}\0${field}\0${tag}`).digest("hex").slice(0,20)}`;
+}
 export function tableConstraints(tables: readonly Table[]) {
   const constraints: {table:string;name:string;kind:"foreign"|"constraint"|"index";sql:string}[]=[];
   for(const table of tables) {
@@ -40,7 +44,7 @@ export function tableConstraints(tables: readonly Table[]) {
     for(const [field,reference] of Object.entries(spec.columns)) {
       const column=definition(reference),key=identifier(field);
       const add=(kind:"foreign"|"constraint"|"index",tag:string,clause:string)=>{
-        const name=`fleur_${tag}_${createHash("sha256").update(`${spec.name}\0${field}\0${tag}`).digest("hex").slice(0,20)}`;
+        const name=constraintName(spec.name,field,tag);
         constraints.push({table:spec.name,name,kind,sql:kind==="index"?`CREATE UNIQUE INDEX ${identifier(name)} ON ${relation} (${clause})`:`ALTER TABLE ${relation} ADD CONSTRAINT ${identifier(name)} ${clause}`});
       };
       if(column.primary)add("constraint","pk",`PRIMARY KEY (${key})`);

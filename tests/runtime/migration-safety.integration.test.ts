@@ -22,7 +22,7 @@ test("folded uniqueness can be removed and reintroduced without duplicate helper
     await generateMigration(root,[ordinary]);await applyMigrations(fixture.url,root,config);
     await generateMigration(root,[folded]);expect((await applyMigrations(fixture.url,root,config)).applied).toEqual(["0003"]);
     await expect(Promise.resolve(fixture.sql.unsafe("INSERT INTO public.folded VALUES(2,'STRASSE',1)"))).rejects.toThrow();
-    expect((await migrationStatus(fixture.url,root,config)).compatible).toBe(true);
+    expect((await migrationStatus(fixture.url,root,config)).migrations.compatible).toBe(true);
   }finally{await fixture.cleanup();await rm(root,{recursive:true,force:true});}
 },240_000);
 
@@ -38,9 +38,9 @@ test("compatible evolution preserves rows and a failing constraint migration rol
     await generateMigration(root,[evolved]);await applyMigrations(fixture.url,root,config);
     expect(await fixture.sql.unsafe("SELECT name,notes,active,version FROM public.atomic_rows")).toEqual([{name:"Retained",notes:null,active:true,version:"1"}]);
     await generateMigration(root,[invalid]);await expect(applyMigrations(fixture.url,root,config)).rejects.toThrow();
-    const status=await migrationStatus(fixture.url,root,config);
+    const status=(await migrationStatus(fixture.url,root,config)).migrations;
     expect(status.applied).toEqual(["0001","0002"]);expect(status.pending).toEqual(["0003"]);
-    expect(status.maintenance?.stage).toBe("rollback verified");
+    expect(status.maintenance.stage).toBe("rollback verified");
     expect(await fixture.sql.unsafe("SELECT name FROM public.atomic_rows")).toEqual([{name:"Retained"}]);
   }finally{await fixture.cleanup();await rm(root,{recursive:true,force:true});}
 },240_000);
@@ -57,7 +57,7 @@ test("a committed transaction with an interrupted acknowledgement reconciles wit
     try{await owner.persist({...completed,stage:"applying"});}finally{await owner.close();}
     expect((await inspectMaintenance(fixture.url,config)).classification).toBe("committed");
     expect(await applyMigrations(fixture.url,root,{...config,confirm:async()=>true})).toMatchObject({applied:[],reconciled:"committed"});
-    const status=await migrationStatus(fixture.url,root,config);expect(status.applied).toEqual(["0001"]);expect(status.maintenance?.epoch).not.toBe(completed.epoch);
+    const status=await migrationStatus(fixture.url,root,config);expect(status.migrations.applied).toEqual(["0001"]);expect((await inspectMaintenance(fixture.url,config)).maintenance?.epoch).not.toBe(completed.epoch);
   }finally{await fixture.cleanup();await rm(root,{recursive:true,force:true});}
 },240_000);
 
@@ -112,7 +112,7 @@ for(const stage of ["preparing","applying"] as const)test(`SIGKILL during real $
     await waitFor(async()=>!(await inspectMaintenance(fixture.url,config)).busy);
     const observed=await inspectMaintenance(fixture.url,config);expect(observed.maintenance?.stage).toBe(stage);expect(observed.classification).toBe("rollback verified");
     expect(await applyMigrations(fixture.url,root,{...config,confirm:async()=>true})).toMatchObject({applied:[],reconciled:"rollback verified"});
-    expect((await migrationStatus(fixture.url,root,config)).pending).toEqual(["0002"]);
+    expect((await migrationStatus(fixture.url,root,config)).migrations.pending).toEqual(["0002"]);
   }finally{
     if(child){child.kill("SIGKILL");await child.exited;}
     if(lock){await lock.unsafe("ROLLBACK");lock.release();}

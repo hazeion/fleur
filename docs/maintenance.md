@@ -3,6 +3,8 @@
 Fleur supplies named inspection, backup, migration and recovery operations. They require the exact project pin and explicit private PostgreSQL configuration. They never accept SQL or shell arguments.
 
 ```sh
+fleur status --json
+fleur db inspect --json
 fleur db inspect --table exercises --limit 100 --json
 fleur db inspect --table exercises --cursor <cursor> --export exercises-page.json --json
 fleur db backup --out before-migration.dump --json
@@ -15,13 +17,37 @@ The configured credentials need database identity inspection, including `pg_cont
 
 The namespace binds the verified PostgreSQL cluster system identifier and project database name. The marker also binds database OID and owner, so replacing the database cannot silently reopen an older binding. Changing the control database or state root while a target is in use is unsupported configuration, not a recovery operation.
 
+## Schema overview and database health
+
+`db inspect` without `--table` returns the schema overview of application base tables in `public`, ordered by name. It never returns rows. Each table reports:
+
+- columns with PostgreSQL type, Fleur column kind, nullability, default and identity
+- primary key
+- foreign keys with their `onDelete` actions
+- unique constraints, and the remaining indexes with their key columns; Fleur's case-folded uniqueness indexes are marked `caseFolded`
+- whether the table is versioned
+
+Fleur column kinds, versioning and managed columns, such as the version field and generated identifiers, come from the declarations recorded with the last applied migration. Tables outside those declarations report `null` for kind and versioning. Fleur's own metadata lives in `fleur_internal` and is excluded. The overview pages by table: `--limit` defaults to 100 and admits 1–500. The encoded page also stays below the byte cap shared with row pages. A page that stops early reports `truncated` and an opaque cursor that resumes after its last table. `--table <name>` adds that table's structure, in the same form, to its page of rows.
+
+`db migration status` is the one computation of migration state. It reports applied and pending migration IDs, drift and the maintenance stage. Drift is a list of at most 100 differences and at most 768 KiB encoded, each with the object, the expected definition and the actual definition. `differencesTruncated` and the envelope's `truncated` report a list cut at either bound; `differenceCount` in the summary always counts every difference. Expected definitions come from the recorded declarations and history. Column types, collations, nullability and identity, primary and foreign keys, unique indexes, Fleur's check constraints, unexpected tables, constraints and indexes, migration checksums and the external maintenance record are compared individually. Any other catalog change, such as a changed default, trigger or function, appears as one catalog fingerprint difference. `db inspect` and `status` embed the same summary: `compatible`, `applied`, `pending`, `drift`, `differenceCount` and `maintenance` with its `state` (`idle`, `active` or `recovery required`) and recorded `stage`.
+
+`status` reports application state, readiness reasons and a `database` object whether or not the application is running. The object has `connectivity` (`connected`, `unreachable` with `failure` of `refused`, `rejected` or `timeout`, or `unknown` when a local prerequisite stopped the probe), the target, the `maintenance` state and stage from Fleur's control record, and the migration summary. When the target is unreachable but the control record shows active maintenance or interrupted recovery, for example while a restore or reset has replaced the database, the reason is `MAINTENANCE_ACTIVE` or `RECOVERY_REQUIRED` rather than `DATABASE_UNAVAILABLE`. A local prerequisite failure, such as an unusable private state directory, is the `PREREQUISITE_UNAVAILABLE` reason with an action that points to `doctor`. A control database that identifies a different cluster than the target is `CONFIGURATION_MISSING` with exit 4. The development lifecycle is not in this release, so the development `state` is `stopped`. Production `state` is `null` because no production `start` can be registered yet. The database probe has its own 5-second deadline, replaced by an explicit `--timeout`. At the deadline, Fleur cancels the probe's statement in progress and reports `unreachable`. A statement that exceeds its 5-second statement timeout is the same timeout finding; `db inspect` and `db migration status` return it as `DATABASE_UNAVAILABLE`. `status` never runs prerequisite probes, and `doctor` never connects to the database.
+
+Every result identifies the target by kind (`development` or `production`), database name, PostgreSQL server version and a non-reversible fingerprint of the verified cluster and database identity. No output from these commands shows the host, port, user or URL.
+
+These diagnostics report drift, pending migrations, active maintenance, recovery state and an unreachable database as data with exit 0. Drift and maintenance never block them. `db inspect` and `db migration status` cannot produce a result from an unreachable database and return `DATABASE_UNAVAILABLE` with exit 4. A failed `db inspect --export` never publishes its file; Fleur publishes only after the inspection succeeds. Unreadable private maintenance state still returns `RECOVERY_REQUIRED`, exit 5, from those commands; `status` reports it as a reason. Normal application admission, startup, apply, seed and reset still refuse drift and pending migrations.
+
+`status`, `db inspect` and `db migration status` default to the development target. `--production` selects the production target and adds no authority. Both targets read the explicit `FLEUR_PRIVATE_DATABASE_URL` configuration that the runtime broker uses. When the trusted lifecycle environment supplies a development binding through `FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL`, that binding is never a production target, and a different configured database is not the development target. Missing or mismatched configuration returns `CONFIGURATION_MISSING` with exit 4. Until `fleur dev` supplies the binding, the configured database counts as the development target unless `--production` is given.
+
+All three run only Fleur-generated statements in a host-opened `REPEATABLE READ READ ONLY` transaction on the target. PostgreSQL itself refuses writes in that transaction (SQLSTATE 25006) and refuses to make it read-write after its first query. Before reading, they verify that the target connection reaches the cluster, database and endpoint identified through the control database.
+
 ## Inspection and export
 
-`db inspect` lists application tables in `public`. `--table` selects a base table with a primary key. Inspection uses a read-only transaction, defaults to 100 rows and permits 1–500. Table lists and rows return an opaque authenticated cursor when truncated. Row cursors bind target identity, table and column metadata. Cursor contents are compressed before authenticated encryption. Decoding bounds expansion to 1 MiB; tokens are limited to 16 KiB. A continuation that cannot fit fails explicitly with RESULT_TOO_LARGE rather than returning an unusable cursor. Tampered or incompatible cursors fail. Rows use native primary-key ordering and return column values as exact strings or null, preserving PostgreSQL numeric precision. A cursor continues a live Read Committed listing; it is not a historical snapshot across invocations.
+`--table` selects a base table with a primary key. Inspection uses a read-only transaction, defaults to 100 rows and permits 1–500. Overview pages and rows return an opaque authenticated cursor when truncated. Row cursors bind target identity, table and column metadata. Cursor contents are compressed before authenticated encryption. Decoding bounds expansion to 1 MiB; tokens are limited to 16 KiB. A continuation that cannot fit fails explicitly with RESULT_TOO_LARGE rather than returning an unusable cursor. Tampered or incompatible cursors fail. Rows use native primary-key ordering and return column values as exact strings or null, preserving PostgreSQL numeric precision. Each invocation reads one consistent snapshot. A cursor continues a live listing in a later invocation; it is not a historical snapshot across invocations.
 
 The complete encoded page is bounded below 1 MiB, including column metadata and cursor. A row that cannot fit fails with `RESULT_TOO_LARGE`; Fleur does not print a partial row. Uniquely named application columns remain ordinary data.
 
-`--export` writes that bounded page to the explicit destination, including its continuation cursor and truncation state. It returns an empty stdout row array plus destination, byte count, SHA-256 and completion metadata. Continue using the returned cursor for additional pages. Existing files and symlinks are never overwritten. Export is data inspection, not a recoverable PostgreSQL backup.
+`--export` writes that bounded page to the explicit destination, including its continuation cursor and truncation state. It returns an empty stdout row array, or an empty table array for the overview, plus destination, byte count, SHA-256 and completion metadata. Continue using the returned cursor for additional pages. Existing files and symlinks are never overwritten. Export is data inspection, not a recoverable PostgreSQL backup.
 
 ## Maintenance ownership and verification
 
@@ -47,7 +73,7 @@ For an interrupted backup, inspect the recorded exact archive reference and disp
 
 ## Result and exit contracts
 
-All commands use the version 1 JSON envelope and global `--timeout`, `--project`, `--help` and `--json` options. `truncated` appears in both the inspection page and envelope. Invalid grammar/cursors use exit 2. Missing configuration, tools or control authority use exit 4. Maintenance contention or uncertain recovery uses exit 5. Oversized inspection results, restore/integrity failures and destination collisions fail with exit 1. Failures never return a success manifest or expose connection credentials.
+All commands use the version 1 JSON envelope and global `--timeout`, `--project`, `--help` and `--json` options. `truncated` appears in both the inspection page and envelope. Invalid grammar/cursors use exit 2. Missing configuration, tools or control authority use exit 4, as does `DATABASE_UNAVAILABLE` when inspection cannot reach the database. Maintenance contention or uncertain recovery uses exit 5. Oversized inspection results, restore/integrity failures and destination collisions fail with exit 1. Failures never return a success manifest or expose connection credentials.
 
 ## Reviewed migrations
 
@@ -63,7 +89,7 @@ Generation compiles admitted server table declarations and registers them inside
 
 Plans admit only SQL emitted by Fleur's declaration compiler. Altered SQL, reordered history, changed checksums and nontransactional additions such as concurrent indexes are rejected. Additions with nullable columns or declared defaults preserve existing rows. Supported decimal widening preserves scale; unsupported type/identity/versioning changes and additions that need an explicit backfill are reported and refused. Resolve these declarations in an unapplied plan before proceeding. Do not remove or edit an applied file. Removing columns or tables requires separate human approval.
 
-`db migration plan` reads the complete artifact chain offline. `db migration status` compares it with actual history and normalized PostgreSQL catalogs. Comparison includes relations, columns, constraints, indexes, functions, enum/domain/range types, defaults, collations, sequence definitions, triggers and policies. The `fleur_internal` schema contains Fleur's migration metadata and is excluded from application catalog fingerprints. History checksums/order are verified separately. The external maintenance record also retains the expected catalog/history, so erasing database metadata does not bypass drift checks. Normal admission rejects drift; there is no push, automatic reset or history rewrite.
+`db migration plan` reads the complete artifact chain offline. `db migration status` compares it with actual history and normalized PostgreSQL catalogs and reports differences as data; see [schema overview and database health](#schema-overview-and-database-health). Comparison includes relations, columns, constraints, indexes, functions, enum/domain/range types, defaults, collations, sequence definitions, triggers and policies. The `fleur_internal` schema contains Fleur's migration metadata and is excluded from application catalog fingerprints. History checksums/order are verified separately. The external maintenance record also retains the expected catalog/history, so erasing database metadata does not bypass drift checks. Normal admission rejects drift; there is no push, automatic reset or history rewrite.
 
 Apply holds exclusive control-database ownership and the target fence through draining, backup verification and the schema transaction. SQL and ordered history commit together. The verified backup remains in private state. Applied SQL must match the reviewed artifact chain. A confirmed rollback requires proof that original schema and data remain unchanged. An uncertain commit keeps normal access blocked. Every completed maintenance resumption receives a new external epoch.
 
@@ -81,7 +107,7 @@ After reviewing that evidence, rerun the corresponding `db migration apply` or `
 
 For example, an interrupted apply whose transaction rolled back still reports `applying` in the durable marker. Inspection proves the original schema/data/history. Approved reconciliation records `rollback verified`, and a fresh inspection plus migration status proves that the original data remains and the migration is pending. An interrupted commit can instead match the complete new history and catalog. Reconciliation records that existing commit without running its SQL again. An inspection exit code alone is not proof of either outcome.
 
-`SCHEMA_DRIFT`, `MIGRATION_EDITED`, `MIGRATIONS_PENDING` and uncertain recovery block with exit 5. `MIGRATION_INCOMPATIBLE` reports an unsupported/backfill-requiring plan with exit 1. Approval uses exit 3; unavailable configuration/tools use exit 4. Other verification failures use exit 1. All results retain the version 1 JSON envelope and safe recovery actions.
+`SCHEMA_DRIFT`, `MIGRATION_EDITED`, `MIGRATIONS_PENDING` and uncertain recovery block apply, seed, reset and application admission with exit 5. `db migration status`, `db inspect` and `status` report the same conditions as exit-0 data. `MIGRATION_INCOMPATIBLE` reports an unsupported/backfill-requiring plan with exit 1. Approval uses exit 3; unavailable configuration/tools use exit 4. Other verification failures use exit 1. All results retain the version 1 JSON envelope and safe recovery actions.
 
 ## Owned seeds and development reset
 

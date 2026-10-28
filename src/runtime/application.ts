@@ -22,12 +22,16 @@ function publicBound(value: unknown): void {
   validatePublicValue(value);
   if (new TextEncoder().encode(JSON.stringify(value)).length > 1048576) throw new Error("RESULT_TOO_LARGE");
 }
+/** A render's nested query; `abandoned` aborts once the render stops waiting for it. */
+type NestedRead = (name: string, input: unknown, abandoned?: AbortSignal) => Promise<unknown>;
 export class ReadApplication {
   readonly registry: Registry;
   readonly #broker: ReadBroker;
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
   readonly #execution: NativeExecution;
+  /** Nested queries waiting for a slot; each blocks a render that holds a slot. */
+  readonly #stalled = new Set<AbortController>();
   private constructor(execution: NativeExecution, registry: Registry, url: string, maintenance: MaintenanceConfiguration) {
     this.registry = registry; this.#maintenance = {...maintenance,tables:registry.tables,completeRegistry:true}; this.#url = url;
     this.#broker = new ReadBroker({ url, tables: registry.tables, maintenance: this.#maintenance });
@@ -51,7 +55,7 @@ export class ReadApplication {
     try { return new ReadApplication(execution, registry, url, maintenance); }
     catch (error) { await execution.close(); throw error; }
   }
-  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: (name: string, input: unknown) => Promise<unknown> = (name, input) => this.query(name, input)): Promise<unknown> {
+  async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: NestedRead = (name, input) => this.query(name, input)): Promise<unknown> {
     const session = randomUUID();
     let sequence = 0, admitted = false;
     let operationFault: unknown;
@@ -69,10 +73,12 @@ export class ReadApplication {
         else if (request.kind === "query" && command.mode === "render" && !db) {
           const query = record(request.value);
           if (Object.keys(query).length !== 2 || typeof query.name !== "string") throw new Error("REQUEST_DENIED");
-          // A nested query never outlives the render that requested it.
+          // A nested query never outlives the render that requested it. The
+          // render stops waiting on it at once: abandonment precedes the reply.
+          const abandoned = new AbortController();
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
-            value = await Promise.race([read(query.name, query.input), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("QUERY_TIMEOUT")), Math.max(0, reservation.deadline - performance.now())); })]);
+            value = await Promise.race([read(query.name, query.input, abandoned.signal), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abandoned.abort(new Error("QUERY_TIMEOUT")); reject(new Error("QUERY_TIMEOUT")); }, Math.max(0, reservation.deadline - performance.now())); })]);
           } finally { clearTimeout(timer); }
         } else if (request.kind === "log" && (command.mode === "query" || command.mode === "mutation")) {
           const log = record(request.value);
@@ -100,18 +106,40 @@ export class ReadApplication {
     return result.value;
   }
   query(name: string, rawInput: unknown): Promise<unknown> { return this.#query(name, rawInput); }
-  /** `limit` caps a nested query by its enclosing render's deadline. */
-  async #query(name: string, rawInput: unknown, limit = Infinity): Promise<unknown> {
+  /** `limit` caps a nested query by its enclosing render's deadline; `abandoned` aborts once that render stops waiting. */
+  async #query(name: string, rawInput: unknown, limit = Infinity, abandoned?: AbortSignal): Promise<unknown> {
     const operation = this.registry.queries.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
     // One deadline covers queueing, preparation, the transaction and execution.
     const started = Math.min(performance.now(), limit - 5000);
-    const reservation = await this.#execution.reserve(started + 5000);
+    const reservation = limit === Infinity ? await this.#execution.reserve(started + 5000) : await this.#reserveNested(started + 5000, abandoned);
     try {
       return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(reservation, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input), started);
     } finally { reservation.release(); }
+  }
+  /**
+   * A nested query waiting for a slot blocks the render that requested it, and
+   * that render holds a slot of its own until the query settles or the render
+   * stops waiting. Once as many nested queries wait as there are slots, every
+   * slot holds such a render: none can be admitted before the render deadlines,
+   * so all of them fail now with QUERY_LIMIT. While fewer wait, some slot holds
+   * other work that can free it, so they keep waiting and are admitted normally.
+   */
+  async #reserveNested(deadline: number, abandoned?: AbortSignal): Promise<Reservation> {
+    abandoned?.throwIfAborted();
+    const stalled = new AbortController();
+    // A render that stopped waiting is no longer blocked by this query.
+    const leave = () => { this.#stalled.delete(stalled); };
+    abandoned?.addEventListener("abort", leave, { once: true });
+    this.#stalled.add(stalled);
+    if (this.#stalled.size >= this.#execution.capacity) {
+      for (const each of this.#stalled) each.abort(new Error("QUERY_LIMIT"));
+      this.#stalled.clear();
+    }
+    try { return await this.#execution.reserve(deadline, abandoned ? AbortSignal.any([abandoned, stalled.signal]) : stalled.signal); }
+    finally { leave(); abandoned?.removeEventListener("abort", leave); }
   }
   async mutate(name: string, rawInput: unknown): Promise<unknown> {
     const operation = this.registry.mutations.get(name);
@@ -134,6 +162,8 @@ export class ReadApplication {
   prepareWorkers(): void { this.#execution.warm(); }
   /** Slot states for operator visibility; no secrets or application data. */
   diagnostics(): ReturnType<NativeExecution["diagnostics"]> { return this.#execution.diagnostics(); }
+  /** The most slots this application's execution holds. */
+  get capacity(): number { return this.#execution.capacity; }
   watch(wakeup: () => void): Promise<() => Promise<void>> { return this.#broker.watch(wakeup); }
   async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.
@@ -163,10 +193,10 @@ export class ReadApplication {
         void acquiring.then(lease => lease.close()).catch(() => {});
         throw error;
       } finally { clearTimeout(timer); }
-      try { return await this.#render(reservation, read ?? ((name, input) => this.#query(name, input, deadline)), path); } finally { await admission.close(); }
+      try { return await this.#render(reservation, read ?? ((name, input, abandoned) => this.#query(name, input, deadline, abandoned)), path); } finally { await admission.close(); }
     } finally { reservation.release(); }
   }
-  async #render(reservation: Reservation, read: ((name: string, input: unknown) => Promise<unknown>) | undefined, path: string): Promise<PageResult> {
+  async #render(reservation: Reservation, read: NestedRead, path: string): Promise<PageResult> {
     {
       const result = record(await this.#execute(reservation, { mode: "render", path }, undefined, 5000, read));
       if (Object.keys(result).length !== 3 || typeof result.html !== "string" || !Array.isArray(result.islands) || result.islands.length > 500 || !Array.isArray(result.regions) || result.regions.length > 500) throw new Error("INTERNAL_FAILURE");

@@ -35,10 +35,10 @@ test("concurrent inspection accepts a cursor key while its publisher syncs the d
       const { SQL } = await import("bun");
       const url = process.env.REVIEW_DATABASE_URL;
       const config = { stateRoot: process.env.REVIEW_STATE_ROOT };
-      const first = inspectDatabase(url, { table: "cursor_rows" }, config);
+      const first = inspectDatabase(url, { project: process.env.REVIEW_STATE_ROOT, table: "cursor_rows" }, config);
       await Promise.race([paused, first.then(() => { throw new Error("Missing publication pause"); })]);
       let settled = false;
-      const second = inspectDatabase(url, { table: "cursor_rows" }, config).then(
+      const second = inspectDatabase(url, { project: process.env.REVIEW_STATE_ROOT, table: "cursor_rows" }, config).then(
         value => { settled = true; return { value }; },
         error => { settled = true; return { error: error.message }; }
       );

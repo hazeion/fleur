@@ -46,6 +46,8 @@ export async function syncDirectory(path: string): Promise<void> {
   const file = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { await file.sync(); } finally { await file.close(); }
 }
+/** Cause recorded when lease acquisition exceeded its bound and closed its own connections. */
+export const leaseDeadline = Symbol("lease deadline");
 export class MaintenanceLease {
   readonly sql: SQL;
   #target: DatabaseIdentity;
@@ -74,7 +76,8 @@ export class MaintenanceLease {
     // full interval for its remaining checks.
     const limit = Math.min(configuration.timeoutMs ?? 5000, 5000);
     const drainMs = exclusive && !inspect ? Math.max(0, limit - 1000) : 0;
-    const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void target.close({ timeout: 0 }).catch(() => {}); }, limit + drainMs);
+    let expired = false;
+    const timer = setTimeout(() => { expired = true; void sql.close({ timeout: 0 }).catch(() => {}); void target.close({ timeout: 0 }).catch(() => {}); }, limit + drainMs);
     try {
       const control = await sql.unsafe("SELECT system_identifier::text AS cluster, pg_backend_pid() AS pid, current_database() AS database, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system()");
       const current = control[0];
@@ -125,7 +128,8 @@ export class MaintenanceLease {
     } catch (error) {
       await sql.close({ timeout: 0 });
       if (error instanceof Error && ["CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) throw error;
-      throw new Error("PREREQUISITE_UNAVAILABLE");
+      // The cause lets read-only diagnostics distinguish an unreachable database; the code is unchanged.
+      throw new Error("PREREQUISITE_UNAVAILABLE", { cause: expired ? leaseDeadline : error });
     } finally { clearTimeout(timer); await target.close({ timeout: 0 }); }
   }
   async assertSession(): Promise<void> {

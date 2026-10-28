@@ -71,14 +71,19 @@ test("applying a reviewed migration verifies backup, commits schema/history toge
     expect(applied.result.data.backup.verified).toBe(true);
     expect(await broker.read(db => db.select(table,{fields:["id","name"]}))).toEqual([]);
     const status = await migrationCli(root,["db","migration","status"],env);
-    expect(status.result.data).toMatchObject({ compatible: true, applied:["0001"], pending:[] });
+    expect(status.result.data.migrations).toMatchObject({ compatible: true, applied:["0001"], pending:[], drift: false });
     await fixture.sql.unsafe("ALTER TABLE exercises ALTER COLUMN name DROP NOT NULL");
     let dispatched = false;
     await expect(broker.read(async () => { dispatched=true;return []; })).rejects.toThrow("SCHEMA_DRIFT");
     expect(dispatched).toBe(false);
+    // Status reports drift as exit-0 data; the broker above still refuses access.
     const drift = await migrationCli(root,["db","migration","status"],env);
-    expect(drift.exit).toBe(5);
-    expect(drift.result.error.code).toBe("SCHEMA_DRIFT");
+    expect(drift.exit).toBe(0);
+    expect(drift.result.data.migrations).toMatchObject({ compatible: false, drift: true, differenceCount: 1 });
+    expect(drift.result.data.differences).toEqual([{ object: "column exercises.name", expected: 'text collate "C" not null', actual: 'text collate "C"' }]);
+    const apply = await migrationCli(root,["db","migration","apply"],env);
+    expect(apply.exit).toBe(5);
+    expect(apply.result.error.code).toBe("SCHEMA_DRIFT");
   } finally { await broker.close(); await fixture.cleanup(); await rm(root,{recursive:true,force:true}); }
 },240_000);
 

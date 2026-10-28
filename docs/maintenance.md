@@ -25,13 +25,13 @@ Fleur uses the configured credential for every operation and never rejects a bro
 | --- | --- | --- |
 | `database connect` | `CONNECT` on the application and control databases | every database operation |
 | `identity inspection` | `EXECUTE` on `pg_control_system()` in the application and control databases | every database operation |
-| `maintenance locks` | `EXECUTE` on PostgreSQL's advisory lock functions in the control database | every database operation |
+| `maintenance locks` | `EXECUTE` on PostgreSQL's advisory lock functions in the control and application databases | every database operation |
 | `schema read` | `USAGE` on `public` and `fleur_internal` and `SELECT` on their tables; backup, apply, seed, restore and reset also read every user schema, table and sequence | every database operation |
 | `role and database creation` | superuser, or `CREATEROLE` and `CREATEDB` with `createrole_self_grant` including `set` and `inherit`, so Fleur can create, verify and remove its disposable backup verification role and database | `db backup`, `db migration apply`, `db restore`, `db reset` |
 | `schema write` | `CREATE` on the application database and on its `public` and `fleur_internal` schemas, and ownership of their tables and functions | `db migration apply`, `db seed`, `db restore`, `db reset` |
 | `database replacement` | ownership of the application database and its schemas | `db restore`, `db reset` |
 
-The first four rows are the profile. A minimal profile grant, run by the database owner or a superuser, looks like this; replace the placeholders with your role and database names:
+The first four rows are the profile. A minimal profile grant, run by the database owner or a superuser, looks like this; replace the placeholders with your role and database names. The schema statements need `fleur_internal` to exist, so run them after the first `db migration apply`:
 
 ```sql
 GRANT CONNECT ON DATABASE <application_database>, <control_database> TO <role>;

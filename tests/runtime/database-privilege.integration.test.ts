@@ -204,6 +204,75 @@ test("db backup, db migration apply, db seed, db restore and db reset under the 
   await rm(join(root, "migrations", "0002.json"));
 }, 300_000);
 
+test("db seed through the CLI under the profile returns DATABASE_PRIVILEGE_INSUFFICIENT naming schema write and changes nothing", async () => {
+  const before = await observed();
+  const seed = await cli(["db", "seed"], profile());
+  expectShortfall(seed, "schema write");
+  expect(await observed()).toEqual(before);
+  expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
+}, 300_000);
+
+test("db recover --inspect under the profile reports DATABASE_PRIVILEGE_INSUFFICIENT instead of an uncertain classification", async () => {
+  // The profile cannot read identity sequences, which the recovery classification digests.
+  const owned = await cli(["db", "recover", "--inspect"], { FLEUR_PRIVATE_DATABASE_URL: superuserUrl });
+  expect(owned.exit).toBe(0);
+  expect(owned.result.data!.actual).not.toBeNull();
+  const before = await observed();
+  const inspect = await cli(["db", "recover", "--inspect"], profile());
+  expectShortfall(inspect, "schema read");
+  expect(await observed()).toEqual(before);
+}, 300_000);
+
+test("a refused advisory lock in the application database returns DATABASE_PRIVILEGE_INSUFFICIENT naming maintenance locks", async () => {
+  // With PostgreSQL's default advisory lock grants in the application database, apply with nothing pending succeeds.
+  const idle = await cli(["db", "migration", "apply"], profile());
+  expect(idle.result.error).toBeNull();
+  expect(idle.exit).toBe(0);
+  expect(idle.result.data).toMatchObject({ applied: [] });
+  const functions = "SELECT p.oid::regprocedure AS f FROM pg_proc p WHERE p.pronamespace='pg_catalog'::regnamespace AND p.proname ~ '^pg_(try_)?advisory_'";
+  await admin.unsafe(`DO $$ DECLARE f regprocedure; BEGIN FOR f IN ${functions} LOOP EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f); END LOOP; END $$`);
+  try {
+    const before = await observed();
+    const apply = await cli(["db", "migration", "apply"], profile());
+    expectShortfall(apply, "maintenance locks");
+    expect(await observed()).toEqual(before);
+    expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
+  } finally {
+    await admin.unsafe(`DO $$ DECLARE f regprocedure; BEGIN FOR f IN ${functions} LOOP EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC', f); END LOOP; END $$`);
+  }
+}, 300_000);
+
+test("a credential that can create roles and databases but owns nothing reaches the schema write and database replacement preflights of apply, restore and reset", async () => {
+  await generateMigration(root, [exercises, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
+  const stateDirectory = (await readdir(root)).find(name => /^[a-f0-9]{64}$/.test(name))!;
+  const retained = (await readdir(join(root, stateDirectory))).find(name => /^before-.*\.dump$/.test(name))!;
+  const creator = `${role}_creator`;
+  // The profile plus role and database creation, including the self-grant the verification database needs.
+  await control.unsafe(`CREATE ROLE ${creator} LOGIN PASSWORD '${password}' CREATEROLE CREATEDB IN ROLE ${role}`);
+  await control.unsafe(`ALTER ROLE ${creator} SET createrole_self_grant = 'set, inherit'`);
+  // Restore refuses while it cannot see that other sessions on the target are idle; PostgreSQL hides the state of
+  // other roles' sessions without pg_read_all_stats, and the fixture's own superuser session stays connected.
+  await control.unsafe(`GRANT pg_read_all_stats TO ${creator}`);
+  try {
+    const login = new URL(profileUrl);
+    login.username = creator;
+    const url = login.toString();
+    const before = await observed();
+    const apply = await cli(["db", "migration", "apply"], { FLEUR_PRIVATE_DATABASE_URL: url });
+    expectShortfall(apply, "schema write");
+    const restore = await cli(["db", "restore", "--from", join(root, stateDirectory, retained)], { FLEUR_PRIVATE_DATABASE_URL: url });
+    expectShortfall(restore, "database replacement");
+    const reset = await cli(["db", "reset"], { FLEUR_PRIVATE_DATABASE_URL: url, FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL: url });
+    expectShortfall(reset, "database replacement");
+    for (const outcome of [apply, restore, reset]) expect(outcome.stdout).not.toContain(creator);
+    expect(await observed()).toEqual(before);
+    expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
+  } finally {
+    await control.unsafe(`DROP ROLE ${creator}`);
+    await rm(join(root, "migrations", "0002.json"));
+  }
+}, 300_000);
+
 test("each missing privilege of the profile fails read-only inspection and status with DATABASE_PRIVILEGE_INSUFFICIENT naming its capability", async () => {
   const variants: { readonly name: string; readonly capability: string; readonly on: SQL; readonly revoke: string; readonly grant: string; readonly args: readonly (readonly string[])[] }[] = [
     { name: "control CONNECT", capability: "database connect", on: control, revoke: `REVOKE CONNECT ON DATABASE postgres FROM ${role}`, grant: `GRANT CONNECT ON DATABASE postgres TO ${role}`, args: [["db", "inspect"], ["status"]] },

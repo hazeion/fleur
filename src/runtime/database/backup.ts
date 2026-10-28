@@ -7,7 +7,7 @@ import { quote, publishFile } from "./inspection";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { dataIntegrity } from "./integrity";
 import { fileDigest, pgTool, schemaDumpArguments } from "./pg-tools";
-import { requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 
 export interface BackupConfiguration extends MaintenanceConfiguration { readonly toolDirectory?: string; readonly timeoutMs?: number; }
 const schemaArgs = schemaDumpArguments;
@@ -60,7 +60,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     await requireAuthority(lease.sql, source, ["role and database creation", "schema read"]);
     // The target fence closes the control-socket-loss race. It is supplemental;
     // replacement ownership is always the independent control-database lock.
-    const fenced = await source.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]);
+    const fenced = await privileged("maintenance locks", () => source.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]));
     if (fenced[0]?.acquired !== true) throw new Error("MAINTENANCE_BUSY");
     const activities = await source.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");
     const prepared = await source.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()");

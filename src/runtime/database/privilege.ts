@@ -8,7 +8,7 @@ import type { SQL } from "bun";
 export const capabilities = {
   "database connect": "CONNECT on the application and control databases",
   "identity inspection": "EXECUTE on pg_control_system() in the application and control databases",
-  "maintenance locks": "EXECUTE on the advisory lock functions in the control database",
+  "maintenance locks": "EXECUTE on the advisory lock functions in the control and application databases",
   "schema read": "USAGE on the schemas and SELECT on the tables and sequences that the command reads",
   "role and database creation": "superuser, or CREATEROLE and CREATEDB with createrole_self_grant including set and inherit, to create, verify and remove the disposable backup verification role and database",
   "schema write": "CREATE on the application database and its public and fleur_internal schemas, and ownership of their tables and functions",

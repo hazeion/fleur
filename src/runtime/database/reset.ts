@@ -10,7 +10,7 @@ import { readMigrations } from "./migration-plan";
 import { dataIntegrity } from "./integrity";
 import { quote } from "./inspection";
 import { seedDatabase } from "./seeds";
-import { requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 
 export interface ResetConfiguration extends BackupConfiguration, MaintenanceAuthority {
   /** Trusted lifecycle binding. Production configuration never supplies this value. */
@@ -29,7 +29,7 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
   try {
     const history = await assertMigrationState(sql);
     if (history.some((row, index) => row.checksum !== plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
-    const fence = await sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]);
+    const fence = await privileged("maintenance locks", () => sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]));
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
     // Before approval, backup or any marker: reset verifies a backup, then drops, recreates and migrates the database.
     await requireAuthority(lease.sql, sql, ["role and database creation", "database replacement", "schema write", "schema read"]);

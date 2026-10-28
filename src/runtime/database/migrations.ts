@@ -10,7 +10,7 @@ import { backupDatabase, type BackupConfiguration } from "./backup";
 import { authorizeMaintenance, type MaintenanceAuthority } from "./maintenance-authority";
 import { reconcileMaintenance } from "./recovery";
 import { dataIntegrity } from "./integrity";
-import { requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 
 /** `db migration status`: the full migration report for one verified target, read inside a read-only transaction. */
 export async function migrationStatus(url: string, project: string, config: BackupConfiguration & { readonly kind?: TargetKind } = {}) {
@@ -31,7 +31,7 @@ export async function applyMigrations(url: string, project: string, config: Back
   let transaction = false, commitAttempted = false;
   const timer = setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},remaining());
   try {
-    const fence=await sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]);
+    const fence=await privileged("maintenance locks",()=>sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]));
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
     const history=await assertMigrationState(sql);
     if (history.some((row,index)=>row.checksum!==plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");

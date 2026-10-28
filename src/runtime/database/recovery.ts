@@ -6,6 +6,7 @@ import { readMigrations } from "./migration-plan";
 import { authorizeMaintenance, type MaintenanceAuthority } from "./maintenance-authority";
 import { cleanupInterruptedVerification } from "./restore-verification";
 import type { BackupConfiguration } from "./backup";
+import { PrivilegeInsufficient, requireAuthority } from "./privilege";
 
 async function actualState(sql:SQL) {
   await sql.unsafe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -29,9 +30,15 @@ export async function inspectMaintenance(url:string,config:BackupConfiguration={
     const maintenance=await lease.marker();
     if(lease.busy)return {target:lease.target,maintenance,busy:true,classification:"in-progress",actual:null};
     try {
+      // The data digest reads every user table and sequence; a refusal there would surface only as an aborted transaction.
+      await requireAuthority(lease.sql,sql,["schema read"]);
       const actual=await actualState(sql);
       return {target:lease.target,maintenance,busy:false,classification:classify(maintenance,actual),actual};
-    }catch{return {target:lease.target,maintenance,busy:false,classification:"uncertain",actual:null};}
+    }catch(error){
+      // A credential that cannot read the state is a shortfall to report, not an uncertain outcome.
+      if(error instanceof PrivilegeInsufficient)throw error;
+      return {target:lease.target,maintenance,busy:false,classification:"uncertain",actual:null};
+    }
   }finally{clearTimeout(timer);await sql.close({timeout:0});await lease.close();}
 }
 /** Explicit classification only. This operation never executes a migration or restoration again. */

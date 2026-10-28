@@ -253,6 +253,11 @@ def result(outcome, start='4242', operation=OPERATION, retired_value=True):
                        'physical_exit_lateness_ms': 0, 'operation': operation, 'start': start, 'retired': retired_value}).encode()
 
 
+def grant(value=2000):
+    """The host's grant: what remains of its deadline when it receives the run acknowledgement."""
+    return {'kind': 'deadline', 'value': value, 'operation': OPERATION}
+
+
 class ControllerRun(unittest.TestCase):
     def slot(self, application, guard_stream, exit_code=0):
         slot = object.__new__(retained.Slot)
@@ -277,14 +282,15 @@ class ControllerRun(unittest.TestCase):
         application = Stream(frames=[{'kind': 'complete', 'value': 1}])
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('premature-exit')])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        host = Host([grant(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
         with patched:
             reply = slot.run(self.request(), host.input, host.output)
         sent = host.sent()
-        self.assertEqual(sent[0]['kind'], 'guard')
-        self.assertEqual(sent[0]['value']['start'], '4242')
+        self.assertEqual(sent[0], {'kind': 'received', 'operation': OPERATION})
+        self.assertEqual(sent[1]['kind'], 'guard')
+        self.assertEqual(sent[1]['value']['start'], '4242')
         self.assertTrue(application.written.startswith(b'startup:approved\n'))
-        self.assertEqual(sent[1], {'kind': 'worker', 'value': {'kind': 'complete', 'value': 1}})
+        self.assertEqual(sent[2], {'kind': 'worker', 'value': {'kind': 'complete', 'value': 1}})
         self.assertEqual(reply['kind'], 'retired')
         self.assertIsNone(slot.prepared)
         self.assertTrue(application.closed and guard_stream.closed)
@@ -303,7 +309,7 @@ class ControllerRun(unittest.TestCase):
             application = Stream(frames=[{'kind': 'complete', 'value': 1}])
             guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', record])
             slot, patched = self.slot(application, guard_stream)
-            host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+            host = Host([grant(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
             with patched, self.assertRaises(retained.Quarantine):
                 slot.run(self.request(), host.input, host.output)
 
@@ -311,7 +317,7 @@ class ControllerRun(unittest.TestCase):
         application = Stream(frames=frames)
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', record])
         slot, patched = self.slot(application, guard_stream, exit_code)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        host = Host([grant(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
         return application, guard_stream, slot, patched, host
 
     # #58: application code can write a terminal-looking frame. Completion bytes
@@ -358,13 +364,13 @@ class ControllerRun(unittest.TestCase):
             application.data += struct.pack('!I', len(frame)) + frame
             guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', lambda: result('cancelled') if guard_stream.stdin_closed else b'{}'])
             slot, patched = self.slot(application, guard_stream)
-            host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}])
+            host = Host([grant(), {'kind': 'admit', 'value': None, 'operation': OPERATION}])
             with patched:
                 reply = slot.run(self.request(), host.input, host.output)
             self.assertTrue(guard_stream.stdin_closed, frame)
             self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'INTERNAL_FAILURE', 'cancelled'), frame)
             # Nothing the host would reject is forwarded to it.
-            self.assertEqual([value['kind'] for value in host.sent()], ['guard'], frame)
+            self.assertEqual([value['kind'] for value in host.sent()], ['received', 'guard'], frame)
             self.assertIsNone(slot.prepared)
 
     def test_application_frames_within_the_public_contract_are_forwarded(self):
@@ -376,13 +382,13 @@ class ControllerRun(unittest.TestCase):
             with patched:
                 reply = slot.run(self.request(), host.input, host.output)
             self.assertEqual(reply['kind'], 'retired')
-            self.assertEqual(host.sent()[1], {'kind': 'worker', 'value': value})
+            self.assertEqual(host.sent()[2], {'kind': 'worker', 'value': value})
 
     def test_host_cancellation_retires_only_through_the_bound_guard(self):
         application = Stream(frames=[{'kind': 'read', 'value': 1}])
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', lambda: result('cancelled') if guard_stream.stdin_closed else b'{}'])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'cancel', 'value': None, 'operation': OPERATION}])
+        host = Host([grant(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'cancel', 'value': None, 'operation': OPERATION}])
         with patched:
             reply = slot.run(self.request(), host.input, host.output)
         self.assertTrue(guard_stream.stdin_closed)
@@ -416,7 +422,7 @@ class ControllerRun(unittest.TestCase):
         application = Stream()
         guard_stream = Stream(lines=[late, record])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([])
+        host = Host([grant(10)])
         return application, guard_stream, slot, patched, host
 
     def test_arming_expiry_with_a_verified_unadmitted_retirement_is_a_timeout(self):
@@ -426,7 +432,8 @@ class ControllerRun(unittest.TestCase):
         with patched:
             reply = slot.run(self.request(10), host.input, host.output)
         self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'unadmitted'))
-        self.assertEqual(host.sent(), [])
+        # Only the run's acknowledgement: no guard binding and no application bytes.
+        self.assertEqual(host.sent(), [{'kind': 'received', 'operation': OPERATION}])
         self.assertEqual(bytes(application.written), b'')
         self.assertIn(OPERATION, slot.retired)
 
@@ -443,8 +450,10 @@ class ControllerRun(unittest.TestCase):
         application = Stream(frames=[{'kind': 'complete', 'value': 1}])
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('deadline')])
         slot, patched = self.slot(application, guard_stream)
-        # The host channel stays open and silent past the run's deadline.
+        # After its grant, the host channel stays open and silent past the run's deadline.
         read, write = os.pipe()
+        data = json.dumps(grant(50)).encode()
+        os.write(write, struct.pack('!I', len(data)) + data)
         host_in = os.fdopen(read, 'rb', buffering=0)
         OPEN.append(host_in)
         output = io.BytesIO()
@@ -454,6 +463,70 @@ class ControllerRun(unittest.TestCase):
         finally:
             os.close(write)
         self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'deadline'))
+        self.assertEqual(bytes(application.written), b'')
+        self.assertIn(OPERATION, slot.retired)
+
+    # #75: host-to-controller transit is charged to the host's budget. The
+    # controller anchors the guard's deadline before acknowledging the run; the
+    # host answers with what remains of its own deadline when it receives that
+    # acknowledgement. Only relative durations cross the clock boundary.
+    def armed_run(self, granted, budget=2000):
+        application = Stream(frames=[{'kind': 'complete', 'value': 1}])
+        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('premature-exit')])
+        slot, patched = self.slot(application, guard_stream)
+        host = Host([{'kind': 'deadline', 'value': granted, 'operation': OPERATION}, {'kind': 'admit', 'value': None, 'operation': OPERATION},
+                     {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        return application, slot, patched, host
+
+    def test_the_guard_deadline_is_the_hosts_remaining_budget_from_the_controllers_acknowledgement(self):
+        application, slot, patched, host = self.armed_run(700)
+        before = time.monotonic()
+        with patched:
+            reply = slot.run(self.request(2000), host.input, host.output)
+        self.assertEqual(reply['kind'], 'retired')
+        sent = host.sent()
+        self.assertEqual(sent[0], {'kind': 'received', 'operation': OPERATION})
+        self.assertEqual(sent[1]['kind'], 'guard')
+        deadline = float(self.arguments[7])
+        self.assertEqual(sent[1]['value']['deadline'], deadline)
+        # Anchored no earlier than the run began, and only the host's grant follows it.
+        self.assertGreaterEqual(deadline, before + .7)
+        self.assertLess(deadline, before + .7 + .5)
+
+    def test_no_host_grant_extends_the_budget_or_reaches_the_guard_unvalidated(self):
+        for granted in (2001, -1, 1.5, None, True, '700'):
+            application, slot, patched, host = self.armed_run(granted)
+            self.arguments = None
+            with patched, self.assertRaises(retained.Quarantine, msg=granted):
+                slot.run(self.request(2000), host.input, host.output)
+            self.assertIsNone(self.arguments, granted)
+            self.assertEqual(bytes(application.written), b'', granted)
+        for grant in ({'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'deadline', 'value': 700, 'operation': '00000000-0000-4000-8000-000000000002'},
+                      {'kind': 'deadline', 'value': 700, 'operation': OPERATION, 'extra': 1}):
+            application = Stream()
+            slot, patched = self.slot(application, Stream())
+            host = Host([grant])
+            self.arguments = None
+            with patched, self.assertRaises(retained.Quarantine, msg=grant):
+                slot.run(self.request(2000), host.input, host.output)
+            self.assertIsNone(self.arguments, grant)
+
+    def test_a_host_grant_that_never_arrives_retires_the_unadmitted_process(self):
+        record = json.dumps({'kind': 'result', 'outcome': 'unadmitted', 'physical_exit_confirmed': True, 'kill_lateness_ms': 10,
+                             'physical_exit_lateness_ms': 12, 'operation': OPERATION, 'start': '4242', 'retired': True}).encode()
+        application = Stream()
+        guard_stream = Stream(lines=[record])
+        slot, patched = self.slot(application, guard_stream)
+        read, write = os.pipe()
+        host_in = os.fdopen(read, 'rb', buffering=0)
+        OPEN.append(host_in)
+        output = io.BytesIO()
+        try:
+            with patched:
+                reply = slot.run(self.request(50), host_in, output)
+        finally:
+            os.close(write)
+        self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'unadmitted'))
         self.assertEqual(bytes(application.written), b'')
         self.assertIn(OPERATION, slot.retired)
 
@@ -487,6 +560,8 @@ class ControllerRun(unittest.TestCase):
             return [value['kind'] for value in host.sent()]
         admit = {'kind': 'admit', 'value': None, 'operation': OPERATION}
         self.assertEqual(controller([{'kind': 'run', 'operation': OPERATION}, admit]), ['ready', 'failure', 'closed'])
+        grant = {'kind': 'deadline', 'value': 700, 'operation': OPERATION}
+        self.assertEqual(controller([{'kind': 'run', 'operation': OPERATION}, grant, admit]), ['ready', 'failure', 'closed'])
         # An admission for an operation that never timed out remains a protocol violation.
         self.assertEqual(controller([admit]), ['ready', 'quarantined'])
 

@@ -154,3 +154,37 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`a slow guard host whose arming
     }
   } finally { await execution.close(); }
 }, 120_000);
+
+// #75: the host grants a run its budget against its own deadline. Transit to
+// the controller (here a stalled `docker run --interactive` client relaying the
+// run frame) must be charged to that budget, never added after the host's
+// deadline on top of the 250-ms tolerance.
+const TRANSIT_STALL = 1500;
+const attachClient = (slot: string): number => {
+  const found = Bun.spawnSync(["pgrep", "-f", `run --interactive --name fleur-exec-controller-${slot} `]).stdout.toString().trim().split("\n").filter(Boolean).map(Number);
+  expect(found).toHaveLength(1);
+  return found[0]!;
+};
+for (let repeat = 1; repeat <= 2; repeat++) test(`a busy operation whose run frame is delayed in transit is still killed by the host's deadline, repeat ${repeat}`, async () => {
+  const execution = await NativeExecution.open(images, { capacity: 1 });
+  try {
+    const first = await execution.execute({}, () => null);
+    const client = attachClient(first.operation.slot);
+    const reservation = await execution.reserve(performance.now() + DEADLINE);
+    let failure: Awaited<ReturnType<typeof outcome>>;
+    process.kill(client, "SIGSTOP");
+    const resume = setTimeout(() => process.kill(client, "SIGCONT"), TRANSIT_STALL);
+    try {
+      failure = await outcome(reservation.run({ spin: true }, () => null));
+    } finally { clearTimeout(resume); process.kill(client, "SIGCONT"); reservation.release(); }
+    // The reply follows the kill, so it bounds the kill time on the host's clock.
+    const late = performance.now() - reservation.deadline;
+    console.info(`[transit] failure reply ${Math.round(late)} ms after the host deadline; guard kill lateness ${failure?.evidence?.kill_lateness_ms} ms, exit lateness ${failure?.evidence?.physical_exit_lateness_ms} ms after its own deadline`);
+    expect(failure?.message).toBe("QUERY_TIMEOUT");
+    expect(failure?.evidence).toMatchObject({ physical_exit_confirmed: true, retired: true, outcome: "deadline" });
+    expect(Number(failure?.evidence?.physical_exit_lateness_ms)).toBeLessThanOrEqual(TOLERANCE);
+    expect(late).toBeLessThan(TOLERANCE + REPORTING);
+    // A timeout is not uncertainty: the same retained container serves the next request.
+    expect((await execution.execute({}, () => null)).operation.container).toBe(first.operation.container);
+  } finally { await execution.close(); }
+}, 120_000);

@@ -264,9 +264,28 @@ class Slot:
             raise Quarantine('REQUEST_DENIED')
         if time.monotonic()-prepared['started'] >= ADMISSION_WINDOW:
             raise Quarantine('ADMISSION_EXPIRED')
-        started = time.monotonic()
-        deadline = started+request['budgetMs']/1000
         operation = prepared['operation']
+        # The host's clock is not this one, so only durations cross. The
+        # deadline is anchored before this acknowledgement, and the host grants
+        # what remains of its own deadline when the acknowledgement reaches it:
+        # transit both ways is charged to the run, never added after the host's
+        # deadline. The grant can only shorten the budget the run frame carried.
+        started = time.monotonic()
+        send(host_out, {'kind': 'received', 'operation': operation})
+        deadline = started+request['budgetMs']/1000
+        try:
+            granted = frame(host_in, deadline)
+        except RuntimeError as error:
+            if str(error) != 'QUERY_TIMEOUT':
+                raise
+            # No grant within the whole budget: the host's deadline has passed,
+            # and arming retires the still-gated process as unadmitted.
+            granted = None
+        if granted is not None:
+            if (type(granted) is not dict or set(granted) != {'kind', 'value', 'operation'} or granted['kind'] != 'deadline'
+                    or granted['operation'] != operation or type(granted['value']) is not int or not 0 <= granted['value'] <= request['budgetMs']):
+                raise Quarantine('REQUEST_DENIED')
+            deadline = started+granted['value']/1000
         try:
             binding = self.arm(operation, deadline)
         except ArmingExpired as expired:
@@ -384,7 +403,7 @@ def main():
                 return
             if type(request) is not dict or type(request.get('operation')) is not str or not re.fullmatch(r'[a-f0-9-]{36}', request['operation']):
                 raise Quarantine('REQUEST_DENIED')
-            if (request.get('kind') in ('admit', 'reply', 'finish', 'cancel') and set(request) == {'kind', 'value', 'operation'}
+            if (request.get('kind') in ('deadline', 'admit', 'reply', 'finish', 'cancel') and set(request) == {'kind', 'value', 'operation'}
                     and request['operation'] in slot.retired):
                 continue
             if request.get('kind') == 'prepare' and set(request) == {'kind', 'operation'}:

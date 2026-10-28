@@ -242,6 +242,10 @@ class IsolatedDaemonError(RuntimeError):
         super().__init__(message+suffix)
 
 
+class DefaultDaemonUnavailable(IsolatedDaemonError):
+    """The default daemon CLI exited nonzero: not yet ready, retried only by the readiness wait."""
+
+
 class Endpoint:
     def __init__(self, root, token, deadline):
         self.root, self.token, self.deadline = root, token, deadline
@@ -513,13 +517,49 @@ def _default_identity(timeout=5):
     template = '{"ID":{{json .ID}},"Driver":{{json .Driver}},"DockerRootDir":{{json .DockerRootDir}}}'
     result = subprocess.run(['docker', '--host', 'unix:///var/run/docker.sock', 'info', '--format', template],
                             env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False)
-    if result.returncode or len(result.stdout) > 4096:
+    if result.returncode:
+        raise DefaultDaemonUnavailable('default daemon identity unavailable')
+    if len(result.stdout) > 4096:
         raise IsolatedDaemonError('default daemon identity unavailable')
     identity = json.loads(result.stdout)
     if (type(identity) is not dict or set(identity) != {'ID', 'Driver', 'DockerRootDir'}
             or any(type(value) is not str or not value for value in identity.values())):
         raise IsolatedDaemonError('default daemon identity invalid')
     return identity
+
+
+# Hosted runners can answer `docker version` while the first `docker info` still
+# stalls for several seconds. The baseline read is a readiness wait, not a latency
+# requirement: retry under one explicit deadline and fail closed when it expires.
+DEFAULT_DAEMON_READY_SECONDS = 30
+DEFAULT_DAEMON_ATTEMPT_SECONDS = 5
+
+# Aggregate owned-daemon cleanup fence. Stop and anchored VFS data-root removal
+# (90.8k files, 12.0k directories) took up to an estimated 23 s on hosted runners,
+# so the former 15 s fence left roots behind (#99). The probe reserves the same window.
+CLEANUP_SECONDS = 60
+
+
+def wait_for_default_daemon(window, attempt_timeout, interval=.5):
+    """Return the default daemon identity once it answers, or fail at the window deadline."""
+    if not 0 < attempt_timeout <= window or interval <= 0:
+        raise ValueError('default daemon readiness bounds invalid')
+    deadline = time.monotonic()+window
+    attempts = {'attempts': 0, 'timeouts': 0, 'refusals': 0}
+    while True:
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            break
+        attempts['attempts'] += 1
+        try:
+            return _default_identity(timeout=min(attempt_timeout, remaining))
+        except subprocess.TimeoutExpired:
+            attempts['timeouts'] += 1
+        except DefaultDaemonUnavailable:
+            attempts['refusals'] += 1
+        time.sleep(max(0, min(interval, deadline-time.monotonic())))
+    raise IsolatedDaemonError(f'default daemon not ready within {window:g}s readiness deadline',
+                              attempts)
 
 
 @contextmanager
@@ -529,7 +569,7 @@ def isolated_vfs_daemon(lifetime=540):
     parent = Path(os.environ.get('RUNNER_TEMP', ''))
     if not parent.is_absolute() or not parent.is_dir() or parent.is_symlink():
         raise IsolatedDaemonError('counterfactual temporary root invalid')
-    baseline = _default_identity()
+    baseline = wait_for_default_daemon(DEFAULT_DAEMON_READY_SECONDS, DEFAULT_DAEMON_ATTEMPT_SECONDS)
     root = Path(tempfile.mkdtemp(prefix='fleur-vfs-', dir=parent))
     token = 'fleur-vfs-' + uuid.uuid4().hex
     (root/'owner').write_text(token)
@@ -562,7 +602,7 @@ def isolated_vfs_daemon(lifetime=540):
         raise
     finally:
         cleanup_error = None
-        cleanup_deadline = min(endpoint.deadline, time.monotonic()+15)
+        cleanup_deadline = min(endpoint.deadline, time.monotonic()+CLEANUP_SECONDS)
         empty = False
         output = b''
         observations=endpoint.cleanup_observations

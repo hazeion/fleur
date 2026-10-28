@@ -37,20 +37,20 @@ type WorkoutSet = Infer<typeof workoutSet>;
 interface StoredSet { repetitions: number; weight: DecimalString | null; unit: string | null }
 
 /** Normalizes stored-range weights textually; larger values are rejected rather than rounded. */
-function storedWeight(value: DecimalString): DecimalString {
+function storedWeight(value: DecimalString, field: string): DecimalString {
   const normalized = weightValue.parse(normalizeDecimal(value));
-  if (normalized.split(".")[0]!.length > 5) throw inputError({ weight: "Use a weight of at most 99999.99." });
+  if (normalized.split(".")[0]!.length > 5) throw inputError({ [field]: "Use a weight of at most 99999.99." });
   return normalized;
 }
-/** Validates and normalizes every copied value before the first write. */
+/** Validates and normalizes every copied value before the first write; errors name the field's input path. */
 function snapshotOf(input: Details) {
   if (input.exercises.reduce((total, exercise) => total + exercise.sets.length, 0) > sessionSetLimit) throw inputError({ exercises: `Record at most ${sessionSetLimit} sets per session.` });
   return {
     date: input.date,
-    templateName: input.templateName === undefined ? null : trimmedName(input.templateName),
-    exercises: input.exercises.map(exercise => ({
-      name: trimmedName(exercise.name),
-      sets: exercise.sets.map((set): StoredSet => ({ repetitions: set.repetitions, weight: set.weight ? storedWeight(set.weight.value) : null, unit: set.weight?.unit ?? null })),
+    templateName: input.templateName === undefined ? null : trimmedName(input.templateName, "templateName"),
+    exercises: input.exercises.map((exercise, index) => ({
+      name: trimmedName(exercise.name, `exercises.${index}.name`),
+      sets: exercise.sets.map((set, setIndex): StoredSet => ({ repetitions: set.repetitions, weight: set.weight ? storedWeight(set.weight.value, `exercises.${index}.sets.${setIndex}.weight`) : null, unit: set.weight?.unit ?? null })),
     })),
   };
 }

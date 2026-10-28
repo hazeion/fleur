@@ -23,10 +23,11 @@ export const templateEntries = defineTable("workout_template_entries", { columns
   targetRepetitions: column.safeInteger(),
 } });
 
-export function trimmedName(value: string) {
+/** `field` is the input path the error names, such as `exercises.1.name`. */
+export function trimmedName(value: string, field = "name") {
   const name = value.trim();
   const length = Array.from(name).length;
-  if (length < 1 || length > 100) throw inputError({ name: "Use 1–100 characters after trimming." });
+  if (length < 1 || length > 100) throw inputError({ [field]: "Use 1–100 characters after trimming." });
   return name;
 }
 handleQuery(listExercises, async ({ db }) => db.select(exercises, { fields: ["id", "name", "version"], orderBy: [{ field: "name", direction: "asc" }] }));

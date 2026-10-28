@@ -122,7 +122,7 @@ def cleanup_diagnostics(endpoint):
 
 
 def run_counterfactual(architecture, directory):
-    from isolated_daemon import isolated_vfs_daemon
+    from isolated_daemon import CLEANUP_SECONDS, isolated_vfs_daemon
     target=Path(directory);target.mkdir(parents=True,exist_ok=True)
     result={'scope':'vfs-and-kernel-network-counterfactual','v1_gate_passed':False,'replaces_overlay_requirement':False,
             'passed':False,'architecture':architecture,'daemon_cleanup_verified':False,
@@ -133,7 +133,7 @@ def run_counterfactual(architecture, directory):
         with isolated_vfs_daemon(lifetime=540) as endpoint:
             if not valid_facts(endpoint.facts):raise RuntimeError('isolated daemon identity unverified')
             result['daemon']={key:endpoint.facts[key] for key in ('driver','server_version',*FACT_FLAGS)}
-            timeout=endpoint.remaining_seconds()-15
+            timeout=endpoint.remaining_seconds()-CLEANUP_SECONDS
             exit_code,raw,transport=execute_probe(architecture,endpoint.environment,timeout)
             result['probe_transport']=transport;result['probe_exit_code']=exit_code
             probe=json.loads(raw)

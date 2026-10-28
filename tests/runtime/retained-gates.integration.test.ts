@@ -167,14 +167,15 @@ test("a slot whose removal cannot be verified stays visible while it occupies ca
 
 /**
  * Runs `work` with Fleur's Docker CLI calls forwarded to the real CLI, except
- * that `race` decides kill and forced removal. "concurrent" first performs the
- * same kill or `rm --force` once, as a slot's own controller does when it exits
- * after removing its application and guard containers while host recovery
- * runs. "refuse" fails a kill without performing it. "replace" removes the
- * kill's target and creates `impostor` (docker create arguments) in its place
- * before the kill, which then fails.
+ * that `race` decides kill and forced removal. "kills" forwards them unchanged:
+ * recovery's kill stops the controller before it could stop itself.
+ * "concurrent" first performs the same kill or `rm --force` once, as a slot's
+ * own controller does when it exits after removing its application and guard
+ * containers while host recovery runs. "refuse" fails a kill without
+ * performing it. "replace" removes the kill's target and creates `impostor`
+ * (docker create arguments) in its place before the kill, which then fails.
  */
-async function withDockerRace<T>(race: "concurrent" | "refuse" | "replace", work: () => Promise<T>, impostor: readonly string[] = []): Promise<T> {
+async function withDockerRace<T>(race: "kills" | "concurrent" | "refuse" | "replace", work: () => Promise<T>, impostor: readonly string[] = []): Promise<T> {
   const real = Bun.which("docker");
   if (!real) throw new Error("Docker CLI required");
   const directory = await mkdtemp(join(tmpdir(), "fleur-docker-race-"));
@@ -196,8 +197,8 @@ exec ${JSON.stringify(real)} "$@"
 // still removing its own containers; the controller then exits by itself
 // between recovery's inspection and its kill. That kill failing must not leave
 // the slot unrecoverable, and recovery is still verified by inspection alone.
-test("quarantine recovery verifies a controller that stopped itself and its removed containers, and still refuses a controller it could not stop or no longer identifies", async () => {
-  for (const race of ["concurrent", "refuse", "replace"] as const) {
+test("quarantine recovery verifies a controller it stopped or that stopped itself and its removed containers, and still refuses a controller it could not stop or no longer identifies", async () => {
+  for (const race of ["kills", "concurrent", "refuse", "replace"] as const) {
     const owner = randomUUID();
     const lease = await RetainedLease.create(owner, images);
     try {
@@ -210,7 +211,7 @@ test("quarantine recovery verifies a controller that stopped itself and its remo
       const impostor = ["--name", lease.controllerName, "--label", `dev.fleur.execution-owner=${owner}`, "--network=none", "--pull=never", "--entrypoint", "/bin/true", images.controller];
       const recovery = await withDockerRace(race, () => lease.cleanup(), impostor).then(() => "recovered", (error: Error) => error.message);
       const running = (await docker("ps", "--quiet", "--no-trunc", "--filter", `label=dev.fleur.execution-owner=${owner}`)).split("\n").filter(Boolean);
-      if (race === "concurrent") {
+      if (race === "kills" || race === "concurrent") {
         expect(recovery).toBe("recovered");
         expect(await owned(owner)).toBe("");
       } else if (race === "refuse") {

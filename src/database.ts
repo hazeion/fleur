@@ -5,7 +5,7 @@ export interface ColumnReference<T = unknown, G extends boolean = boolean, P ext
 export type ColumnKind = "uuid" | "string" | "boolean" | "safeInteger" | "decimal" | "localDate" | "timestamp";
 type KindFor<T> = unknown extends T ? ColumnKind : NonNullable<T> extends UUID ? "uuid" : NonNullable<T> extends LocalDate ? "localDate" : NonNullable<T> extends Timestamp ? "timestamp" : NonNullable<T> extends DecimalString ? "decimal" : NonNullable<T> extends string ? "string" : NonNullable<T> extends number ? "safeInteger" : "boolean";
 export type DeleteAction = "restrict" | "cascade" | "set null";
-import { rehydratingTable, definitions, tableDefinitions, references, definition, type ColumnDefinition } from "./runtime/declarations";
+import { rehydratingTable, definitions, tableDefinitions, references, definition, type ColumnDefinition, type IndexKeyDefinition } from "./runtime/declarations";
 
 class Column<T = unknown, Generated extends boolean = boolean, Primary extends boolean = boolean, Managed extends boolean = false> {
   declare readonly managedValue: Managed;
@@ -70,7 +70,41 @@ type DefaultKeys<C extends ColumnShape> = { [K in keyof C]: C[K] extends ColumnR
 type ManagedKeys<C extends ColumnShape> = { [K in keyof C]: C[K] extends { readonly managedValue: true } ? K : never }[keyof C];
 export type Insert<T extends Table, C extends ColumnShape = T[typeof tableType]["columns"]> = { [K in Exclude<keyof C, DefaultKeys<C>>]: C[K] extends ColumnReference<infer Value> ? Value : never } & { [K in DefaultKeys<C>]?: K extends ManagedKeys<C> ? never : C[K] extends ColumnReference<infer Value> ? Value : never };
 export type Selected<R, F extends readonly (keyof R)[]> = Pick<R, F[number]>;
-export function defineTable<const C extends ColumnShape, V extends boolean = true, const Name extends string = string>(name: Name, options: { columns: C; versioned?: V }): Table<C, V, Name> {
+/** An index key: a declared column of the table, ascending by default. Fleur orders nulls last in both directions. */
+export type IndexKey<C extends ColumnShape> = (keyof C & string) | { readonly field: keyof C & string; readonly direction: "asc" | "desc" };
+/** A non-unique B-tree index over 1–32 keys, in order. Reads that filter or order by a leading prefix of its keys can use it. */
+export interface TableIndex<C extends ColumnShape> { readonly fields: readonly [IndexKey<C>, ...IndexKey<C>[]] }
+const indexLimit = 32;
+function declaredIndexes(columns: ColumnShape, input: unknown): readonly (readonly IndexKeyDefinition[])[] {
+  if (input === undefined) return Object.freeze([]);
+  const invalid = (): never => { throw new Error("Invalid index declaration"); };
+  // Object.keys also rejects holes, which array iteration would skip.
+  const dense = (value: unknown): value is unknown[] => Array.isArray(value) && Object.keys(value).length === value.length;
+  if (!dense(input) || input.length > indexLimit) return invalid();
+  const seen = new Set<string>();
+  return Object.freeze(input.map((index: unknown) => {
+    if (!index || typeof index !== "object" || Array.isArray(index) || Object.keys(index).length !== 1 || !Object.hasOwn(index, "fields")) return invalid();
+    const fields: unknown = (index as { fields: unknown }).fields;
+    if (!dense(fields) || fields.length < 1 || fields.length > indexLimit) return invalid();
+    const keys = fields.map((key: unknown): IndexKeyDefinition => {
+      if (typeof key === "string") return { field: key, direction: "asc" };
+      if (!key || typeof key !== "object" || Array.isArray(key) || Object.keys(key).length !== 2 || !Object.hasOwn(key, "field") || !Object.hasOwn(key, "direction")) return invalid();
+      const { field, direction } = key as { field: unknown; direction: unknown };
+      if (typeof field !== "string" || (direction !== "asc" && direction !== "desc")) return invalid();
+      return { field, direction };
+    });
+    if (keys.some(key => !Object.hasOwn(columns, key.field)) || new Set(keys.map(key => key.field)).size !== keys.length) return invalid();
+    // A primary key or plain unique column already has an ascending index. Scanned backwards it sorts nulls first, so it
+    // cannot serve Fleur's descending order with nulls last; only a single ascending key repeats it.
+    const only = keys.length === 1 && keys[0]!.direction === "asc" ? definition(columns[keys[0]!.field]!) : undefined;
+    if (only && (only.primary || (only.unique && !only.caseFold))) return invalid();
+    const identity = JSON.stringify(keys.map(key => [key.field, key.direction]));
+    if (seen.has(identity)) return invalid();
+    seen.add(identity);
+    return Object.freeze(keys.map(key => Object.freeze(key)));
+  }));
+}
+export function defineTable<const C extends ColumnShape, V extends boolean = true, const Name extends string = string>(name: Name, options: { columns: C; versioned?: V; indexes?: readonly TableIndex<NoInfer<C>>[] }): Table<C, V, Name> {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(name) || Object.hasOwn(options.columns, "version")) throw new Error("Invalid table declaration");
   const columns: Record<string, ColumnReference> = {};
   let primaryKeys = 0;
@@ -81,11 +115,12 @@ export function defineTable<const C extends ColumnShape, V extends boolean = tru
     columns[field] = new Column(current, columnAuthority);
   }
   if (primaryKeys !== 1) throw new Error("Exactly one primary key is required");
+  const indexes = declaredIndexes(columns, options.indexes);
   const versioned = options.versioned !== false;
   if (!versioned && !Object.hasOwn(options,rehydratingTable)) console.warn(`Table "${name}" is unversioned. Updates and deletes have no lost-update guarantee.`);
   if (versioned) columns.version = value("safeInteger", schema.safeInteger()).generated();
   const table = Object.freeze(columns) as Table<C, V, Name>;
-  tableDefinitions.set(table, Object.freeze({ name, columns: table, versioned }));
+  tableDefinitions.set(table, Object.freeze({ name, columns: table, versioned, indexes }));
   for (const [field, reference] of Object.entries(columns)) references.set(reference, { table, field });
   return table;
 }

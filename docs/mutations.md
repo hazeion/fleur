@@ -42,6 +42,32 @@ Explicit `versioned: false` declarations emit the warning that updates and delet
 
 `unique()` declares ordinary database uniqueness. String `unique({ caseFold: true })` uses Unicode 17.0.0 default full case folding with C and F mappings. `caseFold` from `fleur/schema` exposes that same mapping for explicit application comparisons. PostgreSQL's immutable folding function and expression index use the pinned table, with C collation, independently of request validation. Display text retains its case. Case folding does not normalize accents or use Turkic locale rules. The table's source, checksum and license ship in `src/runtime/unicode/NOTICE.md`.
 
+Declare non-unique indexes with the table's `indexes` option. Each index lists 1–32 of the table's own columns in order. A key is a field name, which sorts ascending, or `{ field, direction }`:
+
+```ts
+export const sessions = defineTable("workout_sessions", {
+  columns: { id: column.uuid().primaryKey().generated(), date: column.localDate() },
+  indexes: [{ fields: [{ field: "date", direction: "desc" }, { field: "id", direction: "desc" }] }],
+});
+export const sets = defineTable("workout_session_sets", {
+  columns: { id: column.uuid().primaryKey().generated(), sessionId: column.uuid().references(sessions.id, { onDelete: "cascade" }), position: column.safeInteger() },
+  indexes: [{ fields: ["sessionId", "position"] }],
+});
+// A newest-first history page reads in the first index's order, with no sort.
+handleQuery(listSessions, async ({ db }) => db.select(sessions, {
+  fields: ["id", "date", "version"],
+  orderBy: [{ field: "date", direction: "desc" }, { field: "id", direction: "desc" }], limit: 20,
+}));
+```
+
+PostgreSQL does not index foreign keys. Without an index that starts with the reference column, reading a parent's children, cascading a parent delete and checking a `restrict` reference each scan the whole child table. For an ordered list, put the equality-filtered columns first, then the `orderBy` fields with the same directions. Fleur sorts nulls last in both directions, and so do its descending index keys, so the index returns rows already in order. When `orderBy` omits the primary key, Fleur appends it in ascending order as the final tie-breaker. End the index with the primary key to cover that tie-breaker too. A table admits at most 32 indexes. Fleur rejects:
+
+- a single ascending key on the primary key or on a plain unique column, which is already indexed. A single descending key is allowed: the existing index read backwards sorts nulls first, not last, so it cannot serve Fleur's descending order
+- a repeated column within an index, or a repeated index
+- the managed version column as a key
+
+Indexes are B-tree and non-unique over whole columns. Partial, expression, covering and composite unique indexes are not available. Indexes reach the database only through reviewed migrations. Adding or removing one changes no rows and needs no approval. Drift detection compares each declared index's keys, directions and null ordering.
+
 The trusted schema compiler produces the fixture's table constraints and index. It does not apply schema changes during application startup or introduce a migration command. Existing databases need matching schema through the later migration workflow; the internal verification fixture creates its schema only in an owned disposable database.
 
 In an island, call `const save = useMutation(renameExercise)` and `await save.run(input)`. State exposes `idle`, `pending`, `success`, `failure` and `outcome-unknown`, with `pending` and optional validated `data` or safe `error`. Outcomes resolve to a tagged union for ordinary operation/transport failures:
@@ -94,6 +120,6 @@ Recovery:
 - `NOT_FOUND`: the aggregate was deleted.
 - `outcome-unknown`: reload stored data before deciding whether to save again.
 
-`tests/runtime/fixtures/workouts` demonstrates this for workout templates. Each has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered entries. Entries may repeat an exercise and have positive safe-integer target sets and repetitions. The listing shows 10 templates per page with a link to later pages; its cursors last for the broker's lifetime. PostgreSQL tests cover position-ordered reads, paging past one bounded read, saves and reorders, malformed input, child and output rollback, two writers released together from a held row lock, and restricted exercise deletion. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes. A stale draft reports a conflict without losing its edits, and is then deliberately reapplied and saved.
+`tests/runtime/fixtures/workouts` demonstrates this for workout templates. Each has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered entries. Entries may repeat an exercise and have positive safe-integer target sets and repetitions. The listing shows 10 templates per page with a link to later pages; its cursors last for the broker's lifetime. PostgreSQL tests cover position-ordered reads, paging past one bounded read, saves and reorders, malformed input, child and output rollback, two writers released together from a held row lock, and restricted exercise deletion. Its tables declare indexes for the name-ordered exercise and template listings, entry reads by template in position order, and the exercise reference. A PostgreSQL test generates and applies the fixture's migration through the reviewed flow. At 500 exercises and 100 templates of 100 entries, it shows that entry reads, template cascades and exercise restrict checks use those indexes. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes. A stale draft reports a conflict without losing its edits, and is then deliberately reapplied and saved.
 
 Run `bun run types`, `bun run lint`, `bun run build:reference` and `bun run test`. Database/browser tests use the same owned PostgreSQL, native isolation and explicit Playwright prerequisites described in [read pages](read-pages.md). Lifecycle commands, reactive subscriptions, migrations and the full workout proof remain later slices.

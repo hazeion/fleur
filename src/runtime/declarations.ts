@@ -16,8 +16,10 @@ export interface ColumnDefinition {
   readonly defaultNow?: true;
   readonly reference?: { readonly target: ColumnReference; readonly onDelete: DeleteAction };
 }
+/** One key of a declared non-unique index. Fleur orders nulls last in both directions, and so does the index. */
+export interface IndexKeyDefinition { readonly field: string; readonly direction: "asc" | "desc" }
 export const definitions = new WeakMap<object, ColumnDefinition>();
-export const tableDefinitions = new WeakMap<object, { readonly name: string; readonly columns: Readonly<Record<string, ColumnReference>>; readonly versioned: boolean; readonly alias?: string; readonly source?: Table }>();
+export const tableDefinitions = new WeakMap<object, { readonly name: string; readonly columns: Readonly<Record<string, ColumnReference>>; readonly versioned: boolean; readonly indexes: readonly (readonly IndexKeyDefinition[])[]; readonly alias?: string; readonly source?: Table }>();
 export const references = new WeakMap<object, { readonly table: Table; readonly field: string }>();
 
 export function definition(column: ColumnReference): ColumnDefinition {

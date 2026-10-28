@@ -6,14 +6,18 @@ import { createExercise, createTemplate, deleteExercise, listExercises, listTemp
 import { laterTemplatesPage, templatesPage } from "../shared/pages";
 import { TemplateEditor } from "../client/TemplateEditor";
 
+// Indexes match the listings' name-then-id order, so a page reads in index order. The case-folded unique index
+// keys on folded names and cannot serve that order.
 export const exercises = defineTable("exercises", { columns: {
   id: column.uuid().primaryKey().generated(),
   name: column.string().max(100).unique({ caseFold: true }),
-} });
+}, indexes: [{ fields: ["name", "id"] }] });
 export const templates = defineTable("workout_templates", { columns: {
   id: column.uuid().primaryKey().generated(),
   name: column.string().max(100),
-} });
+}, indexes: [{ fields: ["name", "id"] }] });
+// PostgreSQL does not index foreign keys. Entry reads by template in position order, template cascades and exercise
+// restrict checks look entries up through these indexes.
 export const templateEntries = defineTable("workout_template_entries", { columns: {
   id: column.uuid().primaryKey().generated(),
   templateId: column.uuid().references(templates.id, { onDelete: "cascade" }),
@@ -21,7 +25,7 @@ export const templateEntries = defineTable("workout_template_entries", { columns
   exerciseId: column.uuid().references(exercises.id, { onDelete: "restrict" }),
   targetSets: column.safeInteger(),
   targetRepetitions: column.safeInteger(),
-} });
+}, indexes: [{ fields: ["templateId", "position"] }, { fields: ["exerciseId"] }] });
 
 function trimmedName(value: string) {
   const name = value.trim();

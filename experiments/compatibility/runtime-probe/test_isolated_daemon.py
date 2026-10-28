@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from isolated_daemon import Endpoint, IsolatedDaemonError, eligible_host, isolated_vfs_daemon
+from isolated_daemon import CLEANUP_SECONDS, Endpoint, IsolatedDaemonError, eligible_host, isolated_vfs_daemon
 
 def timeout_fixture(root):
     """Cheap native timeout stand-in; child is always killed and reaped on expiry."""
@@ -637,7 +637,7 @@ class RetainedDaemonRetirement(unittest.TestCase):
                     for path in endpoint.root.iterdir():path.unlink()
                     endpoint.root.rmdir()
                 def retire(endpoint,budget):
-                    self.assertGreater(budget,0);self.assertLessEqual(budget,15)
+                    self.assertGreater(budget,0);self.assertLessEqual(budget,CLEANUP_SECONDS)
                     if verified:
                         endpoint.retirement_facts={'cli_returncode':0,'stdout_bytes':8,'last_stage':12}
                         for name in ('data','exec'):shutil.rmtree(endpoint.root/name)

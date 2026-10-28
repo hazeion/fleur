@@ -33,6 +33,10 @@ class Quarantine(RuntimeError):
     """Uncertain state: no further admission in this slot."""
 
 
+class ArmingExpired(RuntimeError):
+    """The run's deadline expired before its guard reported it armed."""
+
+
 def create(arguments):
     # Docker may print host capability warnings; identity comes from the audit.
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=False)
@@ -152,11 +156,20 @@ class Slot:
     def arm(self, operation, deadline):
         prepared = self.prepared
         arguments = [self.worker, str(prepared['pid']), str(prepared['namespace']), str(self.init), repr(deadline), self.boot, operation]
+        # Starting the guard is trusted overhead with its own bound: a guard
+        # that starts after the deadline still retires the unadmitted process.
         exec_id, stream = start_exec(self.guard, ['/usr/bin/python3', '-I', '-u', '/controller/retained_guard.py', *arguments], '0:0',
-                                     timeout=max(.001, deadline-time.monotonic()), stderr_limit=4096)
+                                     timeout=max(.001, deadline+ARMING_GRACE-time.monotonic()), stderr_limit=4096)
         prepared.update(guard_exec=exec_id, guard_stream=stream)
-        armed = json.loads(stream.line(1024, deadline))
+        try:
+            armed = json.loads(stream.line(1024, deadline))
+        except FAILURES:
+            if time.monotonic() < deadline:
+                raise
+            raise ArmingExpired() from None
         if type(armed) is not dict or set(armed) != {'kind', 'operation', 'start'} or armed['kind'] != 'armed' or armed['operation'] != operation or type(armed['start']) is not str:
+            if time.monotonic() >= deadline and type(armed) is dict and armed.get('kind') == 'result':
+                raise ArmingExpired(armed)
             raise Quarantine('GUARD_UNCONFIRMED')
         info = inspect_exec(exec_id)
         if (info.get('ContainerID') != self.guard or info.get('Running') is not True or info.get('ProcessConfig') != {
@@ -167,12 +180,13 @@ class Slot:
         return {'operation': operation, 'worker': self.worker, 'init': self.init, 'pid': prepared['pid'], 'namespacePid': prepared['namespace'],
                 'start': armed['start'], 'guard': self.guard, 'guardExec': exec_id, 'deadline': deadline, 'boot': self.boot}
 
-    def retire(self, outcomes, end, completed=False):
+    def retire(self, outcomes, end, completed=False, record=None):
         """Wait for the bound guard's record and the exact process exits."""
         prepared = self.prepared
         stream = prepared['guard_stream']
         try:
-            record = json.loads(stream.line(1024, end))
+            if record is None:
+                record = json.loads(stream.line(1024, end))
         except FAILURES:
             raise Quarantine('TERMINATION_UNCONFIRMED') from None
         require_retirement(record, prepared['operation'], prepared['start'], outcomes)
@@ -187,6 +201,26 @@ class Slot:
         prepared['stream'].close(); stream.close()
         self.prepared = None
         return record
+
+    def expire(self, record, deadline):
+        """Arming outlived the budget: the guard retires the never-admitted process."""
+        prepared = self.prepared
+        end = deadline+ARMING_GRACE
+        try:
+            if record is None:
+                record = json.loads(prepared['guard_stream'].line(1024, end))
+            if type(record) is dict and set(record) == {'kind', 'operation', 'start'} and record['kind'] == 'armed' and record['operation'] == prepared['operation']:
+                # Armed just as the deadline passed: it kills at that deadline.
+                prepared['start'] = record['start']
+                record = None
+            elif type(record) is dict and type(record.get('start')) is str and re.fullmatch(r'[0-9]{1,20}', record['start']):
+                # The guard verified this start identity when it bound the process.
+                prepared['start'] = record['start']
+            else:
+                raise Quarantine('TERMINATION_UNCONFIRMED')
+        except FAILURES:
+            raise Quarantine('TERMINATION_UNCONFIRMED') from None
+        return self.retire(('unadmitted', 'deadline', 'cancelled', 'premature-exit'), end, record=record)
 
     def cancel(self, deadline):
         """Cancel this slot's own process through its bound guard."""
@@ -207,10 +241,28 @@ class Slot:
         started = time.monotonic()
         deadline = started+request['budgetMs']/1000
         operation = prepared['operation']
-        binding = self.arm(operation, deadline)
+        try:
+            binding = self.arm(operation, deadline)
+        except ArmingExpired as expired:
+            # Never admitted: the caller's timeout, not slot uncertainty.
+            record = self.expire(expired.args[0] if expired.args else None, deadline)
+            self.retired.append(operation)
+            return {'kind': 'failure', 'operation': operation, 'code': 'QUERY_TIMEOUT', 'physicalExitConfirmed': True, 'deadline': record,
+                    'timings': {'guard': milliseconds(started)}}
         armed = time.monotonic()
         send(host_out, {'kind': 'guard', 'value': binding})
-        if frame(host_in, deadline) != {'kind': 'admit', 'value': None, 'operation': operation}:
+        try:
+            admitted = frame(host_in, deadline)
+        except RuntimeError as error:
+            if str(error) != 'QUERY_TIMEOUT':
+                raise
+            # The host's acknowledgement outlived the budget; the armed guard
+            # kills the still-gated process at its deadline.
+            record = self.retire(('deadline', 'cancelled', 'premature-exit'), deadline+3*TOLERANCE)
+            self.retired.append(operation)
+            return {'kind': 'failure', 'operation': operation, 'code': 'QUERY_TIMEOUT', 'physicalExitConfirmed': True, 'deadline': record,
+                    'timings': {'guard': round(1000*(armed-started))}}
+        if admitted != {'kind': 'admit', 'value': None, 'operation': operation}:
             raise Quarantine('GUARD_PARENT_ACK_REQUIRED')
         timings = {'guard': round(1000*(armed-started))}
         executing = time.monotonic()
@@ -276,6 +328,9 @@ class Slot:
 
 
 TOLERANCE = .25
+# After a run's deadline, its guard has this long to report an unadmitted
+# retirement; one completed within the tolerance is written well before then.
+ARMING_GRACE = 3*TOLERANCE
 
 
 def main():
@@ -296,7 +351,7 @@ def main():
                 return
             if type(request) is not dict or type(request.get('operation')) is not str or not re.fullmatch(r'[a-f0-9-]{36}', request['operation']):
                 raise Quarantine('REQUEST_DENIED')
-            if (request.get('kind') in ('reply', 'finish', 'cancel') and set(request) == {'kind', 'value', 'operation'}
+            if (request.get('kind') in ('admit', 'reply', 'finish', 'cancel') and set(request) == {'kind', 'value', 'operation'}
                     and request['operation'] in slot.retired):
                 continue
             if request.get('kind') == 'prepare' and set(request) == {'kind', 'operation'}:

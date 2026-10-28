@@ -95,8 +95,10 @@ and that retirement precede commit. A busy, malformed or cancelled operation
 fails only itself. Any uncertain ownership, admission, retirement or cleanup
 quarantines the whole slot: its containers are removed, and it keeps occupying
 capacity until that removal is verified; unverified removal keeps that capacity
-occupied and is reported at shutdown. Verified removal is followed by background
-replacement, so one retained slot stays available. An idle slot whose
+occupied and is reported at shutdown. Diagnostics list a quarantined slot until
+its removal is verified, so capacity held by an unverified removal stays
+visible. Verified removal is followed by background replacement, so one
+retained slot stays available. An idle slot whose
 controller exits is retired at once, with backoff if replacements keep failing. Controller loss
 closes the guard's control channel, which kills the bound process before its
 container is removed.
@@ -115,14 +117,30 @@ One five-second deadline starts when a query, mutation or render enters the
 runtime. Waiting for a slot, discarding an aged process, preparation, the
 database transaction and execution all consume it; an admitted operation runs
 only for the time remaining, and a request that cannot be admitted in time fails
-with `QUERY_TIMEOUT`. Render admission and every nested query a render requests
-share the render's deadline. A caller that gives up during preparation leaves
-the slot reserved until preparation settles, so a caller deadline never
-quarantines healthy capacity. Opening the application waits until one retained
-slot is ready and does not hold maintenance admission meanwhile, so the first
-slot's cold creation precedes every operation budget. A request that arrives
-while no slot is ready, during on-demand growth or after a quarantine, waits for
-cold creation inside its own deadline.
+with `QUERY_TIMEOUT`. Guard arming is part of that budget. A run whose
+effective budget, the smaller of its explicit budget and the remaining
+deadline, is under 500 ms fails with `QUERY_TIMEOUT` before any guard starts;
+its slot and prepared process stay in service. If arming still outlives the
+budget, the process is waiting at its startup gate, and the guard retires it as
+unadmitted: the operation fails with `QUERY_TIMEOUT` and the slot stays in
+service, but only when the guard verified the process's start identity and its
+exit within the 250-ms tolerance after the deadline. On a host where arming
+takes longer than the 500-ms margin plus that tolerance, the slot is therefore
+quarantined and replaced. This is deliberate under ADR 0001: late or
+unverified retirement is uncertainty. The controller waits at most 750 ms after
+the deadline for the guard's record, then up to one second each for the two
+exec exits, so this `QUERY_TIMEOUT` arrives at most about 2.75 seconds after
+the deadline.
+Render admission and every nested query a render requests share the render's
+deadline; admission that cannot finish in time also fails with `QUERY_TIMEOUT`.
+A nested query needs a slot of its own, so while every slot holds a render,
+nested queries wait and fail at that deadline. A caller that gives up during
+preparation leaves the slot reserved until preparation settles, so a caller
+deadline never quarantines healthy capacity. Opening the application waits
+until one retained slot is ready and does not hold maintenance admission
+meanwhile, so the first slot's cold creation precedes every operation budget. A
+request that arrives while no slot is ready, during on-demand growth or after a
+quarantine, waits for cold creation inside its own deadline.
 
 ## Qualification status
 

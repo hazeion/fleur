@@ -87,7 +87,7 @@ class PidfdBinding(unittest.TestCase):
 
 class GuardArming(unittest.TestCase):
     """The real guard main and supervision: a start change after inspection is never armed."""
-    def run_guard(self, starts):
+    def run_guard(self, starts, remaining=5, bind=None):
         written, signalled = [], []
         observed = iter(starts)
         read, write = os.pipe()
@@ -96,14 +96,14 @@ class GuardArming(unittest.TestCase):
         def fake_write(fd, data):
             written.append(json.loads(data))
             return len(data)
-        argv = ['guard', CID, '20', '9', '5', repr(time.monotonic() + 5), 'boot', OPERATION]
+        argv = ['guard', CID, '20', '9', '5', repr(time.monotonic() + remaining), 'boot', OPERATION]
         with patch.object(sys, 'argv', argv), patch.object(guard.os, 'geteuid', return_value=0), \
                 patch.object(guard.os, 'write', side_effect=fake_write), \
                 patch.object(guard, 'Path', side_effect=lambda value: type('P', (), {'read_text': lambda self: 'boot\n'})() if 'boot_id' in str(value) else Path(value)), \
                 patch.object(guard, 'cgroup_directory', return_value=Path('/x')), \
                 patch.object(guard, 'members', return_value=[5, 20]), \
                 patch.object(guard, 'identity', side_effect=lambda pid: (next(observed), 9)), \
-                patch.object(guard, 'bind_owned_pidfd', return_value=read), \
+                patch.object(guard, 'bind_owned_pidfd', side_effect=bind or (lambda container, pid: read)), \
                 patch.object(guard.signal, 'pidfd_send_signal', side_effect=lambda fd, sig: signalled.append(fd), create=True), \
                 patch.object(guard, 'retired', return_value=True):
             try:
@@ -125,6 +125,44 @@ class GuardArming(unittest.TestCase):
         code, written, _, _ = self.run_guard(['4242', '4242'])
         self.assertEqual(code, 0)
         self.assertEqual(written[0], {'kind': 'armed', 'operation': OPERATION, 'start': '4242'})
+
+    # #67: the controller admits only after the armed record, so a deadline that
+    # expires before arming leaves the process waiting at its startup gate.
+    def test_deadline_expired_before_arming_retires_the_unadmitted_process(self):
+        code, written, signalled, fd = self.run_guard(['4242', '4242'], remaining=-.05)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]['kind'], 'result')
+        self.assertEqual(written[0]['outcome'], 'unadmitted')
+        self.assertEqual((written[0]['operation'], written[0]['start']), (OPERATION, '4242'))
+        self.assertIs(written[0]['physical_exit_confirmed'], True)
+        self.assertIs(written[0]['retired'], True)
+        self.assertEqual(signalled, [fd])
+        # Lateness is measured from the operation deadline, under the usual gate.
+        self.assertGreaterEqual(written[0]['kill_lateness_ms'], 50)
+        self.assertGreaterEqual(written[0]['physical_exit_lateness_ms'], written[0]['kill_lateness_ms'])
+        self.assertLessEqual(written[0]['physical_exit_lateness_ms'], 250)
+
+    def test_unadmitted_retirement_after_the_tolerance_is_late_termination(self):
+        code, written, _, _ = self.run_guard(['4242', '4242'], remaining=-1)
+        self.assertEqual(code, 0)
+        self.assertEqual(written[-1]['outcome'], 'late-termination')
+        self.assertGreaterEqual(written[-1]['kill_lateness_ms'], 1000)
+
+    # Uncertain ownership is never reported as an unadmitted retirement.
+    def test_expired_arming_never_signals_a_changed_start_identity(self):
+        code, written, signalled, _ = self.run_guard(['4242', '9999'], remaining=-.05)
+        self.assertEqual(signalled, [])
+        self.assertEqual(code, 1)
+        self.assertEqual(written, [{'kind': 'error', 'category': 'deadline-guard-failed'}])
+
+    def test_expired_arming_that_cannot_bind_its_process_is_uncertain(self):
+        def gone(container, pid):
+            raise RuntimeError('worker identity unverified')
+        code, written, signalled, _ = self.run_guard(['4242'], remaining=-.05, bind=gone)
+        self.assertEqual(signalled, [])
+        self.assertEqual(code, 1)
+        self.assertEqual(written, [{'kind': 'error', 'category': 'deadline-guard-failed'}])
 
 
 if __name__ == '__main__':

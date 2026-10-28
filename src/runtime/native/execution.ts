@@ -25,9 +25,12 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 const ADMISSION_MS = 20_000, STARTUP_MS = 30_000, OPERATION_MS = 5000;
-// Guard arming must finish inside the run budget, or the controller treats the
-// expired arming as uncertainty and quarantines the slot. Too little remaining
-// time therefore fails the caller, not healthy capacity.
+// A run whose effective budget, min(explicit budget, remaining deadline), is
+// shorter than this fails with QUERY_TIMEOUT before any guard starts, keeping
+// its slot and prepared process. Guard arming that still outlives a budget is
+// retired as unadmitted only with verified identity inside the 250-ms
+// tolerance. On a host where arming takes longer than this margin plus that
+// tolerance, the slot is deliberately quarantined and replaced (ADR 0001).
 const ARMING_MARGIN_MS = 500;
 
 /** Host view of one retained slot. Its controller serializes every operation. */
@@ -127,7 +130,15 @@ class Slot {
     this.prepared = undefined;
     try {
       await this.#send({ kind: "run", operation: prepared.id, budgetMs, command });
-      const guard = record(await this.#read(budgetMs + 2000));
+      // The controller's arming grace and exit checks follow an expired budget.
+      const guard = record(await this.#read(budgetMs + 5000));
+      if (guard.kind === "failure" && Object.keys(guard).length === 6 && guard.operation === prepared.id && guard.code === "QUERY_TIMEOUT" && guard.physicalExitConfirmed === true) {
+        // Arming outlived the budget: the process never passed its startup gate.
+        const evidence = this.#acceptRetirement(guard.deadline, prepared.id, undefined, ["unadmitted", "cancelled", "deadline", "premature-exit"]);
+        await this.lease.endOperation(prepared.id);
+        this.state = "idle";
+        throw new ExecutionFailure("QUERY_TIMEOUT", evidence);
+      }
       if (guard.kind !== "guard" || Object.keys(guard).length !== 2) this.#quarantine(guard);
       const binding = await this.lease.bindGuard(prepared.id, guard.value);
       const operation = { id: prepared.id, slot: this.owner, container: this.binding.worker, process: { ...prepared.process, start: String(binding.start) } };
@@ -212,7 +223,8 @@ export class NativeExecution {
   readonly #background = new Set<Promise<void>>();
   readonly #waiters: (() => void)[] = [];
   readonly #failures: unknown[] = [];
-  #recovering = 0;
+  /** Quarantined slots until their removal is verified; a failed removal stays here. */
+  readonly #recovering = new Set<Slot>();
   #growAfter = 0;
   #lossBackoff = 0;
   #drained = false;
@@ -242,8 +254,9 @@ export class NativeExecution {
     }
     return execution;
   }
+  /** Every slot holding capacity, including quarantined slots until their removal is verified. */
   diagnostics(): { slot: string; state: SlotState; container?: string; prepared: boolean }[] {
-    return [...this.#slots].map(slot => ({ slot: slot.owner, state: slot.state, ...(slot.binding ? { container: slot.binding.worker } : {}), prepared: slot.fresh }));
+    return [...this.#slots, ...this.#recovering].map(slot => ({ slot: slot.owner, state: slot.state, ...(slot.binding ? { container: slot.binding.worker } : {}), prepared: slot.fresh }));
   }
   #track(work: Promise<void>): void {
     const tracked = work.catch(error => { if (this.#failures.length < 100) this.#failures.push(error); else this.#failures[99] = error; });
@@ -257,10 +270,11 @@ export class NativeExecution {
   }
   // A quarantined slot keeps counting toward capacity until its removal is
   // verified, so replacement never outruns recovery. Unverified removal keeps
-  // that capacity occupied permanently and is reported by close().
+  // that capacity occupied permanently, visible in diagnostics() and reported
+  // by close().
   #recover(slot: Slot, replace: boolean): void {
-    this.#recovering++;
-    this.#track(slot.recover().then(() => { this.#recovering--; if (replace) this.#replace(); }).finally(() => this.#notify()));
+    this.#recovering.add(slot);
+    this.#track(slot.recover().then(() => { this.#recovering.delete(slot); if (replace) this.#replace(); }).finally(() => this.#notify()));
   }
   /** Keep one retained slot available after verified recovery, retrying after any backoff. */
   #replace(): void {
@@ -272,7 +286,7 @@ export class NativeExecution {
     this.#replacement.unref?.();
   }
   #replacement: ReturnType<typeof setTimeout> | undefined;
-  get #occupied(): number { return this.#slots.size + this.#starting.size + this.#recovering; }
+  get #occupied(): number { return this.#slots.size + this.#starting.size + this.#recovering.size; }
   #grow(): void {
     if (performance.now() < this.#growAfter) return;
     const work = Slot.start(this.#images).then(slot => {
@@ -391,10 +405,11 @@ export class NativeExecution {
       run: async (command, exchange, budgetMs = 5000) => {
         if (used || released) throw new Error("REQUEST_DENIED");
         if (this.#closed) throw new Error("APPLICATION_CLOSED");
+        if (!Number.isInteger(budgetMs) || budgetMs <= 0 || budgetMs > OPERATION_MS) throw new Error("REQUEST_DENIED");
         used = true;
-        const left = Math.floor(deadline - performance.now());
-        if (left < ARMING_MARGIN_MS) throw new Error("QUERY_TIMEOUT");
-        const work = slot.run(command, exchange, Math.min(budgetMs, left));
+        const budget = Math.min(budgetMs, Math.floor(deadline - performance.now()));
+        if (budget < ARMING_MARGIN_MS) throw new Error("QUERY_TIMEOUT");
+        const work = slot.run(command, exchange, budget);
         running = work;
         const result = await work;
         this.#lossBackoff = 0;

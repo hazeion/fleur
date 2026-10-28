@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { prepareNativeImages } from "../../src/runtime/native/build";
+import { nativeCommand } from "../../src/runtime/native/command";
 import { NativeExecution } from "../../src/runtime/native/execution";
 
 // V1-SPEC performance budgets: query deadlines include scheduling/queueing and
 // execution. ADR 0001 keeps the five-second operation deadline "including
 // applicable queueing and scheduling" and the 250-ms physical-exit tolerance.
 const source = `
-module.exports.run = async request => {
+module.exports.run = async (request, exchange) => {
   if (request.spin) for (;;) {}
+  // Application code reports entry through the trusted host only after admission.
+  if (request.announce) await exchange({ entered: true });
   return { kind: "complete", value: "done" };
 };`;
 const DEADLINE = 5000, TOLERANCE = 250;
@@ -74,5 +77,80 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`a caller whose deadline expire
     // Never quarantined: the same retained container serves the next request.
     const next = await execution.execute({}, () => null);
     expect(next.operation.container).toBe(first.operation.container);
+  } finally { await execution.close(); }
+}, 120_000);
+
+// #67: a run whose effective budget, min(explicit budget, remaining deadline),
+// is shorter than the host's guard arming margin is the caller's timeout. No
+// guard starts, no application code runs, and the slot keeps its prepared
+// process for the next request.
+const ARMING_MARGIN = 500;
+for (let repeat = 1; repeat <= 2; repeat++) test(`an explicit budget shorter than guard arming times out before any guard starts and keeps the slot, repeat ${repeat}`, async () => {
+  const execution = await NativeExecution.open(images, { capacity: 1 });
+  try {
+    const first = await execution.execute({}, () => null);
+    for (const budget of [1, 250, ARMING_MARGIN - 1]) {
+      let entered = false;
+      const failure = await outcome(execution.execute({ announce: true }, () => { entered = true; return null; }, budget));
+      expect(failure?.message).toBe("QUERY_TIMEOUT");
+      // No guard ran, so there is no retirement evidence to report.
+      expect(failure?.evidence).toBeUndefined();
+      expect(entered).toBe(false);
+      expect(execution.diagnostics()).toEqual([expect.objectContaining({ state: "idle", container: first.operation.container, prepared: true })]);
+    }
+    const next = await execution.execute({ announce: true }, () => null);
+    expect(next.operation.container).toBe(first.operation.container);
+    expect(next.value).toEqual({ kind: "complete", value: "done" });
+  } finally { await execution.close(); }
+}, 120_000);
+
+// ADR 0001: a guard that cannot arm and retire within the deadline plus the
+// 250-ms tolerance is uncertainty. On a slow host the slot may therefore be
+// quarantined and replaced; it must never let application code run late.
+for (let repeat = 1; repeat <= 2; repeat++) test(`a slow guard host whose arming outlives the remaining deadline never runs application code late, repeat ${repeat}`, async () => {
+  const execution = await NativeExecution.open(images, { capacity: 1 });
+  const docker = (...args: string[]) => nativeCommand(["docker", "--host", images.endpoint, ...args], 15_000);
+  try {
+    const first = await execution.execute({}, () => null);
+    const guard = `fleur-exec-${first.operation.slot}-guard`;
+    // Just over the host's arming margin remains, as on a slow host.
+    const reservation = await execution.reserve(performance.now() + 5000);
+    let failure: (Error & { evidence?: Record<string, unknown> }) | undefined;
+    let entered: number | undefined;
+    try {
+      // Throttle only the trusted guard host so arming takes longer than that,
+      // and let the host recover once the deadline has passed.
+      await docker("update", "--cpus", "0.05", guard);
+      let restored: Promise<string> | undefined;
+      try {
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, reservation.deadline - performance.now() - ARMING_MARGIN - 100)));
+        const timer = setTimeout(() => { restored = docker("update", "--cpus", "1", guard); }, Math.max(0, reservation.deadline - performance.now() + 50));
+        await reservation.run({ announce: true }, () => { entered = performance.now(); return null; }).then(() => undefined, (error: unknown) => { failure = error as typeof failure; });
+        clearTimeout(timer);
+      } finally { await (restored ?? docker("update", "--cpus", "1", guard)); }
+    } finally { reservation.release(); }
+    // Application code never runs after the deadline.
+    if (entered !== undefined) expect(entered).toBeLessThanOrEqual(reservation.deadline);
+    expect(failure?.message).toBeOneOf(["QUERY_TIMEOUT", "INTERNAL_FAILURE"]);
+    if (failure?.message === "QUERY_TIMEOUT") {
+      // A verified retirement inside the tolerance keeps the slot in service.
+      expect(failure.evidence).toMatchObject({ physical_exit_confirmed: true, retired: true });
+      console.info("[slow-guard] QUERY_TIMEOUT, slot kept:", failure.evidence?.outcome, "kill lateness", failure.evidence?.kill_lateness_ms);
+      expect(execution.diagnostics().map(slot => [slot.state, slot.container])).toEqual([["idle", first.operation.container]]);
+      expect((await execution.execute({}, () => null)).operation.container).toBe(first.operation.container);
+    } else {
+      // Otherwise the slot is quarantined, removed and replaced.
+      console.info("[slow-guard] quarantined and replaced");
+      expect(await docker("ps", "--all", "--quiet", "--filter", `label=dev.fleur.execution-owner=${first.operation.slot}`).then(async ids => {
+        const end = performance.now() + 15_000;
+        while (ids && performance.now() < end) { await new Promise(resolve => setTimeout(resolve, 100)); ids = await docker("ps", "--all", "--quiet", "--filter", `label=dev.fleur.execution-owner=${first.operation.slot}`); }
+        return ids;
+      })).toBe("");
+      const replaced = performance.now() + 30_000;
+      while (performance.now() < replaced && !execution.diagnostics().some(slot => slot.state === "idle")) await new Promise(resolve => setTimeout(resolve, 50));
+      const next = await execution.execute({}, () => null);
+      expect(next.operation.container).not.toBe(first.operation.container);
+      expect(next.value).toEqual({ kind: "complete", value: "done" });
+    }
   } finally { await execution.close(); }
 }, 120_000);

@@ -138,9 +138,13 @@ export class RetainedLease {
   /** Quarantine recovery: stop creation authority, then the application container, then its guard. */
   async cleanup(): Promise<void> {
     const manager = await this.#inspect(this.controllerName, this.#images.controller);
-    if (manager?.State.Running) await this.#command(["docker", "kill", "--signal", "KILL", manager.Id]);
+    // A quarantined controller removes its own containers and exits by itself,
+    // possibly after this inspection (#89), and a kill of a stopped container
+    // fails. Its status proves nothing either way: the inspection below, bound
+    // to this exact container, does.
+    if (manager?.State.Running) await this.#command(["docker", "kill", "--signal", "KILL", manager.Id]).catch(() => "");
     if (manager) {
-      const stopped = await this.#inspect(this.controllerName, this.#images.controller);
+      const stopped = await this.#inspect(this.controllerName, this.#images.controller, manager.Id);
       if (!stopped || stopped.State.Running !== false || stopped.State.Pid !== 0) throw new Error("CREATION_AUTHORITY_UNCONFIRMED");
     }
     const worker = await this.#inspect(this.workerName, this.#images.worker, this.#slot?.worker);

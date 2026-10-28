@@ -48,8 +48,8 @@ export async function migrationHistory(sql: Connection) {
     }
     return history;
   } catch (error) {
-    // A lost connection or cancelled statement is not evidence about the recorded history.
-    if (unavailability(error)) throw error;
+    // A lost connection, cancelled statement or privilege refusal is not evidence about the recorded history.
+    if (unavailability(error) || (error as { errno?: unknown } | null)?.errno === "42501") throw error;
     throw new Error("SCHEMA_DRIFT");
   }
 }

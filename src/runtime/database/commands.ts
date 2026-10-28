@@ -1,11 +1,25 @@
 import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success, type CliOutcome, type RecoveryAction } from "../../cli/result";
+import { capabilities, privilegeShortfall, profileCapabilities, type PrivilegeInsufficient } from "./privilege";
 /** The one shared option that selects the production target for read-only diagnostics. */
 export const productionOption = { name: "--production", value: false } as const;
 
+/**
+ * DATABASE_PRIVILEGE_INSUFFICIENT, exit 4: names the missing capability category and points to the documented
+ * profile. It never names the role, host, port or URL, and is raised before the command changes anything.
+ */
+export function privilegeFailure(command: string, shortfall: PrivilegeInsufficient): CliOutcome {
+  const { capability } = shortfall;
+  const description = profileCapabilities.includes(capability)
+    ? "Grant the configured database credential this capability from the minimum-privilege profile under \"Credential authority\" in the package docs/maintenance.md, then retry."
+    : "This command needs authority beyond the minimum-privilege profile. Configure a credential with this capability, listed under \"Credential authority\" in the package docs/maintenance.md, then retry.";
+  return failure(command, 4, { code: "DATABASE_PRIVILEGE_INSUFFICIENT", message: `The configured database credential lacks the ${capability} capability this command needs. Nothing was changed.`, expected: { capability, privileges: capabilities[capability] }, actions: [{ command: `fleur ${command}`, description }] });
+}
 const unavailableAction: RecoveryAction = { command: "fleur status", description: "Check database connectivity, then start the PostgreSQL server or correct the private database configuration." };
 /** Maps an operation failure to its stable code, exit category and recovery action. */
 export function databaseFailure(command: string, error: unknown, codes: readonly string[], action: RecoveryAction): CliOutcome {
+  const shortfall = privilegeShortfall(error);
+  if (shortfall) return privilegeFailure(command, shortfall);
   const code = error instanceof Error && [...codes, "DATABASE_UNAVAILABLE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
   if (code === "DATABASE_UNAVAILABLE") return failure(command, 4, { code, message: "The database could not be reached or refused the connection.", actions: [unavailableAction] });
   return failure(command, code === "ARGUMENT_INVALID" ? 2 : ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code) ? 5 : ["CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(code) ? 4 : 1, { code, message: "The database operation could not complete safely.", actions: [action] });

@@ -13,9 +13,37 @@ fleur db recover --inspect --json
 
 Set `FLEUR_PRIVATE_DATABASE_URL` in the trusted supervisor environment. `FLEUR_PRIVATE_CONTROL_DATABASE_URL` selects an existing control database in the same cluster, defaulting to `postgres` on the same endpoint. The control database must differ from the application database. Configure direct PostgreSQL server endpoints only. Transaction-pooling proxies are unsupported. Fleur verifies the server system identifier, database identity, backend address/port, session nonce across a transaction boundary, backend PID and exact session advisory lock. These checks detect switching or lost sessions; SQL observations cannot prove that an arbitrary intermediary is absent.
 
-The configured credentials need database identity inspection, including `pg_control_system()`. Backup authority additionally needs role/database creation and verified cleanup. These credentials stay in the trusted host and PostgreSQL tool environment. Application workers and browser bundles never receive them. All Fleur supervisors and commands managing a target must share the same private durable state root. `FLEUR_PRIVATE_STATE_ROOT` explicitly selects it; the default is the user's local Fleur state directory. Keep this directory outside the replaceable database and preserve it across restarts. Do not delete it to bypass recovery.
+The authority the configured credentials need is described in [credential authority](#credential-authority). These credentials stay in the trusted host and PostgreSQL tool environment. Application workers and browser bundles never receive them. All Fleur supervisors and commands managing a target must share the same private durable state root. `FLEUR_PRIVATE_STATE_ROOT` explicitly selects it; the default is the user's local Fleur state directory. Keep this directory outside the replaceable database and preserve it across restarts. Do not delete it to bypass recovery.
 
 The namespace binds the verified PostgreSQL cluster system identifier and project database name. The marker also binds database OID and owner, so replacing the database cannot silently reopen an older binding. Changing the control database or state root while a target is in use is unsupported configuration, not a recovery operation.
+
+## Credential authority
+
+Fleur uses the configured credential for every operation and never rejects a broader one. Operators may instead supply a credential limited to the **minimum-privilege profile**, which is enough for the read-only operations: the schema overview and `db inspect --table`, `db migration status` and `status` database health. Fleur-generated inspection SQL always runs inside a host-opened `READ ONLY` transaction, whatever the credential allows.
+
+| Capability | Privileges | Needed by |
+| --- | --- | --- |
+| `database connect` | `CONNECT` on the application and control databases | every database operation |
+| `identity inspection` | `EXECUTE` on `pg_control_system()` in the application and control databases | every database operation |
+| `maintenance locks` | `EXECUTE` on PostgreSQL's advisory lock functions in the control database | every database operation |
+| `schema read` | `USAGE` on `public` and `fleur_internal` and `SELECT` on their tables; backup, apply, seed, restore and reset also read every user schema, table and sequence | every database operation |
+| `role and database creation` | superuser, or `CREATEROLE` and `CREATEDB` with `createrole_self_grant` including `set` and `inherit`, so Fleur can create, verify and remove its disposable backup verification role and database | `db backup`, `db migration apply`, `db restore`, `db reset` |
+| `schema write` | `CREATE` on the application database and on its `public` and `fleur_internal` schemas, and ownership of their tables and functions | `db migration apply`, `db seed`, `db restore`, `db reset` |
+| `database replacement` | ownership of the application database and its schemas | `db restore`, `db reset` |
+
+The first four rows are the profile. A minimal profile grant, run by the database owner or a superuser, looks like this; replace the placeholders with your role and database names:
+
+```sql
+GRANT CONNECT ON DATABASE <application_database>, <control_database> TO <role>;
+-- In the application database:
+GRANT USAGE ON SCHEMA public, fleur_internal TO <role>;
+GRANT SELECT ON ALL TABLES IN SCHEMA public, fleur_internal TO <role>;
+ALTER DEFAULT PRIVILEGES FOR ROLE <migrating_role> IN SCHEMA public, fleur_internal GRANT SELECT ON TABLES TO <role>;
+```
+
+PostgreSQL grants `PUBLIC` `CONNECT` on databases and `EXECUTE` on `pg_control_system()` and the advisory lock functions by default. If those defaults were revoked, grant them to the role explicitly, in each database for the functions. The default privileges keep tables created by later migrations readable.
+
+A command whose credential lacks a capability it needs returns `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4 before it changes anything. Backup, apply, seed, restore and reset check their extra authority through PostgreSQL's privilege functions before any approval prompt, backup, maintenance stage or schema change, so the refusal leaves nothing to recover. The error's `expected.capability` names the missing category from the table above, and its action points here. It never names the role, host, port or URL. Under the minimum-privilege profile, `db backup`, `db migration apply`, `db restore` and `db reset` report `role and database creation`, and `db seed` reports `schema write`; `db migration apply` with nothing pending needs no extra authority and reports no applied migrations.
 
 ## Schema overview and database health
 
@@ -73,7 +101,7 @@ For an interrupted backup, inspect the recorded exact archive reference and disp
 
 ## Result and exit contracts
 
-All commands use the version 1 JSON envelope and global `--timeout`, `--project`, `--help` and `--json` options. `truncated` appears in both the inspection page and envelope. Invalid grammar/cursors use exit 2. Missing configuration, tools or control authority use exit 4, as does `DATABASE_UNAVAILABLE` when inspection cannot reach the database. Maintenance contention or uncertain recovery uses exit 5. Oversized inspection results, restore/integrity failures and destination collisions fail with exit 1. Failures never return a success manifest or expose connection credentials.
+All commands use the version 1 JSON envelope and global `--timeout`, `--project`, `--help` and `--json` options. `truncated` appears in both the inspection page and envelope. Invalid grammar/cursors use exit 2. Missing configuration, tools or control authority use exit 4, as do `DATABASE_UNAVAILABLE` when inspection cannot reach the database and `DATABASE_PRIVILEGE_INSUFFICIENT` when the credential lacks a [capability](#credential-authority) the command needs. Maintenance contention or uncertain recovery uses exit 5. Oversized inspection results, restore/integrity failures and destination collisions fail with exit 1. Failures never return a success manifest or expose connection credentials.
 
 ## Reviewed migrations
 

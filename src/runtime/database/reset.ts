@@ -10,6 +10,7 @@ import { readMigrations } from "./migration-plan";
 import { dataIntegrity } from "./integrity";
 import { quote } from "./inspection";
 import { seedDatabase } from "./seeds";
+import { requireAuthority } from "./privilege";
 
 export interface ResetConfiguration extends BackupConfiguration, MaintenanceAuthority {
   /** Trusted lifecycle binding. Production configuration never supplies this value. */
@@ -30,6 +31,8 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
     if (history.some((row, index) => row.checksum !== plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
     const fence = await sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]);
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
+    // Before approval, backup or any marker: reset verifies a backup, then drops, recreates and migrates the database.
+    await requireAuthority(lease.sql, sql, ["role and database creation", "database replacement", "schema write", "schema read"]);
     const intent = { operation: "reset" as const, beforeSchema: await catalogFingerprint(sql), beforeData: await dataIntegrity(sql), beforeHistory: history.map(row => row.checksum), afterSchema: null as string | null, afterData: null as string | null, afterHistory: plans.map(plan => plan.checksum) };
     const planChecksum = digest(JSON.stringify({ operation: "reset", target: lease.target, migrations: plans.map(plan => plan.checksum), seeds: seedPlan, intent }));
     await authorizeMaintenance(lease, { action: "reset", target: lease.target, checksum: planChecksum, replacesCurrentData: true }, config);

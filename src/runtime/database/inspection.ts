@@ -9,6 +9,7 @@ import { MaintenanceLease, digest, syncDirectory, type MaintenanceConfiguration 
 import { caseFoldedKey, catalogTables, tableNames, type CatalogTable } from "./catalog";
 import { readMigrationStatus } from "./migration-status";
 import { withInspection, type TargetKind } from "./target";
+import { privileged } from "./privilege";
 import type { Table } from "../../database";
 import { definition, tableDefinitions } from "../declarations";
 
@@ -20,7 +21,7 @@ async function cursorKey(lease: MaintenanceLease): Promise<Buffer> {
     // processes. Keep readers outside the temporary two-link publication state.
     await sql.unsafe("SET LOCAL statement_timeout='5s'");
     const key = BigInt.asIntN(64, BigInt(`0x${digest(`fleur:cursor-key:v1:${lease.key}`).slice(0, 16)}`)).toString();
-    await sql.unsafe("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+    await privileged("maintenance locks", () => sql.unsafe("SELECT pg_advisory_xact_lock($1::bigint)", [key]));
     return readCursorKey(lease);
   });
 }

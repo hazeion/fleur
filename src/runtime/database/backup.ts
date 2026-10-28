@@ -7,6 +7,7 @@ import { quote, publishFile } from "./inspection";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { dataIntegrity } from "./integrity";
 import { fileDigest, pgTool, schemaDumpArguments } from "./pg-tools";
+import { requireAuthority } from "./privilege";
 
 export interface BackupConfiguration extends MaintenanceConfiguration { readonly toolDirectory?: string; readonly timeoutMs?: number; }
 const schemaArgs = schemaDumpArguments;
@@ -55,6 +56,8 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     cleanupComplete = true;
   }
   try {
+    // Before any fence, marker or verification resource: a credential without this authority changes nothing.
+    await requireAuthority(lease.sql, source, ["role and database creation", "schema read"]);
     // The target fence closes the control-socket-loss race. It is supplemental;
     // replacement ownership is always the independent control-database lock.
     const fenced = await source.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]);

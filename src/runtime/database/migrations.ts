@@ -10,6 +10,7 @@ import { backupDatabase, type BackupConfiguration } from "./backup";
 import { authorizeMaintenance, type MaintenanceAuthority } from "./maintenance-authority";
 import { reconcileMaintenance } from "./recovery";
 import { dataIntegrity } from "./integrity";
+import { requireAuthority } from "./privilege";
 
 /** `db migration status`: the full migration report for one verified target, read inside a read-only transaction. */
 export async function migrationStatus(url: string, project: string, config: BackupConfiguration & { readonly kind?: TargetKind } = {}) {
@@ -37,6 +38,8 @@ export async function applyMigrations(url: string, project: string, config: Back
     if (!history.length && !await emptyApplicationSchema(sql)) throw new Error("SCHEMA_DRIFT");
     const pending=plans.slice(history.length);
     if (!pending.length) return {applied:[],backup:null};
+    // Before approval, backup or any marker: applying needs backup verification and schema ownership.
+    await requireAuthority(lease.sql,sql,["role and database creation","schema write","schema read"]);
     const planChecksum=digest(JSON.stringify({target:lease.target,plans:pending.map(plan=>plan.checksum)}));
     const intent={operation:"migration" as const,beforeSchema:await catalogFingerprint(sql),beforeData:await dataIntegrity(sql),beforeHistory:history.map(row=>row.checksum),afterHistory:plans.map(plan=>plan.checksum),afterSchema:null as string|null};
     if (pending.some(plan=>plan.removals.length)) {

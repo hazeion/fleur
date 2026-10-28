@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { authorizeMaintenance, privateJson, type MaintenanceAuthority } from "./maintenance-authority";
 import { backupDatabase, type BackupConfiguration } from "./backup";
+import { requireAuthority } from "./privilege";
 import { backupManifest, verifyRetainedArchive, cleanupInterruptedVerification } from "./restore-verification";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { readMigrations } from "./migration-plan";
@@ -26,6 +27,8 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
   const io=()=>({timeoutMs:remaining(),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
   try {
     if(lease.busy)throw new Error("MAINTENANCE_BUSY");
+    // Every restore path verifies the archive in a disposable database first; the target may be missing here.
+    await requireAuthority(lease.sql,lease.sql,["role and database creation"]);
     const previous=await lease.marker();
     const replacement=previous?.replacement;
     const retainedResetBackup=replacement && JSON.stringify(previous.target)===JSON.stringify(lease.target)
@@ -59,6 +62,8 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
     if(!fence[0]?.acquired)throw new Error("MAINTENANCE_BUSY");
     const active=await sql.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");
     if(active[0]?.active!=="0"||(await sql.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()")).length)throw new Error("MAINTENANCE_BUSY");
+    // Before freezing the archive, approval or any marker: restore replaces the schemas and digests all data.
+    await requireAuthority(lease.sql,sql,["database replacement","schema write","schema read"]);
     const input=await open(archive,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try {
       const stat=await input.stat();

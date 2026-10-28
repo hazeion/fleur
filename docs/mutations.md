@@ -45,16 +45,16 @@ Explicit `versioned: false` declarations emit the warning that updates and delet
 Declare non-unique indexes with the table's `indexes` option. Each index lists 1–32 of the table's own columns in order. A key is a field name, which sorts ascending, or `{ field, direction }`:
 
 ```ts
-export const sessions = defineTable("workout_sessions", {
+export const meals = defineTable("meals", {
   columns: { id: column.uuid().primaryKey().generated(), date: column.localDate() },
   indexes: [{ fields: [{ field: "date", direction: "desc" }, { field: "id", direction: "desc" }] }],
 });
-export const sets = defineTable("workout_session_sets", {
-  columns: { id: column.uuid().primaryKey().generated(), sessionId: column.uuid().references(sessions.id, { onDelete: "cascade" }), position: column.safeInteger() },
-  indexes: [{ fields: ["sessionId", "position"] }],
+export const mealIngredients = defineTable("meal_ingredients", {
+  columns: { id: column.uuid().primaryKey().generated(), mealId: column.uuid().references(meals.id, { onDelete: "cascade" }), position: column.safeInteger() },
+  indexes: [{ fields: ["mealId", "position"] }],
 });
 // A newest-first history page reads in the first index's order, with no sort.
-handleQuery(listSessions, async ({ db }) => db.select(sessions, {
+handleQuery(listMeals, async ({ db }) => db.select(meals, {
   fields: ["id", "date", "version"],
   orderBy: [{ field: "date", direction: "desc" }, { field: "id", direction: "desc" }], limit: 20,
 }));
@@ -84,42 +84,71 @@ The production browser entry captures Fleur's transport before application modul
 
 ## Ordered child collections
 
-A record that owns an ordered list, such as a workout template and its exercise entries, is one aggregate. Version the parent; its version covers the header and every child. Declare children with a parent reference and a position, and reference other records with the delete action you need:
+A record that owns an ordered list, such as a recipe and its steps, is one aggregate. Version the parent; its version covers the header and every child. Declare children with a parent reference and a position, and reference other records with the delete action you need:
 
 ```ts
-// server/workouts.tsx: imports come from fleur/database, fleur/server and the shared contracts,
-// where updateTemplate outputs { id, name, version }. The fixture also returns the saved entries.
-export const templateEntries = defineTable("workout_template_entries", { columns: {
+// server/recipes.tsx: imports come from fleur/database, fleur/server and the shared contracts,
+// where updateRecipe outputs { id, name, version }. The fixture also returns the saved steps.
+export const recipeSteps = defineTable("recipe_steps", { columns: {
   id: column.uuid().primaryKey().generated(),
-  templateId: column.uuid().references(templates.id, { onDelete: "cascade" }),
+  recipeId: column.uuid().references(recipes.id, { onDelete: "cascade" }),
   position: column.safeInteger(),
-  exerciseId: column.uuid().references(exercises.id, { onDelete: "restrict" }),
-  targetSets: column.safeInteger(), targetRepetitions: column.safeInteger(),
-} });
-handleMutation(updateTemplate, async ({ input, db }) => {
+  ingredientId: column.uuid().references(ingredients.id, { onDelete: "restrict" }),
+  targetPortions: column.safeInteger(), targetCount: column.safeInteger(),
+}, indexes: [{ fields: ["recipeId", "position"] }, { fields: ["ingredientId"] }] });
+handleMutation(updateRecipe, async ({ input, db }) => {
   const name = input.name.trim();
   if (Array.from(name).length < 1 || Array.from(name).length > 100) throw inputError({ name: "Use 1–100 characters after trimming." });
   // First lock and advance the aggregate version, then replace the children.
-  const { version } = await db.updateVersioned(templates, { id: input.id, expectedVersion: input.expectedVersion, set: { name }, returning: ["version"] });
-  const existing = await db.select(templateEntries, { fields: ["id", "version"], where: eq(templateEntries.templateId, input.id), limit: templateEntryLimit });
-  for (const entry of existing) await db.deleteVersioned(templateEntries, { id: entry.id, expectedVersion: entry.version });
-  for (const [position, entry] of input.entries.entries()) await db.insert(templateEntries, { values: { templateId: input.id, position, ...entry }, returning: ["id"] });
+  const { version } = await db.updateVersioned(recipes, { id: input.id, expectedVersion: input.expectedVersion, set: { name }, returning: ["version"] });
+  const existing = await db.select(recipeSteps, { fields: ["id", "version"], where: eq(recipeSteps.recipeId, input.id), limit: recipeStepLimit });
+  for (const step of existing) await db.deleteVersioned(recipeSteps, { id: step.id, expectedVersion: step.version });
+  for (const [position, step] of input.steps.entries()) await db.insert(recipeSteps, { values: { recipeId: input.id, position, ...step }, returning: ["id"] });
   return { id: input.id, name, version };
 });
 ```
 
 The save sends the whole ordered list with the expected parent version. Any header, child or order edit advances the parent version exactly once. Update the parent before touching children. A competing save then waits on the parent row and fails with `VERSION_CONFLICT` before it changes anything. If you replace children first, the loser instead reports `NOT_FOUND` for a child the winner removed. Await each helper in turn. A failed child write or invalid output rolls back the header and every child. `defineTable` declares no composite uniqueness or check constraints. The operation therefore enforces unique positions, by writing them from the list order, and positive targets, through its input schema; PostgreSQL does not.
 
-Read one aggregate with one `selectJoined` statement ordered by child position, so header and children share a snapshot. Bound the child count in the input schema so that read returns the whole aggregate. A list pages its parents with a continuation cursor. It then reads their children through repeated reads of at most 500 rows, continued with `cursorJoined`. Choose a page size whose largest possible page fits the 1 MiB result limit. A list never shows a partial aggregate. Parents and children are then separate statements: a save between them can pair a header with newer children. Editing from such a view fails with `VERSION_CONFLICT` instead of overwriting, and the committed save refreshes the view.
+Read one aggregate with one `selectJoined` statement ordered by child position, so header and children share a snapshot. Bound the child count in the input schema so that read returns the whole aggregate. A list pages its parents with a continuation cursor. It then reads their children through repeated reads of at most 500 rows, continued with `cursorJoined`. Choose a page size whose largest possible page fits the 1 MiB result limit. A list never splits an aggregate across pages. Parents and children are then separate statements: a save between them can pair a header with newer children. Editing from such a view fails with `VERSION_CONFLICT` instead of overwriting. A delete between them leaves a parent with no children: omit that parent rather than returning it, because the output schema requires at least one child and the whole list would fail. Child batches are separate statements too, so a commit between two batches can show one aggregate's children partly from before it and partly from after it. Every such commit refreshes the view.
+
+Report input errors under the input path of the offending field, such as `name`, `ingredients.1.name` or `ingredients.0.portions.1.amount`, so a form can show the error beside that field. Pass the path to `inputError` from the handler's own validation.
 
 Recovery:
 
 - `VERSION_CONFLICT`: another view saved first. Nothing from the rejected save was written. Keep the draft and show the stored version, which refreshes automatically. Offer an explicit action that rebases the kept draft onto the stored version, then save again. Never move a draft's base version, or copy newer data into it, silently.
-- `CONSTRAINT_CONFLICT` while saving: a referenced record, such as an exercise, no longer exists. Nothing was written. Choose a current record.
+- `CONSTRAINT_CONFLICT` while saving: a referenced record, such as an ingredient, no longer exists. Nothing was written. Choose a current record.
 - `CONSTRAINT_CONFLICT` while deleting a referenced record: a `restrict` reference still uses it. First remove it from every current aggregate, then delete it.
 - `NOT_FOUND`: the aggregate was deleted.
 - `outcome-unknown`: reload stored data before deciding whether to save again.
 
-`tests/runtime/fixtures/workouts` demonstrates this for workout templates. Each has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered entries. Entries may repeat an exercise and have positive safe-integer target sets and repetitions. The listing shows 10 templates per page with a link to later pages; its cursors last for the broker's lifetime. PostgreSQL tests cover position-ordered reads, paging past one bounded read, saves and reorders, malformed input, child and output rollback, two writers released together from a held row lock, and restricted exercise deletion. Its tables declare indexes for the name-ordered exercise and template listings, entry reads by template in position order, and the exercise reference. A PostgreSQL test generates and applies the fixture's migration through the reviewed flow. At 500 exercises and 100 templates of 100 entries, it shows that entry reads, template cascades and exercise restrict checks use those indexes. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes. A stale draft reports a conflict without losing its edits, and is then deliberately reapplied and saved.
+`tests/runtime/fixtures/recipes` demonstrates this with a catalog of ingredients and recipes of ordered steps. Ingredient names are trimmed, 1–100 code points and unique under case folding. Each recipe has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered steps. Steps may repeat an ingredient and have positive safe-integer target portions and counts. `recipe.delete` takes the expected version and removes every step. The listing shows 10 recipes per page with a link to later pages; its cursors last for the broker's lifetime. PostgreSQL tests cover position-ordered reads, paging past one bounded read, saves and reorders, malformed input, child and output rollback, two writers released together from a held row lock, restricted ingredient deletion, and a delete committed between the listing's header and step reads, released from a held table lock, which the listing omits. Its tables declare indexes for the name-ordered ingredient and recipe listings, step reads by recipe in position order, and the ingredient reference. A PostgreSQL test generates and applies the fixture's migration through the reviewed flow. At 500 ingredients and 100 recipes of 100 steps, it shows that step reads, recipe cascades and ingredient restrict checks use those indexes. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes. A stale draft reports a conflict without losing its edits, and is then deliberately reapplied and saved.
 
-Run `bun run types`, `bun run lint`, `bun run build:reference` and `bun run test`. Database/browser tests use the same owned PostgreSQL, native isolation and explicit Playwright prerequisites described in [read pages](read-pages.md). Lifecycle commands, reactive subscriptions, migrations and the full workout proof remain later slices.
+## Recorded snapshots
+
+A record that must keep its history copies the values it shows instead of referencing records that can change. The fixture records meals as a three-level aggregate of meal, ingredients and portions. Its only references point to each row's own parent, with `cascade`:
+
+```ts
+// server/meals.tsx: the meal header carries the aggregate version.
+export const meals = defineTable("meals", { columns: {
+  id: column.uuid().primaryKey().generated(),
+  date: column.localDate(),
+  recipeName: column.string().max(100).nullable(),
+}, indexes: [{ fields: [{ field: "date", direction: "desc" }, "id"] }] });
+export const mealPortions = defineTable("meal_portions", { columns: {
+  id: column.uuid().primaryKey().generated(),
+  mealIngredientId: column.uuid().references(mealIngredients.id, { onDelete: "cascade" }),
+  position: column.safeInteger(), count: column.safeInteger(),
+  amount: column.decimal({ precision: 7, scale: 2 }).nullable(), unit: column.string().max(2).nullable(),
+}, indexes: [{ fields: ["mealIngredientId", "position"] }] });
+// shared/meals.ts: an amount always carries its unit, and omitting it omits both.
+export const amount = schema.object({ value: schema.decimal({ maxScale: 2, nonnegative: true }), unit: schema.enum(["g", "ml"]) });
+```
+
+Each meal has a `LocalDate`, an optional source-recipe name and 1–50 ingredients of 1–50 portions each, with at most 50 portions in total, so one bounded joined read returns it whole. Ingredient and recipe names are copied as trimmed text of 1–100 code points. They are snapshot text supplied by the client, which offers catalog and recipe names; the server does not check them against the catalog, so a meal may name an ingredient the catalog never held. Renaming, editing or deleting an ingredient or recipe leaves recorded meals unchanged, and meals never restrict those deletions. A meal can still be edited after its ingredients are gone. A `LocalDate` is a calendar date in a `date` column: it has no time zone and does not shift with the server's or database's zone. Take it from the person's own calendar, for example a date input, never from a UTC instant.
+
+Amount values are exact decimal text, never JavaScript numbers. Validation rejects `0.1 + 0.2` artefacts, exponents, signs, nonfinite text and a third decimal place instead of rounding them. The handler removes leading and trailing zeroes from the text without numeric conversion, so `080.50` becomes `80.5` and `0.00` remains an explicit `0`. It rejects values above the column's 99999.99 with `INPUT_INVALID`. Units never convert. PostgreSQL does not enforce that amount and unit are both present or both absent: the operation writes them together from one validated amount.
+
+Meal saves and deletes follow the ordered-collection rules above, with the same recovery. An update replaces the date, recipe name and every ingredient and portion under one expected version. A delete takes the same version and removes every child. When an edit and a delete compete, the loser reports `VERSION_CONFLICT` if the edit won, or `NOT_FOUND` if the delete won. The history lists 20 whole meals per page, newest date first, and reads their portions in bounded batches of 500 rows. Its tables index the history order and each child table's parent reference in position order. A new meal can start from a recipe on the first listing page: its steps become that many portions of the target count, which the person can then change. PostgreSQL tests cover exact and normalized amounts, dates under a database time zone 14 hours ahead of UTC, position-ordered reads, paging, malformed input, child and output rollback, two writers and an edit racing a delete released from a held row lock, unchanged meals after ingredient and recipe edits and deletion, input errors that name the offending field path, and a delete committed between the history's header and portion reads, which the history omits. A two-view browser test covers client- and server-side rejection with unchanged drafts, refreshes that keep drafts and focus, a conflict that is deliberately reapplied, and deletion.
+
+Run `bun run types`, `bun run lint`, `bun run build:reference` and `bun run test`. Database/browser tests use the same owned PostgreSQL, native isolation and explicit Playwright prerequisites described in [read pages](read-pages.md). Lifecycle commands, reactive subscriptions and migrations remain later slices.

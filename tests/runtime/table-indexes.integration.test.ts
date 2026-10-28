@@ -17,7 +17,7 @@ import { ReadBroker } from "../../src/runtime/database/broker";
 import { migrationTables } from "../../src/runtime/database/migration-declarations";
 
 // Requirements: issue #93; docs/planning/V1-SPEC.md "Database migrations, seeds and recovery", "Schema inspection and
-// database health", "Database tooling for application agents" and the reference workload of 10,000 sessions.
+// database health", "Database tooling for application agents" and the reference workload of 10,000 dated history records.
 // Every database is an owned disposable PostgreSQL container; nothing here touches development data.
 interface PlanNode { "Node Type": string; "Index Name"?: string; "Relation Name"?: string; Plans?: PlanNode[] }
 async function project(prefix: string): Promise<string> {
@@ -54,85 +54,85 @@ async function scansDuring(sql: SQL, index: string, action: (transaction: SQL) =
 }
 
 function historyTables(version: 1 | 2 | 3) {
-  const sessions = defineTable("index_sessions", {
-    columns: { id: column.uuid().primaryKey().generated(), performedOn: column.localDate(), label: column.string().max(100).nullable() },
-    ...(version === 2 ? { indexes: [{ fields: [{ field: "performedOn", direction: "desc" }, { field: "id", direction: "desc" }] }] } as const : {}),
+  const meals = defineTable("index_meals", {
+    columns: { id: column.uuid().primaryKey().generated(), servedOn: column.localDate(), label: column.string().max(100).nullable() },
+    ...(version === 2 ? { indexes: [{ fields: [{ field: "servedOn", direction: "desc" }, { field: "id", direction: "desc" }] }] } as const : {}),
   });
-  const sets = defineTable("index_sets", {
-    columns: { id: column.uuid().primaryKey().generated(), sessionId: column.uuid().references(sessions.id, { onDelete: "cascade" }), position: column.safeInteger() },
-    ...(version === 1 ? {} : { indexes: [{ fields: ["sessionId", "position"] }] } as const),
+  const portions = defineTable("index_portions", {
+    columns: { id: column.uuid().primaryKey().generated(), mealId: column.uuid().references(meals.id, { onDelete: "cascade" }), position: column.safeInteger() },
+    ...(version === 1 ? {} : { indexes: [{ fields: ["mealId", "position"] }] } as const),
   });
-  return { sessions, sets, all: [sessions, sets] as const };
+  return { meals, portions, all: [meals, portions] as const };
 }
 
 test("declared indexes generate reviewed migrations, serve history and cascade paths, and persist across a PostgreSQL restart", async () => {
   const fixture = await ownedPostgres();
   const root = await project("fleur-indexes-apply-");
-  const historyIndex = indexName("index_sessions", "performedOn desc,id desc"), setIndex = indexName("index_sets", "sessionId,position");
+  const historyIndex = indexName("index_meals", "servedOn desc,id desc"), portionIndex = indexName("index_portions", "mealId,position");
   let witness: SQL | undefined, broker: ReadBroker | undefined;
   try {
     const config = { stateRoot: root, toolDirectory: await fixture.pgTools(join(root, "tools")) };
     await generateMigration(root, historyTables(1).all);
     expect((await applyMigrations(fixture.url, root, config)).applied).toEqual(["0001"]);
-    // Development-shaped rows that the index migration must preserve: 10,000 sessions with 10 sets each.
-    await fixture.sql.unsafe("INSERT INTO index_sessions(\"performedOn\",label) SELECT DATE '2000-01-01' + (n % 3650), 'session '||n FROM generate_series(1,10000) n");
-    await fixture.sql.unsafe("INSERT INTO index_sets(\"sessionId\",position) SELECT s.id, p FROM index_sessions s CROSS JOIN generate_series(0,9) p");
+    // Development-shaped rows that the index migration must preserve: 10,000 meals with 10 portions each.
+    await fixture.sql.unsafe("INSERT INTO index_meals(\"servedOn\",label) SELECT DATE '2000-01-01' + (n % 3650), 'meal '||n FROM generate_series(1,10000) n");
+    await fixture.sql.unsafe("INSERT INTO index_portions(\"mealId\",position) SELECT s.id, p FROM index_meals s CROSS JOIN generate_series(0,9) p");
 
     // Generation compiles the declarations into reviewable SQL and leaves the database unchanged.
     const declared = historyTables(2);
     const generated = await generateMigration(root, declared.all);
     expect(generated.generated).toBe(true);
     expect(generated.plan).toMatchObject({ id: "0002", removals: [], incompatibilities: [], backfills: [] });
-    expect(generated.plan.statements).toContain(`CREATE INDEX "${historyIndex}" ON "public"."index_sessions" ("performedOn" DESC NULLS LAST, "id" DESC NULLS LAST)`);
-    expect(generated.plan.statements).toContain(`CREATE INDEX "${setIndex}" ON "public"."index_sets" ("sessionId", "position")`);
+    expect(generated.plan.statements).toContain(`CREATE INDEX "${historyIndex}" ON "public"."index_meals" ("servedOn" DESC NULLS LAST, "id" DESC NULLS LAST)`);
+    expect(generated.plan.statements).toContain(`CREATE INDEX "${portionIndex}" ON "public"."index_portions" ("mealId", "position")`);
     expect(generated.plan.statements.filter(statement => /\bINDEX\b/.test(statement) && !statement.includes("UNIQUE") && statement.startsWith("CREATE"))).toHaveLength(2);
-    expect(await indexDefinitions(fixture.sql, "index_sets")).toEqual({});
+    expect(await indexDefinitions(fixture.sql, "index_portions")).toEqual({});
     expect((await migrationStatus(fixture.url, root, config)).migrations).toMatchObject({ compatible: false, pending: ["0002"], drift: false });
 
     // Adding indexes removes no data, so it applies without human approval and preserves every row.
     const approvals: unknown[] = [];
     expect((await applyMigrations(fixture.url, root, { ...config, confirm: async request => { approvals.push(request); return true; } })).applied).toEqual(["0002"]);
     expect(approvals).toEqual([]);
-    expect(await fixture.sql.unsafe("SELECT (SELECT count(*) FROM index_sessions)::int AS sessions, (SELECT count(*) FROM index_sets)::int AS sets")).toEqual([{ sessions: 10000, sets: 100000 }]);
-    expect(await indexDefinitions(fixture.sql, "index_sessions")).toEqual({ [historyIndex]: `CREATE INDEX ${historyIndex} ON public.index_sessions USING btree ("performedOn" DESC NULLS LAST, id DESC NULLS LAST)` });
-    expect(await indexDefinitions(fixture.sql, "index_sets")).toEqual({ [setIndex]: `CREATE INDEX ${setIndex} ON public.index_sets USING btree ("sessionId", "position")` });
+    expect(await fixture.sql.unsafe("SELECT (SELECT count(*) FROM index_meals)::int AS meals, (SELECT count(*) FROM index_portions)::int AS portions")).toEqual([{ meals: 10000, portions: 100000 }]);
+    expect(await indexDefinitions(fixture.sql, "index_meals")).toEqual({ [historyIndex]: `CREATE INDEX ${historyIndex} ON public.index_meals USING btree ("servedOn" DESC NULLS LAST, id DESC NULLS LAST)` });
+    expect(await indexDefinitions(fixture.sql, "index_portions")).toEqual({ [portionIndex]: `CREATE INDEX ${portionIndex} ON public.index_portions USING btree ("mealId", "position")` });
     expect((await migrationStatus(fixture.url, root, config)).migrations).toMatchObject({ compatible: true, applied: ["0001", "0002"], pending: [], drift: false, differenceCount: 0 });
 
     // The schema overview reports the declared indexes with their key columns and definitions.
     const overview = (await inspectDatabase(fixture.url, { project: root }, config)).data as { tables: { name: string; indexes: unknown[] }[] };
-    expect(overview.tables.find(table => table.name === "index_sessions")!.indexes).toEqual([{ name: historyIndex, unique: false, columns: ["performedOn", "id"], caseFolded: false, definition: expect.stringContaining('("performedOn" DESC NULLS LAST, id DESC NULLS LAST)') }]);
-    expect(overview.tables.find(table => table.name === "index_sets")!.indexes).toEqual([{ name: setIndex, unique: false, columns: ["sessionId", "position"], caseFolded: false, definition: expect.stringContaining('("sessionId", "position")') }]);
+    expect(overview.tables.find(table => table.name === "index_meals")!.indexes).toEqual([{ name: historyIndex, unique: false, columns: ["servedOn", "id"], caseFolded: false, definition: expect.stringContaining('("servedOn" DESC NULLS LAST, id DESC NULLS LAST)') }]);
+    expect(overview.tables.find(table => table.name === "index_portions")!.indexes).toEqual([{ name: portionIndex, unique: false, columns: ["mealId", "position"], caseFolded: false, definition: expect.stringContaining('("mealId", "position")') }]);
 
     // Fleur orders nulls last in both directions; the descending index matches that order, so a newest-first history
-    // page and one session's ordered sets read through the indexes without sorting.
-    await fixture.sql.unsafe("ANALYZE index_sessions; ANALYZE index_sets");
-    const history = await explainRead(fixture.sql, declared.all, { from: declared.sessions, joins: [], fields: { id: declared.sessions.id, performedOn: declared.sessions.performedOn }, orderBy: [{ column: declared.sessions.performedOn, direction: "desc" }, { column: declared.sessions.id, direction: "desc" }], limit: 21 });
+    // page and one meal's ordered portions read through the indexes without sorting.
+    await fixture.sql.unsafe("ANALYZE index_meals; ANALYZE index_portions");
+    const history = await explainRead(fixture.sql, declared.all, { from: declared.meals, joins: [], fields: { id: declared.meals.id, servedOn: declared.meals.servedOn }, orderBy: [{ column: declared.meals.servedOn, direction: "desc" }, { column: declared.meals.id, direction: "desc" }], limit: 21 });
     expect(history.filter(node => node["Index Name"] === historyIndex).length).toBe(1);
     expect(history.map(node => node["Node Type"])).not.toContain("Sort");
     expect(history.map(node => node["Node Type"])).not.toContain("Seq Scan");
     // The primary key's ascending index read backwards sorts nulls first, so Fleur's descending order needs its own index.
-    const byId = await explainRead(fixture.sql, declared.all, { from: declared.sessions, joins: [], fields: { id: declared.sessions.id }, orderBy: [{ column: declared.sessions.id, direction: "desc" }], limit: 21 });
+    const byId = await explainRead(fixture.sql, declared.all, { from: declared.meals, joins: [], fields: { id: declared.meals.id }, orderBy: [{ column: declared.meals.id, direction: "desc" }], limit: 21 });
     expect(byId.map(node => node["Node Type"])).toContain("Sort");
-    const [{ id: sessionId }] = await fixture.sql.unsafe("SELECT id FROM index_sessions ORDER BY \"performedOn\", id LIMIT 1") as [{ id: string }];
-    const children = await explainRead(fixture.sql, declared.all, { from: declared.sets, joins: [], fields: { id: declared.sets.id, position: declared.sets.position }, where: eq(declared.sets.sessionId, sessionId as never), orderBy: [{ column: declared.sets.position, direction: "asc" }], limit: 500 });
-    expect(children.filter(node => node["Index Name"] === setIndex).length).toBe(1);
+    const [{ id: mealId }] = await fixture.sql.unsafe("SELECT id FROM index_meals ORDER BY \"servedOn\", id LIMIT 1") as [{ id: string }];
+    const children = await explainRead(fixture.sql, declared.all, { from: declared.portions, joins: [], fields: { id: declared.portions.id, position: declared.portions.position }, where: eq(declared.portions.mealId, mealId as never), orderBy: [{ column: declared.portions.position, direction: "asc" }], limit: 500 });
+    expect(children.filter(node => node["Index Name"] === portionIndex).length).toBe(1);
     expect(children.map(node => node["Node Type"])).not.toContain("Seq Scan");
-    // Deleting a session cascades to its sets through the foreign-key index.
-    expect(await scansDuring(fixture.sql, setIndex, transaction => transaction.unsafe("DELETE FROM index_sessions WHERE id=$1", [sessionId]))).toBeGreaterThan(0);
-    expect(await fixture.sql.unsafe("SELECT count(*)::int AS sets FROM index_sets WHERE \"sessionId\"=$1", [sessionId])).toEqual([{ sets: 0 }]);
+    // Deleting a meal cascades to its portions through the foreign-key index.
+    expect(await scansDuring(fixture.sql, portionIndex, transaction => transaction.unsafe("DELETE FROM index_meals WHERE id=$1", [mealId]))).toBeGreaterThan(0);
+    expect(await fixture.sql.unsafe("SELECT count(*)::int AS portions FROM index_portions WHERE \"mealId\"=$1", [mealId])).toEqual([{ portions: 0 }]);
 
     // A PostgreSQL restart terminates every session and recovers from storage; data, indexes and history persist.
     witness = new SQL(fixture.url, { max: 1, connectionTimeout: 2 });
     const [{ pid }] = await witness`SELECT pg_backend_pid() AS pid` as [{ pid: number }];
     await fixture.restart();
     expect(await fixture.sql.unsafe("SELECT count(*)::int AS sessions FROM pg_stat_activity WHERE pid=$1", [pid])).toEqual([{ sessions: 0 }]);
-    expect(await fixture.sql.unsafe("SELECT (SELECT count(*) FROM index_sessions)::int AS sessions, (SELECT count(*) FROM index_sets)::int AS sets")).toEqual([{ sessions: 9999, sets: 99990 }]);
-    expect(Object.keys(await indexDefinitions(fixture.sql, "index_sessions"))).toEqual([historyIndex]);
-    expect(Object.keys(await indexDefinitions(fixture.sql, "index_sets"))).toEqual([setIndex]);
+    expect(await fixture.sql.unsafe("SELECT (SELECT count(*) FROM index_meals)::int AS meals, (SELECT count(*) FROM index_portions)::int AS portions")).toEqual([{ meals: 9999, portions: 99990 }]);
+    expect(Object.keys(await indexDefinitions(fixture.sql, "index_meals"))).toEqual([historyIndex]);
+    expect(Object.keys(await indexDefinitions(fixture.sql, "index_portions"))).toEqual([portionIndex]);
     expect((await migrationStatus(fixture.url, root, config)).migrations).toMatchObject({ compatible: true, applied: ["0001", "0002"], drift: false });
     broker = new ReadBroker({ url: fixture.url, tables: declared.all, maintenance: { stateRoot: root } });
-    const newest = await broker.read(db => db.select(declared.sessions, { fields: ["performedOn"], orderBy: [{ field: "performedOn", direction: "desc" }], limit: 1 }));
-    expect(newest.map(row => String(row.performedOn))).toEqual(["2009-12-28"]);
+    const newest = await broker.read(db => db.select(declared.meals, { fields: ["servedOn"], orderBy: [{ field: "servedOn", direction: "desc" }], limit: 1 }));
+    expect(newest.map(row => String(row.servedOn))).toEqual(["2009-12-28"]);
     await broker.close(); broker = undefined;
 
     // Removing a declared index is not a data removal: it applies without approval and keeps every row.
@@ -141,9 +141,9 @@ test("declared indexes generate reviewed migrations, serve history and cascade p
     expect(reduced.plan.statements).toContain(`DROP INDEX public."${historyIndex}"`);
     expect((await applyMigrations(fixture.url, root, { ...config, confirm: async request => { approvals.push(request); return true; } })).applied).toEqual(["0003"]);
     expect(approvals).toEqual([]);
-    expect(await indexDefinitions(fixture.sql, "index_sessions")).toEqual({});
-    expect(Object.keys(await indexDefinitions(fixture.sql, "index_sets"))).toEqual([setIndex]);
-    expect(await fixture.sql.unsafe("SELECT count(*)::int AS sets FROM index_sets")).toEqual([{ sets: 99990 }]);
+    expect(await indexDefinitions(fixture.sql, "index_meals")).toEqual({});
+    expect(Object.keys(await indexDefinitions(fixture.sql, "index_portions"))).toEqual([portionIndex]);
+    expect(await fixture.sql.unsafe("SELECT count(*)::int AS portions FROM index_portions")).toEqual([{ portions: 99990 }]);
     expect((await migrationStatus(fixture.url, root, config)).migrations).toMatchObject({ compatible: true, applied: ["0001", "0002", "0003"], drift: false });
   } finally {
     await witness?.close({ timeout: 0 }).catch(() => {});
@@ -216,37 +216,41 @@ test("status reports a missing or different declared index as drift, and admissi
   }
 }, 240_000);
 
-test("the workout templates fixture's reviewed migration indexes its foreign keys and ordered entry reads", async () => {
-  const tables = await migrationTables(fileURLToPath(new URL("fixtures/workouts", import.meta.url)));
+test("the recipes fixture's reviewed migration indexes its foreign keys, ordered step reads and meal history", async () => {
+  const tables = await migrationTables(fileURLToPath(new URL("fixtures/recipes", import.meta.url)));
   const named = (name: string) => tables.find(table => tableDefinitions.get(table)?.name === name)!;
-  const entries = named("workout_template_entries");
-  const field = (name: string) => (entries as unknown as Record<string, ColumnReference>)[name]!;
-  const byTemplate = indexName("workout_template_entries", "templateId,position"), byExercise = indexName("workout_template_entries", "exerciseId");
+  const steps = named("recipe_steps");
+  const field = (name: string) => (steps as unknown as Record<string, ColumnReference>)[name]!;
+  const byRecipe = indexName("recipe_steps", "recipeId,position"), byIngredient = indexName("recipe_steps", "ingredientId");
   const fixture = await ownedPostgres();
-  const root = await project("fleur-indexes-workouts-");
+  const root = await project("fleur-indexes-recipes-");
   try {
     const config = { stateRoot: root, toolDirectory: await fixture.pgTools(join(root, "tools")) };
     const { plan } = await generateMigration(root, tables);
-    expect(plan.statements).toContain(`CREATE INDEX "${byTemplate}" ON "public"."workout_template_entries" ("templateId", "position")`);
-    expect(plan.statements).toContain(`CREATE INDEX "${byExercise}" ON "public"."workout_template_entries" ("exerciseId")`);
-    for (const table of ["exercises", "workout_templates"]) expect(plan.statements).toContain(`CREATE INDEX "${indexName(table, "name,id")}" ON "public"."${table}" ("name", "id")`);
+    expect(plan.statements).toContain(`CREATE INDEX "${byRecipe}" ON "public"."recipe_steps" ("recipeId", "position")`);
+    expect(plan.statements).toContain(`CREATE INDEX "${byIngredient}" ON "public"."recipe_steps" ("ingredientId")`);
+    for (const table of ["ingredients", "recipes"]) expect(plan.statements).toContain(`CREATE INDEX "${indexName(table, "name,id")}" ON "public"."${table}" ("name", "id")`);
+    // Meal history reads newest dates first with Fleur's ascending id tie-breaker; children read by parent in position order.
+    expect(plan.statements).toContain(`CREATE INDEX "${indexName("meals", "date desc,id")}" ON "public"."meals" ("date" DESC NULLS LAST, "id")`);
+    expect(plan.statements).toContain(`CREATE INDEX "${indexName("meal_ingredients", "mealId,position")}" ON "public"."meal_ingredients" ("mealId", "position")`);
+    expect(plan.statements).toContain(`CREATE INDEX "${indexName("meal_portions", "mealIngredientId,position")}" ON "public"."meal_portions" ("mealIngredientId", "position")`);
     expect((await applyMigrations(fixture.url, root, config)).applied).toEqual(["0001"]);
     expect((await migrationStatus(fixture.url, root, config)).migrations).toMatchObject({ compatible: true, drift: false });
 
-    // Reference catalog: 500 exercises and 100 templates, here with 100 entries each.
-    await fixture.sql.unsafe("INSERT INTO exercises(name) SELECT 'Exercise '||n FROM generate_series(1,500) n");
-    await fixture.sql.unsafe("INSERT INTO workout_templates(name) SELECT 'Template '||n FROM generate_series(1,100) n");
-    await fixture.sql.unsafe("WITH catalog AS (SELECT array_agg(id ORDER BY name) AS ids FROM exercises) INSERT INTO workout_template_entries(\"templateId\",position,\"exerciseId\",\"targetSets\",\"targetRepetitions\") SELECT t.id, p, catalog.ids[1 + (p * 7 + length(t.name)) % 500], 3, 5 FROM workout_templates t CROSS JOIN generate_series(0,99) p CROSS JOIN catalog");
-    await fixture.sql.unsafe("ANALYZE exercises; ANALYZE workout_templates; ANALYZE workout_template_entries");
-    const [template] = await fixture.sql.unsafe("SELECT id FROM workout_templates ORDER BY name LIMIT 1") as [{ id: string }];
-    const read = await explainRead(fixture.sql, tables, { from: entries, joins: [], fields: { id: field("id"), position: field("position") }, where: eq(field("templateId"), template.id), orderBy: [{ column: field("position"), direction: "asc" }], limit: 100 });
-    expect(read.filter(node => node["Index Name"] === byTemplate).length).toBe(1);
+    // Reference catalog: 500 ingredients and 100 recipes, here with 100 steps each.
+    await fixture.sql.unsafe("INSERT INTO ingredients(name) SELECT 'Ingredient '||n FROM generate_series(1,500) n");
+    await fixture.sql.unsafe("INSERT INTO recipes(name) SELECT 'Recipe '||n FROM generate_series(1,100) n");
+    await fixture.sql.unsafe("WITH catalog AS (SELECT array_agg(id ORDER BY name) AS ids FROM ingredients) INSERT INTO recipe_steps(\"recipeId\",position,\"ingredientId\",\"targetPortions\",\"targetCount\") SELECT t.id, p, catalog.ids[1 + (p * 7 + length(t.name)) % 500], 3, 5 FROM recipes t CROSS JOIN generate_series(0,99) p CROSS JOIN catalog");
+    await fixture.sql.unsafe("ANALYZE ingredients; ANALYZE recipes; ANALYZE recipe_steps");
+    const [recipe] = await fixture.sql.unsafe("SELECT id FROM recipes ORDER BY name LIMIT 1") as [{ id: string }];
+    const read = await explainRead(fixture.sql, tables, { from: steps, joins: [], fields: { id: field("id"), position: field("position") }, where: eq(field("recipeId"), recipe.id), orderBy: [{ column: field("position"), direction: "asc" }], limit: 100 });
+    expect(read.filter(node => node["Index Name"] === byRecipe).length).toBe(1);
     expect(read.map(node => node["Node Type"])).not.toContain("Seq Scan");
-    // Restrict checks on exercise deletion and cascades on template deletion look entries up through their indexes.
-    const [unused] = await fixture.sql.unsafe("INSERT INTO exercises(name) VALUES ('Unused') RETURNING id") as [{ id: string }];
-    expect(await scansDuring(fixture.sql, byExercise, transaction => transaction.unsafe("DELETE FROM exercises WHERE id=$1", [unused.id]))).toBeGreaterThan(0);
-    expect(await scansDuring(fixture.sql, byTemplate, transaction => transaction.unsafe("DELETE FROM workout_templates WHERE id=$1", [template.id]))).toBeGreaterThan(0);
-    expect(await fixture.sql.unsafe("SELECT count(*)::int AS entries FROM workout_template_entries")).toEqual([{ entries: 9900 }]);
+    // Restrict checks on ingredient deletion and cascades on recipe deletion look steps up through their indexes.
+    const [unused] = await fixture.sql.unsafe("INSERT INTO ingredients(name) VALUES ('Unused') RETURNING id") as [{ id: string }];
+    expect(await scansDuring(fixture.sql, byIngredient, transaction => transaction.unsafe("DELETE FROM ingredients WHERE id=$1", [unused.id]))).toBeGreaterThan(0);
+    expect(await scansDuring(fixture.sql, byRecipe, transaction => transaction.unsafe("DELETE FROM recipes WHERE id=$1", [recipe.id]))).toBeGreaterThan(0);
+    expect(await fixture.sql.unsafe("SELECT count(*)::int AS steps FROM recipe_steps")).toEqual([{ steps: 9900 }]);
   } finally {
     await fixture.cleanup();
     await rm(root, { recursive: true, force: true });

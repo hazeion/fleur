@@ -39,6 +39,8 @@ Use one simple screen per workflow:
 
 Recorded sessions retain their details when templates change. Demonstrate valid saves, invalid-input rejection, atomic multi-row saves, automatic updates in another browser view, persistence after restart, and operation of the production build.
 
+The workout application lives in its own private repository, `hazeion/fleur-workout`. It is built with Fleur's packed CLI, using only Fleur's public API, as the #38 proof, and the workout acceptance requirements in the [specification](V1-SPEC.md#workout-application-acceptance) are its criteria. Fleur's own fixtures, docs and guidance use neutral examples instead.
+
 ## Building Fleur
 
 Use TDD by default for meaningful testable behavior, with mandatory test-first work for critical contracts and regressions. Use Bun tests, real disposable PostgreSQL integration, Playwright browser checks, compiler type fixtures, oxlint plus remaining ESLint checks, and production-build verification. Separate reviewer agents challenge substantial changes, and automated checks run on pull requests. Tool pins and executable compatibility remain under research. The customized [Fleur TDD skill](../../.agents/skills/fleur-tdd/SKILL.md) is the planning reference for generated application guidance.

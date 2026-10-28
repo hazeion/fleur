@@ -1,3 +1,4 @@
+import { withoutRetrievalSecrets } from "../retrieval/environment";
 import { randomUUID } from "node:crypto";
 import { validatePublicValue } from "../../schema";
 import { validateEndpoint, type NativeImages } from "./endpoint";
@@ -51,7 +52,7 @@ export async function startWorker(images: NativeImages) {
   const child = Bun.spawn(["docker", "--host", images.endpoint, "run", "--interactive", "--name", name, "--label", `dev.fleur.read-controller-owner=${owner}`,
     "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=512m", "--pids-limit=64", "--pull=never",
     "--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock", images.controller, images.worker, images.controller, owner],
-  { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } });
+  { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...withoutRetrievalSecrets(process.env), DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } });
   const reader = new FrameReader(child.stdout);
   let closed = false, used = false;
   let closing: Promise<void> | undefined;

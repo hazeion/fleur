@@ -158,7 +158,10 @@ at startup, never application source:
 
 The internal adapter accepts this configuration through
 `ReadApplication.open(images, url, maintenance, retrieval)`; explicit
-`credentials` replace the environment bindings. Application workers never
-receive the host environment. The development and
+`credentials` replace the environment bindings. A binding with unknown fields,
+or a repeated binding name or field, fails startup with `CONFIGURATION_INVALID`.
+Application workers never receive the host environment, and the host strips
+retrieval credential variables from the Docker client and other child processes
+it starts. The development and
 production lifecycle commands that will read it from the startup environment are
 later slices. `tests/runtime/fixtures/retrieval` demonstrates the contract.

@@ -1,3 +1,4 @@
+import { withoutRetrievalSecrets } from "../retrieval/environment";
 import { randomUUID } from "node:crypto";
 import { validateEndpoint, type NativeImages } from "./endpoint";
 import { FrameReader, framed } from "./host";
@@ -62,7 +63,7 @@ class Slot {
       "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=512m", "--pids-limit=64", "--pull=never",
       "--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock", "--entrypoint", "/usr/bin/python3",
       images.controller, "-I", "-u", "/controller/retained_controller.py", images.worker, images.controller, owner],
-      { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } });
+      { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...withoutRetrievalSecrets(process.env), DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } });
     } catch (error) {
       // No client process exists, so no creation request reached Docker.
       await lease.abandon();

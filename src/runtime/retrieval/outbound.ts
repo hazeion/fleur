@@ -205,7 +205,34 @@ export function credentialsFromEnvironment(environment: Readonly<Record<string, 
   if (text === undefined || text === "") return {};
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return invalid(); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return invalid();
-  for (const binding of Object.values(parsed)) if (!binding || typeof binding !== "object" || Array.isArray(binding)) return invalid();
+  // JSON.parse keeps the last duplicate silently; a duplicate name or field is ambiguous.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || duplicateKeys(text)) return invalid();
+  for (const binding of Object.values(parsed)) {
+    if (!binding || typeof binding !== "object" || Array.isArray(binding) || Object.keys(binding).some(key => !["origin", "header", "query", "value"].includes(key))) return invalid();
+  }
   return parsed as Record<string, CredentialBinding>;
+}
+/** Detects a repeated key in any object of already-valid JSON text. */
+function duplicateKeys(text: string): boolean {
+  const objects: (Set<string> | null)[] = [];
+  let expectingKey = false;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (character === '"') {
+      let end = index + 1;
+      while (text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      const keys = objects.at(-1);
+      if (keys && expectingKey) {
+        const key = JSON.parse(text.slice(index, end + 1)) as string;
+        if (keys.has(key)) return true;
+        keys.add(key);
+        expectingKey = false;
+      }
+      index = end;
+    } else if (character === "{") { objects.push(new Set()); expectingKey = true; }
+    else if (character === "[") { objects.push(null); expectingKey = false; }
+    else if (character === "}" || character === "]") { objects.pop(); expectingKey = false; }
+    else if (character === ",") expectingKey = objects.at(-1) instanceof Set;
+  }
+  return false;
 }

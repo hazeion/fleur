@@ -7,6 +7,8 @@ import { schema } from "../../src/schema";
 import { classifyAddress, type AddressClass } from "../../src/runtime/retrieval/addresses";
 import { RetrievalError, type DestinationDefinition } from "../../src/runtime/retrieval/destinations";
 import { OutboundBroker, credentialsFromEnvironment, type RetrievalConfiguration } from "../../src/runtime/retrieval/outbound";
+import { withoutRetrievalSecrets } from "../../src/runtime/retrieval/environment";
+import { productionHost } from "../../src/setup/host";
 
 // Controlled local fixtures stand in for external providers; no test reaches the internet.
 const secret = "fixture-credential-7f3a9c";
@@ -257,4 +259,38 @@ test("credential bindings are read from the trusted startup environment", () => 
   let thrown = "";
   try { credentialsFromEnvironment({ FLEUR_RETRIEVAL_CREDENTIALS: `{"weather":"${secret}"` }); } catch (error) { thrown = JSON.stringify([(error as Error).message, (error as Error).stack]); }
   expect(thrown).not.toContain(secret);
+});
+
+test("credential environment bindings reject unknown fields and duplicate names without echoing values", () => {
+  const binding = { origin: "https://api.weather.example", header: "authorization", value: `Bearer ${secret}` };
+  const candidates = [
+    JSON.stringify({ weather: { ...binding, extra: "x" } }),
+    `{"weather":${JSON.stringify(binding)},"weather":${JSON.stringify(binding)}}`,
+    `{"weather":{"origin":"https://api.weather.example","header":"authorization","value":"Bearer ${secret}","value":"Bearer other"}}`,
+  ];
+  for (const value of candidates) {
+    let thrown: unknown;
+    try { credentialsFromEnvironment({ FLEUR_RETRIEVAL_CREDENTIALS: value }); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("CONFIGURATION_INVALID");
+    expect(JSON.stringify([(thrown as Error).message, (thrown as Error).stack])).not.toContain(secret);
+  }
+  // Names that differ, and values that merely contain a name, are not duplicates.
+  expect(Object.keys(credentialsFromEnvironment({ FLEUR_RETRIEVAL_CREDENTIALS: JSON.stringify({ weather: { ...binding, value: '"weather":' }, other: binding }) }))).toEqual(["weather", "other"]);
+});
+
+test("host child processes never inherit retrieval credential variables", async () => {
+  const environment = withoutRetrievalSecrets({ PATH: "/usr/bin:/bin", FLEUR_RETRIEVAL_CREDENTIALS: secret, DOCKER_CONFIG: "/x" });
+  expect(environment).toEqual({ PATH: "/usr/bin:/bin", DOCKER_CONFIG: "/x" });
+  const saved = process.env.FLEUR_RETRIEVAL_CREDENTIALS;
+  process.env.FLEUR_RETRIEVAL_CREDENTIALS = secret;
+  try {
+    // The shared host process boundary also runs Fleur's Docker control commands.
+    const host = productionHost();
+    expect(JSON.stringify(host.environment)).not.toContain(secret);
+    const result = await host.run(["/usr/bin/env"], 5000);
+    expect(result.status).toBe("completed");
+    expect(result.stdout).toContain("PATH=");
+    expect(result.stdout).not.toContain(secret);
+  } finally { if (saved === undefined) delete process.env.FLEUR_RETRIEVAL_CREDENTIALS; else process.env.FLEUR_RETRIEVAL_CREDENTIALS = saved; }
 });

@@ -263,6 +263,8 @@ export class NativeExecution {
   #closed = false;
   #refresh: ReturnType<typeof setInterval> | undefined;
   private constructor(images: NativeImages, capacity: number) { this.#images = images; this.#capacity = capacity; }
+  /** The most slots, including starting and recovering ones, this execution holds. */
+  get capacity(): number { return this.#capacity; }
   /**
    * Opening is cold startup: it returns once one retained slot is ready, so
    * container creation is reported separately and never consumed from an
@@ -376,9 +378,10 @@ export class NativeExecution {
       } finally { slot.reserved = false; this.#notify(); }
     })());
   }
-  async #acquire(deadline: number): Promise<Slot> {
+  async #acquire(deadline: number, signal?: AbortSignal): Promise<Slot> {
     for (;;) {
       if (this.#closed) throw new Error("APPLICATION_CLOSED");
+      signal?.throwIfAborted();
       for (const slot of this.#slots) if (slot.state === "idle" && !slot.reserved && slot.lost) { slot.state = "quarantined"; this.#retire(slot); }
       const idle = [...this.#slots].filter(slot => slot.state === "idle" && !slot.reserved);
       const slot = idle.find(candidate => candidate.fresh) ?? idle[0];
@@ -386,8 +389,10 @@ export class NativeExecution {
       if (this.#occupied < this.#capacity) this.#grow();
       if (performance.now() >= deadline) throw new Error("QUERY_TIMEOUT");
       await new Promise<void>(resolve => {
-        const timer = setTimeout(resolve, Math.max(1, Math.min(deadline, Math.max(this.#growAfter, performance.now() + 50)) - performance.now()));
-        this.#waiters.push(() => { clearTimeout(timer); resolve(); });
+        const wake = () => { clearTimeout(timer); signal?.removeEventListener("abort", wake); resolve(); };
+        const timer = setTimeout(wake, Math.max(1, Math.min(deadline, Math.max(this.#growAfter, performance.now() + 50)) - performance.now()));
+        this.#waiters.push(wake);
+        signal?.addEventListener("abort", wake, { once: true });
       });
     }
   }
@@ -395,12 +400,13 @@ export class NativeExecution {
    * Reserve one slot holding a fresh prepared process. One operation deadline
    * covers queueing, discard, preparation and execution: the run receives only
    * the time remaining. Slot startup and recovery are background capacity work
-   * with their own bounds. The reservation runs at most once.
+   * with their own bounds. The reservation runs at most once. Aborting
+   * `signal` while the caller still waits for a slot rejects with its reason.
    */
-  async reserve(deadline = performance.now() + OPERATION_MS): Promise<Reservation> {
+  async reserve(deadline = performance.now() + OPERATION_MS, signal?: AbortSignal): Promise<Reservation> {
     const queued = performance.now();
     if (!Number.isFinite(deadline) || deadline > queued + OPERATION_MS) throw new Error("REQUEST_DENIED");
-    const slot = await this.#acquire(deadline);
+    const slot = await this.#acquire(deadline, signal);
     let used = false, released = false;
     let running: Promise<unknown> | undefined;
     const settle = () => {

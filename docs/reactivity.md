@@ -148,8 +148,14 @@ exec exits, so this `QUERY_TIMEOUT` arrives at most about 2.75 seconds after
 the deadline.
 Render admission and every nested query a render requests share the render's
 deadline; admission that cannot finish in time also fails with `QUERY_TIMEOUT`.
-A nested query needs a slot of its own, so while every slot holds a render,
-nested queries wait and fail at that deadline. A caller that gives up during
+A nested query needs a slot of its own and waits for one while every slot is
+busy. A render waiting on a nested query cannot release its slot, so once
+every slot holds a render whose nested query is waiting, none can be admitted
+before the render deadlines: those nested queries fail at once with
+`QUERY_LIMIT`, which the page reports like any other failed query. While any
+slot holds other work, such as a render waiting on something else, a
+preparation or an ordinary query, nested queries keep waiting and are admitted
+when it frees up. A caller that gives up during
 preparation leaves the slot reserved until preparation settles, so a caller
 deadline never quarantines healthy capacity. Opening the application waits
 until one retained slot is ready and does not hold maintenance admission

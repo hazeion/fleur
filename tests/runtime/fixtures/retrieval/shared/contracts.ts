@@ -5,6 +5,7 @@ export const forecast = defineRetrieval({ name: "weather.forecast", input: schem
 export const strictForecast = defineRetrieval({ name: "weather.strict", input: schema.object({ city }), output: reading });
 export const rebound = defineRetrieval({ name: "weather.rebound", input: schema.object({}), output: schema.boolean() });
 export const directNetwork = defineRetrieval({ name: "network.direct", input: schema.object({ network: schema.boolean() }), output: schema.object({ network: schema.array(schema.string()), environment: schema.boolean() }) });
+export const spin = defineRetrieval({ name: "handler.spin", input: schema.object({}), output: schema.boolean() });
 export const listReadings = defineQuery({ name: "readings.list", input: schema.object({ city }), output: schema.safeInteger() });
 export const saveReading = defineMutation({ name: "readings.save", input: reading, output: schema.object({ id: schema.uuid(), city: schema.string(), temperature: schema.safeInteger() }) });
 export const retrieveInMutation = defineMutation({ name: "readings.retrieve-inside", input: schema.object({}), output: schema.string() });

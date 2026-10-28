@@ -96,6 +96,7 @@ page component to render a fallback explicitly.
 | `RETRIEVAL_DESTINATION_DENIED` | Undeclared destination or request, plain HTTP outside a local exception, or a denied address. |
 | `RETRIEVAL_REDIRECT_DENIED` | The provider redirected. Redirects are never followed; `status` holds the 3xx code. |
 | `RETRIEVAL_TIMEOUT` | The whole-operation deadline expired. |
+| `QUERY_TIMEOUT` | One handler run exceeded the five-second worker operation deadline, for example CPU-bound work, while the retrieval deadline remained. |
 | `RETRIEVAL_HTTP_FAILURE` | A non-2xx, non-redirect response; `status` holds the code. |
 | `RETRIEVAL_TRANSPORT_FAILURE` | DNS, connection or TLS failure, including certificate or hostname verification. |
 | `RETRIEVAL_TOO_LARGE` | The decoded body exceeded the limit, or the selected data exceeded 1 MiB. |
@@ -127,7 +128,11 @@ decoded size. The defaults are 10 seconds and 1 MiB. Trusted server configuratio
 may raise them to at most 30 seconds and 10 MiB. Browser input cannot change them.
 The selected data passed to application code is always bounded to 1 MiB.
 
-Handlers run in fresh isolated application workers with no network access. A
+Handlers run in fresh isolated application workers with no network access.
+Direct network APIs such as `fetch` fail inside the worker: the native
+restrictions deny socket, thread and event-object creation, so the worker
+terminates (`INTERNAL_FAILURE`), or on some kernels stops only at its operation
+deadline (`QUERY_TIMEOUT`). No request leaves the worker either way. A
 worker run that requests a new destination response ends there; the broker
 performs the request outside the five-second worker deadline, and a fresh worker
 replays the handler with the recorded response. A run that requests nothing new

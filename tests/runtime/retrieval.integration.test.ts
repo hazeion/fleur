@@ -102,10 +102,20 @@ test("isolated retrieval handlers obtain declared external data only through the
     expect(await app.retrieve("network.direct", { network: false })).toEqual({ network: [], environment: false });
     // Restricted workers may reject the attempt or be terminated by the
     // native restrictions; either way no request leaves the worker.
+    // Seccomp denies socket creation and thread/event creation, so Bun panics
+    // starting its HTTP client thread. Depending on the kernel the process dies
+    // at once (INTERNAL_FAILURE) or only at the worker operation deadline
+    // (QUERY_TIMEOUT, after the guard confirms physical exit). Every outcome
+    // is blocked: no request reaches the canary.
     const direct = await app.retrieve("network.direct", { network: true }).then(value => ({ value }), (error: unknown) => ({ error }));
     if ("value" in direct) expect(direct.value).toEqual({ network: ["denied", "denied", "denied"], environment: false });
-    else expect((direct.error as Error).message).toBe("INTERNAL_FAILURE");
+    else expect(["INTERNAL_FAILURE", "QUERY_TIMEOUT"]).toContain((direct.error as Error).message);
     expect(directHits).toBe(0);
+    // Handler execution beyond the worker operation deadline, with no external
+    // request outstanding, is an operation timeout rather than a retrieval timeout.
+    const spinning = performance.now();
+    expect((await failure(app.retrieve("handler.spin", {}))).message).toBe("QUERY_TIMEOUT");
+    expect(performance.now() - spinning).toBeLessThan(9_000);
     expect(await app.retrieve("weather.forecast", { city: "after-direct" })).toMatchObject({ available: true });
 
     // Mutations cannot retrieve. Saving retrieved data uses a revalidating mutation.

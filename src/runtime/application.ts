@@ -168,7 +168,9 @@ export class ReadApplication {
     // timeout and can handle RETRIEVAL_TIMEOUT explicitly.
     const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.floor(this.#outbound.timeoutMs / 4));
     const outcomes = new Map<string, { value: unknown } | { error: unknown }>();
-    const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
+    // RETRIEVAL_TIMEOUT means the whole retrieval deadline expired. A worker run
+    // that exceeds its own operation deadline first keeps the operation code.
+    const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" && performance.now() >= deadline - 1 ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
     for (;;) {
       if (deadline - performance.now() < 1) throw new RetrievalError("RETRIEVAL_TIMEOUT");
       const pending = new Map<string, unknown>();

@@ -1,7 +1,7 @@
 import { column, defineTable, eq } from "fleur/database";
 import { defineDestination, handleMutation, handleQuery, handleRetrieval, readQuery, readRetrieval, registerPage, RetrievalError } from "fleur/server";
 import { schema } from "fleur/schema";
-import { directNetwork, forecast, listReadings, rebound, retrieveInMutation, saveReading, strictForecast } from "../shared/contracts";
+import { directNetwork, forecast, listReadings, rebound, retrieveInMutation, saveReading, spin, strictForecast } from "../shared/contracts";
 import { weatherPage } from "../shared/pages";
 import { Refresh } from "../client/Refresh";
 
@@ -40,6 +40,8 @@ handleRetrieval(directNetwork, async ({ input }) => {
   }
   return { network, environment };
 });
+// CPU-bound handler work that never yields; the worker operation deadline ends it.
+handleRetrieval(spin, async () => { for (;;) { /* never yields */ } });
 handleQuery(listReadings, async ({ input, db }) => (await db.select(readings, { fields: ["id"], where: eq(readings.city, input.city) })).length);
 // Retrieved data is saved by a subsequent mutation that revalidates it.
 handleMutation(saveReading, async ({ input, db }) => db.insert(readings, { values: input, returning: ["id", "city", "temperature"] }));

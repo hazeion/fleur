@@ -304,8 +304,7 @@ test("an abandoning caller aborts an in-flight request and the provider sees the
   while ((hits.get("/slow-headers") ?? 0) === before) await new Promise(resolve => setTimeout(resolve, 10));
   const aborted = performance.now();
   abandoned.abort(new Error("QUERY_TIMEOUT"));
-  const error = await work.then(() => undefined, (reason: unknown) => reason);
-  expect(error).toBeInstanceOf(Error);
+  expect((await failure(work)).code).toBe("RETRIEVAL_TIMEOUT");
   expect(performance.now() - aborted).toBeLessThan(500);
   const until = performance.now() + 2000;
   while (closed.length === closedBefore && performance.now() < until) await new Promise(resolve => setTimeout(resolve, 10));
@@ -313,6 +312,6 @@ test("an abandoning caller aborts an in-flight request and the provider sees the
   expect(closed.at(-1)! - aborted).toBeLessThan(1000);
   // An already abandoned request never connects.
   const count = hits.get("/slow-headers") ?? 0;
-  await expect(outbound.request(get("headers"), outbound.deadline(), abandoned.signal)).rejects.toThrow();
+  expect((await failure(outbound.request(get("headers"), outbound.deadline(), abandoned.signal))).code).toBe("RETRIEVAL_TIMEOUT");
   expect(hits.get("/slow-headers") ?? 0).toBe(count);
 });

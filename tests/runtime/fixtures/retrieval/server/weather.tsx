@@ -2,7 +2,7 @@ import { column, defineTable, eq } from "fleur/database";
 import { defineDestination, handleMutation, handleQuery, handleRetrieval, readQuery, readRetrieval, registerPage, RetrievalError } from "fleur/server";
 import { schema } from "fleur/schema";
 import { directNetwork, forecast, listReadings, rebound, retrieveInMutation, saveReading, spin, strictForecast } from "../shared/contracts";
-import { slowPage, weatherPage } from "../shared/pages";
+import { latePage, slowPage, weatherPage } from "../shared/pages";
 import { Refresh } from "../client/Refresh";
 
 export const readings = defineTable("weather_readings", { columns: {
@@ -49,6 +49,13 @@ handleMutation(retrieveInMutation, async () => { await readRetrieval(forecast, {
 
 // A page whose provider never answers; its nested retrieval must not outlive the render.
 registerPage(slowPage, { component: async () => <p>{(await readRetrieval(strictForecast, { city: "slow" })).temperature}</p> });
+// A page that reaches its retrieval late in the render, about two seconds before
+// its deadline; the handler must still see RETRIEVAL_TIMEOUT and fall back.
+registerPage(latePage, { component: async () => {
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  const current = await readRetrieval(forecast, { city: "slow" });
+  return <p aria-label="Temperature">{current.available ? `${current.temperature} degrees` : "Weather unavailable"}</p>;
+} });
 registerPage(weatherPage, { component: async ({ params }) => {
   const current = await readRetrieval(forecast, { city: params.city });
   const saved = await readQuery(listReadings, { city: params.city });

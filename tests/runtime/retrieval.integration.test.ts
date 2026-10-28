@@ -124,7 +124,7 @@ test("isolated retrieval handlers obtain declared external data only through the
     const rendering = performance.now();
     const slowRender = await app.render("/slow").then(() => "rendered", (error: unknown) => (error as Error).message);
     const settled = performance.now();
-    expect(["RETRIEVAL_TIMEOUT", "QUERY_TIMEOUT"]).toContain(slowRender);
+    expect(slowRender).toBe("RETRIEVAL_TIMEOUT");
     expect(settled - rendering).toBeLessThan(8_000);
     // Under load the capped request deadline may already have passed when the
     // render reaches the retrieval, and then no request is made at all. A
@@ -137,6 +137,11 @@ test("isolated retrieval handlers obtain declared external data only through the
     while (slowClosed.length < closedBefore + made && performance.now() < waitUntil) await new Promise(resolve => setTimeout(resolve, 20));
     expect(slowClosed.length).toBe(closedBefore + made);
     if (made) expect(slowClosed.at(-1)!).toBeLessThanOrEqual(settled + 250);
+
+    // A retrieval reached late in the render, under two seconds before its
+    // deadline, still leaves its handler enough time to run after the request
+    // times out: the handler sees RETRIEVAL_TIMEOUT and renders its fallback.
+    expect((await app.render("/late")).html).toContain("Weather unavailable");
 
     // A nested retrieval runs its handler in worker slots, so its slot waits count
     // toward #90's fail-fast: when every slot holds a render whose nested

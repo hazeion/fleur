@@ -1,6 +1,6 @@
 import { queryIdentity } from "./query-identity";
 import type { DatabaseRevision } from "./database/revision";
-import { NativeExecution, type Reservation } from "./native/execution";
+import { ARMING_MARGIN_MS, NativeExecution, type Reservation } from "./native/execution";
 import { randomUUID } from "node:crypto";
 import { MaintenanceLease, type MaintenanceConfiguration } from "./database/maintenance";
 import { ReadBroker } from "./database/broker";
@@ -201,12 +201,14 @@ export class ReadApplication {
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
     const deadline = Math.min(this.#outbound.deadline(), limit);
     // External requests end early enough that the handler still runs after a
-    // timeout and can handle RETRIEVAL_TIMEOUT explicitly.
-    const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.floor((deadline - performance.now()) / 4));
+    // timeout and can handle RETRIEVAL_TIMEOUT explicitly. The reserve always
+    // covers a run's arming margin; when less remains, no request is made.
+    const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.max(ARMING_MARGIN_MS + 250, Math.floor((deadline - performance.now()) / 4)));
     const outcomes = new Map<string, { value: unknown } | { error: unknown }>();
-    // RETRIEVAL_TIMEOUT means the whole retrieval deadline expired. A worker run
-    // that exceeds its own operation deadline first keeps the operation code.
-    const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" && performance.now() >= deadline - 1 ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
+    // RETRIEVAL_TIMEOUT means the whole retrieval deadline expired, or too
+    // little of it remains for a run to start. A worker run that exceeds its
+    // own operation deadline first keeps the operation code.
+    const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" && deadline - performance.now() < ARMING_MARGIN_MS ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
     for (;;) {
       abandoned?.throwIfAborted();
       if (deadline - performance.now() < 1) throw new RetrievalError("RETRIEVAL_TIMEOUT");

@@ -88,13 +88,16 @@ In the reactive adapter a render never waits for an external request: it
 reads cached entries, and missing ones are retrieved outside the render before
 it reruns. A render that runs a retrieval inline (the internal
 `ReadApplication.render` without a reactive view) treats it like a nested
-query. The retrieval is capped by the render deadline. When the render stops
-waiting, its slot waits and outbound request are aborted, closing the
-connection. Each handler run needs an execution slot, so a nested retrieval
-waiting for a slot counts toward the nested fail-fast described in
-[reactivity](reactivity.md): once every slot holds a render whose nested query
-or retrieval waits for a slot, they fail at once with `QUERY_LIMIT`. Outbound
-requests hold no slot and are not counted; they end by their own deadline.
+query. The retrieval's deadline is capped by the render deadline, so its slot
+waits and outbound request end by their own deadlines before the render stops
+waiting. As defence in depth, the render's abandonment also aborts them,
+closing any open connection. Each handler run needs an execution slot, so a
+nested retrieval waiting for a slot counts toward the nested fail-fast
+described in [reactivity](reactivity.md): once every slot holds a render whose
+nested query or retrieval waits for a slot, they fail at once with
+`QUERY_LIMIT`. Outbound requests hold no slot and are not counted. A nested
+retrieval still waiting for a slot at the render deadline fails with either
+`QUERY_TIMEOUT` or `RETRIEVAL_TIMEOUT`, whichever deadline is observed first.
 
 A cached failure stays a failure: it is never presented as empty data. An
 unhandled failure marks the reading server region with its code and leaves
@@ -108,7 +111,7 @@ page component to render a fallback explicitly.
 | `RETRIEVAL_DESTINATION_DENIED` | Undeclared destination or request, plain HTTP outside a local exception, or a denied address. |
 | `RETRIEVAL_REDIRECT_DENIED` | The provider redirected. Redirects are never followed; `status` holds the 3xx code. |
 | `RETRIEVAL_TIMEOUT` | The whole-operation deadline expired. |
-| `QUERY_TIMEOUT` | One handler run exceeded the five-second worker operation deadline, for example CPU-bound work, while the retrieval deadline remained. |
+| `QUERY_TIMEOUT` | One handler run exceeded the five-second worker operation deadline, for example CPU-bound work, while at least 500 ms of the retrieval deadline remained. |
 | `RETRIEVAL_HTTP_FAILURE` | A non-2xx, non-redirect response; `status` holds the code. |
 | `RETRIEVAL_TRANSPORT_FAILURE` | DNS, connection or TLS failure, including certificate or hostname verification. |
 | `RETRIEVAL_TOO_LARGE` | The decoded body exceeded the limit, or the selected data exceeded 1 MiB. |
@@ -118,9 +121,13 @@ Failures carry no URL, header, body or secret; `RetrievalError.status` is the
 only detail.
 
 The broker shares one deadline between the external request and the handler.
-Each external request ends early enough to leave a reserve (two seconds, or a
-quarter of a shorter configured deadline) so the handler can still run, catch
-`RETRIEVAL_TIMEOUT` and return a fallback. An unhandled timeout fails the
+Each external request ends early enough to leave a reserve so the handler can
+still run, catch `RETRIEVAL_TIMEOUT` and return a fallback. The reserve is a
+quarter of the time remaining when the retrieval starts, at most two seconds
+and at least 750 ms: the 500 ms a handler run needs to start plus a 250-ms
+margin. For a nested retrieval that remaining time is what is left of the
+render. When no more than the reserve remains, no request is made and the
+handler sees `RETRIEVAL_TIMEOUT` at once. An unhandled timeout fails the
 retrieval within the whole-operation deadline.
 
 ## Enforcement

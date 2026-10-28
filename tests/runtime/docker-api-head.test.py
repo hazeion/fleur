@@ -124,6 +124,15 @@ class HeadLimits(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertEqual(failure([status + b'\r\nContent-Length: 0\r\n\r\n']), 'API_RESPONSE_INVALID')
 
+    def test_stalled_head_fails_closed_at_the_deadline(self):
+        # The peer stays open after part of the head, so only the deadline ends the read.
+        started = time.monotonic()
+        with patch.object(docker_api, '_connect', return_value=peer([b'HTTP/1.1 200 OK\r\nContent-Le'], close=False)):
+            with self.assertRaises(docker_api.DockerError) as caught:
+                docker_api.call('GET', '/containers/x/json', timeout=.4)
+        self.assertEqual(str(caught.exception), 'API_UNAVAILABLE')
+        self.assertLess(time.monotonic() - started, 1.5)
+
     def test_eof_inside_the_head_fails_closed(self):
         self.assertEqual(failure([b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r']), 'API_EOF')
 

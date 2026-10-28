@@ -13,6 +13,7 @@ import time
 SOCKET = '/var/run/docker.sock'
 RESPONSE_LIMIT = 1024 * 1024
 HEAD_LIMIT = 16385  # response head bytes, including the terminating blank line
+TERMINATOR = b'\r\n\r\n'
 
 
 class DockerError(RuntimeError):
@@ -45,9 +46,9 @@ def _read_head(connection, deadline):
         block = connection.recv(HEAD_LIMIT-len(head), socket.MSG_PEEK)
         if not block:
             raise DockerError('API_EOF')
-        overlap = min(3, len(head))
-        end = (bytes(head[len(head)-overlap:])+block).find(b'\r\n\r\n')
-        take = len(block) if end < 0 else end+4-overlap
+        overlap = min(len(TERMINATOR)-1, len(head))
+        end = (bytes(head[len(head)-overlap:])+block).find(TERMINATOR)
+        take = len(block) if end < 0 else end+len(TERMINATOR)-overlap
         while take:
             data = connection.recv(take)
             if not data:

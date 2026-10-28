@@ -1,4 +1,3 @@
-import { SQL } from "bun";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, link, unlink } from "node:fs/promises";
@@ -7,6 +6,9 @@ import { deflateSync, inflateSync } from "node:zlib";
 import { z } from "zod";
 import type { Json } from "../../cli/result";
 import { MaintenanceLease, digest, syncDirectory, type MaintenanceConfiguration } from "./maintenance";
+import { caseFoldedKey, catalogTables, tableNames, type CatalogTable } from "./catalog";
+import { readMigrationStatus } from "./migration-status";
+import { withInspection, type TargetKind } from "./target";
 
 export interface InspectionOptions { readonly table?: string; readonly limit?: number; readonly cursor?: string; readonly export?: string; }
 export function quote(name: string): string { return '"'+name.replaceAll('"', '""')+'"'; }
@@ -45,16 +47,35 @@ export async function publishFile(pathValue: string, data: string | Uint8Array):
     return { destination: path, bytes: Buffer.byteLength(data), sha256: digest(data), complete: true };
   } finally { await file.close(); await unlink(temp); }
 }
-export async function inspectDatabase(url: string, options: InspectionOptions, config: MaintenanceConfiguration = {}): Promise<{ readonly data: Json; readonly truncated: boolean }> {
+const pageBytes = 1044480;
+/** Overview of one catalog table, with Fleur column kinds, versioning and managed columns from the applied snapshot. */
+export function describeTable(table: CatalogTable, snapshot: unknown): Json {
+  const declared = Array.isArray(snapshot) ? (snapshot as { name?: unknown; versioned?: unknown; columns?: Record<string, { kind?: unknown; managed?: unknown }> }[]).find(entry => entry?.name === table.name) : undefined;
+  const versioned = typeof declared?.versioned === "boolean" ? declared.versioned : null;
+  const field = (name: string) => versioned && name === "version" ? { kind: "safeInteger", managed: true } : declared?.columns && Object.hasOwn(declared.columns, name) ? declared.columns[name] : undefined;
+  const primary = table.constraints.find(constraint => constraint.type === "p");
+  return {
+    name: table.name,
+    versioned,
+    columns: table.columns.map(column => ({ name: column.name, type: column.type, kind: typeof field(column.name)?.kind === "string" ? field(column.name)!.kind as string : null, nullable: column.nullable, default: column.default, identity: column.identity !== "", managed: field(column.name)?.managed === true })),
+    primaryKey: primary ? { name: primary.name, columns: [...primary.columns] } : null,
+    foreignKeys: table.constraints.filter(constraint => constraint.type === "f").map(constraint => ({ name: constraint.name, columns: [...constraint.columns], references: { table: constraint.references!.table, columns: [...constraint.references!.columns] }, onDelete: constraint.onDelete })),
+    uniqueConstraints: table.constraints.filter(constraint => constraint.type === "u").map(constraint => ({ name: constraint.name, columns: [...constraint.columns] })),
+    indexes: table.indexes.map(index => {
+      const folded = index.keys.length === 1 ? caseFoldedKey(index.keys[0]!) : null;
+      return { name: index.name, unique: index.unique, columns: folded ? [folded] : [...index.keys], caseFolded: folded !== null, definition: index.definition };
+    }),
+  };
+}
+/**
+ * `db inspect`: without a table, a paginated schema overview with no rows; with a table, its structure and a bounded
+ * page of rows. Both embed the migration summary and never block on drift or maintenance.
+ */
+export async function inspectDatabase(url: string, options: InspectionOptions & { readonly project: string }, config: MaintenanceConfiguration & { readonly kind?: TargetKind } = {}): Promise<{ readonly data: Json; readonly truncated: boolean }> {
   const limit = options.limit ?? 100;
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("ARGUMENT_INVALID");
-  const lease = await MaintenanceLease.acquire(url, false, config);
-  const sql = new SQL(url, { max: 1, connectionTimeout: 2 });
-  const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, config.timeoutMs ?? 60000);
-  try {
-    await sql.unsafe("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY");
-    await sql.unsafe("SET LOCAL statement_timeout='5s'");
-    await sql.unsafe("SET LOCAL search_path=pg_catalog");
+  return withInspection(url, config.kind ?? "development", config, async ({ sql, lease, target, ...session }) => {
+    const report = await readMigrationStatus({ sql, lease, target, ...session }, options.project);
     const key = await cursorKey(lease);
     let after: string[] | undefined;
     const table = options.table;
@@ -76,11 +97,34 @@ export async function inspectDatabase(url: string, options: InspectionOptions, c
         after = value.after;
       } catch { throw new Error("ARGUMENT_INVALID"); }
     }
-    let rows: Json[], next: string | null = null, truncated: boolean;
+    const continuation = (last: readonly string[]) => {
+      const iv = randomBytes(12);
+      // The command grammar reads a value starting with "-" as a missing option value. The first base64url character
+      // comes from the top six IV bits; avoid index 62 ("-"). The IV stays random and unique.
+      if (iv[0]! >> 2 === 62) iv[0] = iv[0]! ^ 0x80;
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      const ciphertext = Buffer.concat([cipher.update(deflateSync(JSON.stringify({ binding, after: last }))), cipher.final()]);
+      const next = Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url");
+      if (next.length > 16384) throw new Error("RESULT_TOO_LARGE");
+      return next;
+    };
+    let result: { readonly [key: string]: Json }, truncated: boolean;
     if (!table) {
-      const list = await sql.unsafe("SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND ($1::text IS NULL OR c.relname > $1) ORDER BY c.relname LIMIT $2", [after?.[0] ?? null, limit+1]);
-      truncated = list.length > limit;
-      rows = list.slice(0, limit).map((row: { name: unknown }) => ({ name: String(row.name) }));
+      const names = await tableNames(sql, after?.[0] ?? null, limit+1);
+      const tables: Json[] = [];
+      // Reserve room for the continuation cursor; the page is bounded by count and by encoded bytes.
+      let size = Buffer.byteLength(JSON.stringify({ view: "overview", target, migrations: report.summary, tables: [], cursor: null, truncated: true })) + 16384 + 64;
+      let full = false;
+      for (let index = 0; index < Math.min(names.length, limit) && !full; index += 25) {
+        for (const described of await catalogTables(sql, names.slice(index, Math.min(index+25, limit)))) {
+          const entry = describeTable(described, report.snapshot), bytes = Buffer.byteLength(JSON.stringify(entry)) + 1;
+          if (size + bytes > pageBytes) { if (!tables.length) throw new Error("RESULT_TOO_LARGE"); full = true; break; }
+          tables.push(entry); size += bytes;
+        }
+      }
+      truncated = full || names.length > tables.length;
+      const cursor = truncated ? continuation([(tables.at(-1) as { name: string }).name]) : null;
+      result = { view: "overview", target, migrations: report.summary, tables, cursor, truncated };
     } else {
       const pieces: string[] = [];
       for (let index = 0; index < columns.length; index += 40) pieces.push(`jsonb_build_object(${columns.slice(index,index+40).map(column => `'${column.name.replaceAll("'", "''")}',source.${quote(column.name)}::text`).join(",")})`);
@@ -88,27 +132,23 @@ export async function inspectDatabase(url: string, options: InspectionOptions, c
       const where = after ? `WHERE (${primary.map(name => `source.${quote(name)}`).join(",")}) > (${primary.map((_, index) => `$${index+1}`).join(",")})` : "";
       const values = after ?? [];
       const query = `WITH encoded AS (SELECT row_number() OVER (ORDER BY ${primary.map(name => `source.${quote(name)}`).join(",")}) AS position, (${selection})::text AS payload FROM public.${quote(table)} AS source ${where} ORDER BY ${primary.map(name => `source.${quote(name)}`).join(",")} LIMIT $${values.length+1}), sized AS (SELECT *, sum(octet_length(payload)) OVER (ORDER BY position) AS total FROM encoded) SELECT CASE WHEN total<=983040 THEN payload ELSE NULL END AS payload FROM sized ORDER BY position`;
-      const result = await sql.unsafe(query, [...values, limit+1]);
-      rows = [];
-      for (const row of result.slice(0, limit)) {
+      const page = await sql.unsafe(query, [...values, limit+1]);
+      const rows: Json[] = [];
+      for (const row of page.slice(0, limit)) {
         if (row.payload === null) { if (!rows.length) throw new Error("RESULT_TOO_LARGE"); break; }
         rows.push(JSON.parse(String(row.payload)) as Json);
       }
-      truncated = result.length > rows.length;
+      truncated = page.length > rows.length;
+      const last = rows.at(-1) as Record<string, string> | undefined;
+      const cursor = truncated && last ? continuation(primary.map(name => last[name]!)) : null;
+      const structure = describeTable((await catalogTables(sql, [table]))[0]!, report.snapshot);
+      result = { view: "table", target, migrations: report.summary, table, structure, columns, rows, cursor, truncated };
     }
-    if (truncated && rows.length) {
-      const last = rows[rows.length-1] as Record<string, string>;
-      const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv);
-      const ciphertext = Buffer.concat([cipher.update(deflateSync(JSON.stringify({ binding, after: primary.map(name => last[name]) }))), cipher.final()]);
-      next = Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url");
-      if (next.length > 16384) throw new Error("RESULT_TOO_LARGE");
-    }
-    const result = { table: table ?? null, columns, rows, cursor: next, truncated };
-    if (Buffer.byteLength(JSON.stringify(result)) > 1044480) throw new Error("RESULT_TOO_LARGE");
+    if (Buffer.byteLength(JSON.stringify(result)) > pageBytes) throw new Error("RESULT_TOO_LARGE");
     if (options.export) {
       const metadata = await publishFile(options.export, JSON.stringify(result)+"\n");
-      return { data: { ...result, rows: [], export: metadata }, truncated };
+      return { data: { ...result, ...(table ? { rows: [] } : { tables: [] }), export: metadata }, truncated };
     }
     return { data: result, truncated };
-  } finally { clearTimeout(timer); await sql.close({ timeout: 0 }); await lease.close(); }
+  });
 }

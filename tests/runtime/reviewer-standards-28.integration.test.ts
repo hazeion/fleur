@@ -27,6 +27,9 @@ test('independent: changed recorded snapshot is rejected by migration status', a
    const config={stateRoot:root,toolDirectory:await fixture.pgTools(join(root,'tools'))};
    await generateMigration(root,[table]);await applyMigrations(fixture.url,root,config);
    await fixture.sql.unsafe("UPDATE fleur_internal.migrations SET snapshot='[]'");
-   await expect(migrationStatus(fixture.url,root,config)).rejects.toThrow('SCHEMA_DRIFT');
+   // Drift is reported as data (V1-SPEC "Schema inspection and database health"); admission still rejects it.
+   const status=await migrationStatus(fixture.url,root,config);
+   expect(status.migrations).toMatchObject({compatible:false,drift:true,applied:[]});
+   expect(status.differences).toContainEqual(expect.objectContaining({object:'migration history'}));
  } finally {await fixture.cleanup();await rm(root,{recursive:true,force:true});}
 },120000);

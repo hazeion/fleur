@@ -45,10 +45,10 @@ test("every emitted cursor can continue a page with a wide compressible primary 
   try {
     await fixture.sql.unsafe("CREATE TABLE wide_key(id text PRIMARY KEY); INSERT INTO wide_key VALUES(repeat('a',20000)),(repeat('b',20000))");
     const {inspectDatabase}=await import("../../src/runtime/database/inspection");
-    const first=await inspectDatabase(fixture.url,{table:"wide_key",limit:1},{stateRoot:root});
+    const first=await inspectDatabase(fixture.url,{project:root,table:"wide_key",limit:1},{stateRoot:root});
     const cursor=(first.data as {cursor:string}).cursor;
     expect(first.truncated).toBe(true);
-    const next=await inspectDatabase(fixture.url,{table:"wide_key",limit:1,cursor},{stateRoot:root});
+    const next=await inspectDatabase(fixture.url,{project:root,table:"wide_key",limit:1,cursor},{stateRoot:root});
     expect((next.data as {rows:unknown[]}).rows).toEqual([{id:"b".repeat(20000)}]);
     expect(next.truncated).toBe(false);
   }finally{await fixture.cleanup();await rm(root,{recursive:true,force:true});}

@@ -3,26 +3,20 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { readMigrations } from "./migration-plan";
-import { assertMigrationState, catalogFingerprint, emptyApplicationSchema, verifyExternalSchemaState } from "./migration-state";
+import { assertMigrationState, catalogFingerprint, emptyApplicationSchema } from "./migration-state";
+import { readMigrationStatus } from "./migration-status";
+import { withInspection, type TargetKind } from "./target";
 import { backupDatabase, type BackupConfiguration } from "./backup";
 import { authorizeMaintenance, type MaintenanceAuthority } from "./maintenance-authority";
 import { reconcileMaintenance } from "./recovery";
 import { dataIntegrity } from "./integrity";
 
-export async function migrationStatus(url: string, project: string, config: BackupConfiguration = {}) {
-  const started=performance.now(),remaining=()=>Math.max(1,(config.timeoutMs??60000)-(performance.now()-started));
-  const plans = await readMigrations(project);
-  const lease = await MaintenanceLease.acquire(url,false,{...config,timeoutMs:remaining()},true);
-  const sql = new SQL(url,{max:1,connectionTimeout:2});
-  const timer=setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},remaining());
-  try {
-    const marker = await lease.marker();
-    const history = await assertMigrationState(sql);
-    await verifyExternalSchemaState(sql, marker);
-    if (history.some((row,index) => row.checksum !== plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
-    if (!history.length && !await emptyApplicationSchema(sql)) throw new Error("SCHEMA_DRIFT");
-    return { compatible: !lease.busy && (!marker || ["committed","rollback verified"].includes(marker.stage)) && history.length===plans.length, applied: history.map(row=>row.id), pending: plans.slice(history.length).map(plan=>plan.id), maintenance: marker, busy: lease.busy };
-  } finally { clearTimeout(timer);await sql.close({timeout:0}); await lease.close(); }
+/** `db migration status`: the full migration report for one verified target, read inside a read-only transaction. */
+export async function migrationStatus(url: string, project: string, config: BackupConfiguration & { readonly kind?: TargetKind } = {}) {
+  return withInspection(url, config.kind ?? "development", config, async session => {
+    const report = await readMigrationStatus(session, project);
+    return { target: session.target, migrations: report.summary, differences: report.differences, differencesTruncated: report.differencesTruncated };
+  });
 }
 export async function applyMigrations(url: string, project: string, config: BackupConfiguration & MaintenanceAuthority = {}) {
   const started=performance.now(),remaining=()=>Math.max(1,(config.timeoutMs??60000)-(performance.now()-started));

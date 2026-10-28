@@ -3,6 +3,8 @@ export interface CommandInput {
   readonly args: readonly string[];
   readonly project: string;
   readonly timeoutSeconds: number;
+  /** True when --timeout was given; commands with their own shorter default deadline use it only then. */
+  readonly timeoutExplicit?: boolean;
   readonly json: boolean;
 }
 export interface CommandDefinition {

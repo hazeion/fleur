@@ -11,6 +11,7 @@ export interface Invocation {
   readonly commandArgs: readonly string[];
   readonly project: string;
   readonly timeoutSeconds: number;
+  readonly timeoutExplicit: boolean;
   readonly json: boolean;
   readonly help: boolean;
 }
@@ -55,12 +56,12 @@ export function parseInvocation(argv: readonly string[], context: CliContext): {
       if (!value || value.startsWith("-")) return { error: invalid() };
     }
   }
-  return { invocation: { handler, commandArgs, project, timeoutSeconds, json, help } };
+  return { invocation: { handler, commandArgs, project, timeoutSeconds, timeoutExplicit: seen.has("--timeout"), json, help } };
 }
 export async function runCli(argv: readonly string[], context: CliContext = { cwd: process.cwd() }): Promise<CliOutcome> {
   const parsed = parseInvocation(argv, context);
   if ("error" in parsed) return parsed.error;
-  const { handler, commandArgs, project, timeoutSeconds, json, help } = parsed.invocation;
+  const { handler, commandArgs, project, timeoutSeconds, timeoutExplicit, json, help } = parsed.invocation;
   const handlers = context.handlers ?? [];
   if (help || !handler) return success("help", {
     commands: [helpCommand, ...handlers.map(({ name, summary, usage, options }) => ({ name, summary, ...(usage ? { usage } : {}), ...(options ? { options } : {}) }))],
@@ -76,6 +77,6 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
     message: `Fleur ${release.version} requires Bun ${release.engines.bun}; invoking Bun is ${Bun.version}. Install the required Bun version manually and retry.`,
     actions: [{ command: "bun --version", description: `Inspect Bun, then install ${release.engines.bun} manually using https://bun.sh/docs/installation. Fleur does not upgrade or replace Bun.` }],
   });
-  try { return await handler.run({ args: commandArgs, project, timeoutSeconds, json }); }
+  try { return await handler.run({ args: commandArgs, project, timeoutSeconds, timeoutExplicit, json }); }
   catch { return failure(handler.name, 1, { code: "INTERNAL_FAILURE", message: "The command failed unexpectedly.", actions: [] }); }
 }

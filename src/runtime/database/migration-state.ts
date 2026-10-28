@@ -5,6 +5,7 @@ import { tableDefinitions } from "../declarations";
 import { describeTables, restoreTables } from "../table-wire";
 import { migrationPlan, type MigrationPlan } from "./migration-plan";
 import type { Table } from "../../database";
+import { unavailability } from "./target";
 
 type Connection = Pick<SQL,"unsafe">;
 const namespace = "n.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' AND n.nspname NOT IN ('information_schema','fleur_internal')";
@@ -46,7 +47,11 @@ export async function migrationHistory(sql: Connection) {
       previous=expected;
     }
     return history;
-  } catch { throw new Error("SCHEMA_DRIFT"); }
+  } catch (error) {
+    // A lost connection or cancelled statement is not evidence about the recorded history.
+    if (unavailability(error)) throw error;
+    throw new Error("SCHEMA_DRIFT");
+  }
 }
 export async function assertMigrationState(sql: Connection, tables?: readonly Table[],completeRegistry=false) {
   const history = await migrationHistory(sql), last = history.at(-1);

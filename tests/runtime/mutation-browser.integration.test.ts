@@ -57,6 +57,8 @@ test("browser saves, reports concurrent edits, and reconciles response loss with
       expect(submitted).toBe(1);
       await first.getByRole("link", { name: "Refresh stored exercises" }).click();
       await browserExpect(first.getByText(`Unknown ${repeat}`, { exact: true })).toBeVisible();
+      // The link loads a fresh server page whose buttons are inert until it hydrates.
+      await first.waitForFunction(() => document.documentElement.dataset.fleurHydrated === "true");
       expect(submitted).toBe(1);
       const renamed = first.getByRole("listitem").filter({ hasText: `Row ${repeat}` });
       await first.unroute("**/__fleur/mutation");

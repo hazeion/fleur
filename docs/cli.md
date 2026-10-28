@@ -33,6 +33,32 @@ The package includes this document, project creation guidance and prerequisite s
 | `PROJECT_COLLISION` | 5 | Choose an empty target or resolve reported protected files explicitly. |
 | `MAINTENANCE_BUSY` | 5 | Wait for the current setup operation to finish. |
 | `RECOVERY_REQUIRED` | 5 | Inspect reported incomplete restoration or unsafe state before retrying. |
+| `CONFIGURATION_MISSING` | 4 | Supply the explicit private database configuration for the selected target. |
+| `DATABASE_UNAVAILABLE` | 4 when a command needs data from a database it cannot reach | Start the PostgreSQL server or correct the private database configuration, then check `status`. |
+
+### Readiness reasons
+
+`status` reports readiness reasons from this stable vocabulary. Each carries one structured action. They are data in an exit-0 result, not errors.
+
+| Reason | Meaning | Action |
+| --- | --- | --- |
+| `DATABASE_UNAVAILABLE` | The database refused the connection, rejected it or did not answer within the probe deadline. | `fleur status` after starting the server or correcting configuration |
+| `MIGRATION_PENDING` | Committed migrations are not applied. | `fleur db migration plan`, then an explicit `fleur db migration apply` |
+| `SCHEMA_DRIFT` | The schema or history differs from Fleur's record. | `fleur db migration status`; never reset or rewrite history |
+| `MAINTENANCE_ACTIVE` | A maintenance operation holds the target. | `fleur db recover --inspect` and wait |
+| `RECOVERY_REQUIRED` | Interrupted maintenance needs explicit recovery. | `fleur db recover --inspect` |
+| `PREREQUISITE_UNAVAILABLE` | A local prerequisite, such as Fleur's private state directory, stopped the probe. | `fleur doctor` |
+
+When the target is unreachable but Fleur's control record shows active maintenance or interrupted recovery, `status` reports `MAINTENANCE_ACTIVE` or `RECOVERY_REQUIRED` with the recorded stage instead of `DATABASE_UNAVAILABLE`, because a restore or reset can replace the target.
+
+### Migration note: `db migration status` output
+
+This pre-1.0 release changes the `db migration status` JSON version 1 data. Update consumers as follows:
+
+- `compatible`, `applied` and `pending` moved from the top level of `data` to `data.migrations`, the same summary that `db inspect` and `status` embed.
+- `busy` and the raw `maintenance` marker were removed, because the marker names the host, port and owner. Read `data.migrations.maintenance.state` (`idle`, `active` or `recovery required`) and `data.migrations.maintenance.stage` instead. `fleur db recover --inspect` still reports the full durable record.
+- Drift is no longer `SCHEMA_DRIFT` with exit 5. It is `data.migrations.drift`, `data.migrations.differenceCount` and the `data.differences` list, with exit 0. `data.differencesTruncated` and the envelope's `truncated` report a list cut at its count or byte bound.
+- `data.target` identifies the target. An unreachable database returns `DATABASE_UNAVAILABLE` with exit 4.
 
 Doctor and setup may return documented partial diagnostic data on failure, including component states, resumable plans and completed setup actions. A nonzero readiness result never claims a verified native release profile. Per-user grant inspection and revocation do not install or remove software. Interrupted APT setup may propose a separately scoped once-only `recovery-inspect` action for a read-only privileged inspection of retained cache directories. JSON setup reports the plan without creating authority. See [setup recovery](setup.md) for its evidence, consent and preservation requirements.
 
@@ -46,7 +72,7 @@ The compatibility regression uses a real checksum-verified Bun 1.4.2 release exe
 
 ## Database inspection and backups
 
-`db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>]` returns read-only bounded pages. `db backup --out <file>` creates a retained PostgreSQL archive only after full disposable restoration, integrity comparison and owned cleanup. `db recover --inspect` reports durable maintenance state without clearing it. See [maintenance configuration, safety and recovery](maintenance.md).
+`db inspect [--table <name>] [--limit 100] [--cursor <token>] [--export <file>] [--production]` returns read-only bounded pages. Without `--table` it returns the schema overview, which has no rows; with `--table` it returns that table's structure and a page of rows. `status [--production]` reports application state and database health, and `db migration status [--production]` reports applied, pending and drift state. `db inspect` and `status` embed that same migration summary. Findings such as drift, pending migrations, maintenance and an unreachable database are exit-0 data. See [schema overview and database health](maintenance.md#schema-overview-and-database-health). `db backup --out <file>` creates a retained PostgreSQL archive only after full disposable restoration, integrity comparison and owned cleanup. `db recover --inspect` reports durable maintenance state without clearing it. See [maintenance configuration, safety and recovery](maintenance.md).
 
 `db migration generate`, `plan`, `status` and `apply [--grant <id>]` manage reviewed transactional schema artifacts. `db restore --from <file> [--grant <id>]` requires human replacement approval. JSON calls never manufacture destructive authority. See [reviewed migrations and interrupted recovery](maintenance.md#reviewed-migrations) for actual-state checks, grants, tool prerequisites and recovery outcomes.
 

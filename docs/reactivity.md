@@ -152,10 +152,16 @@ A nested query needs a slot of its own and waits for one while every slot is
 busy. A render waiting on a nested query cannot release its slot, so once
 every slot holds a render whose nested query is waiting, none can be admitted
 before the render deadlines: those nested queries fail at once with
-`QUERY_LIMIT`, which the page reports like any other failed query. While any
-slot holds other work, such as a render waiting on something else, a
-preparation or an ordinary query, nested queries keep waiting and are admitted
-when it frees up. A caller that gives up during
+`QUERY_LIMIT`, which the page reports like any other failed query. All of
+them fail, not one chosen victim: each is provably stuck at that moment, and
+failing one frees no slot until its render finishes, which may itself need
+further nested queries. While any slot holds other work, such as a render
+waiting on something else, a preparation or an ordinary query, nested queries
+keep waiting and are admitted when it frees up. Failing fast therefore needs
+every slot live and healthy. While a slot is still starting, is being
+recovered after quarantine, or failed to start, fewer renders than slots can
+already hold every live slot; their nested queries wait and fail with
+`QUERY_TIMEOUT` at the render deadline, as before. A caller that gives up during
 preparation leaves the slot reserved until preparation settles, so a caller
 deadline never quarantines healthy capacity. Opening the application waits
 until one retained slot is ready and does not hold maintenance admission

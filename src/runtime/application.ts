@@ -162,6 +162,8 @@ export class ReadApplication {
   prepareWorkers(): void { this.#execution.warm(); }
   /** Slot states for operator visibility; no secrets or application data. */
   diagnostics(): ReturnType<NativeExecution["diagnostics"]> { return this.#execution.diagnostics(); }
+  /** The most slots this application's execution holds. */
+  get capacity(): number { return this.#execution.capacity; }
   watch(wakeup: () => void): Promise<() => Promise<void>> { return this.#broker.watch(wakeup); }
   async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
     // Route validation also runs in the trusted host before application entry.

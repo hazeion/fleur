@@ -389,7 +389,8 @@ export class NativeExecution {
       if (this.#occupied < this.#capacity) this.#grow();
       if (performance.now() >= deadline) throw new Error("QUERY_TIMEOUT");
       await new Promise<void>(resolve => {
-        const wake = () => { clearTimeout(timer); signal?.removeEventListener("abort", wake); resolve(); };
+        // A wake by timer or abort also leaves the waiter list at once.
+        const wake = () => { clearTimeout(timer); signal?.removeEventListener("abort", wake); const at = this.#waiters.indexOf(wake); if (at >= 0) this.#waiters.splice(at, 1); resolve(); };
         const timer = setTimeout(wake, Math.max(1, Math.min(deadline, Math.max(this.#growAfter, performance.now() + 50)) - performance.now()));
         this.#waiters.push(wake);
         signal?.addEventListener("abort", wake, { once: true });

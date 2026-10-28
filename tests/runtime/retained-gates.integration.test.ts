@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { prepareNativeImages } from "../../src/runtime/native/build";
 import { nativeCommand } from "../../src/runtime/native/command";
 import { NativeExecution } from "../../src/runtime/native/execution";
+import { RetainedLease } from "../../src/runtime/native/retained-lease";
 
 // ADR 0001 verification gate: "Controller loss, guard loss, delayed creation,
 // PID reuse, startup failure, shutdown races and incomplete retirement cannot
@@ -157,5 +162,59 @@ test("a slot whose removal cannot be verified stays visible while it occupies ca
   } finally {
     await execution.close().catch(() => {});
     if (owner) for (const id of (await owned(owner)).split("\n").filter(Boolean)) await docker("rm", "--force", id).catch(() => "");
+  }
+}, 120_000);
+
+/**
+ * Runs `work` with Fleur's Docker CLI calls forwarded to the real CLI, except
+ * that `race` decides kill and forced removal. "concurrent" first performs the
+ * same kill or `rm --force` once, as a slot's own controller does when it exits
+ * after removing its application and guard containers while host recovery
+ * runs. "refuse" fails a kill without performing it.
+ */
+async function withDockerRace<T>(race: "concurrent" | "refuse", work: () => Promise<T>): Promise<T> {
+  const real = Bun.which("docker");
+  if (!real) throw new Error("Docker CLI required");
+  const directory = await mkdtemp(join(tmpdir(), "fleur-docker-race-"));
+  await writeFile(join(directory, "docker"), `#!/bin/sh
+case "${race}:$3:$4" in
+  concurrent:kill:*|concurrent:rm:--force) ${JSON.stringify(real)} "$@" >/dev/null 2>&1 ;;
+  refuse:kill:*) echo "refused by test" >&2; exit 1 ;;
+esac
+exec ${JSON.stringify(real)} "$@"
+`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${directory}:${path}`;
+  try { return await work(); } finally { process.env.PATH = path; await rm(directory, { recursive: true, force: true }); }
+}
+
+// #89: a host read deadline can quarantine a slot while its controller is
+// still removing its own containers; the controller then exits by itself
+// between recovery's inspection and its kill. That kill failing must not leave
+// the slot unrecoverable, and recovery is still verified by inspection alone.
+test("quarantine recovery verifies a controller that stopped itself and its removed containers, and still refuses a controller it could not stop", async () => {
+  for (const race of ["concurrent", "refuse"] as const) {
+    const owner = randomUUID();
+    const lease = await RetainedLease.create(owner, images);
+    try {
+      const start = (name: string, image: string) => docker("run", "--detach", "--name", name, "--label", `dev.fleur.execution-owner=${owner}`,
+        "--network=none", "--pull=never", "--entrypoint", "/bin/sleep", image, "infinity");
+      await start(lease.controllerName, images.controller);
+      const worker = await start(lease.workerName, images.worker), guard = await start(lease.guardName, images.controller);
+      await lease.bindSlot({ worker, init: 2, guard, boot: randomUUID() });
+      const recovery = await withDockerRace(race, () => lease.cleanup()).then(() => "recovered", (error: Error) => error.message);
+      const running = (await docker("ps", "--quiet", "--no-trunc", "--filter", `label=dev.fleur.execution-owner=${owner}`)).split("\n").filter(Boolean);
+      if (race === "concurrent") {
+        expect(recovery).toBe("recovered");
+        expect(await owned(owner)).toBe("");
+      } else {
+        // Creation authority that is still running is never reported as stopped.
+        expect(recovery).toBe("CREATION_AUTHORITY_UNCONFIRMED");
+        expect(running).toHaveLength(3);
+      }
+    } finally {
+      for (const id of (await owned(owner)).split("\n").filter(Boolean)) await docker("rm", "--force", id).catch(() => "");
+      await rm(lease.recoveryDirectory, { recursive: true, force: true });
+    }
   }
 }, 120_000);

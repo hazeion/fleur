@@ -23,14 +23,14 @@ async function failure(work: Promise<unknown>): Promise<Error & { status?: numbe
 test("isolated retrieval handlers obtain declared external data only through the trusted broker", async () => {
   // Controlled local provider. Requests are counted per path and credentials
   // are observed only here, on the provider side.
-  const hits = new Map<string, number>(), credentials: (string | null)[] = [];
+  const hits = new Map<string, number>(), credentials: (string | null)[] = [], slowClosed: number[] = [];
   const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch(request) {
     const path = new URL(request.url).pathname;
     const count = (hits.get(path) ?? 0) + 1;
     hits.set(path, count);
     credentials.push(request.headers.get("authorization"));
     if (path === "/v1/forecast/down") return new Response("down", { status: 503 });
-    if (path === "/v1/forecast/slow") return new Promise<Response>(() => {});
+    if (path === "/v1/forecast/slow") { request.signal.addEventListener("abort", () => slowClosed.push(performance.now())); return new Promise<Response>(() => {}); }
     if (path === "/v1/forecast/moved") return new Response(null, { status: 302, headers: { location: "/v1/forecast/elsewhere" } });
     return Response.json({ temperature: 20 + count, internal: "provider-internal-field" });
   } });
@@ -117,6 +117,42 @@ test("isolated retrieval handlers obtain declared external data only through the
     expect((await failure(app.retrieve("handler.spin", {}))).message).toBe("QUERY_TIMEOUT");
     expect(performance.now() - spinning).toBeLessThan(9_000);
     expect(await app.retrieve("weather.forecast", { city: "after-direct" })).toMatchObject({ available: true });
+
+    // A render's nested retrieval never outlives the render: its outbound
+    // request has ended, connection closed, by the time the render settles.
+    const closedBefore = slowClosed.length, slowBefore = hits.get("/v1/forecast/slow") ?? 0;
+    const rendering = performance.now();
+    const slowRender = await app.render("/slow").then(() => "rendered", (error: unknown) => (error as Error).message);
+    const settled = performance.now();
+    expect(["RETRIEVAL_TIMEOUT", "QUERY_TIMEOUT"]).toContain(slowRender);
+    expect(settled - rendering).toBeLessThan(8_000);
+    // Under load the capped request deadline may already have passed when the
+    // render reaches the retrieval, and then no request is made at all. A
+    // request that was made must be closed by the time the render settles. The
+    // provider observes the close asynchronously; a request left running after
+    // the render would close only seconds later, at its own deadline.
+    const made = (hits.get("/v1/forecast/slow") ?? 0) - slowBefore;
+    expect(made).toBeLessThanOrEqual(1);
+    const waitUntil = performance.now() + 5_000;
+    while (slowClosed.length < closedBefore + made && performance.now() < waitUntil) await new Promise(resolve => setTimeout(resolve, 20));
+    expect(slowClosed.length).toBe(closedBefore + made);
+    if (made) expect(slowClosed.at(-1)!).toBeLessThanOrEqual(settled + 250);
+
+    // A nested retrieval runs its handler in worker slots, so its slot waits count
+    // toward #90's fail-fast: when every slot holds a render whose nested
+    // retrieval waits for a slot, they all fail at once with QUERY_LIMIT.
+    const warm = async () => {
+      app!.prepareWorkers();
+      const until = performance.now() + 120_000;
+      while (performance.now() < until && !(app!.diagnostics().length === app!.capacity && app!.diagnostics().every(slot => slot.state === "idle" && slot.prepared))) await new Promise(resolve => setTimeout(resolve, 100));
+    };
+    const renders = (count: number) => Array.from({ length: count }, () => app!.render("/weather/saturation").then(() => "rendered", (error: unknown) => (error as Error).message));
+    await warm();
+    const saturating = performance.now();
+    expect(await Promise.all(renders(app.capacity))).toEqual(Array(app.capacity).fill("QUERY_LIMIT"));
+    expect(performance.now() - saturating).toBeLessThan(2_500);
+    await warm();
+    expect((await app.render("/weather/saturation")).html).toContain("degrees");
 
     // Mutations cannot retrieve. Saving retrieved data uses a revalidating mutation.
     expect((await failure(app.mutate("readings.retrieve-inside", {}))).message).toBe("UNSUPPORTED_CAPABILITY");

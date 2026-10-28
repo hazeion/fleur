@@ -84,6 +84,18 @@ Results and failures are cached per view, retrieval name and canonical input:
 - One view caches at most 20 distinct retrieval inputs; reading more fails with
   `QUERY_LIMIT` instead of evicting a cached entry.
 
+In the reactive adapter a render never waits for an external request: it
+reads cached entries, and missing ones are retrieved outside the render before
+it reruns. A render that runs a retrieval inline (the internal
+`ReadApplication.render` without a reactive view) treats it like a nested
+query. The retrieval is capped by the render deadline. When the render stops
+waiting, its slot waits and outbound request are aborted, closing the
+connection. Each handler run needs an execution slot, so a nested retrieval
+waiting for a slot counts toward the nested fail-fast described in
+[reactivity](reactivity.md): once every slot holds a render whose nested query
+or retrieval waits for a slot, they fail at once with `QUERY_LIMIT`. Outbound
+requests hold no slot and are not counted; they end by their own deadline.
+
 A cached failure stays a failure: it is never presented as empty data. An
 unhandled failure marks the reading server region with its code and leaves
 healthy sibling regions intact. Catch `RetrievalError` in the handler or the

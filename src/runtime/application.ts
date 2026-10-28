@@ -188,20 +188,27 @@ export class ReadApplication {
    * outcomes. A run that requested nothing new is the result.
    */
   retrieve(name: string, rawInput: unknown): Promise<unknown> { return this.#retrieve(name, rawInput); }
-  async #retrieve(name: string, rawInput: unknown): Promise<unknown> {
+  /**
+   * `limit` caps a render's nested retrieval by the render deadline; `abandoned`
+   * aborts its slot waits and outbound request once that render stops waiting.
+   * Each handler run needs a slot, so a nested retrieval's slot waits count
+   * toward the nested fail-fast; its outbound requests hold no slot and do not.
+   */
+  async #retrieve(name: string, rawInput: unknown, limit = Infinity, abandoned?: AbortSignal): Promise<unknown> {
     const operation = this.registry.retrievals.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
     try { input = operation.input.parse(rawInput); } catch { throw new PublicOperationError("INPUT_INVALID"); }
-    const deadline = this.#outbound.deadline();
+    const deadline = Math.min(this.#outbound.deadline(), limit);
     // External requests end early enough that the handler still runs after a
     // timeout and can handle RETRIEVAL_TIMEOUT explicitly.
-    const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.floor(this.#outbound.timeoutMs / 4));
+    const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.floor((deadline - performance.now()) / 4));
     const outcomes = new Map<string, { value: unknown } | { error: unknown }>();
     // RETRIEVAL_TIMEOUT means the whole retrieval deadline expired. A worker run
     // that exceeds its own operation deadline first keeps the operation code.
     const expired = (error: unknown) => error instanceof Error && error.message === "QUERY_TIMEOUT" && performance.now() >= deadline - 1 ? new RetrievalError("RETRIEVAL_TIMEOUT") : error;
     for (;;) {
+      abandoned?.throwIfAborted();
       if (deadline - performance.now() < 1) throw new RetrievalError("RETRIEVAL_TIMEOUT");
       const pending = new Map<string, unknown>();
       const external = async (request: unknown): Promise<unknown> => {
@@ -215,7 +222,8 @@ export class ReadApplication {
       };
       let result: { value: unknown } | { error: unknown };
       let reservation: Reservation;
-      try { reservation = await this.#execution.reserve(Math.min(deadline, performance.now() + 5000)); }
+      const reserveBy = Math.min(deadline, performance.now() + 5000);
+      try { reservation = limit === Infinity ? await this.#execution.reserve(reserveBy) : await this.#reserveNested(reserveBy, abandoned); }
       catch (error) { throw expired(error); }
       try {
         const budget = Math.min(5000, Math.floor(deadline - performance.now()));
@@ -228,7 +236,7 @@ export class ReadApplication {
         try { return operation.output.parse(result.value); } catch { throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT"); }
       }
       await Promise.all([...pending].map(async ([key, request]) => {
-        try { outcomes.set(key, { value: await this.#outbound.request(request, requestDeadline) }); }
+        try { outcomes.set(key, { value: await this.#outbound.request(request, requestDeadline, abandoned) }); }
         catch (error) { outcomes.set(key, { error: error instanceof RetrievalError ? error : new RetrievalError("RETRIEVAL_TRANSPORT_FAILURE") }); }
       }));
     }
@@ -268,7 +276,7 @@ export class ReadApplication {
         void acquiring.then(lease => lease.close()).catch(() => {});
         throw error;
       } finally { clearTimeout(timer); }
-      try { return await this.#render(reservation, read ?? ((name, input, abandoned) => this.#query(name, input, deadline, abandoned)), retrieve ?? ((name, input) => this.#retrieve(name, input)), path); } finally { await admission.close(); }
+      try { return await this.#render(reservation, read ?? ((name, input, abandoned) => this.#query(name, input, deadline, abandoned)), retrieve ?? ((name, input, abandoned) => this.#retrieve(name, input, deadline, abandoned)), path); } finally { await admission.close(); }
     } finally { reservation.release(); }
   }
   async #render(reservation: Reservation, read: NestedRead, retrieve: NestedRead, path: string): Promise<PageResult> {

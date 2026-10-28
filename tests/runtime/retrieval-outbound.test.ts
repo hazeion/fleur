@@ -13,6 +13,7 @@ import { productionHost } from "../../src/setup/host";
 // Controlled local fixtures stand in for external providers; no test reaches the internet.
 const secret = "fixture-credential-7f3a9c";
 const hits = new Map<string, number>();
+const closed: number[] = [];
 const seen: { authorization?: string | null; host?: string | null; query?: string }[] = [];
 let server: ReturnType<typeof Bun.serve>, tlsServer: ReturnType<typeof Bun.serve>, certificate = "", certificates = "";
 const hit = (path: string) => hits.set(path, (hits.get(path) ?? 0) + 1);
@@ -25,7 +26,7 @@ beforeAll(async () => {
     if (url.pathname.startsWith("/v1/items/")) return Response.json({ id: decodeURIComponent(url.pathname.slice(10)), name: "Item", internal: "server-only-field", nested: { visible: 1, hidden: 2 } }, { headers: { etag: '"v1"', "set-cookie": "session=1", "x-private": "no" } });
     if (url.pathname === "/redirect") return new Response(null, { status: 302, headers: { location: "/v1/items/redirected" } });
     if (url.pathname === "/status") return new Response("unavailable " + secret, { status: 503 });
-    if (url.pathname === "/slow-headers") return never();
+    if (url.pathname === "/slow-headers") { request.signal.addEventListener("abort", () => closed.push(performance.now())); return never(); }
     if (url.pathname === "/slow-body") return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"id":')); } }));
     if (url.pathname === "/chunked") return new Response(new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(65536).fill(32)); } }));
     if (url.pathname === "/declared") return new Response("x".repeat(2 * 1048576), { headers: { "content-type": "application/json" } });
@@ -293,4 +294,25 @@ test("host child processes never inherit retrieval credential variables", async 
     expect(result.stdout).toContain("PATH=");
     expect(result.stdout).not.toContain(secret);
   } finally { if (saved === undefined) delete process.env.FLEUR_RETRIEVAL_CREDENTIALS; else process.env.FLEUR_RETRIEVAL_CREDENTIALS = saved; }
+});
+
+test("an abandoning caller aborts an in-flight request and the provider sees the connection close", async () => {
+  const outbound = broker({ headers: destination(local(), "/slow-headers") });
+  const abandoned = new AbortController();
+  const before = hits.get("/slow-headers") ?? 0, closedBefore = closed.length;
+  const work = outbound.request(get("headers"), outbound.deadline(), abandoned.signal);
+  while ((hits.get("/slow-headers") ?? 0) === before) await new Promise(resolve => setTimeout(resolve, 10));
+  const aborted = performance.now();
+  abandoned.abort(new Error("QUERY_TIMEOUT"));
+  const error = await work.then(() => undefined, (reason: unknown) => reason);
+  expect(error).toBeInstanceOf(Error);
+  expect(performance.now() - aborted).toBeLessThan(500);
+  const until = performance.now() + 2000;
+  while (closed.length === closedBefore && performance.now() < until) await new Promise(resolve => setTimeout(resolve, 10));
+  expect(closed.length).toBe(closedBefore + 1);
+  expect(closed.at(-1)! - aborted).toBeLessThan(1000);
+  // An already abandoned request never connects.
+  const count = hits.get("/slow-headers") ?? 0;
+  await expect(outbound.request(get("headers"), outbound.deadline(), abandoned.signal)).rejects.toThrow();
+  expect(hits.get("/slow-headers") ?? 0).toBe(count);
 });

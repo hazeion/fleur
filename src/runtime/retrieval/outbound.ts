@@ -84,9 +84,12 @@ export class OutboundBroker {
   deadline(): number { return performance.now() + this.timeoutMs; }
   /**
    * Performs one declared GET or HEAD before `deadline`, an absolute
-   * `performance.now()` value shared by every phase. Failures are RetrievalErrors.
+   * `performance.now()` value shared by every phase. `abandoned` ends the
+   * request, including an open connection, once its caller stops waiting.
+   * Failures are RetrievalErrors.
    */
-  async request(raw: unknown, deadline: number): Promise<ExternalResult> {
+  async request(raw: unknown, deadline: number, abandoned?: AbortSignal): Promise<ExternalResult> {
+    if (abandoned?.aborted) throw new RetrievalError("RETRIEVAL_TIMEOUT");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return deny();
     const request = raw as Record<string, unknown>;
     if (Object.keys(request).length !== 4 || typeof request.destination !== "string" || !["GET", "HEAD"].includes(String(request.method))) return deny();
@@ -108,6 +111,8 @@ export class OutboundBroker {
     if (remaining <= 0) throw new RetrievalError("RETRIEVAL_TIMEOUT");
     let expired = false;
     const timer = setTimeout(() => { expired = true; controller.abort(); }, remaining);
+    const abandon = () => { expired = true; controller.abort(); };
+    abandoned?.addEventListener("abort", abandon, { once: true });
     const timeout = new Promise<never>((_resolve, reject) => controller.signal.addEventListener("abort", () => reject(new RetrievalError("RETRIEVAL_TIMEOUT")), { once: true }));
     timeout.catch(() => {});
     const failed = (error: unknown): never => {
@@ -170,6 +175,7 @@ export class OutboundBroker {
       return Object.freeze({ status: response.status, headers: exposed, body });
     } finally {
       clearTimeout(timer);
+      abandoned?.removeEventListener("abort", abandon);
       if (response?.body && !response.bodyUsed) void response.body.cancel().catch(() => {});
       controller.abort();
     }

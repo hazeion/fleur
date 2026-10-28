@@ -2,7 +2,7 @@ import { column, defineTable, eq } from "fleur/database";
 import { defineDestination, handleMutation, handleQuery, handleRetrieval, readQuery, readRetrieval, registerPage, RetrievalError } from "fleur/server";
 import { schema } from "fleur/schema";
 import { directNetwork, forecast, listReadings, rebound, retrieveInMutation, saveReading, spin, strictForecast } from "../shared/contracts";
-import { weatherPage } from "../shared/pages";
+import { slowPage, weatherPage } from "../shared/pages";
 import { Refresh } from "../client/Refresh";
 
 export const readings = defineTable("weather_readings", { columns: {
@@ -47,6 +47,8 @@ handleQuery(listReadings, async ({ input, db }) => (await db.select(readings, { 
 handleMutation(saveReading, async ({ input, db }) => db.insert(readings, { values: input, returning: ["id", "city", "temperature"] }));
 handleMutation(retrieveInMutation, async () => { await readRetrieval(forecast, { city: "paris" }); return "unreachable"; });
 
+// A page whose provider never answers; its nested retrieval must not outlive the render.
+registerPage(slowPage, { component: async () => <p>{(await readRetrieval(strictForecast, { city: "slow" })).temperature}</p> });
 registerPage(weatherPage, { component: async ({ params }) => {
   const current = await readRetrieval(forecast, { city: params.city });
   const saved = await readQuery(listReadings, { city: params.city });

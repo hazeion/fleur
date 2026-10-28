@@ -340,19 +340,24 @@ test("the inspection transaction is read-only in PostgreSQL, and a failed inspec
       import { mock } from "bun:test";
       import * as filesystem from "node:fs/promises";
       const destination = process.env.REVIEW_DESTINATION;
+      const originalLink = filesystem.link;
+      let delayed = false;
       mock.module("node:fs/promises", () => ({ ...filesystem, link: async (from, to) => {
-        if (String(to) === destination) await Bun.sleep(3000);
-        return filesystem.link(from, to);
+        if (String(to) === destination) { delayed = true; await Bun.sleep(3000); }
+        return originalLink(from, to);
       }}));
       const { inspectDatabase } = await import(${JSON.stringify(resolve("src/runtime/database/inspection.ts"))});
       const outcome = await inspectDatabase(process.env.REVIEW_DATABASE_URL, { project: process.env.REVIEW_ROOT, table: "guarded", export: destination }, { stateRoot: process.env.REVIEW_ROOT, timeoutMs: 1500 })
         .then(result => ({ ok: true, sha256: result.data.export.sha256 }), error => ({ ok: false, error: error.message }));
       await Bun.sleep(4000);
-      console.log(JSON.stringify(outcome));
+      console.log(JSON.stringify({ ...outcome, delayed }));
     `], { env: { ...process.env, REVIEW_DATABASE_URL: fixture.url, REVIEW_ROOT: root, REVIEW_DESTINATION: slow }, stdout: "pipe", stderr: "pipe" });
     const [stdout, , exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exit).toBe(0);
-    const outcome = JSON.parse(stdout.trim().split("\n").at(-1)!) as { ok: boolean; sha256?: string; error?: string };
+    const outcome = JSON.parse(stdout.trim().split("\n").at(-1)!) as { ok: boolean; delayed: boolean; sha256?: string; error?: string };
+    // The slow publication path must actually run, and the only admissible failure is the deadline.
+    expect(outcome.delayed).toBe(true);
+    if (!outcome.ok) expect(outcome.error).toBe("DATABASE_UNAVAILABLE");
     const published = await Bun.file(slow).exists();
     expect({ ok: outcome.ok, published }).toEqual({ ok: outcome.ok, published: outcome.ok });
     if (outcome.ok) expect(new Bun.CryptoHasher("sha256").update(await Bun.file(slow).text()).digest("hex")).toBe(outcome.sha256!);

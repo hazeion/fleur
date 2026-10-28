@@ -307,23 +307,76 @@ class ControllerRun(unittest.TestCase):
             with patched, self.assertRaises(retained.Quarantine):
                 slot.run(self.request(), host.input, host.output)
 
-    def test_a_completed_process_that_had_to_be_killed_is_not_clean_retirement(self):
-        # Completion bytes followed by a deadline kill means the process did not
-        # exit by itself; the container must not be reused.
-        application = Stream(frames=[{'kind': 'complete', 'value': 1}])
-        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('deadline')])
-        slot, patched = self.slot(application, guard_stream)
+    def completion(self, record, exit_code=0, frames=({'kind': 'complete', 'value': 1},)):
+        application = Stream(frames=frames)
+        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', record])
+        slot, patched = self.slot(application, guard_stream, exit_code)
         host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        return application, guard_stream, slot, patched, host
+
+    # #58: application code can write a terminal-looking frame. Completion bytes
+    # followed by a deadline kill or an unclean exit mean the process did not
+    # complete: never clean retirement, but a verified retirement fails only
+    # that operation instead of quarantining the slot.
+    def test_a_completed_process_that_had_to_be_killed_is_not_clean_retirement(self):
+        application, guard_stream, slot, patched, host = self.completion(result('deadline'))
+        with patched:
+            reply = slot.run(self.request(), host.input, host.output)
+        self.assertEqual((reply['kind'], reply['code'], reply['physicalExitConfirmed']), ('failure', 'INTERNAL_FAILURE', True))
+        self.assertEqual(reply['deadline']['outcome'], 'deadline')
+        self.assertIsNone(slot.prepared)
+        self.assertIn(OPERATION, slot.retired)
+        self.assertTrue(application.closed and guard_stream.closed)
+
+    def test_nonzero_exit_after_completion_is_not_clean_retirement(self):
+        for exit_code in (1, 25, None):
+            _, _, slot, patched, host = self.completion(result('premature-exit'), exit_code)
+            with patched:
+                reply = slot.run(self.request(), host.input, host.output)
+            self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'INTERNAL_FAILURE', 'premature-exit'), exit_code)
+            self.assertIsNone(slot.prepared)
+
+    def test_uncertain_retirement_after_completion_still_quarantines(self):
+        late = json.dumps({'kind': 'result', 'outcome': 'deadline', 'physical_exit_confirmed': True, 'kill_lateness_ms': 0,
+                           'physical_exit_lateness_ms': 251, 'operation': OPERATION, 'start': '4242', 'retired': True}).encode()
+        for record in (result('deadline', retired_value=False), result('late-termination'), result('cancelled'), result('deadline', start='1'), late, b'{}'):
+            _, _, slot, patched, host = self.completion(record)
+            with patched, self.assertRaises(retained.Quarantine, msg=record):
+                slot.run(self.request(), host.input, host.output)
+        # Missing guard record: retirement itself is unconfirmed.
+        _, _, slot, patched, host = self.completion(lambda: (_ for _ in ()).throw(docker_api.DockerError('QUERY_TIMEOUT')))
         with patched, self.assertRaises(retained.Quarantine):
             slot.run(self.request(), host.input, host.output)
 
-    def test_nonzero_exit_after_completion_quarantines(self):
-        application = Stream(frames=[{'kind': 'complete', 'value': 1}])
-        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('premature-exit')])
-        slot, patched = self.slot(application, guard_stream, exit_code=1)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
-        with patched, self.assertRaises(retained.Quarantine):
-            slot.run(self.request(), host.input, host.output)
+    def test_an_application_frame_the_host_would_reject_cancels_only_its_operation(self):
+        nested = 0
+        for _ in range(100):
+            nested = [nested]
+        for frame in (b'[1]', b'null', b'"complete"', b'{"kind":"read","value":NaN}', b'{"value":Infinity}', b'{"value":1e400}',
+                      b'{"value":9007199254740992}', b'{"value":-9007199254740992.5}', json.dumps({'value': nested}).encode(), b'{"kind":'):
+            application = Stream()
+            application.data += struct.pack('!I', len(frame)) + frame
+            guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', lambda: result('cancelled') if guard_stream.stdin_closed else b'{}'])
+            slot, patched = self.slot(application, guard_stream)
+            host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}])
+            with patched:
+                reply = slot.run(self.request(), host.input, host.output)
+            self.assertTrue(guard_stream.stdin_closed, frame)
+            self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'INTERNAL_FAILURE', 'cancelled'), frame)
+            # Nothing the host would reject is forwarded to it.
+            self.assertEqual([value['kind'] for value in host.sent()], ['guard'], frame)
+            self.assertIsNone(slot.prepared)
+
+    def test_application_frames_within_the_public_contract_are_forwarded(self):
+        nested = 0
+        for _ in range(98):
+            nested = [nested]
+        for value in ({'value': nested}, {'value': 9007199254740991, 'other': -9007199254740991, 'real': 1.5, 'text': 'é', 'flag': None}):
+            application, guard_stream, slot, patched, host = self.completion(result('premature-exit'), frames=(value,))
+            with patched:
+                reply = slot.run(self.request(), host.input, host.output)
+            self.assertEqual(reply['kind'], 'retired')
+            self.assertEqual(host.sent()[1], {'kind': 'worker', 'value': value})
 
     def test_host_cancellation_retires_only_through_the_bound_guard(self):
         application = Stream(frames=[{'kind': 'read', 'value': 1}])

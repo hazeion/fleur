@@ -8,6 +8,7 @@ ownership, admission, retirement or cleanup quarantines the whole slot.
 """
 import collections
 import json
+import math
 from pathlib import Path
 import re
 import struct
@@ -48,11 +49,32 @@ def milliseconds(start):
     return max(0, round(1000*(time.monotonic()-start)))
 
 
+def public_value(value, depth):
+    """The host's public-value contract (validatePublicValue in src/schema.ts)."""
+    if depth > 100:
+        raise ValueError('FRAME_INVALID')
+    if value is None or type(value) in (str, bool):
+        return
+    if type(value) is int and abs(value) <= SAFE_INTEGER or type(value) is float and math.isfinite(value) and abs(value) <= SAFE_INTEGER:
+        return
+    if type(value) not in (list, dict):
+        raise ValueError('FRAME_INVALID')
+    for item in value.values() if type(value) is dict else value:
+        public_value(item, depth+1)
+
+
 def stream_frame(stream, deadline):
+    """One untrusted application frame. Anything the host would reject is this
+    operation's failure here, never a host protocol violation for the slot."""
     size = struct.unpack('!I', stream.read_exact(4, deadline))[0]
     if not 0 < size <= MAX:
         raise RuntimeError('FRAME_BOUND')
-    return json.loads(stream.read_exact(size, deadline))
+    value = json.loads(stream.read_exact(size, deadline))
+    if type(value) is not dict:
+        raise ValueError('FRAME_INVALID')
+    # Forwarded as the value of the host envelope, one level below its root.
+    public_value(value, 1)
+    return value
 
 
 def audit_guard_host(metadata, name, owner, image, environment):
@@ -180,8 +202,10 @@ class Slot:
         return {'operation': operation, 'worker': self.worker, 'init': self.init, 'pid': prepared['pid'], 'namespacePid': prepared['namespace'],
                 'start': armed['start'], 'guard': self.guard, 'guardExec': exec_id, 'deadline': deadline, 'boot': self.boot}
 
-    def retire(self, outcomes, end, completed=False, record=None):
-        """Wait for the bound guard's record and the exact process exits."""
+    def retire(self, outcomes, end, record=None):
+        """Wait for the bound guard's record and the exact process exits.
+
+        Returns the verified record and the application process's exit code."""
         prepared = self.prepared
         stream = prepared['guard_stream']
         try:
@@ -190,17 +214,19 @@ class Slot:
         except FAILURES:
             raise Quarantine('TERMINATION_UNCONFIRMED') from None
         require_retirement(record, prepared['operation'], prepared['start'], outcomes)
-        for exec_id, success in ((prepared['exec'], completed), (prepared['guard_exec'], True)):
+        exits = []
+        for exec_id in (prepared['exec'], prepared['guard_exec']):
             limit = time.monotonic()+1
             while (info := inspect_exec(exec_id)).get('Running') is not False:
                 if time.monotonic() >= limit:
                     raise Quarantine('TERMINATION_UNCONFIRMED')
                 time.sleep(.005)
-            if success and info.get('ExitCode') != 0:
-                raise Quarantine('PROCESS_EXIT_UNCONFIRMED')
+            exits.append(info.get('ExitCode'))
+        if exits[1] != 0:
+            raise Quarantine('PROCESS_EXIT_UNCONFIRMED')
         prepared['stream'].close(); stream.close()
         self.prepared = None
-        return record
+        return record, exits[0]
 
     def expire(self, record, deadline):
         """Arming outlived the budget: the guard retires the never-admitted process."""
@@ -220,7 +246,7 @@ class Slot:
                 raise Quarantine('TERMINATION_UNCONFIRMED')
         except FAILURES:
             raise Quarantine('TERMINATION_UNCONFIRMED') from None
-        return self.retire(('unadmitted', 'deadline', 'cancelled', 'premature-exit'), end, record=record)
+        return self.retire(('unadmitted', 'deadline', 'cancelled', 'premature-exit'), end, record=record)[0]
 
     def cancel(self, deadline):
         """Cancel this slot's own process through its bound guard."""
@@ -228,7 +254,7 @@ class Slot:
         if 'guard_stream' not in prepared:
             self.arm(prepared['operation'], deadline)
         prepared['guard_stream'].close_stdin()
-        return self.retire(('cancelled', 'deadline', 'premature-exit'), deadline+3*TOLERANCE)
+        return self.retire(('cancelled', 'deadline', 'premature-exit'), deadline+3*TOLERANCE)[0]
 
     def run(self, request, host_in, host_out):
         prepared = self.prepared
@@ -258,7 +284,7 @@ class Slot:
                 raise
             # The host's acknowledgement outlived the budget; the armed guard
             # kills the still-gated process at its deadline.
-            record = self.retire(('deadline', 'cancelled', 'premature-exit'), deadline+3*TOLERANCE)
+            record = self.retire(('deadline', 'cancelled', 'premature-exit'), deadline+3*TOLERANCE)[0]
             self.retired.append(operation)
             return {'kind': 'failure', 'operation': operation, 'code': 'QUERY_TIMEOUT', 'physicalExitConfirmed': True, 'deadline': record,
                     'timings': {'guard': round(1000*(armed-started))}}
@@ -297,8 +323,14 @@ class Slot:
         retiring = time.monotonic()
         # Final bytes precede the process exit_group(0). Keep the independent
         # guard armed until its pidfd observes exit and only init remains.
-        record = self.retire(('premature-exit',), deadline+3*TOLERANCE, completed=True)
+        # Application code shares that stdout and can forge final bytes: unless
+        # the process then exits cleanly by itself, its verified retirement
+        # (a deadline kill or another exit) fails only this operation.
+        record, exit_code = self.retire(('premature-exit', 'deadline'), deadline+3*TOLERANCE)
         timings['retire'] = milliseconds(retiring)
+        if record['outcome'] != 'premature-exit' or exit_code != 0:
+            self.retired.append(operation)
+            return {'kind': 'failure', 'operation': operation, 'code': 'INTERNAL_FAILURE', 'physicalExitConfirmed': True, 'deadline': record, 'timings': timings}
         return {'kind': 'retired', 'operation': operation, 'physicalExitConfirmed': True, 'deadline': record, 'timings': timings}
 
     def discard(self, operation):
@@ -328,6 +360,7 @@ class Slot:
 
 
 TOLERANCE = .25
+SAFE_INTEGER = 2**53-1
 # After a run's deadline, its guard has this long to report an unadmitted
 # retirement; one completed within the tolerance is written well before then.
 ARMING_GRACE = 3*TOLERANCE

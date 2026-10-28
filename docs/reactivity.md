@@ -92,12 +92,17 @@ deadline and 250-ms physical-exit tolerance are unchanged.
 An operation completes only after its guard observes physical exit and the
 container's cgroup again holds only its idle init. Mutation output validation
 and that retirement precede commit. A busy, malformed or cancelled operation
-fails only itself. Any uncertain ownership, admission, retirement or cleanup
-quarantines the whole slot: its containers are removed, and it keeps occupying
-capacity until that removal is verified; unverified removal keeps that capacity
-occupied and is reported at shutdown. Diagnostics list a quarantined slot until
-its removal is verified, so capacity held by an unverified removal stays
-visible. Verified removal is followed by background replacement, so one
+fails only itself. Application code shares the channel that carries its result,
+so the controller rejects any application frame the host would not accept, and
+treats a result-like frame as a result only if the process then exits cleanly by
+itself. Otherwise the guard retires the process, at its deadline at the latest,
+and the operation fails with `INTERNAL_FAILURE`. Any uncertain ownership,
+admission, retirement or cleanup quarantines the whole slot: its containers are
+removed, and it keeps occupying capacity until that removal is verified;
+unverified removal keeps that capacity occupied and is reported at shutdown.
+Diagnostics list a quarantined slot until its removal is verified, so capacity
+held by an unverified removal stays visible. Verified removal is followed by
+background replacement, so one
 retained slot stays available. An idle slot whose
 controller exits is retired at once, with backoff if replacements keep failing. Controller loss
 closes the guard's control channel, which kills the bound process before its

@@ -124,12 +124,15 @@ database transaction and execution all consume it; an admitted operation runs
 only for the time remaining, and a request that cannot be admitted in time fails
 with `QUERY_TIMEOUT`. Guard arming is part of that budget. The host's and
 controller's clocks differ, so only durations cross between them: the
-controller anchors the guard's deadline when it acknowledges a run, and the host
-then grants what remains of its own deadline. Transit in either direction
-therefore shortens the run and is never added after the host's deadline. The
-guard's deadline ends early by the acknowledgement's one-way transit, which
-cannot be measured separately. A grant that never arrives within the run's
-budget leaves the process unadmitted, and its guard retires it. A run whose
+controller anchors the guard's deadline when it acknowledges a run, and the
+host's deadline frame then carries what remains of its own deadline. Transit
+in either direction therefore shortens the run and is never added after the
+host's deadline. The guard's deadline ends early by the acknowledgement's
+one-way transit, which cannot be measured separately. If less than 500 ms
+remains when the acknowledgement arrives, no guard starts, the operation fails
+with `QUERY_TIMEOUT` and the slot keeps its prepared process. A deadline frame
+that never arrives within the run's budget leaves the process unadmitted, and
+its guard retires it. A run whose
 effective budget, the smaller of its explicit budget and the remaining
 deadline, is under 500 ms fails with `QUERY_TIMEOUT` before any guard starts;
 its slot and prepared process stay in service. If arming still outlives the

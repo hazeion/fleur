@@ -136,13 +136,23 @@ class Slot {
     try {
       await this.#send({ kind: "run", operation: prepared.id, budgetMs, command });
       // The controller anchors its guard deadline before acknowledging the
-      // run, so granting what remains of this deadline now keeps the guard's
-      // deadline no later than the host's, whatever the transit (#75).
+      // run, so a deadline frame carrying what remains of this deadline now
+      // keeps the guard's deadline no later than the host's, whatever the
+      // transit (#75).
       const received = record(await this.#read(budgetMs + RETIREMENT_MS));
       if (received.kind !== "received" || received.operation !== prepared.id || Object.keys(received).length !== 2) this.#quarantine(received);
-      await this.#send({ kind: "deadline", value: Math.max(0, Math.min(budgetMs, Math.floor(end - performance.now()))), operation: prepared.id });
+      const remaining = Math.min(budgetMs, Math.floor(end - performance.now()));
+      // As before the run frame, too little left to arm a guard is the caller's
+      // timeout: zero withholds admission and the process stays prepared.
+      const value = remaining < ARMING_MARGIN_MS ? 0 : remaining;
+      await this.#send({ kind: "deadline", value, operation: prepared.id });
       // The controller's arming grace and exit checks follow an expired budget.
       const guard = record(await this.#read(budgetMs + RETIREMENT_MS));
+      if (value === 0 && guard.kind === "withheld" && guard.operation === prepared.id && Object.keys(guard).length === 2) {
+        this.prepared = prepared;
+        this.state = "idle";
+        throw new ExecutionFailure("QUERY_TIMEOUT");
+      }
       if (guard.kind === "failure" && Object.keys(guard).length === 6 && guard.operation === prepared.id && guard.code === "QUERY_TIMEOUT" && guard.physicalExitConfirmed === true) {
         // Arming outlived the budget: the process never passed its startup gate.
         const evidence = this.#acceptRetirement(guard.deadline, prepared.id, undefined, ["unadmitted", "cancelled", "deadline", "premature-exit"]);

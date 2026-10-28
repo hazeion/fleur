@@ -155,7 +155,7 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`a slow guard host whose arming
   } finally { await execution.close(); }
 }, 120_000);
 
-// #75: the host grants a run its budget against its own deadline. Transit to
+// #75: the host gives a run its budget against its own deadline. Transit to
 // the controller (here a stalled `docker run --interactive` client relaying the
 // run frame) must be charged to that budget, never added after the host's
 // deadline on top of the 250-ms tolerance.
@@ -165,20 +165,23 @@ const attachClient = (slot: string): number => {
   expect(found).toHaveLength(1);
   return found[0]!;
 };
+const resume = (client: number) => { try { process.kill(client, "SIGCONT"); } catch { /* The client already exited; the run reports that itself. */ } };
+/** Run while the slot's attach client stops relaying frames for `stallMs`. */
+async function stalled(execution: NativeExecution, client: number, stallMs: (deadline: number) => number, command: unknown, exchange: () => null = () => null) {
+  const reservation = await execution.reserve(performance.now() + DEADLINE);
+  process.kill(client, "SIGSTOP");
+  const timer = setTimeout(() => resume(client), stallMs(reservation.deadline));
+  try {
+    const failure = await outcome(reservation.run(command, exchange));
+    return { failure, late: performance.now() - reservation.deadline };
+  } finally { clearTimeout(timer); resume(client); reservation.release(); }
+}
 for (let repeat = 1; repeat <= 2; repeat++) test(`a busy operation whose run frame is delayed in transit is still killed by the host's deadline, repeat ${repeat}`, async () => {
   const execution = await NativeExecution.open(images, { capacity: 1 });
   try {
     const first = await execution.execute({}, () => null);
-    const client = attachClient(first.operation.slot);
-    const reservation = await execution.reserve(performance.now() + DEADLINE);
-    let failure: Awaited<ReturnType<typeof outcome>>;
-    process.kill(client, "SIGSTOP");
-    const resume = setTimeout(() => process.kill(client, "SIGCONT"), TRANSIT_STALL);
-    try {
-      failure = await outcome(reservation.run({ spin: true }, () => null));
-    } finally { clearTimeout(resume); process.kill(client, "SIGCONT"); reservation.release(); }
+    const { failure, late } = await stalled(execution, attachClient(first.operation.slot), () => TRANSIT_STALL, { spin: true });
     // The reply follows the kill, so it bounds the kill time on the host's clock.
-    const late = performance.now() - reservation.deadline;
     console.info(`[transit] failure reply ${Math.round(late)} ms after the host deadline; guard kill lateness ${failure?.evidence?.kill_lateness_ms} ms, exit lateness ${failure?.evidence?.physical_exit_lateness_ms} ms after its own deadline`);
     expect(failure?.message).toBe("QUERY_TIMEOUT");
     expect(failure?.evidence).toMatchObject({ physical_exit_confirmed: true, retired: true, outcome: "deadline" });
@@ -186,5 +189,27 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`a busy operation whose run fra
     expect(late).toBeLessThan(TOLERANCE + REPORTING);
     // A timeout is not uncertainty: the same retained container serves the next request.
     expect((await execution.execute({}, () => null)).operation.container).toBe(first.operation.container);
+  } finally { await execution.close(); }
+}, 120_000);
+
+// Transit that leaves less than the arming margin is the caller's timeout, as
+// a short budget is before the run frame (#67): no guard starts, no
+// application code runs, and the slot keeps its prepared process.
+for (let repeat = 1; repeat <= 2; repeat++) test(`a run frame delayed until too little of the deadline remains to arm keeps the slot prepared, repeat ${repeat}`, async () => {
+  const execution = await NativeExecution.open(images, { capacity: 1 });
+  try {
+    const first = await execution.execute({}, () => null);
+    let entered = false;
+    const announced = () => { entered = true; return null; };
+    // The run frame reaches the controller about 200 ms before the host's deadline.
+    const { failure } = await stalled(execution, attachClient(first.operation.slot), deadline => Math.max(0, deadline - performance.now() - 200), { announce: true }, announced);
+    expect(failure?.message).toBe("QUERY_TIMEOUT");
+    // No guard ran, so there is no retirement evidence to report.
+    expect(failure?.evidence).toBeUndefined();
+    expect(entered).toBe(false);
+    expect(execution.diagnostics()).toEqual([expect.objectContaining({ state: "idle", container: first.operation.container, prepared: true })]);
+    const next = await execution.execute({ announce: true }, announced);
+    expect(entered).toBe(true);
+    expect(next.operation.container).toBe(first.operation.container);
   } finally { await execution.close(); }
 }, 120_000);

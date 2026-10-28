@@ -266,26 +266,31 @@ class Slot:
             raise Quarantine('ADMISSION_EXPIRED')
         operation = prepared['operation']
         # The host's clock is not this one, so only durations cross. The
-        # deadline is anchored before this acknowledgement, and the host grants
-        # what remains of its own deadline when the acknowledgement reaches it:
-        # transit both ways is charged to the run, never added after the host's
-        # deadline. The grant can only shorten the budget the run frame carried.
+        # deadline is anchored before this acknowledgement, and the host's
+        # deadline frame carries what remains of its own deadline when the
+        # acknowledgement reaches it: transit both ways is charged to the run,
+        # never added after the host's deadline. The frame can only shorten the
+        # budget the run frame carried.
         started = time.monotonic()
         send(host_out, {'kind': 'received', 'operation': operation})
         deadline = started+request['budgetMs']/1000
         try:
-            granted = frame(host_in, deadline)
+            remaining = frame(host_in, deadline)
         except RuntimeError as error:
             if str(error) != 'QUERY_TIMEOUT':
                 raise
-            # No grant within the whole budget: the host's deadline has passed,
-            # and arming retires the still-gated process as unadmitted.
-            granted = None
-        if granted is not None:
-            if (type(granted) is not dict or set(granted) != {'kind', 'value', 'operation'} or granted['kind'] != 'deadline'
-                    or granted['operation'] != operation or type(granted['value']) is not int or not 0 <= granted['value'] <= request['budgetMs']):
+            # No deadline frame within the whole budget: the host's deadline has
+            # passed, and arming retires the still-gated process as unadmitted.
+            remaining = None
+        if remaining is not None:
+            if (type(remaining) is not dict or set(remaining) != {'kind', 'value', 'operation'} or remaining['kind'] != 'deadline'
+                    or remaining['operation'] != operation or type(remaining['value']) is not int or not 0 <= remaining['value'] <= request['budgetMs']):
                 raise Quarantine('REQUEST_DENIED')
-            deadline = started+granted['value']/1000
+            if remaining['value'] == 0:
+                # Too little remained to arm a guard: the caller's timeout. The
+                # process never passed its gate and stays prepared.
+                return {'kind': 'withheld', 'operation': operation}
+            deadline = started+remaining['value']/1000
         try:
             binding = self.arm(operation, deadline)
         except ArmingExpired as expired:

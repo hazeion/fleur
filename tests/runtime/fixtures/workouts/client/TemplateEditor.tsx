@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { defineIsland, useMutation, type MutationOutcome } from "fleur/client";
 import { schema, type Infer, type UUID } from "fleur/schema";
 import { Link } from "fleur/routing";
@@ -6,17 +6,16 @@ import { createTemplate, exercise, template, updateTemplate } from "../shared/co
 import { templatesPage } from "../shared/pages";
 
 interface DraftEntry { key: number; exerciseId: UUID | ""; targetSets: string; targetRepetitions: string }
-let nextKey = 0;
-const draftEntries = (stored?: Infer<typeof template>): DraftEntry[] => stored
-  ? stored.entries.map(entry => ({ key: nextKey++, exerciseId: entry.exerciseId, targetSets: String(entry.targetSets), targetRepetitions: String(entry.targetRepetitions) }))
-  : [{ key: nextKey++, exerciseId: "", targetSets: "", targetRepetitions: "" }];
+const draftEntries = (key: () => number, stored?: Infer<typeof template>): DraftEntry[] => stored
+  ? stored.entries.map(entry => ({ key: key(), exerciseId: entry.exerciseId, targetSets: String(entry.targetSets), targetRepetitions: String(entry.targetRepetitions) }))
+  : [{ key: key(), exerciseId: "", targetSets: "", targetRepetitions: "" }];
 // Contract validation rejects anything that is not a positive safe integer before sending.
 const count = (value: string) => /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
 function message(outcome: MutationOutcome<unknown>): string {
   if (outcome.status === "success") return "Saved";
   if (outcome.status === "outcome-unknown") return "Outcome unknown. Reload stored templates before deciding whether to try again.";
   if (outcome.delivery === "not-sent") return `Not sent: ${outcome.error.code}`;
-  if (outcome.error.code === "VERSION_CONFLICT") return "VERSION_CONFLICT: this template changed elsewhere. Your draft is kept; reload stored templates to edit the current version.";
+  if (outcome.error.code === "VERSION_CONFLICT") return "VERSION_CONFLICT: this template changed elsewhere. Your draft is kept; review the stored version, then reapply your draft to it to save.";
   if (outcome.error.code === "CONSTRAINT_CONFLICT") return "CONSTRAINT_CONFLICT: an exercise in this draft no longer exists.";
   return outcome.error.code;
 }
@@ -25,7 +24,8 @@ function message(outcome: MutationOutcome<unknown>): string {
 export const TemplateEditor = defineIsland({
   props: schema.object({ exercises: schema.array(exercise), template: template.optional() }),
   component: ({ exercises, template: stored }) => {
-    const [name, setName] = useState(stored?.name ?? ""), [entries, setEntries] = useState(() => draftEntries(stored));
+    const keys = useRef(0), key = () => keys.current++;
+    const [name, setName] = useState(stored?.name ?? ""), [entries, setEntries] = useState(() => draftEntries(key, stored));
     // The draft keeps the version it was based on; newer props never replace it silently.
     const [baseVersion, setBaseVersion] = useState(stored?.version ?? 0), [status, setStatus] = useState("");
     const create = useMutation(createTemplate), update = useMutation(updateTemplate);
@@ -47,7 +47,7 @@ export const TemplateEditor = defineIsland({
       setStatus(message(outcome));
       if (outcome.status !== "success") return;
       if (stored) setBaseVersion(outcome.data.version);
-      else { setName(""); setEntries(draftEntries()); }
+      else { setName(""); setEntries(draftEntries(key)); }
     }}>
       <label>Template name<input value={name} onInput={event => setName(event.currentTarget.value)} /></label>
       {entries.map((entry, index) => <fieldset key={entry.key} aria-label={`Entry ${index + 1}`}>
@@ -61,9 +61,12 @@ export const TemplateEditor = defineIsland({
         <button type="button" disabled={index === entries.length - 1} onClick={() => move(index, 1)}>Move down</button>
         <button type="button" disabled={entries.length === 1} onClick={() => setEntries(current => current.filter(item => item.key !== entry.key))}>Remove</button>
       </fieldset>)}
-      <button type="button" onClick={() => setEntries(current => [...current, ...draftEntries()])}>Add exercise</button>
+      <button type="button" onClick={() => setEntries(current => [...current, ...draftEntries(key)])}>Add exercise</button>
       <button type="submit" disabled={save.pending || uncertain}>{stored ? "Save template" : "Create template"}</button>
       <p role="status">{save.pending ? "Saving" : status}</p>
+      {stored && stored.version > baseVersion && !save.pending && <button type="button" onClick={() => { setBaseVersion(stored.version); setStatus(""); }}>
+        Reapply draft to version {stored.version}
+      </button>}
       {uncertain && <Link to={templatesPage} params={{}}>Reload stored templates</Link>}
     </form>;
   },

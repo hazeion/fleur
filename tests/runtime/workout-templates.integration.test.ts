@@ -12,14 +12,26 @@ import { ownedPostgres } from "./owned-postgres";
 interface Exercise { id: string; name: string; version: number }
 interface Entry { exerciseId: string; exerciseName: string; targetSets: number; targetRepetitions: number }
 interface Template { id: string; name: string; version: number; entries: Entry[] }
-interface Listing { templates: Template[]; complete: boolean }
+interface Listing { templates: Template[]; cursor?: string }
+const pageSize = 10;
 
 let images: Awaited<ReturnType<typeof prepareNativeImages>> | undefined;
 let fixture: Awaited<ReturnType<typeof ownedPostgres>> | undefined;
 let app: ReadApplication;
 const exercises: Record<string, Exercise> = {};
-const list = async () => await app.query("template.list", {}) as Listing;
-const stored = async (id: string) => (await list()).templates.find(item => item.id === id);
+/** Follows continuation cursors through every listing page. */
+async function pages(): Promise<Listing[]> {
+  const result: Listing[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await app.query("template.list", cursor === undefined ? {} : { cursor }) as Listing;
+    result.push(page);
+    cursor = page.cursor;
+  } while (cursor !== undefined && result.length < 100);
+  return result;
+}
+const list = async () => (await pages()).flatMap(page => page.templates);
+const stored = async (id: string) => (await list()).find(item => item.id === id);
 const entry = (name: string, targetSets: number, targetRepetitions: number) => ({ exerciseId: exercises[name]!.id, targetSets, targetRepetitions });
 const shown = (name: string, targetSets: number, targetRepetitions: number): Entry => ({ exerciseId: exercises[name]!.id, exerciseName: name, targetSets, targetRepetitions });
 
@@ -32,7 +44,7 @@ beforeAll(async () => {
   for (const name of ["Squat", "Bench press", "Row", "Deadlift"]) exercises[name] = await app.mutate("exercise.create", { name }) as Exercise;
   // Competing saves need two retained slots. Create the second before any race so cold
   // slot creation cannot consume a contender's five-second deadline.
-  await Promise.allSettled([list(), list()]);
+  await Promise.allSettled([app.query("template.list", {}), app.query("template.list", {})]);
   const deadline = Date.now() + 60_000;
   while (app.diagnostics().filter(slot => slot.state === "idle").length < 2) {
     if (Date.now() > deadline) throw new Error("Second retained slot did not become ready");
@@ -55,13 +67,38 @@ test("creates trimmed templates with repeated ordered exercises and reads them t
   const astral = "😀".repeat(100);
   const widest = await app.mutate("template.create", { name: astral, entries: [entry("Deadlift", Number.MAX_SAFE_INTEGER, 1)] }) as Template;
   expect(widest).toMatchObject({ name: astral, entries: [shown("Deadlift", Number.MAX_SAFE_INTEGER, 1)] });
-  const listing = await list();
-  expect(listing.complete).toBe(true);
-  const pushDays = listing.templates.filter(item => item.name === "Push day");
-  expect(pushDays.map(item => item.id)).toEqual([created.id, duplicate.id].sort());
-  expect(listing.templates.find(item => item.id === created.id)).toEqual(created);
-  const names = listing.templates.map(item => item.name);
-  expect(names).toEqual([...names].sort((left, right) => left < right ? -1 : left > right ? 1 : 0));
+  // Names order by code point, then id; "P" precedes U+1F600 under any comparison.
+  const own = (await list()).filter(item => [created.id, duplicate.id, widest.id].includes(item.id));
+  expect(own.map(item => item.id)).toEqual([...[created.id, duplicate.id].sort(), widest.id]);
+  expect(own.find(item => item.id === created.id)).toEqual(created);
+}, 60_000);
+
+test("entries read in position order regardless of insertion order or row identity", async () => {
+  const id = randomUUID();
+  await fixture!.sql.unsafe("INSERT INTO workout_templates(id,name) VALUES($1,'Seeded order')", [id]);
+  // Inserted 1, 2, 0 with identities ordering 2, 1, 0: only position yields 0, 1, 2.
+  for (const [entryId, position, name] of [["bbbbbbbb-0000-4000-8000-000000000000", 1, "Row"], ["aaaaaaaa-0000-4000-8000-000000000000", 2, "Squat"], ["cccccccc-0000-4000-8000-000000000000", 0, "Deadlift"]] as const)
+    await fixture!.sql.unsafe('INSERT INTO workout_template_entries(id,"templateId",position,"exerciseId","targetSets","targetRepetitions") VALUES($1,$2,$3,$4,$5,1)', [entryId, id, position, exercises[name]!.id, position + 1]);
+  expect((await stored(id))?.entries).toEqual([shown("Deadlift", 1, 1), shown("Row", 2, 1), shown("Squat", 3, 1)]);
+}, 60_000);
+
+test("listing pages through templates whose entries exceed one bounded read, never splitting a template", async () => {
+  const ids: string[] = [];
+  for (let index = 1; index <= 12; index++) {
+    const id = randomUUID();
+    ids.push(id);
+    await fixture!.sql.unsafe("INSERT INTO workout_templates(id,name) VALUES($1,$2)", [id, `Bulk ${String(index).padStart(2, "0")}`]);
+    await fixture!.sql.unsafe('INSERT INTO workout_template_entries("templateId",position,"exerciseId","targetSets","targetRepetitions") SELECT $1,position,$2,position+1,1 FROM generate_series(0,99) AS position', [id, exercises.Squat!.id]);
+  }
+  const listed = await pages();
+  expect(listed.length).toBeGreaterThanOrEqual(2);
+  for (const page of listed.slice(0, -1)) expect(page).toMatchObject({ templates: { length: pageSize }, cursor: expect.any(String) });
+  expect(listed.at(-1)!.cursor).toBeUndefined();
+  const all = listed.flatMap(page => page.templates);
+  expect(new Set(all.map(item => item.id)).size).toBe(all.length);
+  const bulk = all.filter(item => ids.includes(item.id));
+  expect(bulk.map(item => item.name)).toEqual(Array.from({ length: 12 }, (_, index) => `Bulk ${String(index + 1).padStart(2, "0")}`));
+  for (const item of bulk) expect(item.entries).toEqual(Array.from({ length: 100 }, (_, position) => shown("Squat", position + 1, 1)));
 }, 60_000);
 
 test("rejects malformed template input before any write", async () => {
@@ -117,7 +154,24 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`competing saves at one expecte
   const created = await app.mutate("template.create", { name: `Contested ${repeat}`, entries: [entry("Squat", 1, 1), entry("Row", 1, 1)] }) as Template;
   const left = { id: created.id, expectedVersion: 1, name: `Left ${repeat}`, entries: [entry("Bench press", 3, 5), entry("Bench press", 3, 5), entry("Bench press", 3, 5)] };
   const right = { id: created.id, expectedVersion: 1, name: `Right ${repeat}`, entries: [entry("Deadlift", 1, 1)] };
-  const results = await Promise.allSettled([app.mutate("template.update", left), app.mutate("template.update", right)]);
+  // Hold the template row so both saves are admitted and blocked before either can lock it.
+  const lock = await fixture!.sql.reserve();
+  let results: PromiseSettledResult<unknown>[];
+  try {
+    await lock.unsafe("BEGIN");
+    await lock.unsafe("SELECT id FROM workout_templates WHERE id=$1 FOR UPDATE", [created.id]);
+    const contest = Promise.allSettled([app.mutate("template.update", left), app.mutate("template.update", right)]);
+    try {
+      const deadline = Date.now() + 4000;
+      for (;;) {
+        const [row] = await fixture!.sql.unsafe("SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'");
+        if (row?.waiting >= 2) break;
+        if (Date.now() > deadline) throw new Error("Both saves did not reach the held template lock");
+        await Bun.sleep(20);
+      }
+    } finally { await lock.unsafe("ROLLBACK"); }
+    results = await contest;
+  } finally { lock.release(); }
   const winners = results.filter(result => result.status === "fulfilled");
   expect(winners).toHaveLength(1);
   expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "VERSION_CONFLICT" } });

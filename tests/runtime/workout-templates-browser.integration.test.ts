@@ -20,7 +20,7 @@ async function fillEntry(form: Locator, position: number, exercise: string, sets
   await entry.getByLabel("Repetitions").fill(repetitions);
 }
 
-test("two views create, reorder and conflict on templates while keeping unsaved drafts and focus", async () => {
+test("two views create, reorder, conflict and deliberately reapply template drafts while keeping unsaved drafts and focus", async () => {
   const project = await admitProject(fileURLToPath(new URL("fixtures/workouts", import.meta.url)));
   const bundle = await compileClient(project);
   const source = [...bundle.files.values()].map(file => typeof file.body === "string" ? file.body : new TextDecoder().decode(file.body)).join("\n");
@@ -75,11 +75,11 @@ test("two views create, reorder and conflict on templates while keeping unsaved 
       await fillEntry(owner, 1, "Row", "5", "8");
       await owner.getByRole("button", { name: "Save template" }).click();
       await browserExpect(owner.getByRole("status")).toHaveText("Saved");
-      await browserExpect(stored(first, name).getByText("Version 3")).toBeVisible({ timeout: 15_000 });
+      await browserExpect(stored(first, name).getByText("Version 3", { exact: true })).toBeVisible({ timeout: 15_000 });
 
       // Server content in the second view follows each commit; its keyed draft island does not.
       await browserExpect(stored(second, name).getByRole("listitem")).toHaveText(["Row: 5 × 8", "Squat: 3 × 5"], { timeout: 15_000 });
-      await browserExpect(stored(second, name).getByText("Version 3")).toBeVisible({ timeout: 15_000 });
+      await browserExpect(stored(second, name).getByText("Version 3", { exact: true })).toBeVisible({ timeout: 15_000 });
       await browserExpect(draft).toHaveValue(`Unsaved draft ${repeat}`);
       await browserExpect(draft).toBeFocused();
       expect(await second.evaluate(() => (globalThis as unknown as { originalDraft: Element }).originalDraft === document.activeElement)).toBe(true);
@@ -89,7 +89,16 @@ test("two views create, reorder and conflict on templates while keeping unsaved 
       await browserExpect(editor(second, name).getByRole("status")).toContainText("VERSION_CONFLICT");
       await browserExpect(draft).toHaveValue(`Unsaved draft ${repeat}`);
       await browserExpect(stored(second, name).getByRole("listitem")).toHaveText(["Row: 5 × 8", "Squat: 3 × 5"]);
-      await browserExpect(stored(first, name).getByText("Version 3")).toBeVisible({ timeout: 15_000 });
+      await browserExpect(stored(first, name).getByText("Version 3", { exact: true })).toBeVisible({ timeout: 15_000 });
+
+      // Deliberate recovery: rebase the kept draft onto the stored version, then save it.
+      await editor(second, name).getByRole("button", { name: "Reapply draft to version 3" }).click();
+      await browserExpect(draft).toHaveValue(`Unsaved draft ${repeat}`);
+      await editor(second, name).getByRole("button", { name: "Save template" }).click();
+      const rebased = `Unsaved draft ${repeat}`;
+      await browserExpect(editor(second, rebased).getByRole("status")).toHaveText("Saved", { timeout: 15_000 });
+      await browserExpect(stored(first, rebased).getByRole("listitem")).toHaveText(["Squat: 3 × 5", "Row: 4 × 8"], { timeout: 15_000 });
+      await browserExpect(stored(first, rebased).getByText("Version 4", { exact: true })).toBeVisible({ timeout: 15_000 });
       expect(errors).toEqual([]);
       await first.close(); await second.close();
     }

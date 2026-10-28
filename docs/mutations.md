@@ -61,7 +61,8 @@ The production browser entry captures Fleur's transport before application modul
 A record that owns an ordered list, such as a workout template and its exercise entries, is one aggregate. Version the parent; its version covers the header and every child. Declare children with a parent reference and a position, and reference other records with the delete action you need:
 
 ```ts
-// server/workouts.ts
+// server/workouts.tsx: imports come from fleur/database, fleur/server and the shared contracts,
+// where updateTemplate outputs { id, name, version }. The fixture also returns the saved entries.
 export const templateEntries = defineTable("workout_template_entries", { columns: {
   id: column.uuid().primaryKey().generated(),
   templateId: column.uuid().references(templates.id, { onDelete: "cascade" }),
@@ -70,27 +71,29 @@ export const templateEntries = defineTable("workout_template_entries", { columns
   targetSets: column.safeInteger(), targetRepetitions: column.safeInteger(),
 } });
 handleMutation(updateTemplate, async ({ input, db }) => {
+  const name = input.name.trim();
+  if (Array.from(name).length < 1 || Array.from(name).length > 100) throw inputError({ name: "Use 1–100 characters after trimming." });
   // First lock and advance the aggregate version, then replace the children.
-  await db.updateVersioned(templates, { id: input.id, expectedVersion: input.expectedVersion, set: { name: trimmedName(input.name) }, returning: ["id"] });
-  const existing = await db.select(templateEntries, { fields: ["id", "version"], where: eq(templateEntries.templateId, input.id), limit: 100 });
+  const { version } = await db.updateVersioned(templates, { id: input.id, expectedVersion: input.expectedVersion, set: { name }, returning: ["version"] });
+  const existing = await db.select(templateEntries, { fields: ["id", "version"], where: eq(templateEntries.templateId, input.id), limit: templateEntryLimit });
   for (const entry of existing) await db.deleteVersioned(templateEntries, { id: entry.id, expectedVersion: entry.version });
   for (const [position, entry] of input.entries.entries()) await db.insert(templateEntries, { values: { templateId: input.id, position, ...entry }, returning: ["id"] });
-  return readTemplate(db, input.id);
+  return { id: input.id, name, version };
 });
 ```
 
-The save sends the whole ordered list with the expected parent version. Any header, child or order edit advances the parent version exactly once. Update the parent before touching children. A competing save then waits on the parent row and fails with `VERSION_CONFLICT` before it changes anything. If you replace children first, the loser instead reports `NOT_FOUND` for a child the winner removed. Await each helper in turn. A failed child write or invalid output rolls back the header and every child.
+The save sends the whole ordered list with the expected parent version. Any header, child or order edit advances the parent version exactly once. Update the parent before touching children. A competing save then waits on the parent row and fails with `VERSION_CONFLICT` before it changes anything. If you replace children first, the loser instead reports `NOT_FOUND` for a child the winner removed. Await each helper in turn. A failed child write or invalid output rolls back the header and every child. `defineTable` declares no composite uniqueness or check constraints. The operation therefore enforces unique positions, by writing them from the list order, and positive targets, through its input schema; PostgreSQL does not.
 
-Read the aggregate with one `selectJoined` statement ordered by parent key and child position, so header and children share a snapshot. Bound the child count in the input schema so one read returns a whole aggregate. If a list read fills its row limit, drop the final aggregate, which may be partial, and report the list incomplete.
+Read one aggregate with one `selectJoined` statement ordered by child position, so header and children share a snapshot. Bound the child count in the input schema so that read returns the whole aggregate. A list pages its parents with a continuation cursor. It then reads their children through repeated reads of at most 500 rows, continued with `cursorJoined`. Choose a page size whose largest possible page fits the 1 MiB result limit. A list never shows a partial aggregate. Parents and children are then separate statements: a save between them can pair a header with newer children. Editing from such a view fails with `VERSION_CONFLICT` instead of overwriting, and the committed save refreshes the view.
 
 Recovery:
 
-- `VERSION_CONFLICT`: another view saved first. Keep the draft and show the stored version, which refreshes automatically. Nothing from the rejected save was written. Reapply the draft to the current version deliberately; never copy the newer version into an old draft silently.
+- `VERSION_CONFLICT`: another view saved first. Nothing from the rejected save was written. Keep the draft and show the stored version, which refreshes automatically. Offer an explicit action that rebases the kept draft onto the stored version, then save again. Never move a draft's base version, or copy newer data into it, silently.
 - `CONSTRAINT_CONFLICT` while saving: a referenced record, such as an exercise, no longer exists. Nothing was written. Choose a current record.
 - `CONSTRAINT_CONFLICT` while deleting a referenced record: a `restrict` reference still uses it. First remove it from every current aggregate, then delete it.
 - `NOT_FOUND`: the aggregate was deleted.
 - `outcome-unknown`: reload stored data before deciding whether to save again.
 
-`tests/runtime/fixtures/workouts` demonstrates this for workout templates. Each has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered entries. Entries may repeat an exercise and have positive safe-integer target sets and repetitions. PostgreSQL tests cover joined ordered reads, saves and reorders, malformed input, child and output rollback, two concurrent writers and restricted exercise deletion. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes, and a stale draft reports a conflict without losing its edits.
+`tests/runtime/fixtures/workouts` demonstrates this for workout templates. Each has a trimmed name of 1–100 code points, need not be unique, and holds 1–100 ordered entries. Entries may repeat an exercise and have positive safe-integer target sets and repetitions. The listing shows 10 templates per page with a link to later pages; its cursors last for the broker's lifetime. PostgreSQL tests cover position-ordered reads, paging past one bounded read, saves and reorders, malformed input, child and output rollback, two writers released together from a held row lock, and restricted exercise deletion. A two-view browser test shows server content following each commit. Unsaved drafts and focus survive those refreshes. A stale draft reports a conflict without losing its edits, and is then deliberately reapplied and saved.
 
 Run `bun run types`, `bun run lint`, `bun run build:reference` and `bun run test`. Database/browser tests use the same owned PostgreSQL, native isolation and explicit Playwright prerequisites described in [read pages](read-pages.md). Lifecycle commands, reactive subscriptions, migrations and the full workout proof remain later slices.

@@ -17,14 +17,18 @@ function templateTypes(db: WriteDb) {
   const listed = (listing: Output<typeof listTemplates>) => {
     const name: string = listing.templates[0]!.entries[0]!.exerciseName;
     const version: number = listing.templates[0]!.version;
-    return [name, version, listing.complete] as const;
+    const cursor: string | undefined = listing.cursor;
+    return [name, version, cursor] as const;
   };
+  const nextPage: Input<typeof listTemplates> = { cursor: "opaque" };
+  // @ts-expect-error Listing continuation is an opaque string cursor, not a page number.
+  const numbered: Input<typeof listTemplates> = { cursor: 2 };
   useMutation(updateTemplate).run(save);
   // @ts-expect-error Client input requires the ordered entry list.
   useMutation(updateTemplate).run({ id, expectedVersion: 1, name: "Legs" });
   db.insert(templateEntries, { values: { templateId: id, position: 0, exerciseId: id, targetSets: 3, targetRepetitions: 5 }, returning: ["id"] });
   // @ts-expect-error Entry rows require their parent template reference.
   db.insert(templateEntries, { values: { position: 0, exerciseId: id, targetSets: 3, targetRepetitions: 5 }, returning: ["id"] });
-  void [unversioned, arbitrary, textual, listed];
+  void [unversioned, arbitrary, textual, listed, nextPage, numbered];
 }
 void templateTypes;

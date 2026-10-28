@@ -1,8 +1,9 @@
-import { column, defineTable, eq, type ReadDb, type WriteDb } from "fleur/database";
+import { column, defineTable, eq, inArray, type ReadDb, type WriteDb } from "fleur/database";
 import { handleMutation, handleQuery, inputError, readQuery, registerPage } from "fleur/server";
+import { Link } from "fleur/routing";
 import type { Infer, UUID } from "fleur/schema";
-import { createExercise, createTemplate, deleteExercise, listExercises, listTemplates, rejectTemplateOutput, template, templateEntryInput, templateEntryLimit, updateTemplate } from "../shared/contracts";
-import { templatesPage } from "../shared/pages";
+import { createExercise, createTemplate, deleteExercise, listExercises, listTemplates, rejectTemplateOutput, template, templateEntry, templateEntryInput, templateEntryLimit, templatePageSize, updateTemplate } from "../shared/contracts";
+import { laterTemplatesPage, templatesPage } from "../shared/pages";
 import { TemplateEditor } from "../client/TemplateEditor";
 
 export const exercises = defineTable("exercises", { columns: {
@@ -33,8 +34,8 @@ handleMutation(createExercise, async ({ input, db }) => db.insert(exercises, { v
 handleMutation(deleteExercise, async ({ input, db }) => db.deleteVersioned(exercises, input));
 
 type Template = Infer<typeof template>;
-/** One joined statement: header, ordered entries and current exercise names share a snapshot. */
-function readTemplates(db: ReadDb, options: { id?: UUID; limit: number }) {
+/** One joined statement: a template's header, ordered entries and exercise names share a snapshot. */
+function readTemplateRows(db: ReadDb, id: UUID) {
   return db.selectJoined({
     from: templateEntries,
     joins: [
@@ -46,36 +47,56 @@ function readTemplates(db: ReadDb, options: { id?: UUID; limit: number }) {
       exerciseId: templateEntries.exerciseId, exerciseName: exercises.name,
       targetSets: templateEntries.targetSets, targetRepetitions: templateEntries.targetRepetitions,
     },
-    ...(options.id === undefined ? {} : { where: eq(templates.id, options.id) }),
-    orderBy: [{ column: templates.name, direction: "asc" }, { column: templates.id, direction: "asc" }, { column: templateEntries.position, direction: "asc" }],
-    limit: options.limit,
+    where: eq(templates.id, id),
+    orderBy: [{ column: templateEntries.position, direction: "asc" }],
+    limit: templateEntryLimit,
   });
 }
-function grouped(rows: Awaited<ReturnType<typeof readTemplates>>): Template[] {
-  const result: Template[] = [];
-  for (const { id, name, version, ...entry } of rows) {
-    const last = result.at(-1);
-    if (last?.id === id) last.entries.push(entry);
-    else result.push({ id, name, version, entries: [entry] });
-  }
-  return result;
-}
 async function readTemplate(db: ReadDb, id: UUID): Promise<Template> {
-  const [found] = grouped(await readTemplates(db, { id, limit: templateEntryLimit }));
-  if (!found) throw new Error("Saved template is missing");
-  return found;
+  const rows = await readTemplateRows(db, id);
+  if (!rows[0]) throw new Error("Saved template is missing");
+  return { id, name: rows[0].name, version: rows[0].version, entries: rows.map(row => ({ exerciseId: row.exerciseId, exerciseName: row.exerciseName, targetSets: row.targetSets, targetRepetitions: row.targetRepetitions })) };
 }
 async function insertEntries(db: WriteDb, templateId: UUID, entries: readonly Infer<typeof templateEntryInput>[]) {
   for (const [position, entry] of entries.entries()) await db.insert(templateEntries, { values: { templateId, position, ...entry }, returning: ["id"] });
 }
 
-const listingLimit = 500;
-handleQuery(listTemplates, async ({ db }) => {
-  const rows = await readTemplates(db, { limit: listingLimit });
-  const result = grouped(rows);
-  // A full page may have cut the last template's entries; never present a partial template.
-  const complete = rows.length < listingLimit;
-  return { templates: complete ? result : result.slice(0, -1), complete };
+const entryReadLimit = 500;
+/** Ordered entries for one page of templates, in bounded reads of at most 500 rows. */
+async function readEntries(db: ReadDb, ids: readonly UUID[]) {
+  const selection = {
+    from: templateEntries,
+    joins: [{ type: "inner", table: exercises, on: eq(templateEntries.exerciseId, exercises.id) }] as const,
+    fields: {
+      entryId: templateEntries.id, templateId: templateEntries.templateId, position: templateEntries.position,
+      exerciseId: exercises.id, exerciseName: exercises.name,
+      targetSets: templateEntries.targetSets, targetRepetitions: templateEntries.targetRepetitions,
+    },
+    where: inArray(templateEntries.templateId, ids),
+    orderBy: [{ column: templateEntries.templateId, direction: "asc" }, { column: templateEntries.position, direction: "asc" }],
+  } as const;
+  const entries = new Map<UUID, Infer<typeof templateEntry>[]>();
+  let cursor: string | undefined;
+  do {
+    const rows = await db.selectJoined({ ...selection, limit: entryReadLimit, ...(cursor === undefined ? {} : { cursor }) });
+    for (const row of rows) entries.set(row.templateId, [...entries.get(row.templateId) ?? [], { exerciseId: row.exerciseId, exerciseName: row.exerciseName, targetSets: row.targetSets, targetRepetitions: row.targetRepetitions }]);
+    const last = rows.length === entryReadLimit ? rows.at(-1) : undefined;
+    cursor = last && db.cursorJoined({ ...selection, after: last });
+  } while (cursor !== undefined);
+  return entries;
+}
+// Headers and their entries are separate statements. A save committed between them can pair a
+// header with newer entries; editing from that view then fails with VERSION_CONFLICT rather than
+// overwriting, and the committed save triggers a refresh that shows the consistent result.
+handleQuery(listTemplates, async ({ input, db }) => {
+  const orderBy = [{ field: "name", direction: "asc" }] as const;
+  const headers = await db.select(templates, { fields: ["id", "name", "version"], orderBy, limit: templatePageSize + 1, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) });
+  const page = headers.slice(0, templatePageSize), last = page.at(-1);
+  const entries = page.length ? await readEntries(db, page.map(header => header.id)) : new Map<UUID, Infer<typeof templateEntry>[]>();
+  return {
+    templates: page.map(header => ({ ...header, entries: entries.get(header.id) ?? [] })),
+    ...(headers.length > templatePageSize && last ? { cursor: db.cursor(templates, { orderBy, after: last }) } : {}),
+  };
 });
 handleMutation(createTemplate, async ({ input, db }) => {
   const { id } = await db.insert(templates, { values: { name: trimmedName(input.name) }, returning: ["id"] });
@@ -97,15 +118,17 @@ handleMutation(rejectTemplateOutput, async ({ input, db }) => {
   return "server-private-canary" as unknown as boolean;
 });
 
-registerPage(templatesPage, { component: async () => {
-  const exerciseRows = await readQuery(listExercises, {}), listing = await readQuery(listTemplates, {});
+async function templatesView(cursor?: string) {
+  const exerciseRows = await readQuery(listExercises, {}), listing = await readQuery(listTemplates, cursor === undefined ? {} : { cursor });
   return <main><h1>Workout templates</h1>
     <TemplateEditor key="new" exercises={exerciseRows} />
-    {!listing.complete && <p>Only the first stored templates are shown.</p>}
+    {listing.cursor !== undefined && <Link to={laterTemplatesPage} params={{ cursor: listing.cursor }}>Later templates</Link>}
     {listing.templates.map(stored => <article key={stored.id}>
       <h2>{stored.name}</h2><p>Version {stored.version}</p>
       <ol>{stored.entries.map((entry, index) => <li key={index}>{entry.exerciseName}: {entry.targetSets} × {entry.targetRepetitions}</li>)}</ol>
       <TemplateEditor key={stored.id} exercises={exerciseRows} template={stored} />
     </article>)}
   </main>;
-} });
+}
+registerPage(templatesPage, { component: () => templatesView() });
+registerPage(laterTemplatesPage, { component: ({ params }) => templatesView(params.cursor) });

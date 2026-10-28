@@ -127,15 +127,32 @@ class Slot {
       || !outcomes.includes(String(proof.outcome)) || [proof.kill_lateness_ms, proof.physical_exit_lateness_ms].some(ms => typeof ms !== "number" || !Number.isInteger(ms) || ms < 0 || ms > 250)) throw new Error("TERMINATION_UNCONFIRMED");
     return Object.freeze({ ...proof });
   }
-  async run(command: unknown, exchange: Exchange, budgetMs: number): Promise<ExecutionResult> {
+  /** `end` is this run's `performance.now()` deadline: `budgetMs` after the budget was computed. */
+  async run(command: unknown, exchange: Exchange, budgetMs: number, end: number): Promise<ExecutionResult> {
     const prepared = this.prepared;
     if (this.state !== "idle" || !prepared || !Number.isInteger(budgetMs) || budgetMs <= 0 || budgetMs > 5000) throw new Error("REQUEST_DENIED");
     this.state = "running";
     this.prepared = undefined;
     try {
       await this.#send({ kind: "run", operation: prepared.id, budgetMs, command });
+      // The controller anchors its guard deadline before acknowledging the
+      // run, so a deadline frame carrying what remains of this deadline now
+      // keeps the guard's deadline no later than the host's, whatever the
+      // transit (#75).
+      const received = record(await this.#read(budgetMs + RETIREMENT_MS));
+      if (received.kind !== "received" || received.operation !== prepared.id || Object.keys(received).length !== 2) this.#quarantine(received);
+      const remaining = Math.min(budgetMs, Math.floor(end - performance.now()));
+      // As before the run frame, too little left to arm a guard is the caller's
+      // timeout: zero withholds admission and the process stays prepared.
+      const value = remaining < ARMING_MARGIN_MS ? 0 : remaining;
+      await this.#send({ kind: "deadline", value, operation: prepared.id });
       // The controller's arming grace and exit checks follow an expired budget.
       const guard = record(await this.#read(budgetMs + RETIREMENT_MS));
+      if (value === 0 && guard.kind === "withheld" && guard.operation === prepared.id && Object.keys(guard).length === 2) {
+        this.prepared = prepared;
+        this.state = "idle";
+        throw new ExecutionFailure("QUERY_TIMEOUT");
+      }
       if (guard.kind === "failure" && Object.keys(guard).length === 6 && guard.operation === prepared.id && guard.code === "QUERY_TIMEOUT" && guard.physicalExitConfirmed === true) {
         // Arming outlived the budget: the process never passed its startup gate.
         const evidence = this.#acceptRetirement(guard.deadline, prepared.id, undefined, ["unadmitted", "cancelled", "deadline", "premature-exit"]);
@@ -421,9 +438,10 @@ export class NativeExecution {
         if (this.#closed) throw new Error("APPLICATION_CLOSED");
         if (!Number.isInteger(budgetMs) || budgetMs <= 0 || budgetMs > OPERATION_MS) throw new Error("REQUEST_DENIED");
         used = true;
-        const budget = Math.min(budgetMs, Math.floor(deadline - performance.now()));
+        const now = performance.now();
+        const budget = Math.min(budgetMs, Math.floor(deadline - now));
         if (budget < ARMING_MARGIN_MS) throw new Error("QUERY_TIMEOUT");
-        const work = slot.run(command, exchange, budget);
+        const work = slot.run(command, exchange, budget, now + budget);
         running = work;
         const result = await work;
         this.#lossBackoff = 0;

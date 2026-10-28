@@ -14,6 +14,7 @@ import socket
 import struct
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -253,6 +254,11 @@ def result(outcome, start='4242', operation=OPERATION, retired_value=True):
                        'physical_exit_lateness_ms': 0, 'operation': operation, 'start': start, 'retired': retired_value}).encode()
 
 
+def deadline_frame(value=2000):
+    """What remains of the host's deadline when the run acknowledgement reaches it."""
+    return {'kind': 'deadline', 'value': value, 'operation': OPERATION}
+
+
 class ControllerRun(unittest.TestCase):
     def slot(self, application, guard_stream, exit_code=0):
         slot = object.__new__(retained.Slot)
@@ -277,25 +283,30 @@ class ControllerRun(unittest.TestCase):
         application = Stream(frames=[{'kind': 'complete', 'value': 1}])
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('premature-exit')])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        host = Host([deadline_frame(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
         with patched:
             reply = slot.run(self.request(), host.input, host.output)
         sent = host.sent()
-        self.assertEqual(sent[0]['kind'], 'guard')
-        self.assertEqual(sent[0]['value']['start'], '4242')
+        self.assertEqual(sent[0], {'kind': 'received', 'operation': OPERATION})
+        self.assertEqual(sent[1]['kind'], 'guard')
+        self.assertEqual(sent[1]['value']['start'], '4242')
         self.assertTrue(application.written.startswith(b'startup:approved\n'))
-        self.assertEqual(sent[1], {'kind': 'worker', 'value': {'kind': 'complete', 'value': 1}})
+        self.assertEqual(sent[2], {'kind': 'worker', 'value': {'kind': 'complete', 'value': 1}})
         self.assertEqual(reply['kind'], 'retired')
         self.assertIsNone(slot.prepared)
         self.assertTrue(application.closed and guard_stream.closed)
 
     def test_missing_host_admission_never_releases_the_application(self):
         application = Stream(frames=[{'kind': 'complete', 'value': 1}])
-        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}'])
+        # A pending record keeps the fake guard exec running once it has armed.
+        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('deadline')])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([{'kind': 'reply', 'value': None, 'operation': OPERATION}])
-        with patched, self.assertRaises(retained.Quarantine):
+        host = Host([deadline_frame(), {'kind': 'reply', 'value': None, 'operation': OPERATION}])
+        with patched, self.assertRaises(retained.Quarantine) as caught:
             slot.run(self.request(), host.input, host.output)
+        # The guard armed and was reported; only the missing admission stopped the run.
+        self.assertEqual([value['kind'] for value in host.sent()], ['received', 'guard'])
+        self.assertEqual(str(caught.exception), 'GUARD_PARENT_ACK_REQUIRED')
         self.assertEqual(bytes(application.written), b'')
 
     def test_a_guard_record_for_another_operation_or_start_quarantines(self):
@@ -303,7 +314,7 @@ class ControllerRun(unittest.TestCase):
             application = Stream(frames=[{'kind': 'complete', 'value': 1}])
             guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', record])
             slot, patched = self.slot(application, guard_stream)
-            host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+            host = Host([deadline_frame(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
             with patched, self.assertRaises(retained.Quarantine):
                 slot.run(self.request(), host.input, host.output)
 
@@ -311,7 +322,7 @@ class ControllerRun(unittest.TestCase):
         application = Stream(frames=frames)
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', record])
         slot, patched = self.slot(application, guard_stream, exit_code)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        host = Host([deadline_frame(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}])
         return application, guard_stream, slot, patched, host
 
     # #58: application code can write a terminal-looking frame. Completion bytes
@@ -358,13 +369,13 @@ class ControllerRun(unittest.TestCase):
             application.data += struct.pack('!I', len(frame)) + frame
             guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', lambda: result('cancelled') if guard_stream.stdin_closed else b'{}'])
             slot, patched = self.slot(application, guard_stream)
-            host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}])
+            host = Host([deadline_frame(), {'kind': 'admit', 'value': None, 'operation': OPERATION}])
             with patched:
                 reply = slot.run(self.request(), host.input, host.output)
             self.assertTrue(guard_stream.stdin_closed, frame)
             self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'INTERNAL_FAILURE', 'cancelled'), frame)
             # Nothing the host would reject is forwarded to it.
-            self.assertEqual([value['kind'] for value in host.sent()], ['guard'], frame)
+            self.assertEqual([value['kind'] for value in host.sent()], ['received', 'guard'], frame)
             self.assertIsNone(slot.prepared)
 
     def test_application_frames_within_the_public_contract_are_forwarded(self):
@@ -376,13 +387,13 @@ class ControllerRun(unittest.TestCase):
             with patched:
                 reply = slot.run(self.request(), host.input, host.output)
             self.assertEqual(reply['kind'], 'retired')
-            self.assertEqual(host.sent()[1], {'kind': 'worker', 'value': value})
+            self.assertEqual(host.sent()[2], {'kind': 'worker', 'value': value})
 
     def test_host_cancellation_retires_only_through_the_bound_guard(self):
         application = Stream(frames=[{'kind': 'read', 'value': 1}])
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', lambda: result('cancelled') if guard_stream.stdin_closed else b'{}'])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([{'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'cancel', 'value': None, 'operation': OPERATION}])
+        host = Host([deadline_frame(), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'cancel', 'value': None, 'operation': OPERATION}])
         with patched:
             reply = slot.run(self.request(), host.input, host.output)
         self.assertTrue(guard_stream.stdin_closed)
@@ -416,7 +427,7 @@ class ControllerRun(unittest.TestCase):
         application = Stream()
         guard_stream = Stream(lines=[late, record])
         slot, patched = self.slot(application, guard_stream)
-        host = Host([])
+        host = Host([deadline_frame(10)])
         return application, guard_stream, slot, patched, host
 
     def test_arming_expiry_with_a_verified_unadmitted_retirement_is_a_timeout(self):
@@ -426,7 +437,8 @@ class ControllerRun(unittest.TestCase):
         with patched:
             reply = slot.run(self.request(10), host.input, host.output)
         self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'unadmitted'))
-        self.assertEqual(host.sent(), [])
+        # Only the run's acknowledgement: no guard binding and no application bytes.
+        self.assertEqual(host.sent(), [{'kind': 'received', 'operation': OPERATION}])
         self.assertEqual(bytes(application.written), b'')
         self.assertIn(OPERATION, slot.retired)
 
@@ -443,8 +455,10 @@ class ControllerRun(unittest.TestCase):
         application = Stream(frames=[{'kind': 'complete', 'value': 1}])
         guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('deadline')])
         slot, patched = self.slot(application, guard_stream)
-        # The host channel stays open and silent past the run's deadline.
+        # After its deadline frame, the host channel stays open and silent past the run's deadline.
         read, write = os.pipe()
+        data = json.dumps(deadline_frame(50)).encode()
+        os.write(write, struct.pack('!I', len(data)) + data)
         host_in = os.fdopen(read, 'rb', buffering=0)
         OPEN.append(host_in)
         output = io.BytesIO()
@@ -454,6 +468,110 @@ class ControllerRun(unittest.TestCase):
         finally:
             os.close(write)
         self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'deadline'))
+        self.assertEqual(bytes(application.written), b'')
+        self.assertIn(OPERATION, slot.retired)
+
+    # #75: host-to-controller transit is charged to the host's budget. The
+    # controller anchors the guard's deadline before acknowledging the run; the
+    # host's deadline frame carries what remains of its own deadline when that
+    # acknowledgement reaches it. Only durations cross the clock boundary.
+    def armed_run(self, remaining, budget=2000):
+        application = Stream(frames=[{'kind': 'complete', 'value': 1}])
+        guard_stream = Stream(lines=[b'{"kind":"armed","operation":"' + OPERATION.encode() + b'","start":"4242"}', result('premature-exit')])
+        slot, patched = self.slot(application, guard_stream)
+        host = Host([deadline_frame(remaining), {'kind': 'admit', 'value': None, 'operation': OPERATION},
+                     {'kind': 'finish', 'value': None, 'operation': OPERATION}])
+        return application, slot, patched, host
+
+    def test_the_guard_deadline_is_what_the_host_has_left_when_the_controller_acknowledges_the_run(self):
+        application, slot, patched, host = self.armed_run(700)
+        before = time.monotonic()
+        with patched:
+            reply = slot.run(self.request(2000), host.input, host.output)
+        self.assertEqual(reply['kind'], 'retired')
+        sent = host.sent()
+        self.assertEqual(sent[0], {'kind': 'received', 'operation': OPERATION})
+        self.assertEqual(sent[1]['kind'], 'guard')
+        deadline = float(self.arguments[7])
+        self.assertEqual(sent[1]['value']['deadline'], deadline)
+        # Anchored no earlier than the run began; only the deadline frame's value follows it.
+        self.assertGreaterEqual(deadline, before + .7)
+        self.assertLess(deadline, before + .7 + .5)
+
+    def test_no_deadline_frame_extends_the_budget_or_reaches_the_guard_unvalidated(self):
+        for remaining in (2001, -1, 1.5, None, True, '700'):
+            application, slot, patched, host = self.armed_run(remaining)
+            self.arguments = None
+            with patched, self.assertRaises(retained.Quarantine, msg=remaining):
+                slot.run(self.request(2000), host.input, host.output)
+            self.assertIsNone(self.arguments, remaining)
+            self.assertEqual(bytes(application.written), b'', remaining)
+        for value in ({'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'deadline', 'value': 700, 'operation': '00000000-0000-4000-8000-000000000002'},
+                      {'kind': 'deadline', 'value': 700, 'operation': OPERATION, 'extra': 1}):
+            application = Stream()
+            slot, patched = self.slot(application, Stream())
+            host = Host([value])
+            self.arguments = None
+            with patched, self.assertRaises(retained.Quarantine, msg=value):
+                slot.run(self.request(2000), host.input, host.output)
+            self.assertIsNone(self.arguments, value)
+
+    def test_the_deadline_is_anchored_before_the_acknowledgement_not_when_the_deadline_frame_arrives(self):
+        application, slot, patched, _ = self.armed_run(700)
+        read, write = os.pipe()
+        host_in = os.fdopen(read, 'rb', buffering=0)
+        OPEN.append(host_in)
+        output = io.BytesIO()
+        def answer():
+            # The host's deadline frame reaches the controller 400 ms after the run.
+            time.sleep(.4)
+            for value in (deadline_frame(700), {'kind': 'admit', 'value': None, 'operation': OPERATION}, {'kind': 'finish', 'value': None, 'operation': OPERATION}):
+                data = json.dumps(value).encode()
+                os.write(write, struct.pack('!I', len(data)) + data)
+            os.close(write)
+        writer = threading.Thread(target=answer)
+        before = time.monotonic()
+        writer.start()
+        try:
+            with patched:
+                reply = slot.run(self.request(2000), host_in, output)
+        finally:
+            writer.join()
+        self.assertEqual(reply['kind'], 'retired')
+        # Anchored when the run was acknowledged, not 400 ms later.
+        self.assertLess(float(self.arguments[7]), before + .7 + .2)
+
+    # Too little of the host's deadline remains to arm a guard: the run is the
+    # caller's timeout, and the process stays prepared at its gate (#67).
+    def test_a_zero_deadline_frame_keeps_the_process_prepared_without_arming(self):
+        application, slot, patched, host = self.armed_run(0)
+        prepared = dict(slot.prepared)
+        self.arguments = None
+        with patched:
+            reply = slot.run(self.request(2000), host.input, host.output)
+        self.assertEqual(reply, {'kind': 'withheld', 'operation': OPERATION})
+        self.assertIsNone(self.arguments)
+        self.assertEqual(bytes(application.written), b'')
+        self.assertEqual(slot.prepared, prepared)
+        self.assertNotIn(OPERATION, slot.retired)
+        self.assertEqual(host.sent(), [{'kind': 'received', 'operation': OPERATION}])
+
+    def test_a_deadline_frame_that_never_arrives_retires_the_unadmitted_process(self):
+        record = json.dumps({'kind': 'result', 'outcome': 'unadmitted', 'physical_exit_confirmed': True, 'kill_lateness_ms': 10,
+                             'physical_exit_lateness_ms': 12, 'operation': OPERATION, 'start': '4242', 'retired': True}).encode()
+        application = Stream()
+        guard_stream = Stream(lines=[record])
+        slot, patched = self.slot(application, guard_stream)
+        read, write = os.pipe()
+        host_in = os.fdopen(read, 'rb', buffering=0)
+        OPEN.append(host_in)
+        output = io.BytesIO()
+        try:
+            with patched:
+                reply = slot.run(self.request(50), host_in, output)
+        finally:
+            os.close(write)
+        self.assertEqual((reply['kind'], reply['code'], reply['deadline']['outcome']), ('failure', 'QUERY_TIMEOUT', 'unadmitted'))
         self.assertEqual(bytes(application.written), b'')
         self.assertIn(OPERATION, slot.retired)
 
@@ -487,6 +605,7 @@ class ControllerRun(unittest.TestCase):
             return [value['kind'] for value in host.sent()]
         admit = {'kind': 'admit', 'value': None, 'operation': OPERATION}
         self.assertEqual(controller([{'kind': 'run', 'operation': OPERATION}, admit]), ['ready', 'failure', 'closed'])
+        self.assertEqual(controller([{'kind': 'run', 'operation': OPERATION}, deadline_frame(700), admit]), ['ready', 'failure', 'closed'])
         # An admission for an operation that never timed out remains a protocol violation.
         self.assertEqual(controller([admit]), ['ready', 'quarantined'])
 

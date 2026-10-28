@@ -7,7 +7,7 @@ Use client/ for interactive Preact islands, server/ for server code and shared/ 
 The approved application imports are fleur/schema, fleur/database, fleur/server, fleur/client, fleur/routing, preact, preact/hooks and compiler-managed Preact JSX entry points. The read-page and mutation slices supply schemas, tables/relations, read-only queries, atomic versioned writes, routes and validated islands; see the package docs/read-pages.md and generated dist/reference declarations. Use only these imports and fixed dependencies. Suggest additional packages with the need and existing alternatives; do not install them or edit protected manifests, locks or tooling. Use Tailwind utilities and documented inline styles/CSS variables. Do not author stylesheets or load external JavaScript.
 Server components and operations are the default. Validate public inputs and outputs. Browser data requests must use Fleur operations. Database changes require reviewed migrations and explicit destructive authority; never reset development data to fix a test.
 Read docs/fleur.md for offline pinned guidance and .agents/skills/fleur-tdd/SKILL.md before changing testable behavior. Use disposable test data and independent review for substantial work.
-This creation release supplies the project layout and pinned tooling. Application lifecycle commands are not implemented by this slice; do not invent working APIs or claim a running application.
+This creation release supplies the project layout and pinned tooling. Application lifecycle commands are not implemented by this slice, except the database operations named in the Database section of AGENTS.md; do not invent working APIs or claim a running application.
 `;
 const generatedEnd = "<!-- fleur:generated:end -->\n";
 const databaseGuidance = `
@@ -18,7 +18,7 @@ Fleur owns database orchestration: development PostgreSQL, maintenance locking, 
 ### Data access
 
 - Declare tables with \`defineTable\` and relations with \`defineRelations\` from \`fleur/database\` in server/. Tables are versioned by default: writes use \`updateVersioned\` and \`deleteVersioned\` with the expected version and report version conflicts. Declare \`versioned: false\` only when lost concurrent updates are acceptable.
-- Typed queries (\`defineQuery\` with \`handleQuery\`) and mutations (\`defineMutation\` with \`handleMutation\`) are the only data access path for application code. Query handlers only read. Each mutation runs in one transaction that commits only after its output validates.
+- Fleur queries (\`defineQuery\` with \`handleQuery\`) and Fleur mutations (\`defineMutation\` with \`handleMutation\`) are the only data access path for application code. A Fleur query only reads. Each Fleur mutation runs in one transaction that commits only after its output validates.
 - Raw SQL, Drizzle, Bun SQL, PostgreSQL clients and other ORMs are not application imports. The trusted broker holds the database credential and binds every value, so application code never receives a connection, and typed operations keep inferred types, validation and maintenance checks intact. When an operation needs something the typed APIs cannot express, do not work around them: suggest the missing capability to the user by describing the need and the existing alternatives you considered.
 - Use inferred types from schemas and table declarations instead of hand-written copies or casts. Fleur applies runtime validation at every boundary, including operation inputs and outputs, inserts, seed values and island props.
 
@@ -40,7 +40,7 @@ Commit migration files with the application. Never edit or remove an applied mig
 ### Credentials, test data and destructive authority
 
 - Database credentials stay in the trusted host. Never read, print, log or commit them, and never pass them to application code, workers or browser bundles.
-- Database tests use a uniquely owned disposable PostgreSQL database. Never use development data as test data, and never point tests at the development or production database.
+- Database tests need a uniquely owned disposable PostgreSQL database. This release supplies no approved way for application tests to create one, so do not build your own harness or connect to PostgreSQL directly. Never use development data as test data, and never point tests at the development or production database.
 - Destructive operations, including \`fleur db reset\`, \`fleur db restore --from <file>\` and destructive migrations, need human approval bound to the exact target and content. JSON output and a generic --yes never grant it, and an agent never approves on the user's behalf.
 - Read data with \`fleur db inspect --table <name>\`, which is read-only and bounded. Take retained backups with \`fleur db backup --out <file>\`. After an interrupted operation, run \`fleur db recover --inspect\` and keep its maintenance marker and backups; never delete Fleur state to force access.
 
@@ -49,7 +49,7 @@ Commit migration files with the application. Never edit or remove an applied mig
 Run these checks and report which ones actually ran:
 
 1. \`bun run types\`.
-2. Database tests against disposable PostgreSQL covering the changed tables, constraints and operations.
+2. Database tests against disposable PostgreSQL covering the changed tables, constraints and operations. This release has no approved disposable test database for applications, so report this check as not run.
 3. \`fleur db migration status\`, which must show no drift and no pending entries after apply.
 4. Persistence across restart: data written before a development restart is still present afterwards. The development lifecycle is not in this release, so report this check as not run.
 
@@ -60,7 +60,7 @@ Fleur ${releaseVersion} does not include the operations below. Do not call, simu
 - The \`db inspect\` schema overview. Without --table, \`fleur db inspect\` currently lists application tables only.
 - \`fleur status\` database health.
 - \`fleur dev\`, including automatic initialization of a new development database. Apply migrations and seeds explicitly.
-- \`db query\`. \`db query\` is a development-only diagnostic for reading development data, never a data access path for application code.
+- \`fleur db query\`. \`db query\` is a development-only diagnostic for reading development data, never a data access path for application code.
 `;
 const instructionGuidance = {
   "AGENTS.md": sharedGuidance + databaseGuidance + generatedEnd,

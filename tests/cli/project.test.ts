@@ -350,8 +350,13 @@ async function releaseCommands(): Promise<string[]> {
   expect(exit).toBe(0);
   return (JSON.parse(stdout).data.commands as { name: string }[]).map(({ name }) => name);
 }
+/** Every backticked `fleur ...` mention, reduced to its command path: the words before the first option or placeholder argument. */
 function namedCommands(text: string): string[] {
-  return [...text.matchAll(/`(?:fleur )?((?:db|status|dev|setup|doctor|new|init)(?: [a-z][a-z-]*)*)(?=[ `])/g)].map((match) => match[1]!);
+  return [...text.matchAll(/`fleur ([^`]+)`/g)].map((match) => {
+    const words = match[1]!.split(/\s+/);
+    const end = words.findIndex((word) => word.startsWith("-") || word.startsWith("<"));
+    return words.slice(0, end === -1 ? words.length : end).join(" ");
+  });
 }
 test("generated AGENTS.md has a dedicated database section covering every specified topic and CLAUDE.md references it", async () => {
   const cwd = await root();
@@ -380,11 +385,11 @@ test("the database section names only operations in the pinned release and marks
   expect(split).toBeGreaterThan(0);
   const available = section.slice(0, split), unavailable = section.slice(split);
   const released = await releaseCommands();
-  const resolves = (command: string) => released.some((name) => command === name || command.startsWith(name + " "));
+  const resolves = (command: string) => released.includes(command);
   const named = namedCommands(available);
   expect(named.length).toBeGreaterThan(0);
   for (const command of named) expect({ command, released: resolves(command) }).toEqual({ command, released: true });
-  for (const command of released.filter((name) => name.startsWith("db "))) expect({ command, named: named.some((item) => item === command || item.startsWith(command + " ")) }).toEqual({ command, named: true });
+  for (const command of released.filter((name) => name.startsWith("db "))) expect({ command, named: named.includes(command) }).toEqual({ command, named: true });
   for (const later of ["db query", "status", "dev"]) {
     expect(resolves(later)).toBe(false);
     expect(named).not.toContain(later);

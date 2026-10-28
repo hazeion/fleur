@@ -12,6 +12,8 @@ import time
 
 SOCKET = '/var/run/docker.sock'
 RESPONSE_LIMIT = 1024 * 1024
+HEAD_LIMIT = 16385  # response head bytes, including the terminating blank line
+TERMINATOR = b'\r\n\r\n'
 
 
 class DockerError(RuntimeError):
@@ -34,15 +36,27 @@ def _request(method, path, body):
 
 
 def _read_head(connection, deadline):
+    # Peek, then consume only through the blank line: body and hijacked stream
+    # bytes after it stay in the socket for their own readers.
     head = bytearray()
-    while b'\r\n\r\n' not in head:
-        if len(head) > 16384:
+    while True:
+        if len(head) >= HEAD_LIMIT:
             raise DockerError('API_RESPONSE_BOUND')
         connection.settimeout(max(.001, deadline-time.monotonic()))
-        block = connection.recv(1)
+        block = connection.recv(HEAD_LIMIT-len(head), socket.MSG_PEEK)
         if not block:
             raise DockerError('API_EOF')
-        head.extend(block)
+        overlap = min(len(TERMINATOR)-1, len(head))
+        end = (bytes(head[len(head)-overlap:])+block).find(TERMINATOR)
+        take = len(block) if end < 0 else end+len(TERMINATOR)-overlap
+        while take:
+            data = connection.recv(take)
+            if not data:
+                raise DockerError('API_EOF')
+            head.extend(data)
+            take -= len(data)
+        if end >= 0:
+            break
     lines = bytes(head).decode('latin-1').split('\r\n')
     status = lines[0].split(' ', 2)
     if len(status) < 2 or not status[1].isdigit():

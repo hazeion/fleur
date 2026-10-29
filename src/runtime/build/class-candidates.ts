@@ -10,6 +10,8 @@ const node = (value: unknown): Node | undefined => value && typeof value === "ob
 const nodes = (value: unknown): Node[] => Array.isArray(value) ? value.map(node).filter((value): value is Node => value !== undefined) : [];
 const name = (value: unknown): string | undefined => { const item = node(value); return typeof item?.name === "string" ? item.name : typeof item?.value === "string" ? item.value : undefined; };
 const lookup = (scope: Scope, name: string): Binding | undefined => scope.bindings.get(name) ?? (scope.parent && lookup(scope.parent, name));
+const propertyExpression = (member: Node): Node | undefined => member.computed ? node(member.key) : { type: "Literal", value: name(member.key) };
+const restExpression = (pattern: Node, expression: Node): Node => ({ type: "ObjectRest", argument: expression, excluded: nodes(pattern.properties).filter(item => item.type === "Property").map(propertyExpression) });
 
 /** Trace presentation values, never arbitrary literals from server modules. */
 export function presentationClassStrings(project: AdmittedProject): string[] {
@@ -33,8 +35,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     }
     else if (pattern?.type === "ObjectPattern") for (const item of nodes(pattern.properties)) {
       const key = name(item.key);
-      if (item.type === "RestElement") declare(node(item.argument), expression ? { type: "ObjectRest", argument: expression, excluded: nodes(pattern.properties).filter(item => item.type === "Property").map(item => name(item.key) ?? "*") } : undefined, scope);
-      else if (item.type === "Property") declare(node(item.value), key && expression ? { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true } : undefined, scope);
+      if (item.type === "RestElement") declare(node(item.argument), expression ? restExpression(pattern, expression) : undefined, scope);
+      else if (item.type === "Property") declare(node(item.value), key && expression ? { type: "MemberExpression", object: expression, property: propertyExpression(item), computed: true } : undefined, scope);
     }
   };
   for (const [path, source] of project.sources) {
@@ -142,13 +144,35 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   }
   interface Call { readonly values: Node[]; readonly scope: Scope; }
   // An unknown computed key selects any possible value, never the key expression itself.
-  const key = (value: Node | undefined, scope: Scope, seen = new Set<Binding>()): string => {
-    if (typeof value?.value === "string" || typeof value?.value === "number") return String(value.value);
+  const keys = (value: Node | undefined, scope: Scope, seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map()): string[] => {
+    if (value) scope = contexts.get(value) ?? scope;
+    if (typeof value?.value === "string" || typeof value?.value === "number") return [String(value.value)];
     if (value?.type === "Identifier") {
       const binding = resolveBinding(lookup(scope, String(value.name)));
-      if (binding && !seen.has(binding)) return key(binding.expression, binding.scope, new Set([...seen, binding]));
+      const selected = binding && (arguments_.get(binding) ?? binding);
+      if (binding && selected && !seen.has(binding)) return keys(selected.expression, selected.scope, new Set([...seen, binding]), arguments_);
     }
-    return "*";
+    if (value?.type === "ConditionalExpression") return [...new Set([...keys(node(value.consequent), scope, seen, arguments_), ...keys(node(value.alternate), scope, seen, arguments_)])];
+    if (value && ["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return keys(node(value.expression), scope, seen, arguments_);
+    return ["*"];
+  };
+  const arrayLength = (value: Node | undefined, scope: Scope, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): number | undefined => {
+    if (!value) return;
+    scope = contexts.get(value) ?? scope;
+    if (value.type === "Identifier") {
+      const binding = resolveBinding(lookup(scope, String(value.name)));
+      const selected = binding && (arguments_.get(binding) ?? binding);
+      if (binding && selected && !seen.has(binding) && !assigned.has(binding)) return arrayLength(selected.expression, selected.scope, arguments_, new Set([...seen, binding]));
+    } else if (value.type === "ArrayExpression" && Array.isArray(value.elements)) {
+      let length = 0;
+      for (const item of value.elements) {
+        const element = node(item);
+        const count = element?.type === "SpreadElement" ? arrayLength(node(element.argument), scope, arguments_, seen) : 1;
+        if (count === undefined) return;
+        length += count;
+      }
+      return length;
+    }
   };
   const trace = (value: Node | undefined, outer: Scope, properties: readonly Selection[] = [], seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map(), call?: Call): void => {
     if (!value || seen.size > 100) return;
@@ -168,10 +192,11 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       if (value.operator !== "&&") visit(node(value.left), scope);
       visit(node(value.right), scope);
     } else if (value.type === "MemberExpression") {
-      const selected = value.computed ? key(node(value.property), scope) : name(value.property);
-      if (selected) visit(node(value.object), scope, [{ key: selected }, ...properties]);
+      const selected = value.computed ? keys(node(value.property), scope, new Set(), arguments_) : [name(value.property)];
+      for (const key of selected) if (key) visit(node(value.object), scope, [{ key }, ...properties]);
     } else if (value.type === "ObjectRest" && properties[0]) {
-      const selected = properties[0], excluded = new Set([...(selected.excluded ?? []), ...value.excluded as string[]]);
+      const definite = nodes(value.excluded).flatMap(value => { const selected = keys(value, scope, new Set(), arguments_); return selected.length === 1 ? selected : []; });
+      const selected = properties[0], excluded = new Set([...(selected.excluded ?? []), ...definite]);
       if (!excluded.has(selected.key) && !excluded.has("*")) visit(node(value.argument), scope, [{ ...selected, excluded }, ...properties.slice(1)]);
     } else if (value.type === "ObjectExpression" && properties[0]) {
       for (const member of nodes(value.properties)) {
@@ -180,9 +205,28 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       }
     } else if (value.type === "ArrayExpression") {
       const elements = Array.isArray(value.elements) ? value.elements : [];
-      elements.forEach((element, index) => {
-        if (!properties.length || properties[0]?.key === "*" || properties[0]?.key === String(index)) visit(node(element), scope, properties.slice(1));
-      });
+      const selected = properties[0];
+      if (!selected || selected.key === "*") for (const element of elements) visit(node(element), scope, properties.slice(1));
+      else if (/^(0|[1-9][0-9]*)$/.test(selected.key)) {
+        const index = Number(selected.key);
+        let offset = 0, uncertain = false;
+        for (const item of elements) {
+          const element = node(item);
+          if (element?.type === "SpreadElement") {
+            const argument = node(element.argument), count = arrayLength(argument, scope, arguments_);
+            if (offset <= index) {
+              const last = Math.min(index - offset, count === undefined ? index - offset : count - 1);
+              // Bound uncertain projection work by the admitted source budget.
+              if (uncertain && last > 2000) throw new Error("SOURCE_REJECTED");
+              for (let position = uncertain ? 0 : index - offset; position <= last; position++) visit(argument, scope, [{ key: String(position) }, ...properties.slice(1)]);
+            }
+            if (count === undefined) uncertain = true; else offset += count;
+          } else {
+            if (offset === index || uncertain && offset < index) visit(element, scope, properties.slice(1));
+            offset++;
+          }
+        }
+      }
     } else if (value.type === "CallExpression") {
       const callee = node(value.callee);
       if (callee?.type === "MemberExpression" && ["join", "filter"].includes(name(callee.property) ?? "")) { visit(node(callee.object), scope); return; }
@@ -199,7 +243,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         else if (pattern.type === "RestElement") replace(node(pattern.argument), expression);
         else if (pattern.type === "ObjectPattern") for (const member of nodes(pattern.properties)) {
           const key = name(member.key);
-          if (member.type === "Property" && key) replace(node(member.value), { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true });
+          if (member.type === "RestElement") replace(node(member.argument), restExpression(pattern, expression));
+          else if (member.type === "Property" && key) replace(node(member.value), { type: "MemberExpression", object: expression, property: propertyExpression(member), computed: true });
         }
         else if (pattern.type === "ArrayPattern" && Array.isArray(pattern.elements)) pattern.elements.forEach((element, index) => replace(node(element), { type: "MemberExpression", object: expression, property: { type: "Literal", value: index }, computed: true }));
       };

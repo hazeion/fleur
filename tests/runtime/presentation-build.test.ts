@@ -146,6 +146,30 @@ test("class bindings support destructuring and defaults without confusing shadow
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("spread indexing and computed rest keys retain only selected presentation values", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-projections-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), `
+      const pair = ["w-[211px]", 'content-["indexed-spread-private-canary"]'];
+      const key = "className";
+      const {[key]: omitted, ...props} = {class: "w-[223px]", className: 'content-["computed-rest-private-canary"]'};
+      const choose = ({hidden, ...values}: {hidden: string; className: string}) => values;
+      const choices = {small: "w-[241px]", large: "w-[251px]", private: 'content-["unselected-key-private-canary"]'};
+      export const Page = ({wide}: {wide: boolean}) => <main class={[...pair][0]}>
+        <p {...props}/><p {...choose({hidden: 'content-["rest-argument-private-canary"]', className: "w-[227px]"})}/>
+        <p class={[...["w-[229px]", "w-[233px]"], "w-[239px]"][2]}/>
+        <p class={choices[wide ? "small" : "large"]}/>
+      </main>;
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    for (const canary of ["indexed-spread-private-canary", "computed-rest-private-canary", "rest-argument-private-canary", "unselected-key-private-canary"]) expect(css).not.toContain(canary);
+    for (const width of [211, 223, 227, 239, 241, 251]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+    for (const width of [229, 233]) expect(css).not.toMatch(new RegExp(`width:\\s*${width}px`));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
   try {

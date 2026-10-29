@@ -67,9 +67,10 @@ export async function readDatabaseMigrationState(sql: Connection, marker: Mainte
   const expectedCatalog = [last?.catalog, recorded?.catalog].find(value => value !== undefined && value !== catalog);
   return { history, catalog, expectedCatalog, recordedHistoryChanged, unrecordedObjects, drift: recordedHistoryChanged || expectedCatalog !== undefined || unrecordedObjects };
 }
-export async function assertMigrationState(sql: Connection, tables?: readonly Table[],completeRegistry=false, marker: MaintenanceMarker | null = null) {
+export async function assertMigrationState(sql: Connection, tables?: readonly Table[],completeRegistry=false, marker: MaintenanceMarker | null = null, operation: "application" | "backup" = "application") {
   const state = await readDatabaseMigrationState(sql, marker);
-  if (state.drift || !state.history) throw new Error("SCHEMA_DRIFT");
+  // Backup can preserve a database before its first migration. Recorded drift and corrupt history still refuse it.
+  if (!state.history || state.drift && !(operation === "backup" && state.unrecordedObjects)) throw new Error("SCHEMA_DRIFT");
   const history = state.history, last = history.at(-1);
   if (last) {
     if (tables && snapshotSignature(describeTables(tables)) !== snapshotSignature(describeTables(restoreTables(last.snapshot)).filter(expected=>completeRegistry||tables.some(table=>tableDefinitions.get(table)?.name===expected.name)))) throw new Error("MIGRATIONS_PENDING");

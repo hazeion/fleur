@@ -27,7 +27,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
   const lease = held?.lease ?? await MaintenanceLease.acquire(urlValue, true, config, false, async (control, target) => {
     await requireAuthority(control, target, ["role and database creation", "schema read"]);
     await requireApplicationLock(target, "session");
-  });
+  }, "backup");
   const source = held?.source ?? new SQL(urlValue, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const token = randomUUID().replaceAll("-", ""), name = `fleur_verify_${token}`;
   const tag = `fleur-verification-v1:${digest(JSON.stringify(lease.target))}:${token}`;

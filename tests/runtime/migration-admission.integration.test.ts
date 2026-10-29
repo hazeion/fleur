@@ -8,6 +8,7 @@ import { ownedPostgres } from "./owned-postgres";
 import { column, defineTable } from "../../src/database";
 import { generateMigration } from "../../src/runtime/database/migration-plan";
 import { catalogFingerprint } from "../../src/runtime/database/migration-state";
+import { backupDatabase } from "../../src/runtime/database/backup";
 
 test("unrecorded application objects are drift for status, admission and apply", async () => {
   const fixture = await ownedPostgres();
@@ -67,6 +68,8 @@ test("recorded catalog and history drift agree across status, admission and appl
       expect((await migrationStatus(fixture.url, root, config)).migrations).toMatchObject({ compatible: false, drift: true });
       await expect(admit()).rejects.toThrow("SCHEMA_DRIFT");
       await expect(applyMigrations(fixture.url, root, config)).rejects.toThrow("SCHEMA_DRIFT");
+      await expect(backupDatabase(fixture.url, join(root, "drift.dump"), config)).rejects.toThrow("SCHEMA_DRIFT");
+      expect(await Bun.file(join(root, "drift.dump")).exists()).toBe(false);
       // Restore the fixture from independently retained values, never by rewriting Fleur's expected state.
       if (alteration.startsWith("ALTER")) {
         await fixture.sql.unsafe("ALTER TABLE public.recorded ALTER COLUMN name SET NOT NULL; ALTER TABLE public.recorded ALTER COLUMN name DROP DEFAULT");

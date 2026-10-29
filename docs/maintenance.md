@@ -97,6 +97,8 @@ Verification compares normalized schema dumps, every table's complete row multis
 
 Cleanup checks cluster-scoped database/role identities and ownership tags before non-force deletion, then proves absence. It never targets an unrelated project. Only after verification and cleanup does Fleur publish the archive and its `.manifest.json`, with SHA-256, byte count, schema/data digests, plan checksum and completion evidence. Publication refuses collisions and preserves both unrelated files and retained evidence. Verified backups remain until deliberately deleted.
 
+Backup can preserve a database before its first migration, including unrecorded application objects. This does not admit application operations or apply migrations against that schema. Once Fleur has recorded catalog or history expectations, backup refuses changes to those expectations just as admission does.
+
 ## Interrupted work
 
 Fleur fsyncs external stages and the state directory. Records include target identity, exact backup reference, plan checksum, epoch and disposable verification identity. Stages distinguish preparing, backup verified, applying, committed, rollback verified and recovery required. Migration and restore also use applying and rollback verified, with recorded before/after catalog, data and history evidence.

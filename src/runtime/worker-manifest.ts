@@ -5,7 +5,7 @@ import type { Table } from "../database";
 import { tableDefinitions } from "./declarations";
 import { describeTables } from "./table-wire";
 import { describeSchema } from "./schema-wire";
-import { queries, mutations, mutationNames, pages, queryNames, pageNames } from "./registrations";
+import { queries, mutations, mutationNames, pages, queryNames, pageNames, retrievals, retrievalNames, destinations, destinationNames } from "./registrations";
 import { islands, islandNames } from "./islands";
 import { nameExports } from "./worker-execution";
 
@@ -21,5 +21,7 @@ export function workerManifest(exports: Readonly<Record<string, unknown>>) {
     mutations: [...mutations.keys()].map(mutation => ({ id: mutationNames.get(mutation)!, input: describeSchema(mutation.input), output: describeSchema(mutation.output) })),
     pages: [...pages.keys()].map(page => ({ id: pageNames.get(page)!, path: page.path, params: describeSchema(page.params) })),
     islands: [...islandNames].map(([island, id]) => ({ id, props: describeSchema(islands.get(island)!.schema) })),
+    retrievals: [...retrievals.keys()].map(retrieval => ({ id: retrievalNames.get(retrieval)!, input: describeSchema(retrieval.input), output: describeSchema(retrieval.output) })),
+    destinations: [...destinations].map(([key, destination]) => ({ id: destinationNames.get(key)!, origin: destination.origin, path: destination.path, response: describeSchema(destination.response), headers: [...destination.headers], credential: destination.credential ?? null })),
   };
 }

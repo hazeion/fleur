@@ -108,7 +108,9 @@ export interface Query<I = unknown, O = unknown> {
   readonly output: Schema<O>;
 }
 export interface Mutation<I = unknown, O = unknown> { readonly kind: "mutation"; readonly name?: string; readonly input: Schema<I>; readonly output: Schema<O>; }
-export type Operation<I = unknown, O = unknown> = Query<I, O> | Mutation<I, O>;
+/** A validated server operation that obtains external API data through Fleur's capability. */
+export interface Retrieval<I = unknown, O = unknown> { readonly kind: "retrieval"; readonly name?: string; readonly input: Schema<I>; readonly output: Schema<O>; }
+export type Operation<I = unknown, O = unknown> = Query<I, O> | Mutation<I, O> | Retrieval<I, O>;
 export type Input<Q extends Operation> = Q extends Operation<infer I, unknown> ? I : never;
 export type Output<Q extends Operation> = Q extends Operation<unknown, infer O> ? O : never;
 export function defineQuery<I, O>(options: { name?: string; input: Schema<I>; output: Schema<O> }): Query<I, O> {
@@ -129,6 +131,13 @@ export function defineMutation<I, O>(options: { name?: string; input: Schema<I>;
   validator(options.input); validator(options.output);
   if (Object.keys(options).some(key => !["name", "input", "output"].includes(key))) throw new Error("Invalid mutation fields");
   return Object.freeze({ kind: "mutation", input: options.input, output: options.output, ...(options.name === undefined ? {} : { name: options.name }) });
+}
+
+export function defineRetrieval<I, O>(options: { name?: string; input: Schema<I>; output: Schema<O> }): Retrieval<I, O> {
+  if (options.name !== undefined && !/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/.test(options.name)) throw new Error("Invalid retrieval name");
+  validator(options.input); validator(options.output);
+  if (Object.keys(options).some(key => !["name", "input", "output"].includes(key))) throw new Error("Invalid retrieval fields");
+  return Object.freeze({ kind: "retrieval", input: options.input, output: options.output, ...(options.name === undefined ? {} : { name: options.name }) });
 }
 
 export { caseFold } from "./runtime/unicode/case-fold";

@@ -65,7 +65,9 @@ the documented [maintenance commands](maintenance.md).
 The internal build/render adapter and
 `tests/runtime/fixtures/reactive` demonstrate these contracts. Lifecycle CLI
 commands and full reference-workload performance qualification remain their own
-slices. External retrieval is separate from database subscriptions.
+slices. [External retrieval](retrieval.md) is separate from database
+subscriptions: results are cached per view and refresh only on first load, new
+inputs or an explicit `refreshRetrieval`.
 
 ## Native execution
 

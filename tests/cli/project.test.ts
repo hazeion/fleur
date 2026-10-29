@@ -304,7 +304,8 @@ test("both instruction files reference offline pinned guidance and the approved 
   expect(offline).toContain("Never automatically replay an unknown mutation");
   expect(offline).toContain("docs/reactivity.md");
   expect(offline).toContain("Use stable keys to preserve island drafts, focus and local state");
-  expect(offline).toContain("Lifecycle commands, external retrieval and production operations require their later implementations");
+  expect(offline).toContain("External retrieval is documented in docs/retrieval.md");
+  expect(offline).toContain("Lifecycle commands and production operations require their later implementations");
   expect(offline).toContain("bun run types");
   expect(offline).toContain("TypeScript 6.0.3");
 });

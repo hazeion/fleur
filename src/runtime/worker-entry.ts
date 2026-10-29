@@ -1,5 +1,6 @@
 import { validatePublicValue } from "../schema";
-import { executePage, executeQuery, executeMutation } from "./worker-execution";
+import { executePage, executeQuery, executeMutation, executeRetrieval } from "./worker-execution";
+import { RetrievalError, retrievalFailureCodes, type RetrievalFailureCode } from "./retrieval/destinations";
 import { workerManifest } from "./worker-manifest";
 import { workerReadDb, workerWriteDb } from "./read-wire";
 import { PublicOperationError, type DeclaredErrorCode } from "../server";
@@ -21,6 +22,10 @@ export function makeRunner(exports: Readonly<Record<string, unknown>>) {
       if (result.session !== command.session || result.sequence !== current || Object.keys(result).some(key => !["session", "sequence", "value", "error", "details"].includes(key))) throw new Error("REQUEST_DENIED");
       if (result.error !== undefined) {
         if (["INPUT_INVALID", "NOT_FOUND", "CONSTRAINT_CONFLICT", "VERSION_CONFLICT", "UNSUPPORTED_CAPABILITY"].includes(String(result.error))) throw new PublicOperationError(result.error as DeclaredErrorCode, result.details);
+        if (retrievalFailureCodes.includes(result.error as RetrievalFailureCode)) {
+          const status = result.details && typeof result.details === "object" && "status" in result.details ? result.details.status : undefined;
+          throw new RetrievalError(result.error as RetrievalFailureCode, typeof status === "number" ? status : undefined);
+        }
         throw new Error(typeof result.error === "string" ? result.error : "INTERNAL_FAILURE");
       }
       return result.value;
@@ -30,25 +35,28 @@ export function makeRunner(exports: Readonly<Record<string, unknown>>) {
       if (command.mode === "register") value = manifest;
       else {
         exchange("registry", manifest);
-        if ((command.mode === "query" || command.mode === "mutation") && typeof command.operation === "string") {
+        if ((command.mode === "query" || command.mode === "mutation" || command.mode === "retrieval") && typeof command.operation === "string") {
           let logs = 0;
           const log = (level: string, message: string) => {
             if (typeof message !== "string" || message.length > 1024 || ++logs > 50) throw new Error("QUERY_LIMIT");
             exchange("log", { level, message });
           };
+          const safeLog = { info: (message: string) => log("info", message), warn: (message: string) => log("warn", message) };
           value = command.mode === "mutation"
-            ? await executeMutation(command.operation, command.input, workerWriteDb(request => exchange("write", request)), { info: message => log("info", message), warn: message => log("warn", message) })
-            : await executeQuery(command.operation, command.input, workerReadDb(request => exchange("read", request)), { info: message => log("info", message), warn: message => log("warn", message) });
+            ? await executeMutation(command.operation, command.input, workerWriteDb(request => exchange("write", request)), safeLog)
+            : command.mode === "retrieval"
+              ? await executeRetrieval(command.operation, command.input, request => exchange("external", request), safeLog)
+              : await executeQuery(command.operation, command.input, workerReadDb(request => exchange("read", request)), safeLog);
         } else if (command.mode === "render" && typeof command.path === "string") {
-          value = await executePage(command.path, async (name, input) => exchange("query", { name, input }));
+          value = await executePage(command.path, async (name, input) => exchange("query", { name, input }), async (name, input) => exchange("retrieval", { name, input }));
         } else throw new Error("REQUEST_DENIED");
       }
       validatePublicValue(value);
       if (new TextEncoder().encode(JSON.stringify(value)).length > 1048576) throw new Error("RESULT_TOO_LARGE");
       return { kind: "complete", session: command.session, sequence, value };
     } catch (error) {
-      if (error instanceof PublicOperationError) return { kind: "failure", session: command.session, sequence, code: error.code, ...(error.details === undefined ? {} : { details: error.details }) };
-      const allowed = ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "ROUTE_INVALID", "ROUTE_NOT_FOUND", "UNSUPPORTED_CAPABILITY"];
+      if (error instanceof PublicOperationError || error instanceof RetrievalError) return { kind: "failure", session: command.session, sequence, code: error.code, ...(error.details === undefined ? {} : { details: error.details }) };
+      const allowed = ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "ROUTE_INVALID", "ROUTE_NOT_FOUND", "UNSUPPORTED_CAPABILITY", "RETRIEVAL_PENDING", ...retrievalFailureCodes];
       const code = error instanceof Error && allowed.includes(error.message) ? error.message : "INTERNAL_FAILURE";
       return { kind: "failure", session: command.session, sequence, code };
     }

@@ -5,6 +5,7 @@ import type { BrowserBuild } from "./build/client";
 import { ReactiveProject } from "./reactive-project";
 import { viewRequest } from "./reactive-wire";
 import type { PageResult } from "./worker-execution";
+import { retrievalFailureCodes } from "./retrieval/destinations";
 
 async function admittedHTML(rendered: PageResult): Promise<void> {
   await new HTMLRewriter().on("iframe,frame,frameset,object,embed,script,portal,fencedframe", { element() { throw new Error("UNSUPPORTED_CAPABILITY"); } }).transform(new Response(rendered.html)).text();
@@ -21,7 +22,13 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
       if (!query) throw new Error("REQUEST_DENIED");
       try { return query.input.parse(input); } catch { throw new Error("INPUT_INVALID"); }
     },
-    render: async (path, read) => { const result = await app.render(path, read); await admittedHTML(result); return result; },
+    validateRetrieval: (name, input) => {
+      const retrieval = app.registry.retrievals.get(name);
+      if (!retrieval) throw new Error("REQUEST_DENIED");
+      try { return retrieval.input.parse(input); } catch { throw new Error("INPUT_INVALID"); }
+    },
+    retrieve: (name, input) => app.retrieve(name, input),
+    render: async (path, read, retrieve) => { const result = await app.render(path, read, retrieve); await admittedHTML(result); return result; },
   });
   // LISTEN is an optimization. Authoritative probes keep running if the
   // notification connection fails or a wakeup is dropped.
@@ -53,8 +60,9 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
     } catch (error) {
       if (error instanceof Error && ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) return new Response(`<!doctype html><html lang="en"><title>Database maintenance</title><h1>Database maintenance</h1><p>${error.message === "RECOVERY_REQUIRED" ? "Maintenance needs inspection before this application can resume." : "Database maintenance is in progress. Refresh after it completes."}</p></html>`, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
       if (error instanceof PublicOperationError) return Response.json({ error: { code: error.code, ...(error.details === undefined ? {} : { details: error.details }) } }, { status: error.code === "NOT_FOUND" ? 404 : error.code === "INPUT_INVALID" ? 400 : error.code.endsWith("CONFLICT") ? 409 : 422, headers: { "Cache-Control": "no-store" } });
-      const code = error instanceof Error && ["ROUTE_INVALID", "ROUTE_NOT_FOUND", "QUERY_TIMEOUT", "RESULT_TOO_LARGE"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
-      return Response.json({ error: { code } }, { status: code === "ROUTE_NOT_FOUND" ? 404 : code === "ROUTE_INVALID" ? 400 : 500, headers: { "Cache-Control": "no-store" } });
+      const code = error instanceof Error && ["ROUTE_INVALID", "ROUTE_NOT_FOUND", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", ...retrievalFailureCodes].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+      // An unhandled page-level retrieval failure is a gateway failure, never empty success.
+      return Response.json({ error: { code } }, { status: code === "ROUTE_NOT_FOUND" ? 404 : code === "ROUTE_INVALID" ? 400 : code.startsWith("RETRIEVAL_") ? 502 : 500, headers: { "Cache-Control": "no-store" } });
     }
   } });
   origin = server.url.origin;

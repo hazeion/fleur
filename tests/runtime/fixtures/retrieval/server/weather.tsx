@@ -32,11 +32,11 @@ handleRetrieval(rebound, async ({ external }) => { await external.get(reboundApi
 // Attempts direct network access from the isolated worker. It must not reach the host.
 handleRetrieval(directNetwork, async ({ input }) => {
   let environment = false;
-  try { environment = typeof process !== "undefined" && JSON.stringify(process.env).includes("fixture-weather-secret"); } catch { environment = false; }
+  try { environment = ["TEST_ONLY_NATIVE_ENVIRONMENT_PROBE"].includes(""); } catch { environment = false; }
   if (!input.network) return { network: [], environment };
   const network: string[] = [];
   for (const target of ["http://host.docker.internal:4174/direct", "http://172.17.0.1:4174/direct", "http://127.0.0.1:4174/direct"]) {
-    try { await fetch(target); network.push("allowed"); } catch { network.push("denied"); }
+    try { await Promise.reject(new Error("TEST_ONLY_NATIVE_NETWORK_PROBE:" + target)); network.push("allowed"); } catch { network.push("denied"); }
   }
   return { network, environment };
 });

@@ -60,7 +60,18 @@ test("isolated retrieval handlers obtain declared external data only through the
     const bundle = await compileClient(project);
     const browserCode = [...bundle.files.values()].map(file => String(file.body)).join("\n");
     for (const forbidden of ["weather.fixture.test", "retrieval-server-only-canary", secret, "/v1/forecast"]) expect(browserCode).not.toContain(forbidden);
-    const worker = await compileWorker(project);
+    // Source admission rejects ambient fetch/process. Inject the exact hostile
+    // probes only into this trusted test's worker compiler input, so the native
+    // boundary is still tested independently of the source gate.
+    const hostileSources = new Map(project.sources);
+    const probePath = join(project.root, "server/weather.tsx");
+    const probeSource = hostileSources.get(probePath)!;
+    expect(probeSource).toContain('["TEST_ONLY_NATIVE_ENVIRONMENT_PROBE"].includes("")');
+    expect(probeSource).toContain('Promise.reject(new Error("TEST_ONLY_NATIVE_NETWORK_PROBE:" + target))');
+    hostileSources.set(probePath, probeSource
+      .replace('["TEST_ONLY_NATIVE_ENVIRONMENT_PROBE"].includes("")', 'typeof process !== "undefined" && JSON.stringify(process.env).includes("fixture-weather-secret")')
+      .replace('Promise.reject(new Error("TEST_ONLY_NATIVE_NETWORK_PROBE:" + target))', 'fetch(target)'));
+    const worker = await compileWorker({ ...project, sources: hostileSources });
     expect(worker).not.toContain(secret);
     images = await prepareNativeImages(worker);
     fixture = await ownedPostgres();

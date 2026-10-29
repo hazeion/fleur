@@ -1,11 +1,19 @@
 import { fileURLToPath } from "node:url";
 import { relative, extname } from "node:path";
 import type { AdmittedProject } from "./admission";
+import { SourceAdmissionError } from "./diagnostics";
 
 export function exportId(project: AdmittedProject, path: string): string { return relative(project.root, path).replaceAll("\\", "/"); }
 export const publicModules = Object.fromEntries(["schema", "database", "server", "client", "routing"].map(name => [`fleur/${name}`, fileURLToPath(new URL(`../../${name}.ts`, import.meta.url))]));
 export const preactModules = Object.fromEntries(["preact", "preact/hooks", "preact/jsx-runtime", "preact/jsx-dev-runtime"].map(name => [name, fileURLToPath(import.meta.resolve(name))]));
 export async function compileWorker(project: AdmittedProject): Promise<string> {
+  try { return await compileAdmittedWorker(project); }
+  catch (error) {
+    if (error instanceof SourceAdmissionError) throw error;
+    throw new SourceAdmissionError("application source", 1, "BUILD_REFUSED", "Use admitted local modules and the Fleur-owned Preact JSX runtime.");
+  }
+}
+async function compileAdmittedWorker(project: AdmittedProject): Promise<string> {
   const modules = [...project.shared, ...project.client, ...project.server];
   const entry = [
     `import {makeRunner} from ${JSON.stringify(fileURLToPath(new URL("../worker-entry.ts", import.meta.url)))};`,
@@ -30,12 +38,16 @@ export async function compileWorker(project: AdmittedProject): Promise<string> {
         if (!path) throw new Error("SOURCE_REJECTED");
         return { path };
       });
+      builder.onLoad({ filter: /.*/ }, args => {
+        const asset = project.assets.get(args.path);
+        if (asset) return { contents: `export default ${JSON.stringify(asset.url)};`, loader: "js" };
+      });
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, args => {
         const contents = project.sources.get(args.path);
         if (contents !== undefined) return { contents, loader: extname(args.path).slice(1) as "ts" | "tsx" | "js" | "jsx" };
       });
     } }],
   });
-  if (!result.success || result.outputs.length !== 1) throw new Error("SOURCE_REJECTED: " + result.logs.map(log => log.message).join("; "));
+  if (!result.success || result.outputs.length !== 1) throw new SourceAdmissionError("application source", 1, "BUILD_REFUSED", "Use admitted local modules and the Fleur-owned Preact JSX runtime.");
   return result.outputs[0]!.text();
 }

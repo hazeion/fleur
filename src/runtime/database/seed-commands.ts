@@ -2,6 +2,7 @@ import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success } from "../../cli/result";
 import { privilegeFailure } from "./commands";
 import { privilegeShortfall } from "./privilege";
+import { sourceFailure } from "../build/diagnostics";
 
 export const seedCommands: readonly CommandDefinition[] = [
   { name: "db seed", usage: "db seed", summary: "Reconcile declared seed ownership without overwriting user edits.", options: [] },
@@ -30,6 +31,8 @@ export const seedCommands: readonly CommandDefinition[] = [
         : await (await import("./reset")).resetDatabase(url, project, seeds, config);
       return success(definition.name, JSON.parse(JSON.stringify(result)));
     } catch (error) {
+      const source = sourceFailure(definition.name, error);
+      if (source) return source;
       const shortfall = privilegeShortfall(error);
       if (shortfall) return privilegeFailure(definition.name, shortfall);
       const allowed = ["AUTHORITY_REQUIRED", "REQUEST_DENIED", "SEED_INVALID", "SEED_CONFLICT", "MIGRATION_EDITED", "MIGRATIONS_PENDING", "MIGRATION_INCOMPATIBLE", "SCHEMA_DRIFT", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE", "SOURCE_REJECTED", "BACKUP_VERIFICATION_FAILED"];

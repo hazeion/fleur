@@ -2,6 +2,11 @@
 
 Fleur is a TypeScript application environment and a set of development tools for existing coding agents. It gives agents a consistent project layout, typed application APIs, and commands to develop and verify small full-stack browser applications.
 
+[Application admission](docs/application-surface.md) checks imports, presentation
+assets and styling before compilation. Browser transport and DOM guards enforce
+the approved surface alongside CSP, with Tailwind generation and dynamic inline
+JSX styles.
+
 [Reactive database views](docs/reactivity.md) refresh server regions and island
 queries after managed commits, with explicit stale/error states, reconnect
 recovery and preservation of keyed drafts, focus and local state.

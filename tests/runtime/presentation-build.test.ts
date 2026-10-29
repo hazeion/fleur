@@ -183,6 +183,86 @@ test("spread indexing and computed rest keys retain only selected presentation v
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("array projections use the state at each presentation read and resolve computed mutation keys", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-read-points-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), `
+      const prefix = ["w-[421px]"];
+      const first = <p class={[...prefix, "w-[431px]"][1]}/>;
+      prefix.length = 0;
+      const length = "0";
+      const computed = [0, "w-[409px]"];
+      computed[length] = 1;
+      const original = ["w-[439px]"];
+      const alias = original;
+      const snapshot = [...original];
+      alias.length = 0;
+      const stable = ["w-[443px]"];
+      function unused() { stable.length = 0; }
+      const permuted = ["w-[449px]", "w-[457px]"]; permuted.reverse();
+      const sorted = ["w-[461px]"]; sorted.sort();
+      const sortedPrivate = ["bg-red-500", 'content-["unselected-sort-private-canary"]']; sortedPrivate.sort();
+      const filled = [0]; filled.fill("w-[463px]");
+      const copied = ["w-[467px]", 0]; copied.copyWithin(1, 0, 1);
+      export const Page = () => <main>{first}
+        <p class={[...computed, 'content-["computed-mutation-private-canary"]'][1]}/>
+        <p class={[...original, "w-[433px]"][0]}/><p class={snapshot[0]}/>
+        <p class={[...stable, 'content-["unused-mutation-private-canary"]'][0]}/>
+        <p class={[...permuted, 'content-["permuted-tail-private-canary"]'][0]}/>
+        <p class={[...sorted, 'content-["sorted-tail-private-canary"]'][0]}/>
+        <p class={sortedPrivate[0]}/>
+        <p class={[...filled, 'content-["filled-tail-private-canary"]'][0]}/>
+        <p class={[...copied, 'content-["copied-tail-private-canary"]'][1]}/>
+      </main>;
+      export function Conditional({clear}: {clear: boolean}) {
+        const values = ["w-[479px]"];
+        function remove() { values.pop(); }
+        if (clear) remove();
+        return <p class={[...values, "w-[487px]"][0]}/>;
+      }
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    for (const width of [409, 431, 433, 439, 443, 457, 461, 463, 467, 479, 487]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+    for (const canary of ["computed-mutation-private-canary", "unused-mutation-private-canary", "permuted-tail-private-canary", "sorted-tail-private-canary", "filled-tail-private-canary", "copied-tail-private-canary", "unselected-sort-private-canary"]) expect(css).not.toContain(canary);
+    expect(css).toContain("--color-red-500");
+    expect(css).not.toMatch(/width:\s*449px/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("array mutation helpers retain call arguments and distinguish reassigned aliases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-mutation-calls-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), `
+      function append(target: string[], value: string) { target.push(value); }
+      const values: string[] = [];
+      append(values, "w-[491px]");
+      const original = ["w-[499px]"];
+      let alias = original;
+      alias = ["w-[503px]"];
+      alias.length = 0;
+      const spread: string[] = [];
+      spread.push(...[0, "w-[509px]"]);
+      let selected = "w-[521px]";
+      const captured = [selected];
+      selected = 'content-["later-assignment-private-canary"]';
+      export const Page = () => <main>
+        <p class={[...values, 'content-["call-tail-private-canary"]'][0]}/>
+        <p class={[...original, 'content-["alias-tail-private-canary"]'][0]}/>
+        <p class={[...spread, 'content-["spread-call-tail-private-canary"]'][1]}/>
+        <p class={captured[0]}/>
+      </main>;
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    for (const width of [491, 499, 509, 521]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+    for (const canary of ["call-tail-private-canary", "alias-tail-private-canary", "spread-call-tail-private-canary", "later-assignment-private-canary"]) expect(css).not.toContain(canary);
+    expect(css).not.toMatch(/width:\s*503px/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
   try {

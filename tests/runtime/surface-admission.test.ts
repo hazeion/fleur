@@ -50,6 +50,10 @@ test("source refusal identifies the safe location and remedy without echoing sou
 test("browser source rejects named transport and executable aliases before either build", async () => {
   for (const source of [
     'export const run = globalThis["fe" + "tch"];',
+    'export const run = globalThis[`fetch`];',
+    'const key = "fetch"; export const run = globalThis[key];',
+    'const ambient = {browser: globalThis}; export const run = ambient.browser.fetch;',
+    'export const run = Reflect.get(globalThis, "fetch");',
     'const { sendBeacon: send } = navigator; export {send};',
     'export const run = new XMLHttpRequest();',
     'export const run = new WebSocket("wss://example.invalid");',
@@ -62,7 +66,7 @@ test("browser source rejects named transport and executable aliases before eithe
     'export const run = import("data:text/javascript,export default 1");',
     'const name = "./view"; export const run = import(name);',
   ]) await fixture({ "client/view.ts": source }, async root => {
-    await expect(admitProject(root)).rejects.toThrow("SOURCE_REJECTED");
+    await expect(admitProject(root), source).rejects.toThrow("SOURCE_REJECTED");
   });
 });
 
@@ -139,4 +143,26 @@ test("compiler refusals do not expose resolver paths or source text", async () =
       expect(JSON.stringify(failure)).not.toContain(root);
     }
   });
+});
+
+test("ordinary data fields, type members and locally bound helpers do not grant ambient capabilities", async () => {
+  await fixture({ "client/view.ts": `
+    interface Row { fetch: string; process: string; constructor: string; innerHTML: string; }
+    const data: Row = {fetch:"Download", process:"Step", constructor:"Name", innerHTML:"Text"};
+    export const fields = [data.fetch, data.process, data.constructor, data.innerHTML];
+    export function process(value: number) { return value + 1; }
+    export const result = process(2);
+    export const render = (fetch: (value: string) => string) => fetch("local helper");
+  ` }, async root => {
+    const project = await admitProject(root);
+    expect(project.client).toHaveLength(1);
+    expect((await compileClient(project)).entry).toMatch(/^\/assets\//);
+  });
+});
+
+test("unregistered import.meta asset paths are refused before Vite can read server files", async () => {
+  await fixture({
+    "server/private.ts": 'export const secret = "unadmitted-server-bytes";',
+    "client/view.ts": 'export const leaked = new URL("../server/private.ts", import.meta.url).href;',
+  }, async root => { await expect(admitProject(root)).rejects.toThrow("SOURCE_REJECTED"); });
 });

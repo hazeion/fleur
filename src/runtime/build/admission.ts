@@ -5,21 +5,10 @@ import { parseSync } from "rolldown/utils";
 import { SourceAdmissionError } from "./diagnostics";
 import { admitPresentationAssets, type PresentationAsset } from "./assets";
 import { forbiddenPresentationElements, validatePresentationAttribute } from "../presentation-policy";
+import { sourceCapabilities, staticString } from "./capabilities";
 
 const packages = new Set(["fleur/schema", "fleur/database", "fleur/server", "fleur/client", "fleur/routing", "preact", "preact/hooks", "preact/jsx-runtime", "preact/jsx-dev-runtime"]);
 const extensions = [".ts", ".tsx", ".js", ".jsx"];
-const executableNames = new Set(["eval", "Function", "AsyncFunction", "GeneratorFunction", "AsyncGeneratorFunction", "require", "Worker", "SharedWorker", "importScripts", "WebAssembly", "Bun", "Deno", "process"]);
-const transportNames = new Set(["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "WebTransport", "RTCPeerConnection", "sendBeacon", "serviceWorker", "audioWorklet", "paintWorklet"]);
-const injectionNames = new Set(["dangerouslySetInnerHTML", "innerHTML", "outerHTML", "insertAdjacentHTML", "createContextualFragment", "parseFromString", "setHTML", "setHTMLUnsafe", "CSSStyleSheet", "insertRule", "replaceSync", "adoptedStyleSheets"]);
-function staticString(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return;
-  const node = value as Record<string, unknown>;
-  if (typeof node.value === "string") return node.value;
-  if (node.type === "BinaryExpression" && node.operator === "+") {
-    const left = staticString(node.left), right = staticString(node.right);
-    if (left !== undefined && right !== undefined) return left + right;
-  }
-}
 const denied = (): never => { throw new SourceAdmissionError("application source", 1, "UNAPPROVED_SOURCE", "Use supported Fleur imports, local application modules, Tailwind utilities and inert presentation assets."); };
 async function projectAliases(root: string): Promise<(specifier: string) => readonly string[]> {
   const path = join(root, "tsconfig.json");
@@ -115,11 +104,7 @@ async function collectProject(directory: string): Promise<AdmittedProject> {
     const parsed = parseSync(file, text);
     if (parsed.errors.length) return denied();
     const imports: string[] = [];
-    const factories = new Set(["h", "createElement", "jsx", "jsxs", "jsxDEV"]);
-    for (const statement of parsed.program.body) {
-      if (statement.type !== "ImportDeclaration" || statement.source.value !== "preact") continue;
-      for (const specifier of statement.specifiers) if (specifier.type === "ImportSpecifier" && specifier.imported.type === "Identifier" && ["h", "createElement"].includes(specifier.imported.name)) factories.add(specifier.local.name);
-    }
+    const capability = sourceCapabilities(parsed.program);
     const literal = (value: unknown): string => {
       if (!value || typeof value !== "object" || !("value" in value) || typeof value.value !== "string") return denied();
       return value.value;
@@ -127,34 +112,22 @@ async function collectProject(directory: string): Promise<AdmittedProject> {
     const fail = (node: Record<string, unknown>, code: string, action: string): never => {
       throw new SourceAdmissionError(relative(root, file), text.slice(0, typeof node.start === "number" ? node.start : 0).split("\n").length, code, action);
     };
-    const checkCapability = (node: Record<string, unknown>, name: string | undefined) => {
-      if (name && executableNames.has(name)) fail(node, "EXECUTABLE_CODE", "Use statically named local imports and registered Fleur islands; executable code and workers are not application capabilities.");
-      if (name && transportNames.has(name)) fail(node, "MANUAL_TRANSPORT", "Use Fleur queries, mutations or retrievals for application data.");
-      if (name && injectionNames.has(name)) fail(node, "PRESENTATION_INJECTION", "Use Tailwind utilities and JSX inline styles or custom properties; authored stylesheets and HTML injection are not supported.");
+    const checkCapability = (node: Record<string, unknown>) => {
+      const kind = capability(node);
+      if (kind === "executable") fail(node, "EXECUTABLE_CODE", "Use statically named local imports and registered Fleur islands; executable code and workers are not application capabilities.");
+      if (kind === "transport") fail(node, "MANUAL_TRANSPORT", "Use Fleur queries, mutations or retrievals for application data.");
+      if (kind === "injection") fail(node, "PRESENTATION_INJECTION", "Use Tailwind utilities and JSX inline styles or custom properties; authored stylesheets and HTML injection are not supported.");
     };
-    const inspect = (value: unknown, parent?: Record<string, unknown>, key?: string): void => {
+    const inspect = (value: unknown, parent?: Record<string, unknown>, key?: string, typeOnly = false): void => {
       if (!value || typeof value !== "object") return;
-      if (Array.isArray(value)) { value.forEach(item => inspect(item, parent, key)); return; }
+      if (Array.isArray(value)) { value.forEach(item => inspect(item, parent, key, typeOnly)); return; }
       const node = value as Record<string, unknown>;
-      const propertyKey = parent?.type === "Property" && key === "key" && !parent.shorthand;
-      if (node.type === "Identifier" && !propertyKey) checkCapability(node, String(node.name));
-      if (node.type === "MemberExpression") {
-        const property = node.property as Record<string, unknown>;
-        const name = node.computed ? staticString(property) : String(property.name);
-        checkCapability(node, name);
-        if (name === "constructor") fail(node, "EXECUTABLE_CODE", "Do not recover dynamic code constructors; use registered Fleur operations and islands.");
-      }
-      if (node.type === "ObjectPattern") {
-        for (const property of node.properties as Record<string, unknown>[]) {
-          const name = property.key as Record<string, unknown> | undefined;
-          if (name) checkCapability(property, property.computed ? staticString(name) : typeof name.name === "string" ? name.name : staticString(name));
-        }
-      }
-      if (node.type === "Property" || node.type === "JSXAttribute") {
-        const property = (node.key ?? node.name) as Record<string, unknown> | undefined;
-        const name = property && (typeof property.name === "string" ? property.name : staticString(property));
-        if (name && injectionNames.has(name)) checkCapability(node, name);
-      }
+      typeOnly ||= String(node.type).startsWith("TS") && !["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSInstantiationExpression"].includes(String(node.type));
+      const propertyKey = key === "key" && ["Property", "MethodDefinition", "PropertyDefinition"].includes(String(parent?.type)) && !parent?.computed && !parent?.shorthand;
+      const memberKey = key === "property" && parent?.type === "MemberExpression" && !parent.computed;
+      if (!typeOnly && !propertyKey && !memberKey && ["Identifier", "MemberExpression"].includes(String(node.type))) checkCapability(node);
+      if (node.type === "MetaProperty" && (node.meta as Record<string, unknown> | undefined)?.name === "import") fail(node, "ASSET_REFERENCE", "Import validated files from assets/ or use their /assets/ URLs; import.meta asset transforms are not supported.");
+      if (node.type === "JSXAttribute" && (node.name as Record<string, unknown> | undefined)?.name === "dangerouslySetInnerHTML") fail(node, "PRESENTATION_INJECTION", "Use JSX elements and inline styles; HTML injection is not supported.");
       if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(String(node.type)) && node.source !== null && node.source !== undefined) imports.push(literal(node.source));
       if (node.type === "JSXOpeningElement") {
         const name = node.name as Record<string, unknown> | undefined;
@@ -174,17 +147,17 @@ async function collectProject(directory: string): Promise<AdmittedProject> {
       if (node.type === "TSImportType") imports.push(literal(node.source));
       if (node.type === "CallExpression" || node.type === "NewExpression") {
         const callee = node.callee as Record<string, unknown> | undefined;
-        if (callee?.type === "Identifier" && ["require", "eval", "Function", "Worker", "SharedWorker"].includes(String(callee.name))) return denied();
+        if (!typeOnly && callee) checkCapability(callee);
         const arguments_ = node.arguments as unknown[];
         const property = callee?.property as Record<string, unknown> | undefined;
         const name = callee?.type === "Identifier" ? String(callee.name) : property?.name;
-        if (typeof name === "string" && (factories.has(name) || name === "createElementNS")) {
+        if (typeof name === "string" && (callee && capability(callee) === "factory")) {
           const tag = staticString(arguments_[name === "createElementNS" ? 1 : 0]);
           if (tag && forbiddenPresentationElements.includes(tag.toLowerCase())) fail(node, "FORBIDDEN_ELEMENT", "Use inert presentation elements and JSX inline styles; executable documents and stylesheet elements are not supported.");
         }
-        if (["setTimeout", "setInterval"].includes(String(name)) && staticString(arguments_[0]) !== undefined) fail(node, "EXECUTABLE_CODE", "Pass a function to timers; executable strings are not supported.");
+        if (callee && capability(callee) === "timer" && staticString(arguments_[0]) !== undefined) fail(node, "EXECUTABLE_CODE", "Pass a function to timers; executable strings are not supported.");
       }
-      Object.entries(node).forEach(([name, child]) => inspect(child, node, name));
+      Object.entries(node).forEach(([name, child]) => inspect(child, node, name, typeOnly));
     };
     inspect(parsed.program);
     for (const imported of imports) {

@@ -72,18 +72,38 @@ test("CSP independently blocks code and stylesheets while allowing inline declar
   const server = serveReadApplication(application("<main>CSP policy</main>"), bundle);
   const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage();
-    await page.route(server.url.origin + "/", async route => {
-      const response = await route.fetch();
-      const policy = response.headers()["content-security-policy"]!;
-      const nonce = /'nonce-([^']+)'/.exec(policy)![1];
-      // Keep the production CSP, but omit the runtime bundle entirely. These
-      // probes execute normally as a trusted parser script, outside DevTools.
-      await route.fulfill({ response, body: `<!doctype html><html><head>
+    const checkPolicy = async (enabled: boolean) => {
+      const page = await browser.newPage();
+      // The no-policy run establishes that hostile resources really work. Keep
+      // the same responses in both runs so a missing file is never the defense.
+      const served: string[] = [];
+      const resources = [
+        { url: server.url.origin + "/unregistered.js", type: "text/javascript", body: "window.localResourceExecuted = true;" },
+        { url: "https://policy.example.invalid/unregistered.js", type: "text/javascript", body: "window.externalResourceExecuted = true;" },
+        { url: server.url.origin + "/unregistered.css", type: "text/css", body: "#local-style { color: rgb(56, 34, 12) }" },
+        { url: "https://policy.example.invalid/unregistered.css", type: "text/css", body: "#external-style { color: rgb(12, 34, 56) }" },
+      ];
+      for (const resource of resources) await page.route(resource.url, async route => {
+        served.push(resource.url);
+        await route.fulfill({ status: 200, contentType: resource.type, headers: { "x-content-type-options": "nosniff" }, body: resource.body });
+      });
+      await page.route(server.url.origin + "/", async route => {
+        const response = await route.fetch();
+        const headers = response.headers();
+        const policy = headers["content-security-policy"]!;
+        const nonce = /'nonce-([^']+)'/.exec(policy)![1];
+        if (!enabled) delete headers["content-security-policy"];
+        // Keep the production CSP, but omit the runtime bundle entirely. These
+        // probes execute normally as a trusted parser script, outside DevTools.
+        await route.fulfill({ response, headers, body: `<!doctype html><html><head>
         <style>#sample { color: rgb(255, 0, 0) !important }</style>
-        <link rel="stylesheet" href="https://example.invalid/theme.css">
+        <link rel="stylesheet" href="/unregistered.css">
+        <link rel="stylesheet" href="https://policy.example.invalid/unregistered.css">
         </head><body><div id="sample" style="color:rgb(10,20,30);--accent:purple">Safe</div>
+        <div id="local-style">Local stylesheet probe</div>
+        <div id="external-style">External stylesheet probe</div>
         <script>window.escape = true</script><script src="/unregistered.js"></script>
+        <script src="https://policy.example.invalid/unregistered.js"></script>
         <script nonce="${nonce}">
           const probe = run => { try { run(); return 'allowed'; } catch { return 'denied'; } };
           window.policyProbe = {
@@ -93,15 +113,34 @@ test("CSP independently blocks code and stylesheets while allowing inline declar
           };
           fetch('/').then(() => window.policyProbe.transport = 'allowed');
         </script></body></html>` });
+      });
+      await page.goto(server.url.origin);
+      await page.waitForFunction(() => (window as unknown as { policyProbe: { transport: string } }).policyProbe.transport === "allowed");
+      const result = await page.evaluate(() => {
+        const state = window as unknown as { policyProbe: unknown; escape?: boolean; localResourceExecuted?: boolean; externalResourceExecuted?: boolean };
+        const sample = document.getElementById("sample")!;
+        return {
+          probe: state.policyProbe, escaped: state.escape === true,
+          localResourceExecuted: state.localResourceExecuted === true, externalResourceExecuted: state.externalResourceExecuted === true,
+          localColor: getComputedStyle(document.getElementById("local-style")!).color,
+          externalColor: getComputedStyle(document.getElementById("external-style")!).color,
+          color: getComputedStyle(sample).color, accent: getComputedStyle(sample).getPropertyValue("--accent"),
+        };
+      });
+      await page.close();
+      expect(served.sort()).toEqual(enabled ? [] : resources.map(resource => resource.url).sort());
+      return result;
+    };
+    expect(await checkPolicy(false)).toEqual({
+      probe: { eval: "allowed", constructor: "allowed", transport: "allowed" }, escaped: true,
+      localResourceExecuted: true, externalResourceExecuted: true,
+      localColor: "rgb(56, 34, 12)", externalColor: "rgb(12, 34, 56)", color: "rgb(255, 0, 0)", accent: "purple",
     });
-    await page.goto(server.url.origin);
-    await page.waitForFunction(() => (window as unknown as { policyProbe: { transport: string } }).policyProbe.transport === "allowed");
-    const result = await page.evaluate(() => {
-      const state = window as unknown as { policyProbe: unknown; escape?: boolean };
-      const sample = document.getElementById("sample")!;
-      return { probe: state.policyProbe, escaped: state.escape === true, color: getComputedStyle(sample).color, accent: getComputedStyle(sample).getPropertyValue("--accent") };
+    expect(await checkPolicy(true)).toEqual({
+      probe: { eval: "denied", constructor: "denied", transport: "allowed" }, escaped: false,
+      localResourceExecuted: false, externalResourceExecuted: false,
+      localColor: "rgb(0, 0, 0)", externalColor: "rgb(0, 0, 0)", color: "rgb(10, 20, 30)", accent: "purple",
     });
-    expect(result).toEqual({ probe: { eval: "denied", constructor: "denied", transport: "allowed" }, escaped: false, color: "rgb(10, 20, 30)", accent: "purple" });
   } finally { await browser.close(); await server.stop(true); }
 }, 30_000);
 

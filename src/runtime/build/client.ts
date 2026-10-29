@@ -5,6 +5,7 @@ import type { AdmittedProject } from "./admission";
 import { createHash } from "node:crypto";
 import { compileStyles } from "./styles";
 import { SourceAdmissionError } from "./diagnostics";
+import { parseSync } from "rolldown/utils";
 
 export interface BrowserBuild { readonly entry: string; readonly stylesheet?: string; readonly files: ReadonlyMap<string, { readonly body: string | Uint8Array; readonly type: string; readonly cache?: "no-cache" }>; }
 export async function compileClient(project: AdmittedProject): Promise<BrowserBuild> {
@@ -16,6 +17,23 @@ export async function compileClient(project: AdmittedProject): Promise<BrowserBu
 }
 async function compileBrowser(project: AdmittedProject): Promise<BrowserBuild> {
   const modules = [...project.shared, ...project.client];
+  // Vite's import.meta transforms may read files without resolveId/load hooks.
+  // Recheck this compiler boundary independently of source admission, before
+  // Vite sees any application bytes. Static asset imports use frozen URL stubs.
+  for (const path of modules) {
+    const source = project.sources.get(path);
+    if (source === undefined) throw new Error("SOURCE_REJECTED");
+    const parsed = parseSync(path, source);
+    if (parsed.errors.length) throw new Error("SOURCE_REJECTED");
+    const inspect = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) { value.forEach(inspect); return; }
+      const item = value as Record<string, unknown>;
+      if (item.type === "MetaProperty" && (item.meta as Record<string, unknown> | undefined)?.name === "import") throw new Error("SOURCE_REJECTED");
+      Object.values(item).forEach(inspect);
+    };
+    inspect(parsed.program);
+  }
   const entry = [
     `import ${JSON.stringify(fileURLToPath(new URL("../browser-transport.ts", import.meta.url)))};`,
     `import {hydrateAdmitted} from ${JSON.stringify(fileURLToPath(new URL("../hydration.ts", import.meta.url)))};`,
@@ -64,7 +82,7 @@ async function compileBrowser(project: AdmittedProject): Promise<BrowserBuild> {
     } else files.set("/"+file.fileName, { body: file.source, type: file.fileName.endsWith(".map") ? "application/json" : "text/css; charset=utf-8" });
   }
   if (!filename) throw new Error("Client entry missing");
-  const css = await compileStyles(project.sources);
+  const css = await compileStyles(project);
   const stylesheet = `/assets/styles-${createHash("sha256").update(css).digest("hex").slice(0, 16)}.css`;
   files.set(stylesheet, { body: css, type: "text/css; charset=utf-8" });
   return Object.freeze({ entry: filename, stylesheet, files });

@@ -28,6 +28,88 @@ test("client builds complete Tailwind utilities from admitted source without loa
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Tailwind follows server presentation classes without copying private strings or conditional inputs into CSS", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-private-styles-"));
+  try {
+    await mkdir(join(root, "server"));
+    await mkdir(join(root, "shared"));
+    await writeFile(join(root, "server", "private.ts"), `export const privateNote = 'content-["server-only-review-canary"]';`);
+    await writeFile(join(root, "shared", "classes.ts"), 'export const compact = "w-[47px]";');
+    await writeFile(join(root, "server", "page.tsx"), `
+      import { compact } from "../shared/classes";
+      import { privateNote } from "./private";
+      const roomy = "w-[123px] hover:text-red-500";
+      const hidden = 'content-["unused-local-canary"]';
+      export function Page() { const selected = privateNote ? roomy : compact; return <main className={selected}><p class="font-bold">Public</p></main>; }
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = [...bundle.files.values()].filter(file => file.type.startsWith("text/css")).map(file => String(file.body)).join("\n");
+    expect(css).not.toContain("server-only-review-canary");
+    expect(css).not.toContain("unused-local-canary");
+    expect(css).toMatch(/width:\s*123px/);
+    expect(css).toMatch(/width:\s*47px/);
+    expect(css).toContain(":hover");
+    expect(css).toContain("font-weight:");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("presentation class tracing respects local shadows, named reexports, helper returns and spread props", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-selection-"));
+  try {
+    await mkdir(join(root, "server"));
+    await mkdir(join(root, "shared"));
+    await writeFile(join(root, "shared", "classes.ts"), 'export const compact = "w-[53px]";');
+    await writeFile(join(root, "shared", "index.ts"), 'export {compact as small} from "./classes";');
+    await writeFile(join(root, "server", "page.tsx"), `
+      import { h as element } from "preact";
+      import * as P from "preact";
+      import { small } from "../shared/index";
+      const choice = 'content-["shadowed-private-canary"]';
+      const props = { className: "h-[71px]", note: 'content-["unrendered-prop-canary"]' };
+      const styles = { large: "w-[137px]", small };
+      function select(value: string, hidden: string) { return hidden ? value : "w-[53px]"; }
+      const sizes = (wide: boolean) => wide ? "h-[79px]" : "h-[83px]";
+      export function Page({wide}: {wide:boolean}) {
+        const choice = wide ? styles.large : styles.small;
+        return <main {...props} class={select(choice, 'content-["predicate-private-canary"]')}><aside class={sizes(wide)}/>{element("p", {className: "font-semibold"}, "Public")}{P.h("p", {class: "p-[17px]"}, "Namespace")}</main>;
+      }
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)!.body);
+    expect(css).toMatch(/width:\s*137px/);
+    expect(css).toMatch(/width:\s*53px/);
+    expect(css).toMatch(/height:\s*71px/);
+    expect(css).toContain("--font-weight-semibold");
+    expect(css).toMatch(/height:\s*79px/);
+    expect(css).toMatch(/height:\s*83px/);
+    expect(css).toMatch(/padding:\s*17px/);
+    for (const value of ["shadowed-private-canary", "unrendered-prop-canary", "predicate-private-canary"]) expect(css).not.toContain(value);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
+  try {
+    await mkdir(join(root, "server"));
+    await mkdir(join(root, "client"));
+    await writeFile(join(root, "server", "private.ts"), 'export const secret = "admitted-server-canary";');
+    const path = join(root, "client", "view.ts");
+    await writeFile(path, 'export const label = "safe";');
+    const admitted = await admitProject(root);
+    const canonical = admitted.client[0]!;
+    const sources = new Map(admitted.sources);
+    sources.set(canonical, 'export const leaked = new URL("../server/private.ts", import.meta.url).href;');
+    await writeFile(join(root, "server", "private.ts"), 'export const secret = "unsnapshotted-server-canary";');
+    const outcome = await compileClient({ ...admitted, sources }).then(bundle => ({ bundle, error: undefined }), (error: Error) => ({ bundle: undefined, error }));
+    if (outcome.bundle) {
+      const output = [...outcome.bundle.files.values()].map(file => typeof file.body === "string" ? file.body : new TextDecoder().decode(file.body)).join("\n");
+      const decoded = [...output.matchAll(/data:[^"'\s,]+;base64,([A-Za-z0-9+/=]+)/g)].map(match => Buffer.from(match[1]!, "base64").toString("utf8")).join("\n");
+      expect(decoded).not.toContain("unsnapshotted-server-canary");
+    }
+    expect(outcome.error?.message).toBe("SOURCE_REJECTED");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("source admission rejects executable presentation files before either build can consume them", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-active-asset-"));
   try {

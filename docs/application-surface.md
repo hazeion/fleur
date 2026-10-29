@@ -36,8 +36,12 @@ restricts executable resources. Neither layer replaces source admission.
 Use complete Tailwind utility strings, including variants and arbitrary values.
 Selecting between complete strings is supported. Assembling fragments does not
 make Tailwind generate the missing class. Fleur compiles the release-owned
-Tailwind 4.3.3 theme from the admitted source snapshot without loading application
-configuration, plugins or stylesheets.
+Tailwind 4.3.3 theme from presentation values in the admitted source snapshot,
+without loading application configuration, plugins or stylesheets. It follows
+JSX `class`/`className` values and Preact props through lexical constants, local
+imports, conditional results and helper returns. Unrelated server strings and
+branch conditions never become stylesheet input. Runtime data cannot introduce
+new utilities that have no complete string in those presentation expressions.
 
 Dynamic JSX inline style values and custom properties work:
 

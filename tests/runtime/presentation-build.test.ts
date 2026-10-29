@@ -357,6 +357,104 @@ test.each([
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test.each([
+  {
+    name: "call arguments run before the called helper",
+    source: `let selected = "w-[601px]";
+      function inner() { selected = 'content-["nested-argument-private-canary"]'; }
+      function outer(value: unknown) { selected = "w-[619px]"; }
+      outer(inner()); export const Page = () => <main class={selected}/>;`,
+    required: /width:\s*619px/, canary: "nested-argument-private-canary",
+  },
+  ...["undefined", "() => 0"].map(comparator => ({
+    name: `sort(${comparator}) preserves the selected class`,
+    source: `const values = ["bg-red-500", 'content-["sort-private-canary"]'];
+      values.sort(${comparator}); export const Page = () => <main class={values[0]}/>;`,
+    required: /background-color:/, canary: "sort-private-canary",
+  })),
+  {
+    name: "compound class assignment retains complete strings on both sides",
+    source: `let selected = "w-[701px]"; selected += " h-[709px]";
+      export const Page = () => <main class={selected}/>;`,
+    required: /width:\s*701px/, additional: /height:\s*709px/,
+  },
+  {
+    name: "computed mutation keys use their value at the mutation",
+    source: `let index = 1;
+      const values = ['content-["mutated-key-private-canary"]', "w-[701px]"];
+      index = 0; values[index] = "w-[709px]";
+      export const Page = () => <main class={values[0]}/>;`,
+    required: /width:\s*709px/, canary: "mutated-key-private-canary",
+  },
+  {
+    name: "spread helper arguments preserve array references and scalar arguments",
+    source: `function clear(target: string[], end: number) { target.length = end; }
+      const values = ['content-["spread-helper-private-canary"]'];
+      clear(...[values, 0] as const);
+      export const Page = () => <main class={[...values, "w-[709px]"][0]}/>;`,
+    required: /width:\s*709px/, canary: "spread-helper-private-canary",
+  },
+  {
+    name: "helper assignments after return are unreachable",
+    source: `let selected = "w-[601px]";
+      function change() { selected = "w-[701px]"; return; selected = 'content-["unreachable-helper-private-canary"]'; }
+      change(); export const Page = () => <main class={selected}/>;`,
+    required: /width:\s*701px/, canary: "unreachable-helper-private-canary",
+  },
+  {
+    name: "earlier call arguments keep their value when later arguments mutate it",
+    source: `let selected = "w-[719px]";
+      function inner() { selected = 'content-["later-argument-private-canary"]'; }
+      function outer(first: string, second: unknown) { selected = first; }
+      outer(selected, inner()); export const Page = () => <main class={selected}/>;`,
+    required: /width:\s*719px/, canary: "later-argument-private-canary",
+  },
+  {
+    name: "conditional helper returns retain both reachable scalar selections",
+    source: `let selected = "w-[727px]";
+      function change(skip: boolean) { if (skip) return; selected = "w-[733px]"; }
+      export function Page({skip}: {skip: boolean}) { change(skip); return <main class={selected}/>; }`,
+    required: /width:\s*727px/, additional: /width:\s*733px/,
+  },
+  {
+    name: "do while false performs its removal before any following class read",
+    source: `const values = ["w-[739px]", 'content-["do-while-removed-private-canary"]'];
+      do { values.pop(); } while (false);
+      export const Page = () => <main class={values[0]}><p class={values[1]}/></main>;`,
+    required: /width:\s*739px/, canary: "do-while-removed-private-canary",
+  },
+])("$name", async item => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-execution-order-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), item.source);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    expect(css).toMatch(item.required);
+    if ("additional" in item) expect(css).toMatch(item.additional);
+    if ("canary" in item && item.canary) expect(css).not.toContain(item.canary);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("an unresolved sort projection is refused before exposing unselected array values", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-unknown-sort-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), `
+      export function Page({compare}: {compare: (a: string, b: string) => number}) {
+        const values = ["bg-red-500", 'content-["unresolved-sort-private-canary"]'];
+        values.sort(compare); return <main class={values[0]}/>;
+      }
+    `);
+    const compiled = compileClient(await admitProject(root));
+    await expect(compiled).rejects.toThrow("SOURCE_REJECTED");
+    const failure = await compiled.catch((error: unknown) => error);
+    expect(failure).toMatchObject({ name: "SourceAdmissionError", diagnostic: { file: "server/page.tsx", line: 4, code: "UNRESOLVED_CLASS_SORT", action: expect.stringContaining("statically resolvable pure sort comparator") } });
+    expect(JSON.stringify(failure)).not.toContain("unresolved-sort-private-canary");
+    expect(JSON.stringify(failure)).not.toContain(root);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
   try {

@@ -1,12 +1,14 @@
 import { parseSync } from "rolldown/utils";
+import { relative } from "node:path";
 import type { AdmittedProject } from "./admission";
+import { SourceAdmissionError } from "./diagnostics";
 
 type Node = Record<string, unknown>;
 interface Scope { readonly parent?: Scope; readonly bindings: Map<string, Binding>; readonly function?: boolean; }
 interface Binding { readonly scope: Scope; readonly expression?: Node; readonly point?: Point; readonly imported?: { module: string; name: string }; readonly factory?: "function" | "namespace"; }
 interface Module { readonly scope: Scope; readonly exports: Map<string, Binding>; readonly reexports: string[]; }
 interface Selection { readonly key: string; readonly excluded?: ReadonlySet<string>; }
-interface Point { readonly value: Node; readonly scope: Scope; readonly caller?: Point; readonly bindings?: ReadonlyMap<Binding, Binding>; }
+interface Point { readonly value: Node; readonly scope: Scope; readonly offset?: number; readonly caller?: Point; readonly bindings?: ReadonlyMap<Binding, Binding>; }
 interface ResolvedValue extends Point { readonly read: Point; readonly arguments: ReadonlyMap<Binding, Binding>; }
 interface Effect extends Point { readonly conditional: boolean; }
 interface Mutation extends Effect { readonly target: Node; readonly key?: Node; readonly replacement?: Node; readonly method?: string; readonly arguments?: Node[]; }
@@ -18,11 +20,28 @@ const propertyExpression = (member: Node): Node | undefined => member.computed ?
 const restExpression = (pattern: Node, expression: Node): Node => ({ type: "ObjectRest", argument: expression, excluded: nodes(pattern.properties).filter(item => item.type === "Property").map(propertyExpression) });
 const execution = (scope: Scope): Scope => scope.function || !scope.parent ? scope : execution(scope.parent);
 const position = (value: Node): number => typeof value.start === "number" ? value.start : 0;
+const completion = (value: Node): number => typeof value.end === "number" ? value.end : position(value);
+const terminates = (value: Node | undefined): boolean => {
+  if (!value) return false;
+  if (["ReturnStatement", "ThrowStatement", "BreakStatement", "ContinueStatement"].includes(String(value.type))) return true;
+  if (value.type === "BlockStatement") return nodes(value.body).some(terminates);
+  if (value.type === "IfStatement") return terminates(node(value.consequent)) && terminates(node(value.alternate));
+  return false;
+};
+const mayTerminate = (value: Node | undefined): boolean => {
+  if (!value) return false;
+  if (terminates(value)) return true;
+  if (value.type === "BlockStatement") return nodes(value.body).some(mayTerminate);
+  if (value.type === "IfStatement") return mayTerminate(node(value.consequent)) || mayTerminate(node(value.alternate));
+  return false;
+};
 
 /** Trace presentation values, never arbitrary literals from server modules. */
 export function presentationClassStrings(project: AdmittedProject): string[] {
   const modules = new Map<string, Module>(), contexts = new WeakMap<Node, Scope>();
+  const sourceFiles = new WeakMap<Scope, { path: string; source: string }>();
   const repeated = new WeakSet<Node>();
+  const unreachable = new WeakSet<Node>();
   const sinks: { value: Node; scope: Scope; property?: string }[] = [];
   const calls: (Effect & { callee: Node })[] = [];
   const assignments: (Effect & { target: Node; replacement: Node })[] = [];
@@ -50,9 +69,10 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     const parsed = parseSync(path, source);
     if (parsed.errors.length) throw new Error("SOURCE_REJECTED");
     const scope: Scope = { bindings: new Map(), function: true }, module: Module = { scope, exports: new Map(), reexports: [] };
+    sourceFiles.set(scope, { path, source });
     modules.set(path, module);
-    const visit = (value: unknown, outer: Scope, conditional = false, looping = false): void => {
-      if (Array.isArray(value)) { value.forEach(item => visit(item, outer, conditional, looping)); return; }
+    const visit = (value: unknown, outer: Scope, conditional = false, looping = false, reachable = true): void => {
+      if (Array.isArray(value)) { value.forEach(item => visit(item, outer, conditional, looping, reachable)); return; }
       const item = node(value);
       if (!item || typeof item.type !== "string") return;
       let current = outer;
@@ -61,6 +81,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         current = { parent: outer, bindings: new Map(), function: true };
         conditional = false;
         looping = false;
+        reachable = true;
         if (item.type === "FunctionExpression") declare(node(item.id), item, current);
         for (const parameter of nodes(item.params)) declare(parameter, undefined, current);
       } else if (["ClassDeclaration", "ClassExpression", "TSModuleDeclaration", "TSEnumDeclaration"].includes(item.type)) {
@@ -75,12 +96,13 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       }
       contexts.set(item, current);
       if (looping) repeated.add(item);
+      if (!reachable) unreachable.add(item);
       if (item.type === "VariableDeclaration") {
         let target = current;
         if (item.kind === "var") while (target.parent && !target.function) target = target.parent;
         for (const declaration of nodes(item.declarations)) declare(node(declaration.id), node(declaration.init), target);
       }
-      if (item.type === "AssignmentExpression") {
+      if (reachable && item.type === "AssignmentExpression") {
         const target = node(item.left), value = node(item.right);
         if (target && value) assignments.push({ target, value: item, replacement: value, scope: current, conditional });
         if (target?.type === "MemberExpression" && node(target.object)) {
@@ -100,20 +122,30 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
           }
         }
       }
-      if (item.type === "JSXAttribute" && ["class", "className"].includes(name(item.name) ?? "")) {
+      if (reachable && item.type === "JSXAttribute" && ["class", "className"].includes(name(item.name) ?? "")) {
         const value = node(item.value); if (value) sinks.push({ value, scope: current });
       }
-      if (item.type === "JSXSpreadAttribute") {
+      if (reachable && item.type === "JSXSpreadAttribute") {
         const value = node(item.argument); if (value) for (const property of ["class", "className"]) sinks.push({ value, scope: current, property });
       }
-      if (item.type === "CallExpression") {
+      if (reachable && item.type === "CallExpression") {
         const callee = node(item.callee); if (callee) calls.push({ callee, value: item, scope: current, conditional });
         if (callee?.type === "MemberExpression" && ["pop", "push", "shift", "splice", "unshift", "reverse", "sort", "fill", "copyWithin"].includes(name(callee.property) ?? "") && node(callee.object)) mutations.push({ target: node(callee.object)!, value: item, scope: current, conditional, method: name(callee.property)!, arguments: nodes(item.arguments) });
       }
       for (const [key, child] of Object.entries(item)) {
-        const branch = ["IfStatement", "ConditionalExpression"].includes(item.type) && ["consequent", "alternate"].includes(key) || item.type === "LogicalExpression" && key === "right" || ["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement"].includes(item.type);
-        const repeats = ["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement"].includes(item.type) && !["init", "right"].includes(key);
-        visit(child, current, conditional || branch, looping || repeats);
+        if (key === "body" && ["BlockStatement", "Program"].includes(item.type)) {
+          let active = reachable, possibleExit = false;
+          for (const statement of nodes(child)) {
+            visit(statement, current, conditional || possibleExit, looping, active);
+            if (terminates(statement)) active = false;
+            if (mayTerminate(statement)) possibleExit = true;
+          }
+          continue;
+        }
+        const once = item.type === "DoWhileStatement" && node(item.test)?.type === "Literal" && node(item.test)?.value === false;
+        const branch = ["IfStatement", "ConditionalExpression"].includes(item.type) && ["consequent", "alternate"].includes(key) || item.type === "LogicalExpression" && key === "right" || !once && ["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement"].includes(item.type);
+        const repeats = !once && ["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement"].includes(item.type) && !["init", "right"].includes(key);
+        visit(child, current, conditional || branch, looping || repeats, reachable);
       }
     };
     visit(parsed.program, scope);
@@ -159,22 +191,63 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (props && (direct || namespace)) for (const property of ["class", "className"]) sinks.push({ value: props, scope, property });
   }
   interface Call { readonly values: Node[]; readonly scope: Scope; readonly point: Point; }
-  // An unknown computed key selects any possible value, never the key expression itself.
-  const keys = (value: Node | undefined, scope: Scope, seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map()): string[] => {
-    if (value) scope = contexts.get(value) ?? scope;
-    if (typeof value?.value === "string" || typeof value?.value === "number") return [String(value.value)];
-    if (value?.type === "Identifier") {
-      const binding = resolveBinding(lookup(scope, String(value.name)));
-      const selected = binding && (arguments_.get(binding) ?? binding);
-      if (binding && selected && !seen.has(binding)) return keys(selected.expression, selected.scope, new Set([...seen, binding]), arguments_);
+  type Primitive = string | number | boolean | null | undefined;
+  const constants = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Map<Binding, Point>()): Primitive[] | undefined => {
+    if (!value) return [undefined];
+    scope = contexts.get(value) ?? scope;
+    if (value.type === "Literal" && (value.value === null || ["string", "number", "boolean"].includes(typeof value.value))) return [value.value as Primitive];
+    if (value.type === "ProjectedValue") {
+      const read = value.point as Point;
+      return constants(node(value.expression), read.scope, read, value.arguments as ReadonlyMap<Binding, Binding>, seen);
     }
-    if (value?.type === "ConditionalExpression") return [...new Set([...keys(node(value.consequent), scope, seen, arguments_), ...keys(node(value.alternate), scope, seen, arguments_)])];
-    if (value && ["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return keys(node(value.expression), scope, seen, arguments_);
-    return ["*"];
+    if (["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return constants(node(value.expression), scope, point, arguments_, seen);
+    const combine = (possibilities: (Primitive[] | undefined)[]): Primitive[] | undefined => {
+      if (possibilities.some(value => value === undefined)) return;
+      const values = [...new Set(possibilities.flatMap(value => value!))];
+      if (values.length > 128) throw new Error("SOURCE_REJECTED");
+      return values;
+    };
+    if (value.type === "ProjectedUnion") return combine(nodes(value.values).map(value => constants(value, scope, point, arguments_, seen)));
+    if (value.type === "ConditionalExpression") return combine([constants(node(value.consequent), scope, point, arguments_, seen), constants(node(value.alternate), scope, point, arguments_, seen)]);
+    if (value.type === "Identifier") {
+      const binding = resolveBinding(lookup(scope, String(value.name)));
+      if (!binding) return value.name === "undefined" ? [undefined] : undefined;
+      if (seen.has(binding) && !before(point, seen.get(binding)!) || seen.size > 100) return;
+      const expressions = bindingValues(binding, point, arguments_);
+      return expressions.length ? combine(expressions.map(expression => constants(expression.value, expression.scope, expression.read, expression.arguments, new Map([...seen, [binding, point]])))) : undefined;
+    }
+    if (value.type === "UnaryExpression") {
+      if (value.operator === "void") return [undefined];
+      const values = constants(node(value.argument), scope, point, arguments_, seen);
+      if (value.operator === "-") return values?.map(value => -Number(value));
+      if (value.operator === "+") return values?.map(value => Number(value));
+      if (value.operator === "!") return values?.map(value => !value);
+    }
+    if (value.type === "BinaryExpression" || value.type === "LogicalExpression") {
+      const left = constants(node(value.left), scope, point, arguments_, seen), right = constants(node(value.right), scope, point, arguments_, seen);
+      if (!left || !right) return;
+      const operation = (left: Primitive, right: Primitive): Primitive => {
+        switch (value.operator) {
+          case "+": return typeof left === "string" || typeof right === "string" ? String(left) + String(right) : Number(left) + Number(right);
+          case "-": return Number(left) - Number(right);
+          case "*": return Number(left) * Number(right);
+          case "/": return Number(left) / Number(right);
+          case "%": return Number(left) % Number(right);
+          case "&&": return left && right;
+          case "||": return left || right;
+          case "??": return left ?? right;
+          default: return undefined;
+        }
+      };
+      if (!["+", "-", "*", "/", "%", "&&", "||", "??"].includes(String(value.operator))) return;
+      return combine(left.map(value => right.map(other => operation(value, other))));
+    }
   };
+  // An unknown computed key selects any possible value, never the key expression itself.
+  const keys = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>): string[] => constants(value, scope, point, arguments_)?.map(String) ?? ["*"];
   const before = (effect: Point, point: Point): boolean => {
     const owner = execution(effect.scope), reader = execution(point.scope);
-    for (let frame: Point | undefined = point; frame; frame = frame.caller) if (execution(frame.scope) === owner) return position(effect.value) < position(frame.value);
+    for (let frame: Point | undefined = point; frame; frame = frame.caller) if (execution(frame.scope) === owner) return completion(effect.value) < (frame.offset ?? position(frame.value));
     for (let ancestor = reader.parent; ancestor; ancestor = ancestor.parent) if (ancestor === owner) return true;
     // Imported module initialization completes before a function can read it.
     return !owner.parent && !!reader.parent;
@@ -190,13 +263,22 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (!arguments_.has(binding)) for (const effect of effects(origin, point, arguments_)) {
       if (effect.binding !== binding || !effect.mutation.replacement) continue;
       const replacement = { value: effect.mutation.replacement, scope: effect.mutation.scope, read: effect.point, arguments: effect.arguments };
+      const operator = effect.mutation.value.operator;
+      if (typeof operator === "string" && operator !== "=") {
+        const previous = { type: "ProjectedUnion", values: values.map(value => captured(value.value, value.read, value.arguments)) };
+        replacement.value = { type: ["&&=", "||=", "??="].includes(operator) ? "LogicalExpression" : "BinaryExpression", operator: operator.slice(0, -1), left: previous, right: captured(replacement.value, replacement.read, replacement.arguments) };
+      }
       values = effect.optional ? [...values, replacement] : [replacement];
     }
     return values;
   };
-  const origins = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): Point[] | undefined => {
+  const origins = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Map<Binding, Point>()): Point[] | undefined => {
     if (!value || seen.size > 100) return;
     scope = contexts.get(value) ?? scope;
+    if (value.type === "ProjectedValue") {
+      const read = value.point as Point;
+      return origins(node(value.expression), read.scope, read, value.arguments as ReadonlyMap<Binding, Binding>, seen);
+    }
     if (value.type === "ArrayExpression") return [{ ...located(value, scope, point), bindings: arguments_ }];
     if (["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return origins(node(value.expression), scope, point, arguments_, seen);
     if (value.type === "ConditionalExpression") {
@@ -205,20 +287,30 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     }
     if (value.type !== "Identifier") return;
     const binding = resolveBinding(lookup(scope, String(value.name)));
-    if (!binding || seen.has(binding)) return;
-    const nextSeen = new Set([...seen, binding]), expressions = bindingValues(binding, point, arguments_);
+    if (!binding || seen.has(binding) && !before(point, seen.get(binding)!)) return;
+    const nextSeen = new Map([...seen, [binding, point]]), expressions = bindingValues(binding, point, arguments_);
     const resolved = expressions.map(expression => origins(expression.value, expression.scope, expression.read, expression.arguments, nextSeen));
     return resolved.length && resolved.every(value => value !== undefined) ? resolved.flatMap(value => value!) : undefined;
   };
   interface AppliedMutation { readonly mutation: Mutation; readonly binding?: Binding; readonly point: Point; readonly optional: boolean; readonly repeated: boolean; readonly arguments: ReadonlyMap<Binding, Binding>; }
+  const argumentValues = (values: Node[], scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Node>()): Node[][] | undefined => {
+    let alternatives: Node[][] = [[]];
+    for (const value of values) {
+      const read = located(value, scope, point);
+      const choices = value.type === "SpreadElement" ? arrays(node(value.argument), scope, read, arguments_, seen) : [[captured(value, read, arguments_)]];
+      if (!choices) return;
+      alternatives = bounded(alternatives.flatMap(prefix => choices.map(suffix => [...prefix, ...suffix])));
+    }
+    return alternatives;
+  };
   const effects = (origin: Point, point: Point, arguments_: ReadonlyMap<Binding, Binding>): AppliedMutation[] => {
     const collected: AppliedMutation[] = [];
     const collect = (owner: Scope, limit: Point, inherited: ReadonlyMap<Binding, Binding>, optional = false, looping = false, invocation?: Point, seen = new Set<Scope>()): void => {
       if (seen.has(owner) || seen.size > 100) return;
       const nextSeen = new Set([...seen, owner]);
-      const events = [...mutations, ...assignments.filter(event => event.target.type === "Identifier"), ...calls].filter(event => execution(event.scope) === owner && (invocation || before(event, limit)) && (execution(origin.scope) !== owner || position(event.value) > position(origin.value))).sort((left, right) => position(left.value) - position(right.value));
+      const events = [...mutations, ...assignments.filter(event => event.target.type === "Identifier"), ...calls].filter(event => execution(event.scope) === owner && (invocation || before(event, limit)) && (execution(origin.scope) !== owner || position(event.value) > position(origin.value))).sort((left, right) => completion(left.value) - completion(right.value));
       for (const event of events) {
-        const eventPoint = invocation ? { value: event.value, scope: event.scope, caller: invocation } : located(event.value, event.scope, limit);
+        const eventPoint = { ...(invocation ? { value: event.value, scope: event.scope, caller: invocation } : located(event.value, event.scope, limit)), offset: completion(event.value) };
         if ("target" in event) {
           const binding = assignments.some(assignment => assignment === event) ? resolveBinding(lookup(event.scope, String(event.target.name))) : undefined;
           collected.push({ mutation: event, ...(binding ? { binding } : {}), point: eventPoint, optional: optional || event.conditional, repeated: looping || repeated.has(event.value), arguments: inherited });
@@ -227,12 +319,16 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         const binding = event.callee.type === "Identifier" ? resolveBinding(lookup(event.scope, String(event.callee.name))) : undefined;
         const fn = binding?.expression, local = fn && contexts.get(fn);
         if (!fn || !local || !["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(fn.type))) continue;
-        const replacements = new Map(inherited);
-        nodes(fn.params).forEach((parameter, index) => {
-          const argument = nodes(event.value.arguments)[index], parameterBinding = parameter.type === "Identifier" && lookup(local, String(parameter.name));
-          if (parameterBinding && argument) replacements.set(parameterBinding, { scope: event.scope, expression: argument, point: eventPoint });
-        });
-        collect(local, event, replacements, optional || event.conditional, looping || repeated.has(event.value), eventPoint, nextSeen);
+        const possibilities = argumentValues(nodes(event.value.arguments), event.scope, eventPoint, inherited);
+        if (!possibilities) continue;
+        for (const values of possibilities) {
+          const replacements = new Map(inherited);
+          nodes(fn.params).forEach((parameter, index) => {
+            const argument = values[index], parameterBinding = parameter.type === "Identifier" && lookup(local, String(parameter.name));
+            if (parameterBinding && argument) replacements.set(parameterBinding, { scope: event.scope, expression: argument, point: eventPoint });
+          });
+          collect(local, event, replacements, optional || event.conditional || possibilities.length > 1, looping || repeated.has(event.value), eventPoint, nextSeen);
+        }
       }
     };
     const owners: Scope[] = [];
@@ -253,21 +349,30 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (arrays.length > 128 || arrays.some(array => array.length > 2000)) throw new Error("SOURCE_REJECTED");
     return arrays;
   };
+  const unresolvedSort = (mutation: Mutation): never => {
+    let scope = mutation.scope;
+    while (scope.parent) scope = scope.parent;
+    const file = sourceFiles.get(scope);
+    throw new SourceAdmissionError(file ? relative(project.root, file.path) : "application source", file ? file.source.slice(0, position(mutation.value)).split("\n").length : 1, "UNRESOLVED_CLASS_SORT", "Select complete classes explicitly or use a statically resolvable pure sort comparator.");
+  };
   const captured = (value: Node | undefined, point: Point, arguments_: ReadonlyMap<Binding, Binding>): Node => ({ type: "ProjectedValue", expression: value, point, arguments: arguments_ });
-  const sortKey = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): string | undefined => {
+  const functionValue = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): ResolvedValue | undefined => {
     if (!value) return;
     scope = contexts.get(value) ?? scope;
     if (value.type === "ProjectedValue") {
       const capturedPoint = value.point as Point;
-      return sortKey(node(value.expression), capturedPoint.scope, capturedPoint, value.arguments as ReadonlyMap<Binding, Binding>, seen);
+      return functionValue(node(value.expression), capturedPoint.scope, capturedPoint, value.arguments as ReadonlyMap<Binding, Binding>, seen);
     }
-    if (value.type === "Literal" && (value.value === null || ["string", "number", "boolean"].includes(typeof value.value))) return String(value.value);
-    if (["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return sortKey(node(value.expression), scope, point, arguments_, seen);
+    if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(value.type))) return { value, scope, read: point, arguments: arguments_ };
+    if (["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return functionValue(node(value.expression), scope, point, arguments_, seen);
     if (value.type === "Identifier") {
       const binding = resolveBinding(lookup(scope, String(value.name)));
       if (!binding || seen.has(binding) || seen.size > 100) return;
-      const possible = bindingValues(binding, point, arguments_).map(expression => sortKey(expression.value, expression.scope, expression.read, expression.arguments, new Set([...seen, binding])));
-      if (possible.length && possible.every(value => value !== undefined && value === possible[0])) return possible[0];
+      const possible = bindingValues(binding, point, arguments_);
+      if (possible.length === 1) {
+        const expression = possible[0]!;
+        return functionValue(expression.value, expression.scope, expression.read, expression.arguments, new Set([...seen, binding]));
+      }
     }
   };
   // Each alternative describes one array allocation at the read point. Copies
@@ -301,21 +406,13 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         }
         if (effect.repeated && ["push", "unshift", "splice"].includes(mutation.method ?? "")) return;
         const optional = effect.optional || targets.some(target => target.value !== origin.value);
-        const selected = mutation.key ? keys(mutation.key, mutation.scope, new Set(), effect.arguments) : [];
+        const selected = mutation.key ? keys(mutation.key, mutation.scope, located(mutation.key, mutation.scope, effect.point), effect.arguments) : [];
         const numeric = (value: Node | undefined): number | undefined => {
-          const values = keys(value, mutation.scope, new Set(), effect.arguments);
+          const values = keys(value, mutation.scope, effect.point, effect.arguments);
           const result = values.length === 1 && values[0] !== "*" ? Number(values[0]) : NaN;
           return Number.isSafeInteger(result) ? result : undefined;
         };
-        const insertions = (argumentsList: Node[]): Node[][] | undefined => {
-          let additions: Node[][] = [[]];
-          for (const argument of argumentsList) {
-            const choices = argument.type === "SpreadElement" ? arrays(node(argument.argument), mutation.scope, effect.point, effect.arguments, nextSeen) : [[captured(argument, effect.point, effect.arguments)]];
-            if (!choices) return;
-            additions = bounded(additions.flatMap(prefix => choices.map(suffix => [...prefix, ...suffix])));
-          }
-          return additions;
-        };
+        const insertions = (values: Node[]): Node[][] | undefined => argumentValues(values, mutation.scope, effect.point, effect.arguments, nextSeen);
         const transformed: Node[][] = [];
         for (const previous of alternatives) {
           const next = [...previous], argumentsList = mutation.arguments ?? [];
@@ -344,11 +441,33 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
           }
           else if (mutation.method === "reverse") next.reverse();
           else if (mutation.method === "sort") {
-            const ordered = previous.map(value => ({ value, key: sortKey(value, mutation.scope, effect.point, effect.arguments) }));
-            if (!argumentsList.length && ordered.every(item => item.key !== undefined)) {
-              ordered.sort((left, right) => left.key! < right.key! ? -1 : left.key! > right.key! ? 1 : 0);
+            const comparator = constants(argumentsList[0], mutation.scope, effect.point, effect.arguments);
+            if (comparator?.length === 1 && comparator[0] === undefined) {
+              const ordered = previous.map(value => ({ value, known: constants(value, mutation.scope, effect.point, effect.arguments) }));
+              if (ordered.some(item => item.known?.length !== 1)) unresolvedSort(mutation);
+              ordered.sort((left, right) => {
+                const a = left.known![0], b = right.known![0];
+                return a === undefined ? b === undefined ? 0 : 1 : b === undefined ? -1 : String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
+              });
               next.splice(0, next.length, ...ordered.map(item => item.value));
-            } else next.fill({ type: "ProjectedUnion", values: previous });
+            } else {
+              const fn = functionValue(argumentsList[0], mutation.scope, effect.point, effect.arguments);
+              if (!fn) return unresolvedSort(mutation);
+              const body = node(fn.value.body), statements = body?.type === "BlockStatement" ? nodes(body.body).filter(value => !unreachable.has(value) && value.type !== "EmptyStatement") : [];
+              if (body?.type === "BlockStatement" && (statements.length !== 1 || statements[0]?.type !== "ReturnStatement")) unresolvedSort(mutation);
+              const returned = body?.type === "BlockStatement" ? node(statements[0]?.argument) : body;
+              next.sort((left, right) => {
+                const replacements = new Map(fn.arguments);
+                nodes(fn.value.params).forEach((parameter, index) => {
+                  const binding = parameter.type === "Identifier" && lookup(fn.scope, String(parameter.name));
+                  if (!binding) return unresolvedSort(mutation);
+                  replacements.set(binding, { scope: mutation.scope, expression: index === 0 ? left : index === 1 ? right : captured(undefined, effect.point, effect.arguments), point: effect.point });
+                });
+                const result = constants(returned, fn.scope, { value: returned ?? fn.value, scope: fn.scope, caller: effect.point }, replacements);
+                if (result?.length !== 1) return unresolvedSort(mutation);
+                return Number(result[0]) || 0;
+              });
+            }
           } else if (mutation.method === "fill") {
             const start = argumentsList[1] ? numeric(argumentsList[1]) : 0, end = argumentsList[2] ? numeric(argumentsList[2]) : next.length;
             if (start === undefined || end === undefined) for (let index = 0; index < next.length; index++) next[index] = { type: "ProjectedUnion", values: [next[index], at(0)] };
@@ -374,7 +493,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     }
     return result;
   };
-  const trace = (value: Node | undefined, outer: Scope, properties: readonly Selection[] = [], seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map(), call?: Call, point?: Point): void => {
+  const trace = (value: Node | undefined, outer: Scope, properties: readonly Selection[] = [], seen = new Map<Binding, Point>(), arguments_: ReadonlyMap<Binding, Binding> = new Map(), call?: Call, point?: Point): void => {
     if (!value || seen.size > 100) return;
     const scope = contexts.get(value) ?? outer;
     const read = point ?? { value, scope };
@@ -399,8 +518,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (value.type === "Identifier") {
       let binding = resolveBinding(lookup(scope, String(value.name)));
       if (binding?.imported?.name === "*" && properties[0]) { binding = resolveBinding(exported(binding.imported.module, properties[0].key)); properties = properties.slice(1); }
-      if (!binding || seen.has(binding)) return;
-      const nextSeen = new Set([...seen, binding]);
+      if (!binding || seen.has(binding) && (call || !before(read, seen.get(binding)!))) return;
+      const nextSeen = new Map([...seen, [binding, read]]);
       for (const expression of bindingValues(binding, read, arguments_)) trace(expression.value, expression.scope, properties, nextSeen, expression.arguments, call, expression.read);
     } else if (value.type === "ConditionalExpression") {
       visit(node(value.consequent), scope); visit(node(value.alternate), scope);
@@ -408,10 +527,10 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       if (value.operator !== "&&") visit(node(value.left), scope);
       visit(node(value.right), scope);
     } else if (value.type === "MemberExpression") {
-      const selected = value.computed ? keys(node(value.property), scope, new Set(), arguments_) : [name(value.property)];
+      const selected = value.computed ? keys(node(value.property), scope, read, arguments_) : [name(value.property)];
       for (const key of selected) if (key) visit(node(value.object), scope, [{ key }, ...properties]);
     } else if (value.type === "ObjectRest" && properties[0]) {
-      const definite = nodes(value.excluded).flatMap(value => { const selected = keys(value, scope, new Set(), arguments_); return selected.length === 1 && selected[0] !== "*" ? selected : []; });
+      const definite = nodes(value.excluded).flatMap(value => { const selected = keys(value, scope, located(value, scope, read), arguments_); return selected.length === 1 && selected[0] !== "*" ? selected : []; });
       const selected = properties[0], excluded = new Set([...(selected.excluded ?? []), ...definite]);
       if (!excluded.has(selected.key) && !excluded.has("*")) visit(node(value.argument), scope, [{ ...selected, excluded }, ...properties.slice(1)]);
     } else if (value.type === "ObjectExpression" && properties[0]) {
@@ -448,7 +567,9 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     } else if (value.type === "CallExpression") {
       const callee = node(value.callee);
       if (callee?.type === "MemberExpression" && ["join", "filter"].includes(name(callee.property) ?? "")) { visit(node(callee.object), scope); return; }
-      visit(callee, scope, properties, seen, { values: nodes(value.arguments), scope, point: read });
+      const invocation = { ...located(value, scope, read), offset: completion(value) };
+      const possibilities = argumentValues(nodes(value.arguments), scope, invocation, arguments_);
+      if (possibilities) for (const values of possibilities) visit(callee, scope, properties, seen, { values, scope, point: invocation });
     } else if (call && ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(value.type))) {
       const local = contexts.get(value) ?? scope;
       const replacements = new Map(arguments_);
@@ -477,7 +598,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         const returns = (value: unknown): void => {
           if (Array.isArray(value)) { value.forEach(returns); return; }
           const statement = node(value);
-          if (!statement || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(statement.type))) return;
+          if (!statement || unreachable.has(statement) || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(statement.type))) return;
           if (statement.type === "ReturnStatement") trace(node(statement.argument), contexts.get(statement) ?? local, properties, seen, replacements, undefined, { value: statement, scope: contexts.get(statement) ?? local, caller: call.point });
           else Object.values(statement).forEach(returns);
         };

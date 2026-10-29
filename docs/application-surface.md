@@ -47,6 +47,14 @@ new utilities that have no complete string in those presentation expressions.
 Static array projection is limited to 128 alternatives and 2,000 elements.
 Fleur collects these values without executing application code.
 
+Sorting an array used for classes requires statically resolvable ordering.
+Default sorting, explicit `undefined` and supported pure comparators such as
+`() => 0` work. A comparator must use identifier parameters and an expression
+body or a single reachable return expression whose comparisons resolve to
+primitive values. Runtime-selected comparators and unresolved results are
+refused with `UNRESOLVED_CLASS_SORT`. Select complete classes explicitly or use
+a statically resolvable pure comparator to repair the refusal.
+
 Dynamic JSX inline style values and custom properties work:
 
 ```tsx

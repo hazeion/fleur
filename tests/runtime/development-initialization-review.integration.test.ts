@@ -99,14 +99,16 @@ test("a dropped development database is recreated as new only if it was never in
     await generateMigration(project, [categories]);
     const seed = defineSeed({ key: "categories", table: categories, rows: [{ ownerKey: "general", values: { id: 1, name: "General" } }] });
     expect((await startDevelopmentDatabase(target, project, [seed] as Seed[], config)).initialization).toMatchObject({ status: "initialized", seedRowsApplied: 1 });
-    // Once initialized, a dropped database comes back empty and not new: startup reports the explicit flow, every time.
+    // Once initialized, a dropped database comes back empty and not new. Startup reports readiness from the shared
+    // probe, which still holds Fleur's recorded catalog, every time; it neither reinitializes nor fails with an action
+    // that cannot resolve the loss.
     await fixture.sql.unsafe("DROP DATABASE fleur_review_dropped WITH (FORCE)");
     for (let attempt = 0; attempt < 2; attempt++) {
       const report = await startDevelopmentDatabase(target, project, [seed] as Seed[], config);
-      expect(report).toMatchObject({ error: null, ready: false, initialization: { status: "existing", migrationsApplied: [], seedRowsApplied: 0 } });
-      expect(report.reasons.map(reason => reason.code)).toEqual(["MIGRATION_PENDING"]);
+      expect(report).toMatchObject({ error: null, state: "failed", ready: false, initialization: { status: "existing", migrationsApplied: [], seedRowsApplied: 0 } });
+      expect(report.reasons.map(reason => reason.code)).toEqual(["MIGRATION_PENDING", "SCHEMA_DRIFT"]);
+      const sql = new SQL(target.url, { max: 1 });
+      try { expect(await sql.unsafe("SELECT to_regclass('public.dropped_categories') IS NULL AS absent")).toEqual([{ absent: true }]); } finally { await sql.close({ timeout: 0 }); }
     }
-    await applyMigrations(target.url, project, { ...config, toolDirectory: await fixture.pgTools(join(root, "tools")) });
-    expect(await startDevelopmentDatabase(target, project, [seed] as Seed[], config)).toMatchObject({ state: "ready", initialization: { status: "existing" } });
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 240_000);

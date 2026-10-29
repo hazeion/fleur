@@ -75,8 +75,8 @@ async function uncontended<T>(deadline: number, step: () => Promise<T>): Promise
 /**
  * Creates the binding's development database when it does not exist, writing the creation record first. An existing
  * database, including an adopted volume's, is left untouched and never becomes new. When a database that may have
- * been initialized has disappeared, its empty replacement is never new: data comes back only through the explicit
- * flow, such as `db restore` or `db migration apply`.
+ * been initialized has disappeared, its empty replacement is never new, and readiness reports what Fleur's records
+ * expected of it.
  */
 export async function createDevelopmentDatabase(database: DevelopmentDatabase, config: MaintenanceConfiguration = {}): Promise<{ readonly created: boolean }> {
   const name = databaseUrl(database.url).pathname.slice(1);

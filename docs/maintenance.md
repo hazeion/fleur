@@ -243,8 +243,8 @@ and JSON.
   `db seed`. The record is also retired when startup finds that something else,
   such as an explicit apply, changed the database first. A database emptied
   afterwards is not new. If such a database disappears, startup creates an
-  empty replacement that is not new. Bring data back explicitly, with
-  `db restore` or `db migration apply`. A database that disappears before its
+  empty replacement that is not new and reports its readiness reasons, such as
+  drift from Fleur's recorded catalog. A database that disappears before its
   first initialization is recreated as new.
 - **Other databases.** Adopted volumes, another binding's database, a database
   Fleur did not create, a database that reset recreated, production targets and

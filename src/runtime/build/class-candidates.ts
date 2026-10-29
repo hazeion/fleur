@@ -361,7 +361,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   };
   const captured = (value: Node | undefined, point: Point, arguments_: ReadonlyMap<Binding, Binding>): Node => ({ type: "ProjectedValue", expression: value, point, arguments: arguments_ });
   const pureConstantExpression = (value: Node | undefined): boolean => {
-    if (!value || !["Literal", "Identifier", "UnaryExpression", "BinaryExpression", "LogicalExpression", "ConditionalExpression", "TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return false;
+    if (value && ["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return pureConstantExpression(node(value.expression));
+    if (!value || !["Literal", "Identifier", "UnaryExpression", "BinaryExpression", "LogicalExpression", "ConditionalExpression"].includes(String(value.type))) return false;
     if (value.type === "UnaryExpression" && value.operator === "delete") return false;
     return Object.values(value).every(child => {
       const expression = node(child);
@@ -465,7 +466,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
               next.splice(0, next.length, ...ordered.map(item => item.value));
             } else {
               const fn = functionValue(argumentsList[0], mutation.scope, effect.point, effect.arguments);
-              if (!fn) return unresolvedSort(mutation);
+              if (!fn || fn.value.async || fn.value.generator) return unresolvedSort(mutation);
               const body = node(fn.value.body), statements = body?.type === "BlockStatement" ? nodes(body.body).filter(value => !unreachable.has(value) && value.type !== "EmptyStatement") : [];
               if (body?.type === "BlockStatement" && (statements.length !== 1 || statements[0]?.type !== "ReturnStatement")) unresolvedSort(mutation);
               const returned = body?.type === "BlockStatement" ? node(statements[0]?.argument) : body;

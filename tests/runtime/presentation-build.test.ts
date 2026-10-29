@@ -366,7 +366,7 @@ test.each([
       outer(inner()); export const Page = () => <main class={selected}/>;`,
     required: /width:\s*619px/, canary: "nested-argument-private-canary",
   },
-  ...["undefined", "() => 0"].map(comparator => ({
+  ...["undefined", "() => 0", "() => (0 as number)"].map(comparator => ({
     name: `sort(${comparator}) preserves the selected class`,
     source: `const values = ["bg-red-500", 'content-["sort-private-canary"]'];
       values.sort(${comparator}); export const Page = () => <main class={values[0]}/>;`,
@@ -461,7 +461,7 @@ test.each([
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test.each(["compare", "() => void(index = 0)"])("an unresolved sort projection %s is refused before exposing unselected array values", async comparator => {
+test.each(["compare", "() => void(index = 0)", "async () => -1", "function* () { return -1; }"])("an unresolved sort projection %s is refused before exposing unselected array values", async comparator => {
   const root = await mkdtemp(join(tmpdir(), "fleur-class-unknown-sort-"));
   try {
     await mkdir(join(root, "server"));

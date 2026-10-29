@@ -153,6 +153,36 @@ test("CSP independently blocks code and stylesheets while allowing inline declar
   } finally { await browser.close(); await server.stop(true); }
 }, 30_000);
 
+test("CSP permits prevented form-submit handlers while rejecting native form navigation", async () => {
+  const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/saves", import.meta.url))));
+  const server = serveReadApplication(application('<form id="handled"><button>Handle</button></form><form id="native"><input name="form-proof" value="1"><button>Navigate</button></form>'), bundle);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const page = await browser.newPage();
+      const nativeRequests: string[] = [];
+      page.on("request", request => { if (new URL(request.url()).searchParams.has("form-proof")) nativeRequests.push(request.url()); });
+      await page.goto(server.url.origin);
+      await page.waitForFunction(() => document.documentElement.dataset.fleurHydrated === "true");
+      await page.evaluate(() => {
+        document.getElementById("handled")!.addEventListener("submit", event => {
+          event.preventDefault(); document.documentElement.dataset.formHandled = "true";
+        });
+        document.addEventListener("securitypolicyviolation", event => {
+          if (event.violatedDirective === "form-action") document.documentElement.dataset.nativeFormDenied = "true";
+        });
+      });
+      await page.getByRole("button", { name: "Handle", exact: true }).click();
+      await page.waitForFunction(() => document.documentElement.dataset.formHandled === "true", undefined, { timeout: 2000 });
+      await page.getByRole("button", { name: "Navigate", exact: true }).click({ noWaitAfter: true });
+      await page.waitForFunction(() => document.documentElement.dataset.nativeFormDenied === "true", undefined, { timeout: 2000 });
+      expect(nativeRequests).toEqual([]);
+      expect(page.url()).toBe(server.url.origin + "/");
+      await page.close();
+    }
+  } finally { await browser.close(); await server.stop(true); }
+}, 30_000);
+
 test("server HTML rejects active presentation markup before navigation or refresh", async () => {
   const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/saves", import.meta.url))));
   for (const html of [

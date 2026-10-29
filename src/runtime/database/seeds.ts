@@ -90,7 +90,7 @@ export async function reconcileSeeds(sql: Pick<SQL, "unsafe">, seeds: ReturnType
 }
 export async function seedDatabase(url: string, project: string, declarations: readonly Seed[], config: MaintenanceConfiguration = {}, held?: { lease: MaintenanceLease; sql: SQL }) {
   const seeds = orderSeeds(declarations), plans = await readMigrations(project);
-  const lease = held?.lease ?? await MaintenanceLease.acquire(url, true, config);
+  const lease = held?.lease ?? await MaintenanceLease.acquire(url, true, config, false, (control, target) => requireAuthority(control, target, ["schema write", "schema read"]));
   const sql = held?.sql ?? new SQL(url, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, config.timeoutMs ?? 60000);
   let marker: MaintenanceMarker | undefined, transaction = false, commitAttempted = false;

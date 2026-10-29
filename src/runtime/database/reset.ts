@@ -22,7 +22,7 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
   const started = performance.now(), remaining = () => { const value = (config.timeoutMs ?? 60000) - (performance.now() - started); if (value <= 0) throw new Error("RECOVERY_REQUIRED"); return value; };
   const plans = await readMigrations(project), seedPlan = config.seed ? describeSeeds(seeds) : [];
   if (plans.some(plan => plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
-  const lease = await MaintenanceLease.acquire(url, true, { ...config, timeoutMs: remaining() });
+  const lease = await MaintenanceLease.acquire(url, true, { ...config, timeoutMs: remaining() }, false, (control, target) => requireAuthority(control, target, ["role and database creation", "database replacement", "schema write", "schema read"]));
   let sql = new SQL(url, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, remaining());
   let marker: MaintenanceMarker | undefined, replacing = false;

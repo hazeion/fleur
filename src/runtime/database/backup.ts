@@ -24,7 +24,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
   const tool = (name: "pg_dump" | "pg_restore", args: readonly string[], url: string, io: { output?: string; input?: string } = {}) => pgTool(name, args, url, { ...io, timeoutMs: remaining(), ...(config.toolDirectory ? { directory: config.toolDirectory } : {}) });
   await tool("pg_dump", ["--version"], urlValue);
   await tool("pg_restore", ["--version"], urlValue);
-  const lease = held?.lease ?? await MaintenanceLease.acquire(urlValue, true, config);
+  const lease = held?.lease ?? await MaintenanceLease.acquire(urlValue, true, config, false, (control, target) => requireAuthority(control, target, ["role and database creation", "schema read"]));
   const source = held?.source ?? new SQL(urlValue, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const token = randomUUID().replaceAll("-", ""), name = `fleur_verify_${token}`;
   const tag = `fleur-verification-v1:${digest(JSON.stringify(lease.target))}:${token}`;

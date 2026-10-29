@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { readMigrations } from "./migration-plan";
-import { assertMigrationState, catalogFingerprint, emptyApplicationSchema } from "./migration-state";
+import { assertMigrationState, catalogFingerprint, emptyApplicationSchema, migrationHistory } from "./migration-state";
 import { readMigrationStatus } from "./migration-status";
 import { withInspection, type TargetKind } from "./target";
 import { backupDatabase, type BackupConfiguration } from "./backup";
@@ -24,7 +24,11 @@ export async function applyMigrations(url: string, project: string, config: Back
   const plans = await readMigrations(project);
   if (plans.some(plan=>plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
   let lease: MaintenanceLease;
-  try {lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()});}
+  try {lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()},false,async (control,target)=>{
+    // No-op apply needs no write authority. Recompute pending work under the lease below.
+    const history=await privileged("schema read",()=>migrationHistory(target));
+    if(plans.length>history.length)await requireAuthority(control,target,["role and database creation","schema write","schema read"]);
+  });}
   catch(error) {if(error instanceof Error&&error.message==="RECOVERY_REQUIRED")return reconcileMaintenance(url,project,config);throw error;}
   const sql = new SQL(url,{max:1,connectionTimeout:2,idleTimeout:0,maxLifetime:0});
   let marker: MaintenanceMarker | undefined;

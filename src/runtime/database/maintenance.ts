@@ -6,7 +6,7 @@ import { lstat, mkdir, open, realpath, rename, link, unlink } from "node:fs/prom
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { privileged } from "./privilege";
+import { PrivilegeInsufficient, privileged } from "./privilege";
 
 export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; readonly completeRegistry?: boolean; }
 const identitySchema = z.strictObject({ cluster: z.string().regex(/^\d+$/), database: z.string().min(1).max(63), oid: z.string().regex(/^\d+$/), owner: z.string().min(1), address: z.string(), port: z.number().int(), });
@@ -62,7 +62,7 @@ export class MaintenanceLease {
   private constructor(sql: SQL, target: DatabaseIdentity, key: string, directory: string, pid: number, exclusive: boolean, nonce: string, busy = false) {
     this.sql = sql; this.#target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy;
   }
-  static async acquire(urlValue: string, exclusive: boolean, configuration: MaintenanceConfiguration = {}, inspect = false): Promise<MaintenanceLease> {
+  static async acquire(urlValue: string, exclusive: boolean, configuration: MaintenanceConfiguration = {}, inspect = false, preflight?: (control: SQL, target: SQL) => Promise<void>): Promise<MaintenanceLease> {
     const targetUrl = databaseUrl(urlValue);
     const configuredControl = configuration.controlUrl ?? process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL;
     const controlUrl = configuredControl ? databaseUrl(configuredControl) : new URL(targetUrl);
@@ -90,6 +90,9 @@ export class MaintenanceLease {
         : (await privileged("database connect", () => target.connect()), await privileged("identity inspection", () => target.unsafe("SELECT system_identifier::text AS cluster, current_database() AS database, d.oid::text AS oid, pg_get_userbyid(d.datdba) AS owner, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system(), pg_database d WHERE d.datname=current_database()")));
       const identity = identitySchema.parse(inspect ? { ...rows[0], cluster: current.cluster, address: current.address, port: current.port } : rows[0]);
       if (identity.database !== targetUrl.pathname.slice(1) || current.cluster !== identity.cluster || current.address !== identity.address || current.port !== identity.port) throw new Error("CONFIGURATION_MISSING");
+      // Refused authority must never queue an exclusive lock or create private state.
+      // Callers repeat their authority checks under the lease before doing work.
+      await preflight?.(sql, target);
       const hash = digest(`fleur:maintenance:v1:${identity.cluster}:${identity.database}`);
       const key = BigInt.asIntN(64, BigInt(`0x${hash.slice(0, 16)}`)).toString();
       const nonce = crypto.randomUUID();
@@ -130,6 +133,7 @@ export class MaintenanceLease {
       return lease;
     } catch (error) {
       await sql.close({ timeout: 0 });
+      if (error instanceof PrivilegeInsufficient) throw error;
       if (error instanceof Error && ["CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) throw error;
       // The cause lets read-only diagnostics distinguish an unreachable database; the code is unchanged.
       throw new Error("PREREQUISITE_UNAVAILABLE", { cause: expired ? leaseDeadline : error });

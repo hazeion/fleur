@@ -44,6 +44,8 @@ JSX `class`/`className` values and Preact props through lexical constants, local
 imports, conditional results and helper returns. Unrelated server strings and
 branch conditions never become stylesheet input. Runtime data cannot introduce
 new utilities that have no complete string in those presentation expressions.
+Static array projection is limited to 128 alternatives and 2,000 elements.
+Fleur collects these values without executing application code.
 
 Dynamic JSX inline style values and custom properties work:
 

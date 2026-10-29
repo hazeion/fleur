@@ -3,10 +3,11 @@ import type { AdmittedProject } from "./admission";
 
 type Node = Record<string, unknown>;
 interface Scope { readonly parent?: Scope; readonly bindings: Map<string, Binding>; readonly function?: boolean; }
-interface Binding { readonly scope: Scope; readonly expression?: Node; readonly imported?: { module: string; name: string }; readonly factory?: "function" | "namespace"; }
+interface Binding { readonly scope: Scope; readonly expression?: Node; readonly point?: Point; readonly imported?: { module: string; name: string }; readonly factory?: "function" | "namespace"; }
 interface Module { readonly scope: Scope; readonly exports: Map<string, Binding>; readonly reexports: string[]; }
 interface Selection { readonly key: string; readonly excluded?: ReadonlySet<string>; }
-interface Point { readonly value: Node; readonly scope: Scope; }
+interface Point { readonly value: Node; readonly scope: Scope; readonly caller?: Point; readonly bindings?: ReadonlyMap<Binding, Binding>; }
+interface ResolvedValue extends Point { readonly read: Point; readonly arguments: ReadonlyMap<Binding, Binding>; }
 interface Effect extends Point { readonly conditional: boolean; }
 interface Mutation extends Effect { readonly target: Node; readonly key?: Node; readonly replacement?: Node; readonly method?: string; readonly arguments?: Node[]; }
 const node = (value: unknown): Node | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Node : undefined;
@@ -21,6 +22,7 @@ const position = (value: Node): number => typeof value.start === "number" ? valu
 /** Trace presentation values, never arbitrary literals from server modules. */
 export function presentationClassStrings(project: AdmittedProject): string[] {
   const modules = new Map<string, Module>(), contexts = new WeakMap<Node, Scope>();
+  const repeated = new WeakSet<Node>();
   const sinks: { value: Node; scope: Scope; property?: string }[] = [];
   const calls: (Effect & { callee: Node })[] = [];
   const assignments: (Effect & { target: Node; replacement: Node })[] = [];
@@ -49,8 +51,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (parsed.errors.length) throw new Error("SOURCE_REJECTED");
     const scope: Scope = { bindings: new Map(), function: true }, module: Module = { scope, exports: new Map(), reexports: [] };
     modules.set(path, module);
-    const visit = (value: unknown, outer: Scope, conditional = false): void => {
-      if (Array.isArray(value)) { value.forEach(item => visit(item, outer, conditional)); return; }
+    const visit = (value: unknown, outer: Scope, conditional = false, looping = false): void => {
+      if (Array.isArray(value)) { value.forEach(item => visit(item, outer, conditional, looping)); return; }
       const item = node(value);
       if (!item || typeof item.type !== "string") return;
       let current = outer;
@@ -58,6 +60,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         if (item.type === "FunctionDeclaration" && name(item.id)) declare(node(item.id), item, outer);
         current = { parent: outer, bindings: new Map(), function: true };
         conditional = false;
+        looping = false;
         if (item.type === "FunctionExpression") declare(node(item.id), item, current);
         for (const parameter of nodes(item.params)) declare(parameter, undefined, current);
       } else if (["ClassDeclaration", "ClassExpression", "TSModuleDeclaration", "TSEnumDeclaration"].includes(item.type)) {
@@ -71,6 +74,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         if (item.type === "CatchClause") declare(node(item.param), undefined, current);
       }
       contexts.set(item, current);
+      if (looping) repeated.add(item);
       if (item.type === "VariableDeclaration") {
         let target = current;
         if (item.kind === "var") while (target.parent && !target.function) target = target.parent;
@@ -108,7 +112,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       }
       for (const [key, child] of Object.entries(item)) {
         const branch = ["IfStatement", "ConditionalExpression"].includes(item.type) && ["consequent", "alternate"].includes(key) || item.type === "LogicalExpression" && key === "right" || ["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement"].includes(item.type);
-        visit(child, current, conditional || branch);
+        const repeats = ["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement"].includes(item.type) && !["init", "right"].includes(key);
+        visit(child, current, conditional || branch, looping || repeats);
       }
     };
     visit(parsed.program, scope);
@@ -169,25 +174,30 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   };
   const before = (effect: Point, point: Point): boolean => {
     const owner = execution(effect.scope), reader = execution(point.scope);
-    if (owner === reader) return position(effect.value) < position(point.value);
+    for (let frame: Point | undefined = point; frame; frame = frame.caller) if (execution(frame.scope) === owner) return position(effect.value) < position(frame.value);
     for (let ancestor = reader.parent; ancestor; ancestor = ancestor.parent) if (ancestor === owner) return true;
     // Imported module initialization completes before a function can read it.
     return !owner.parent && !!reader.parent;
   };
-  const bindingValues = (binding: Binding, point: Point, arguments_: ReadonlyMap<Binding, Binding>): Point[] => {
+  const located = (value: Node, scope: Scope, context?: Point): Point => {
+    for (let frame = context; frame; frame = frame.caller) if (execution(frame.scope) === execution(scope)) return { value, scope, ...(frame.caller ? { caller: frame.caller } : {}) };
+    return { value, scope };
+  };
+  const bindingValues = (binding: Binding, point: Point, arguments_: ReadonlyMap<Binding, Binding>): ResolvedValue[] => {
     const selected = arguments_.get(binding) ?? binding;
-    let values: Point[] = selected.expression ? [{ value: selected.expression, scope: selected.scope }] : [];
-    if (!arguments_.has(binding)) for (const assignment of assignments) {
-      if (assignment.target.type !== "Identifier" || resolveBinding(lookup(assignment.scope, String(assignment.target.name))) !== binding || !before(assignment, point)) continue;
-      const replacement = { value: assignment.replacement, scope: assignment.scope };
-      values = assignment.conditional ? [...values, replacement] : [replacement];
+    const origin = located(selected.expression ?? { type: "Empty", start: 0 }, selected.scope, point);
+    let values: ResolvedValue[] = selected.expression ? [{ ...origin, read: selected.point ?? origin, arguments: arguments_ }] : [];
+    if (!arguments_.has(binding)) for (const effect of effects(origin, point, arguments_)) {
+      if (effect.binding !== binding || !effect.mutation.replacement) continue;
+      const replacement = { value: effect.mutation.replacement, scope: effect.mutation.scope, read: effect.point, arguments: effect.arguments };
+      values = effect.optional ? [...values, replacement] : [replacement];
     }
     return values;
   };
   const origins = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): Point[] | undefined => {
     if (!value || seen.size > 100) return;
     scope = contexts.get(value) ?? scope;
-    if (value.type === "ArrayExpression") return [{ value, scope }];
+    if (value.type === "ArrayExpression") return [{ ...located(value, scope, point), bindings: arguments_ }];
     if (["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return origins(node(value.expression), scope, point, arguments_, seen);
     if (value.type === "ConditionalExpression") {
       const left = origins(node(value.consequent), scope, point, arguments_, seen), right = origins(node(value.alternate), scope, point, arguments_, seen);
@@ -197,32 +207,45 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     const binding = resolveBinding(lookup(scope, String(value.name)));
     if (!binding || seen.has(binding)) return;
     const nextSeen = new Set([...seen, binding]), expressions = bindingValues(binding, point, arguments_);
-    const resolved = expressions.map(expression => origins(expression.value, expression.scope, expression, arguments_, nextSeen));
+    const resolved = expressions.map(expression => origins(expression.value, expression.scope, expression.read, expression.arguments, nextSeen));
     return resolved.length && resolved.every(value => value !== undefined) ? resolved.flatMap(value => value!) : undefined;
   };
-  interface AppliedMutation { readonly mutation: Mutation; readonly point: Point; readonly optional: boolean; readonly arguments: ReadonlyMap<Binding, Binding>; }
+  interface AppliedMutation { readonly mutation: Mutation; readonly binding?: Binding; readonly point: Point; readonly optional: boolean; readonly repeated: boolean; readonly arguments: ReadonlyMap<Binding, Binding>; }
   const effects = (origin: Point, point: Point, arguments_: ReadonlyMap<Binding, Binding>): AppliedMutation[] => {
     const collected: AppliedMutation[] = [];
-    const collect = (owner: Scope, limit: Point, inherited: ReadonlyMap<Binding, Binding>, optional = false, invocation?: Point, seen = new Set<Scope>()): void => {
+    const collect = (owner: Scope, limit: Point, inherited: ReadonlyMap<Binding, Binding>, optional = false, looping = false, invocation?: Point, seen = new Set<Scope>()): void => {
       if (seen.has(owner) || seen.size > 100) return;
       const nextSeen = new Set([...seen, owner]);
-      const events = [...mutations, ...calls].filter(event => execution(event.scope) === owner && (invocation || before(event, limit)) && (execution(origin.scope) !== owner || position(event.value) > position(origin.value))).sort((left, right) => position(left.value) - position(right.value));
+      const events = [...mutations, ...assignments.filter(event => event.target.type === "Identifier"), ...calls].filter(event => execution(event.scope) === owner && (invocation || before(event, limit)) && (execution(origin.scope) !== owner || position(event.value) > position(origin.value))).sort((left, right) => position(left.value) - position(right.value));
       for (const event of events) {
-        if ("target" in event) { collected.push({ mutation: event, point: invocation ?? event, optional: optional || event.conditional, arguments: inherited }); continue; }
+        const eventPoint = invocation ? { value: event.value, scope: event.scope, caller: invocation } : located(event.value, event.scope, limit);
+        if ("target" in event) {
+          const binding = assignments.some(assignment => assignment === event) ? resolveBinding(lookup(event.scope, String(event.target.name))) : undefined;
+          collected.push({ mutation: event, ...(binding ? { binding } : {}), point: eventPoint, optional: optional || event.conditional, repeated: looping || repeated.has(event.value), arguments: inherited });
+          continue;
+        }
         const binding = event.callee.type === "Identifier" ? resolveBinding(lookup(event.scope, String(event.callee.name))) : undefined;
         const fn = binding?.expression, local = fn && contexts.get(fn);
         if (!fn || !local || !["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(fn.type))) continue;
         const replacements = new Map(inherited);
         nodes(fn.params).forEach((parameter, index) => {
           const argument = nodes(event.value.arguments)[index], parameterBinding = parameter.type === "Identifier" && lookup(local, String(parameter.name));
-          if (parameterBinding && argument) replacements.set(parameterBinding, { scope: event.scope, expression: argument });
+          if (parameterBinding && argument) replacements.set(parameterBinding, { scope: event.scope, expression: argument, point: eventPoint });
         });
-        collect(local, event, replacements, optional || event.conditional, invocation ?? event, nextSeen);
+        collect(local, event, replacements, optional || event.conditional, looping || repeated.has(event.value), eventPoint, nextSeen);
       }
     };
     const owners: Scope[] = [];
-    for (let scope: Scope | undefined = execution(point.scope); scope; scope = scope.parent ? execution(scope.parent) : undefined) owners.unshift(scope);
-    if (!owners.includes(execution(origin.scope))) owners.unshift(execution(origin.scope));
+    const frames: Point[] = [];
+    for (let frame: Point | undefined = point; frame; frame = frame.caller) frames.unshift(frame);
+    for (const frame of frames) {
+      const ancestors: Scope[] = [];
+      for (let scope: Scope | undefined = execution(frame.scope); scope; scope = scope.parent ? execution(scope.parent) : undefined) ancestors.unshift(scope);
+      for (const owner of ancestors) if (!owners.includes(owner)) owners.push(owner);
+    }
+    const allocationOwner = execution(origin.scope);
+    if (!allocationOwner.parent && owners.includes(allocationOwner)) owners.splice(owners.indexOf(allocationOwner), 1);
+    if (!owners.includes(allocationOwner)) owners.unshift(allocationOwner);
     for (const owner of owners) collect(owner, point, arguments_);
     return collected;
   };
@@ -243,7 +266,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (value.type === "Identifier") {
       const binding = resolveBinding(lookup(scope, String(value.name)));
       if (!binding || seen.has(binding) || seen.size > 100) return;
-      const possible = bindingValues(binding, point, arguments_).map(expression => sortKey(expression.value, expression.scope, expression, arguments_, new Set([...seen, binding])));
+      const possible = bindingValues(binding, point, arguments_).map(expression => sortKey(expression.value, expression.scope, expression.read, expression.arguments, new Set([...seen, binding])));
       if (possible.length && possible.every(value => value !== undefined && value === possible[0])) return possible[0];
     }
   };
@@ -256,23 +279,42 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     for (const origin of allocations) {
       if (seen.has(origin.value)) return;
       const nextSeen = new Set([...seen, origin.value]);
+      const bindings = origin.bindings ?? arguments_;
       let alternatives: Node[][] = [[]];
       for (const item of Array.isArray(origin.value.elements) ? origin.value.elements : []) {
         const element = node(item);
-        const choices = element?.type === "SpreadElement" ? arrays(node(element.argument), origin.scope, origin, arguments_, nextSeen) : [[captured(element, origin, arguments_)]];
+        const choices = element?.type === "SpreadElement" ? arrays(node(element.argument), origin.scope, origin, bindings, nextSeen) : [[captured(element, origin, bindings)]];
         if (!choices) return;
         alternatives = bounded(alternatives.flatMap(prefix => choices.map(suffix => [...prefix, ...suffix])));
       }
       for (const effect of effects(origin, point, arguments_)) {
+        if (effect.binding) continue;
         const mutation = effect.mutation;
         const targets = origins(mutation.target, mutation.scope, effect.point, effect.arguments);
         if (!targets?.some(target => target.value === origin.value)) continue;
+        if (effect.repeated && ["pop", "shift"].includes(mutation.method ?? "")) {
+          // A loop can remove any prefix/suffix, including every element. Keep
+          // the finite states instead of assuming that its body runs once.
+          if (alternatives.reduce((count, values) => count + values.length + 1, 0) > 128) return;
+          alternatives = alternatives.flatMap(values => Array.from({ length: values.length + 1 }, (_, count) => mutation.method === "pop" ? values.slice(0, count) : values.slice(count)));
+          continue;
+        }
+        if (effect.repeated && ["push", "unshift", "splice"].includes(mutation.method ?? "")) return;
         const optional = effect.optional || targets.some(target => target.value !== origin.value);
         const selected = mutation.key ? keys(mutation.key, mutation.scope, new Set(), effect.arguments) : [];
         const numeric = (value: Node | undefined): number | undefined => {
           const values = keys(value, mutation.scope, new Set(), effect.arguments);
           const result = values.length === 1 && values[0] !== "*" ? Number(values[0]) : NaN;
           return Number.isSafeInteger(result) ? result : undefined;
+        };
+        const insertions = (argumentsList: Node[]): Node[][] | undefined => {
+          let additions: Node[][] = [[]];
+          for (const argument of argumentsList) {
+            const choices = argument.type === "SpreadElement" ? arrays(node(argument.argument), mutation.scope, effect.point, effect.arguments, nextSeen) : [[captured(argument, effect.point, effect.arguments)]];
+            if (!choices) return;
+            additions = bounded(additions.flatMap(prefix => choices.map(suffix => [...prefix, ...suffix])));
+          }
+          return additions;
         };
         const transformed: Node[][] = [];
         for (const previous of alternatives) {
@@ -295,12 +337,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
           } else if (mutation.method === "pop") next.pop();
           else if (mutation.method === "shift") next.shift();
           else if (mutation.method === "push" || mutation.method === "unshift") {
-            let additions: Node[][] = [[]];
-            for (const argument of argumentsList) {
-              const choices = argument.type === "SpreadElement" ? arrays(node(argument.argument), mutation.scope, effect.point, effect.arguments, nextSeen) : [[captured(argument, effect.point, effect.arguments)]];
-              if (!choices) return;
-              additions = bounded(additions.flatMap(prefix => choices.map(suffix => [...prefix, ...suffix])));
-            }
+            const additions = insertions(argumentsList);
+            if (!additions) return;
             transformed.push(...additions.map(items => mutation.method === "push" ? [...next, ...items] : [...items, ...next]));
             continue;
           }
@@ -322,7 +360,10 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
           } else if (mutation.method === "splice") {
             const start = numeric(argumentsList[0]), count = argumentsList[1] ? numeric(argumentsList[1]) : next.length;
             if (start === undefined || count === undefined) return;
-            next.splice(start, count, ...argumentsList.slice(2).map((_, index) => at(index + 2)));
+            const additions = insertions(argumentsList.slice(2));
+            if (!additions) return;
+            transformed.push(...additions.map(items => { const values = [...next]; values.splice(start, count, ...items); return values; }));
+            continue;
           }
           transformed.push(next);
         }
@@ -360,7 +401,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       if (binding?.imported?.name === "*" && properties[0]) { binding = resolveBinding(exported(binding.imported.module, properties[0].key)); properties = properties.slice(1); }
       if (!binding || seen.has(binding)) return;
       const nextSeen = new Set([...seen, binding]);
-      for (const expression of bindingValues(binding, read, arguments_)) trace(expression.value, expression.scope, properties, nextSeen, arguments_, call);
+      for (const expression of bindingValues(binding, read, arguments_)) trace(expression.value, expression.scope, properties, nextSeen, expression.arguments, call, expression.read);
     } else if (value.type === "ConditionalExpression") {
       visit(node(value.consequent), scope); visit(node(value.alternate), scope);
     } else if (value.type === "LogicalExpression") {
@@ -415,7 +456,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         if (!pattern || !expression) return;
         if (pattern.type === "Identifier") {
           const declaration = lookup(local, String(pattern.name));
-          if (declaration) replacements.set(declaration, { scope: call.scope, expression });
+          if (declaration) replacements.set(declaration, { scope: call.scope, expression, point: call.point });
         } else if (pattern.type === "AssignmentPattern") replace(node(pattern.left), { type: "LogicalExpression", operator: "??", left: expression, right: pattern.right });
         else if (pattern.type === "RestElement") replace(node(pattern.argument), expression);
         else if (pattern.type === "ObjectPattern") for (const member of nodes(pattern.properties)) {
@@ -431,13 +472,13 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         replace(parameter, expression);
       });
       const body = node(value.body);
-      if (body?.type !== "BlockStatement") trace(body, local, properties, seen, replacements);
+      if (body?.type !== "BlockStatement") trace(body, local, properties, seen, replacements, undefined, body ? { value: body, scope: local, caller: call.point } : undefined);
       else {
         const returns = (value: unknown): void => {
           if (Array.isArray(value)) { value.forEach(returns); return; }
           const statement = node(value);
           if (!statement || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(statement.type))) return;
-          if (statement.type === "ReturnStatement") trace(node(statement.argument), contexts.get(statement) ?? local, properties, seen, replacements);
+          if (statement.type === "ReturnStatement") trace(node(statement.argument), contexts.get(statement) ?? local, properties, seen, replacements, undefined, { value: statement, scope: contexts.get(statement) ?? local, caller: call.point });
           else Object.values(statement).forEach(returns);
         };
         returns(body);

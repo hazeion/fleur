@@ -263,6 +263,100 @@ test("array mutation helpers retain call arguments and distinguish reassigned al
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("repeated array removals retain the possible trailing presentation selection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-repeated-mutation-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), `
+      const values = ["w-[531px]", "w-[541px]"];
+      for (let index = 0; index < 2; index++) values.pop();
+      export const Page = () => <p class={[...values, "w-[547px]"][0]}/>;
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    expect(css).toMatch(/width:\s*547px/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test.each([
+  {
+    name: "helper reads retain their invocation time",
+    source: `const values = ["w-[601px]"];
+      function select() { return values[0]; }
+      const first = <p class={select()}/>;
+      values[0] = 'content-["helper-future-private-canary"]';
+      export const Page = () => <main>{first}</main>;`,
+    width: 601,
+    canary: "helper-future-private-canary",
+  },
+  {
+    name: "invoked helpers update scalar class selections",
+    source: `let selected = "w-[601px]";
+      function change() { selected = "w-[607px]"; }
+      function unused() { selected = 'content-["unused-scalar-private-canary"]'; }
+      change();
+      export const Page = () => <main class={selected}/>;`,
+    width: 607,
+    canary: "unused-scalar-private-canary",
+  },
+  {
+    name: "splice spread insertions preserve indexed selection",
+    source: `const values = ["w-[601px]"];
+      values.splice(0, 1, ...["w-[607px]", 'content-["splice-unselected-private-canary"]']);
+      export const Page = () => <main class={values[0]}/>;`,
+    width: 607,
+    canary: "splice-unselected-private-canary",
+  },
+  {
+    name: "nested helper reads preserve local statement order",
+    source: `const values = ["w-[601px]"];
+      function select() {
+        values[0] = "w-[613px]";
+        const selected = values[0];
+        values[0] = 'content-["helper-local-future-private-canary"]';
+        return selected;
+      }
+      const invoke = () => select();
+      const first = <p class={invoke()}/>;
+      export const Page = () => <main>{first}</main>;`,
+    width: 613,
+    canary: "helper-local-future-private-canary",
+  },
+  {
+    name: "nested scalar helpers capture their arguments before later assignments",
+    source: `let selected = "w-[601px]";
+      function change(value: string) { selected = value; }
+      function invoke(value: string) { change(value); }
+      invoke("w-[617px]");
+      const first = <p class={selected}/>;
+      selected = 'content-["scalar-helper-future-private-canary"]';
+      export const Page = () => <main>{first}</main>;`,
+    width: 617,
+    canary: "scalar-helper-future-private-canary",
+  },
+  {
+    name: "nested helper reads apply caller effects after module initialization",
+    source: `const values = ["w-[601px]"];
+      values[0] = 'content-["earlier-module-private-canary"]';
+      function select() { return values[0]; }
+      function invoke() { values[0] = "w-[619px]"; return select(); }
+      const first = <p class={invoke()}/>;
+      export const Page = () => <main>{first}</main>;`,
+    width: 619,
+    canary: "earlier-module-private-canary",
+  },
+])("$name", async ({ source, width, canary }) => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-helper-order-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), source);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+    expect(css).not.toContain(canary);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
   try {

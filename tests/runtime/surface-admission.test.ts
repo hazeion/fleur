@@ -79,6 +79,9 @@ test("executable TypeScript wrappers and ambient member paths retain source capa
     'export namespace Values { export const remote = fetch("/__fleur/view"); }',
     'export const run = () => document.defaultView!.fetch("/__fleur/view");',
     'export const run = () => window[["fe", "tch"].join("") as "fetch"]("/__fleur/view");',
+    'class Local { static { var fetch = () => 1; } } export const result = fetch("/__fleur/view");',
+    'namespace Local { var fetch = () => 1; } export const result = fetch("/__fleur/view");',
+    'function ambient() { return window; } export const result = ambient().fetch("/__fleur/view");',
   ]) await fixture({ "client/view.ts": source }, async root => {
     await expect(admitProject(root), source).rejects.toThrow("SOURCE_REJECTED");
   });
@@ -167,6 +170,9 @@ test("ordinary data fields, type members and locally bound helpers do not grant 
     export function process(value: number) { return value + 1; }
     export const result = process(2);
     export const render = (fetch: (value: string) => string) => fetch("local helper");
+    export class Local { static { var fetch = (value: number) => value; fetch(3); } }
+    export namespace Helpers { var fetch = (value: number) => value; export const result = fetch(3); }
+    export const viewport = () => window.innerWidth;
   ` }, async root => {
     const project = await admitProject(root);
     expect(project.client).toHaveLength(1);

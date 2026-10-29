@@ -126,6 +126,11 @@ async function collectProject(directory: string): Promise<AdmittedProject> {
       const propertyKey = key === "key" && ["Property", "MethodDefinition", "PropertyDefinition"].includes(String(parent?.type)) && !parent?.computed && !parent?.shorthand;
       const memberKey = key === "property" && parent?.type === "MemberExpression" && !parent.computed;
       if (!typeOnly && !propertyKey && !memberKey && ["Identifier", "MemberExpression"].includes(String(node.type))) checkCapability(node);
+      const wrappers = ["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "TSInstantiationExpression", "ChainExpression", "ParenthesizedExpression"];
+      if (!typeOnly && !propertyKey && !memberKey && ["Identifier", "MemberExpression", ...wrappers].includes(String(node.type)) && ["global", "navigator", "document", "reflect"].includes(capability(node))) {
+        const staticReceiver = parent?.type === "MemberExpression" && key === "object" || wrappers.includes(String(parent?.type)) && key === "expression";
+        if (!staticReceiver) fail(node, "AMBIENT_REFERENCE", "Keep ambient browser objects in statically named property access; use Fleur operations for application data.");
+      }
       if (node.type === "MetaProperty" && (node.meta as Record<string, unknown> | undefined)?.name === "import") fail(node, "ASSET_REFERENCE", "Import validated files from assets/ or use their /assets/ URLs; import.meta asset transforms are not supported.");
       if (node.type === "JSXAttribute" && (node.name as Record<string, unknown> | undefined)?.name === "dangerouslySetInnerHTML") fail(node, "PRESENTATION_INJECTION", "Use JSX elements and inline styles; HTML injection is not supported.");
       if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(String(node.type)) && node.source !== null && node.source !== undefined) imports.push(literal(node.source));

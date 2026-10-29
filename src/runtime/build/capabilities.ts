@@ -79,7 +79,7 @@ export function sourceCapabilities(program: unknown): (value: Node) => Kind {
   const hoist = (value: unknown, scope: Scope): void => {
     if (Array.isArray(value)) { for (const child of value) hoist(child, scope); return; }
     const current = node(value);
-    if (!current || String(current.type).includes("Function")) return;
+    if (!current || String(current.type).includes("Function") || ["ClassDeclaration", "ClassExpression", "StaticBlock", "TSModuleDeclaration", "TSModuleBlock"].includes(String(current.type))) return;
     if (current.type === "VariableDeclaration" && current.kind === "var") declare(current, scope);
     for (const child of Object.values(current)) hoist(child, scope);
   };
@@ -89,11 +89,11 @@ export function sourceCapabilities(program: unknown): (value: Node) => Kind {
     if (!current) return;
     let scope = parent;
     const type = String(current.type);
-    if (type === "Program" || type === "BlockStatement" || type === "SwitchStatement") {
+    if (["Program", "BlockStatement", "SwitchStatement", "StaticBlock", "TSModuleBlock"].includes(type)) {
       scope = { parent, bindings: new Map() };
       const statements = (type === "SwitchStatement" ? (current.cases as Node[]).flatMap(item => item.consequent as unknown[]) : current.body) as unknown[];
       for (const statement of statements) declare(statement, scope);
-      if (type === "Program") hoist(current, scope);
+      if (["Program", "StaticBlock", "TSModuleBlock"].includes(type)) hoist(current.body, scope);
     } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(type)) {
       scope = { parent, bindings: new Map() };
       bind(node(current.id), scope, undefined, "function");

@@ -129,18 +129,20 @@ test("class bindings support destructuring and defaults without confusing shadow
       const local = 'content-["var-private-canary"]';
       const Inner = 'content-["class-private-canary"]';
       const [classes] = ["w-[173px]"];
+      const base = ["w-[191px]"];
+      const {hidden, ...props} = {hidden: 'content-["rest-private-canary"]', className: "w-[197px]"};
       function choose(value = "w-[179px]") { return value; }
       function fromObject({value}: {value: string; private: string}) { return value; }
       function fromArray([value]: string[]) { return value; }
-      export function Page({privateNote}: {privateNote:string}) { return <main class={privateNote}><p class={classes}/><p class={choose()}/><p class={fromObject({value: "w-[183px]", private: 'content-["unselected-argument-canary"]'})}/><p class={fromArray(["w-[187px]"])}/></main>; }
+      export function Page({privateNote}: {privateNote:string}) { return <main class={privateNote}><p class={classes}/><p class={choose()}/><p class={fromObject({value: "w-[183px]", private: 'content-["unselected-argument-canary"]'})}/><p class={fromArray(["w-[187px]"])}/><p class={[...base, "h-[193px]"].join(" ")}/><p {...props}/></main>; }
       export function Fallback() { try { throw "unknown runtime value"; } catch (caught) { return <main class={caught}/>; } }
       export function Hoisted() { if (true) { var local = "w-[181px]"; } return <main class={local}/>; }
       export const Component = class Inner { render() { return <main class={Inner}/>; } };
     `);
     const bundle = await compileClient(await admitProject(root));
     const css = String(bundle.files.get(bundle.stylesheet!)?.body);
-    for (const canary of ["destructured-private-canary", "caught-private-canary", "var-private-canary", "class-private-canary", "unselected-argument-canary"]) expect(css).not.toContain(canary);
-    for (const width of [173, 179, 181, 183, 187]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+    for (const canary of ["destructured-private-canary", "caught-private-canary", "var-private-canary", "class-private-canary", "unselected-argument-canary", "rest-private-canary"]) expect(css).not.toContain(canary);
+    for (const width of [173, 179, 181, 183, 187, 191, 197]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -5,6 +5,7 @@ type Node = Record<string, unknown>;
 interface Scope { readonly parent?: Scope; readonly bindings: Map<string, Binding>; readonly function?: boolean; }
 interface Binding { readonly scope: Scope; readonly expression?: Node; readonly imported?: { module: string; name: string }; readonly factory?: "function" | "namespace"; }
 interface Module { readonly scope: Scope; readonly exports: Map<string, Binding>; readonly reexports: string[]; }
+interface Selection { readonly key: string; readonly excluded?: ReadonlySet<string>; }
 const node = (value: unknown): Node | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Node : undefined;
 const nodes = (value: unknown): Node[] => Array.isArray(value) ? value.map(node).filter((value): value is Node => value !== undefined) : [];
 const name = (value: unknown): string | undefined => { const item = node(value); return typeof item?.name === "string" ? item.name : typeof item?.value === "string" ? item.value : undefined; };
@@ -32,7 +33,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     }
     else if (pattern?.type === "ObjectPattern") for (const item of nodes(pattern.properties)) {
       const key = name(item.key);
-      if (item.type === "RestElement") declare(node(item.argument), undefined, scope);
+      if (item.type === "RestElement") declare(node(item.argument), expression ? { type: "ObjectRest", argument: expression, excluded: nodes(pattern.properties).filter(item => item.type === "Property").map(item => name(item.key) ?? "*") } : undefined, scope);
       else if (item.type === "Property") declare(node(item.value), key && expression ? { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true } : undefined, scope);
     }
   };
@@ -149,13 +150,13 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     }
     return "*";
   };
-  const trace = (value: Node | undefined, outer: Scope, properties: readonly string[] = [], seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map(), call?: Call): void => {
+  const trace = (value: Node | undefined, outer: Scope, properties: readonly Selection[] = [], seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map(), call?: Call): void => {
     if (!value || seen.size > 100) return;
     const scope = contexts.get(value) ?? outer;
-    const visit = (value: Node | undefined, scope: Scope, selected: readonly string[] = properties, nextSeen = seen, invocation = call) => trace(value, scope, selected, nextSeen, arguments_, invocation);
+    const visit = (value: Node | undefined, scope: Scope, selected: readonly Selection[] = properties, nextSeen = seen, invocation = call) => trace(value, scope, selected, nextSeen, arguments_, invocation);
     if (value.type === "Identifier") {
       let binding = resolveBinding(lookup(scope, String(value.name)));
-      if (binding?.imported?.name === "*" && properties[0]) { binding = resolveBinding(exported(binding.imported.module, properties[0])); properties = properties.slice(1); }
+      if (binding?.imported?.name === "*" && properties[0]) { binding = resolveBinding(exported(binding.imported.module, properties[0].key)); properties = properties.slice(1); }
       if (!binding || seen.has(binding)) return;
       const selected = arguments_.get(binding) ?? binding;
       const nextSeen = new Set([...seen, binding]);
@@ -168,16 +169,19 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       visit(node(value.right), scope);
     } else if (value.type === "MemberExpression") {
       const selected = value.computed ? key(node(value.property), scope) : name(value.property);
-      if (selected) visit(node(value.object), scope, [selected, ...properties]);
+      if (selected) visit(node(value.object), scope, [{ key: selected }, ...properties]);
+    } else if (value.type === "ObjectRest" && properties[0]) {
+      const selected = properties[0], excluded = new Set([...(selected.excluded ?? []), ...value.excluded as string[]]);
+      if (!excluded.has(selected.key) && !excluded.has("*")) visit(node(value.argument), scope, [{ ...selected, excluded }, ...properties.slice(1)]);
     } else if (value.type === "ObjectExpression" && properties[0]) {
       for (const member of nodes(value.properties)) {
         if (member.type === "SpreadElement") visit(node(member.argument), scope);
-        else if (properties[0] === "*" || name(member.key) === properties[0]) visit(node(member.value), scope, properties.slice(1));
+        else if (!properties[0].excluded?.has(name(member.key) ?? "") && (properties[0].key === "*" || name(member.key) === properties[0].key)) visit(node(member.value), scope, properties.slice(1));
       }
     } else if (value.type === "ArrayExpression") {
       const elements = Array.isArray(value.elements) ? value.elements : [];
       elements.forEach((element, index) => {
-        if (!properties.length || properties[0] === "*" || properties[0] === String(index)) visit(node(element), scope, properties.slice(1));
+        if (!properties.length || properties[0]?.key === "*" || properties[0]?.key === String(index)) visit(node(element), scope, properties.slice(1));
       });
     } else if (value.type === "CallExpression") {
       const callee = node(value.callee);
@@ -216,7 +220,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         };
         returns(body);
       }
-    } else if (["JSXExpressionContainer", "TSAsExpression", "TSTypeAssertion", "TSInstantiationExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) visit(node(value.expression), scope);
+    } else if (value.type === "SpreadElement") visit(node(value.argument), scope);
+    else if (["JSXExpressionContainer", "TSAsExpression", "TSTypeAssertion", "TSInstantiationExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) visit(node(value.expression), scope);
     else if (properties.length === 0 && !call) {
       if (typeof value.value === "string") result.add(value.value);
       else if (value.type === "TemplateLiteral") {
@@ -227,6 +232,6 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       } else if (value.type === "SequenceExpression") visit(nodes(value.expressions).at(-1), scope);
     }
   };
-  for (const sink of sinks) trace(sink.value, sink.scope, sink.property ? [sink.property] : []);
+  for (const sink of sinks) trace(sink.value, sink.scope, sink.property ? [{ key: sink.property }] : []);
   return [...result];
 }

@@ -30,6 +30,8 @@ through Fleur queries, mutations and retrievals. Calling an allowed Fleur URL
 with a manual browser transport is still refused. The browser installs runtime
 transport and DOM guards before application modules evaluate; CSP separately
 restricts executable resources. Neither layer replaces source admission.
+Keep ambient browser objects in statically named property access; passing or
+returning the window, document, navigator or reflection object is not admitted.
 
 ## Styling
 

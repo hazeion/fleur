@@ -5,8 +5,8 @@ import { describeTables, restoreTables } from "../../src/runtime/table-wire";
 import { definition } from "../../src/runtime/declarations";
 
 test("worker table declarations reconstruct only registered, typed read authority", () => {
-  const exercises = defineTable("wire_exercises", { columns: { id: column.uuid().primaryKey(), name: column.string().max(100), note: column.string().nullable() } });
-  const described = describeTables([exercises]);
+  const ingredients = defineTable("wire_ingredients", { columns: { id: column.uuid().primaryKey(), name: column.string().max(100), note: column.string().nullable() } });
+  const described = describeTables([ingredients]);
   const received = restoreTables(JSON.parse(JSON.stringify(described)));
   expect(received[0]).toHaveProperty("version");
   expect(definition(received[0]!.note!).check.parse(null)).toBeNull();

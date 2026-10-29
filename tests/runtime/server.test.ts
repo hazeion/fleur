@@ -5,12 +5,12 @@ import { definePage } from "../../src/routing";
 import { h } from "preact";
 
 test("server registration rejects duplicates and read dispatch requires render authority", async () => {
-  const query = defineQuery({ name: "exercises.server-test", input: schema.object({}), output: schema.string() });
-  handleQuery(query, async () => "Squat");
+  const query = defineQuery({ name: "ingredients.server-test", input: schema.object({}), output: schema.string() });
+  handleQuery(query, async () => "Sage");
   expect(() => handleQuery(query, async () => "again")).toThrow();
   await expect(readQuery(query, {})).rejects.toThrow("UNSUPPORTED_CAPABILITY");
-  const page = definePage({ path: "/registered-exercises", params: schema.object({}) });
-  registerPage(page, { component: () => h("h1", null, "Exercises") });
+  const page = definePage({ path: "/registered-ingredients", params: schema.object({}) });
+  registerPage(page, { component: () => h("h1", null, "Ingredients") });
   expect(() => registerPage(page, { component: () => h("h1", null, "duplicate") })).toThrow();
 });
 

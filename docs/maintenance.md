@@ -5,8 +5,8 @@ Fleur supplies named inspection, backup, migration and recovery operations. They
 ```sh
 fleur status --json
 fleur db inspect --json
-fleur db inspect --table exercises --limit 100 --json
-fleur db inspect --table exercises --cursor <cursor> --export exercises-page.json --json
+fleur db inspect --table ingredients --limit 100 --json
+fleur db inspect --table ingredients --cursor <cursor> --export ingredients-page.json --json
 fleur db backup --out before-migration.dump --json
 fleur db recover --inspect --json
 ```
@@ -147,12 +147,12 @@ serialized declarations again before applying them.
 
 ```ts
 import { defineSeed } from "fleur/database";
-import { exercises } from "../server/tables";
+import { ingredients } from "../server/tables";
 
 export const catalog = defineSeed({
-  key: "exercise-catalog",
-  table: exercises,
-  rows: [{ ownerKey: "squat", values: { id: 1, name: "Squat" } }],
+  key: "ingredient-catalog",
+  table: ingredients,
+  rows: [{ ownerKey: "sage", values: { id: 1, name: "Sage" } }],
 });
 ```
 

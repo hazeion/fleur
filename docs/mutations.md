@@ -3,10 +3,10 @@
 Declare browser-safe contracts in `shared/`, handlers and tables in `server/`, and forms in `client/`. `defineMutation`, `handleMutation` and `useMutation` infer input and output types from the same strict schemas. Export contracts to assign stable identities; explicit names must be unique across queries and mutations.
 
 ```ts
-// shared/exercises.ts
+// shared/ingredients.ts
 import { defineMutation, schema } from "fleur/schema";
-export const renameExercise = defineMutation({
-  name: "exercises.rename",
+export const renameIngredient = defineMutation({
+  name: "ingredients.rename",
   input: schema.object({
     id: schema.uuid(), expectedVersion: schema.safeInteger(), name: schema.string(),
   }),
@@ -15,19 +15,19 @@ export const renameExercise = defineMutation({
   }),
 });
 
-// server/exercises.ts
+// server/ingredients.ts
 import { column, defineTable } from "fleur/database";
 import { handleMutation, inputError } from "fleur/server";
-import { renameExercise } from "../shared/exercises";
-export const exercises = defineTable("exercises", { columns: {
+import { renameIngredient } from "../shared/ingredients";
+export const ingredients = defineTable("ingredients", { columns: {
   id: column.uuid().primaryKey().generated(),
   name: column.string().max(100).unique({ caseFold: true }),
 } });
-handleMutation(renameExercise, async ({ input, db }) => {
+handleMutation(renameIngredient, async ({ input, db }) => {
   const name = input.name.trim();
   const length = Array.from(name).length;
   if (length < 1 || length > 100) throw inputError({ name: "Use 1–100 characters after trimming." });
-  return db.updateVersioned(exercises, {
+  return db.updateVersioned(ingredients, {
     id: input.id, expectedVersion: input.expectedVersion, set: { name },
     returning: ["id", "name", "version"],
   });
@@ -45,18 +45,20 @@ Explicit `versioned: false` declarations emit the warning that updates and delet
 Declare non-unique indexes with the table's `indexes` option. Each index lists 1–32 of the table's own columns in order. A key is a field name, which sorts ascending, or `{ field, direction }`:
 
 ```ts
+// Simplified from tests/runtime/fixtures/recipes/server/meals.tsx, which declares the same indexes.
 export const meals = defineTable("meals", {
   columns: { id: column.uuid().primaryKey().generated(), date: column.localDate() },
-  indexes: [{ fields: [{ field: "date", direction: "desc" }, { field: "id", direction: "desc" }] }],
+  indexes: [{ fields: [{ field: "date", direction: "desc" }, "id"] }],
 });
 export const mealIngredients = defineTable("meal_ingredients", {
   columns: { id: column.uuid().primaryKey().generated(), mealId: column.uuid().references(meals.id, { onDelete: "cascade" }), position: column.safeInteger() },
   indexes: [{ fields: ["mealId", "position"] }],
 });
-// A newest-first history page reads in the first index's order, with no sort.
+// A newest-first history page reads in the first index's order, with no sort. Fleur appends
+// the primary key in ascending order as the tie-breaker, which the index's final "id" key covers.
 handleQuery(listMeals, async ({ db }) => db.select(meals, {
   fields: ["id", "date", "version"],
-  orderBy: [{ field: "date", direction: "desc" }, { field: "id", direction: "desc" }], limit: 20,
+  orderBy: [{ field: "date", direction: "desc" }], limit: 20,
 }));
 ```
 
@@ -70,7 +72,7 @@ Indexes are B-tree and non-unique over whole columns. Partial, expression, cover
 
 The trusted schema compiler produces the fixture's table constraints and index. It does not apply schema changes during application startup or introduce a migration command. Existing databases need matching schema through the later migration workflow; the internal verification fixture creates its schema only in an owned disposable database.
 
-In an island, call `const save = useMutation(renameExercise)` and `await save.run(input)`. State exposes `idle`, `pending`, `success`, `failure` and `outcome-unknown`, with `pending` and optional validated `data` or safe `error`. Outcomes resolve to a tagged union for ordinary operation/transport failures:
+In an island, call `const save = useMutation(renameIngredient)` and `await save.run(input)`. State exposes `idle`, `pending`, `success`, `failure` and `outcome-unknown`, with `pending` and optional validated `data` or safe `error`. Outcomes resolve to a tagged union for ordinary operation/transport failures:
 
 - `success` includes validated data and means the transaction committed.
 - `failure` includes an error code and `delivery: "not-sent" | "submitted"`. Invalid input and offline refusal before dispatch establish not-sent. Concurrent calls while the same hook is pending return `ALREADY_PENDING` without sending.

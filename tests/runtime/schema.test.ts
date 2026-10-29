@@ -3,11 +3,11 @@ import { schema } from "../../src/schema";
 
 test("public object validation distinguishes omission from null and rejects extra fields", () => {
   const contract = schema.object({ name: schema.string(), note: schema.string().optional(), deleted: schema.boolean().nullable() });
-  expect(contract.parse({ name: "Squat", deleted: null })).toEqual({ name: "Squat", deleted: null });
+  expect(contract.parse({ name: "Sage", deleted: null })).toEqual({ name: "Sage", deleted: null });
   for (const input of [
-    { name: "Squat" },
-    { name: "Squat", deleted: null, note: undefined },
-    { name: "Squat", deleted: null, secret: "private" },
+    { name: "Sage" },
+    { name: "Sage", deleted: null, note: undefined },
+    { name: "Sage", deleted: null, secret: "private" },
   ]) expect(() => contract.parse(input)).toThrow();
 });
 
@@ -24,7 +24,7 @@ test("public values reject nested JavaScript objects and accessor side effects",
 });
 
 test("wire scalars retain exact decimals, calendar dates and Unicode limits", () => {
-  expect(schema.string().min(1).max(1).parse("💪")).toBe("💪");
+  expect(schema.string().min(1).max(1).parse("🧂")).toBe("🧂");
   expect(String(schema.localDate().parse("2024-02-29"))).toBe("2024-02-29");
   expect(String(schema.timestamp().parse("2024-02-29T12:00:00.000Z"))).toBe("2024-02-29T12:00:00.000Z");
   expect(String(schema.decimal({ maxScale: 2, nonnegative: true }).parse("001.20"))).toBe("001.20");
@@ -33,7 +33,7 @@ test("wire scalars retain exact decimals, calendar dates and Unicode limits", ()
   for (const value of ["1e2", "-1", "1.001", "NaN"]) expect(() => schema.decimal({ maxScale: 2, nonnegative: true }).parse(value)).toThrow();
   expect(() => schema.safeInteger().parse(1.2)).toThrow();
   expect(() => schema.number().parse(Number.MAX_SAFE_INTEGER + 1)).toThrow();
-  expect(schema.array(schema.enum(["kg", "lb"])).min(1).max(2).parse(["kg"])).toEqual(["kg"]);
+  expect(schema.array(schema.enum(["g", "ml"])).min(1).max(2).parse(["g"])).toEqual(["g"]);
 });
 
 test("schema arrays reject holes, cycles and hidden properties without invoking getters", () => {

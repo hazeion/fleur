@@ -9,7 +9,7 @@ test("source admission follows transitive imports and refuses browser authority 
   try {
     for (const part of ["client", "server", "shared"]) await mkdir(join(root, part));
     await writeFile(join(root, "server", "private.ts"), 'export const password = "chunk-secret-canary";');
-    await writeFile(join(root, "shared", "public.ts"), 'export const label = "Exercises";');
+    await writeFile(join(root, "shared", "public.ts"), 'export const label = "Ingredients";');
     await writeFile(join(root, "client", "view.tsx"), 'import {label} from "../shared/public"; export const title = label;');
     expect((await admitProject(root)).client.length).toBe(1);
     for (const forbidden of [

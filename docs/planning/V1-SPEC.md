@@ -75,11 +75,11 @@ Typed database operations include filtering, sorting, pagination, joins, inserts
 These are target API signatures to implement and verify, not existing runtime code. Preserve the accepted `schema`, `defineQuery`, `defineMutation`, table/column and handler shapes from the application-contract resolution.
 
 ```ts
-// shared/exercises.ts
+// shared/ingredients.ts
 import { schema, defineQuery, defineMutation } from "fleur/schema";
 
-export const listExercises = defineQuery({
-  name: "exercises.list",
+export const listIngredients = defineQuery({
+  name: "ingredients.list",
   input: schema.object({}),
   output: schema.array(schema.object({
     id: schema.uuid(), name: schema.string().min(1).max(100),
@@ -87,8 +87,8 @@ export const listExercises = defineQuery({
   })),
 });
 
-export const renameExercise = defineMutation({
-  name: "exercises.rename",
+export const renameIngredient = defineMutation({
+  name: "ingredients.rename",
   input: schema.object({
     id: schema.uuid(), expectedVersion: schema.safeInteger(),
     name: schema.string(),
@@ -100,20 +100,20 @@ export const renameExercise = defineMutation({
 
 // server/operations.ts
 import { handleQuery, handleMutation, inputError } from "fleur/server";
-import { listExercises, renameExercise } from "../shared/exercises";
-import { exercises } from "./tables";
+import { listIngredients, renameIngredient } from "../shared/ingredients";
+import { ingredients } from "./tables";
 
-handleQuery(listExercises, async ({ db }) => db.select(exercises, {
+handleQuery(listIngredients, async ({ db }) => db.select(ingredients, {
   fields: ["id", "name", "version"],
   orderBy: [{ field: "id", direction: "asc" }], limit: 100,
 }));
-handleMutation(renameExercise, async ({ input, db }) => {
+handleMutation(renameIngredient, async ({ input, db }) => {
   const name = input.name.trim();
   const length = Array.from(name).length;
   if (length < 1 || length > 100) {
     throw inputError({ name: "Use 1–100 characters after trimming." });
   }
-  return db.updateVersioned(exercises, {
+  return db.updateVersioned(ingredients, {
     id: input.id, expectedVersion: input.expectedVersion,
     set: { name }, returning: ["id", "name", "version"],
   });
@@ -165,20 +165,20 @@ Page contracts remain browser-safe in shared/. Server page registration replaces
 // shared/pages.ts
 import { definePage } from "fleur/routing";
 import { schema } from "fleur/schema";
-export const exercisesPage = definePage({
-  path: "/exercises", params: schema.object({}),
+export const ingredientsPage = definePage({
+  path: "/ingredients", params: schema.object({}),
 });
 
 // server/pages.tsx
 import { registerPage, readQuery } from "fleur/server";
-import { exercisesPage } from "../shared/pages";
-import { listExercises } from "../shared/exercises";
+import { ingredientsPage } from "../shared/pages";
+import { listIngredients } from "../shared/ingredients";
 import RenameForm from "../client/RenameForm";
 
-registerPage(exercisesPage, {
+registerPage(ingredientsPage, {
   component: async ({ params }) => {
-    const rows = await readQuery(listExercises, {});
-    return <main><h1>Exercises</h1>{rows.map(row =>
+    const rows = await readQuery(listIngredients, {});
+    return <main><h1>Ingredients</h1>{rows.map(row =>
       <section key={row.id}><p>{row.name}</p>
         <RenameForm id={row.id} version={row.version} />
       </section>)}</main>;
@@ -189,12 +189,12 @@ registerPage(exercisesPage, {
 import { useState } from "preact/hooks";
 import { defineIsland, useMutation } from "fleur/client";
 import { schema } from "fleur/schema";
-import { renameExercise } from "../shared/exercises";
+import { renameIngredient } from "../shared/ingredients";
 export default defineIsland({
  props: schema.object({ id: schema.uuid(), version: schema.safeInteger() }),
  component: props => {
   const [name, setName] = useState("");
-  const rename = useMutation(renameExercise);
+  const rename = useMutation(renameIngredient);
   return <form onSubmit={event => {
     event.preventDefault();
     if (rename.pending) return;

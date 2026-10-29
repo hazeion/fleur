@@ -16,7 +16,7 @@ test("declared errors survive query and nested page boundaries while unexpected 
       import { workerManifest } from "./src/runtime/worker-manifest.ts";
       const query = defineQuery({ name: "review.error-chain", input: schema.object({ kind: schema.string() }), output: schema.string() });
       handleQuery(query, async ({ input }) => {
-        if (input.kind === "missing") throw publicError("NOT_FOUND", { resource: "exercise" });
+        if (input.kind === "missing") throw publicError("NOT_FOUND", { resource: "ingredient" });
         if (input.kind === "invalid") throw inputError({ name: "A name is required." });
         throw new Error("PRIVATE_SQL_PASSWORD_CANARY");
       });
@@ -63,7 +63,7 @@ test("declared errors survive query and nested page boundaries while unexpected 
     expect(stdout).not.toContain("PRIVATE_SQL_PASSWORD_CANARY");
     const observations = JSON.parse(stdout) as { mode: string; kind: string; code: string; details: unknown }[];
     for (const mode of ["query", "page"]) {
-      expect(observations.find(item => item.mode === mode && item.kind === "missing")).toMatchObject({ code: "NOT_FOUND", details: { resource: "exercise" } });
+      expect(observations.find(item => item.mode === mode && item.kind === "missing")).toMatchObject({ code: "NOT_FOUND", details: { resource: "ingredient" } });
       expect(observations.find(item => item.mode === mode && item.kind === "invalid")).toMatchObject({ code: "INPUT_INVALID", details: { name: "A name is required." } });
       expect(observations.find(item => item.mode === mode && item.kind === "unexpected")).toMatchObject({ code: "INTERNAL_FAILURE", details: null });
     }

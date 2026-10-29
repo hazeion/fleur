@@ -13,22 +13,22 @@ test("seeds update only unchanged owned rows and preserve user edits, tombstones
   const fixture = await ownedPostgres(), root = await mkdtemp(join(tmpdir(), "fleur-seeds-"));
   const table = defineTable("seed_rows", { columns: { id: column.safeInteger().primaryKey(), name: column.string().max(20) } });
   const broker = new ReadBroker({ url: fixture.url, tables: [table], maintenance: { stateRoot: root } });
-  const seed = (name: string) => defineSeed({ key: "catalog", table, rows: [{ ownerKey: "squat", values: { id: 1, name } }, { ownerKey: "press", values: { id: 2, name: "Press" } }] });
+  const seed = (name: string) => defineSeed({ key: "catalog", table, rows: [{ ownerKey: "sage", values: { id: 1, name } }, { ownerKey: "pepper", values: { id: 2, name: "Pepper" } }] });
   try {
     const config = { stateRoot: root, toolDirectory: await fixture.pgTools(join(root, "tools")) };
     await generateMigration(root, [table]); await applyMigrations(fixture.url, root, config);
-    expect(await seedDatabase(fixture.url, root, [seed("Squat")], config)).toMatchObject({ inserted: 2, updated: 0, skipped: [] });
-    expect(await seedDatabase(fixture.url, root, [seed("Squat")], config)).toMatchObject({ inserted: 0, updated: 0 });
-    expect(await seedDatabase(fixture.url, root, [seed("Back squat")], config)).toMatchObject({ updated: 1 });
-    await broker.mutate(db => db.updateVersioned(table, { id: 1, expectedVersion: 2, set: { name: "My squat" }, returning: ["id"] }));
-    expect(await seedDatabase(fixture.url, root, [seed("Front squat")], config)).toMatchObject({ updated: 0, skipped: [{ seed: "catalog", ownerKey: "squat", reason: "user-edited" }] });
+    expect(await seedDatabase(fixture.url, root, [seed("Sage")], config)).toMatchObject({ inserted: 2, updated: 0, skipped: [] });
+    expect(await seedDatabase(fixture.url, root, [seed("Sage")], config)).toMatchObject({ inserted: 0, updated: 0 });
+    expect(await seedDatabase(fixture.url, root, [seed("Garden sage")], config)).toMatchObject({ updated: 1 });
+    await broker.mutate(db => db.updateVersioned(table, { id: 1, expectedVersion: 2, set: { name: "My sage" }, returning: ["id"] }));
+    expect(await seedDatabase(fixture.url, root, [seed("Dried sage")], config)).toMatchObject({ updated: 0, skipped: [{ seed: "catalog", ownerKey: "sage", reason: "user-edited" }] });
     await broker.mutate(db => db.deleteVersioned(table, { id: 2, expectedVersion: 1 }));
-    expect(await seedDatabase(fixture.url, root, [seed("Front squat")], config)).toMatchObject({ inserted: 0, skipped: [{ seed: "catalog", ownerKey: "squat", reason: "user-edited" }, { seed: "catalog", ownerKey: "press", reason: "deleted" }] });
+    expect(await seedDatabase(fixture.url, root, [seed("Dried sage")], config)).toMatchObject({ inserted: 0, skipped: [{ seed: "catalog", ownerKey: "sage", reason: "user-edited" }, { seed: "catalog", ownerKey: "pepper", reason: "deleted" }] });
     await seedDatabase(fixture.url, root, [], config);
-    expect(await broker.read(db => db.select(table, { fields: ["id", "name", "version"] }))).toEqual([{ id: 1, name: "My squat", version: 3 }]);
+    expect(await broker.read(db => db.select(table, { fields: ["id", "name", "version"] }))).toEqual([{ id: 1, name: "My sage", version: 3 }]);
     await broker.mutate(db => db.insert(table, { values: { id: 2, name: "User recreation" }, returning: ["id"] }));
-    await expect(seedDatabase(fixture.url, root, [seed("Squat")], config)).rejects.toThrow("SEED_CONFLICT");
-    expect(await broker.read(db => db.select(table, { fields: ["name"], orderBy: [{ field: "id", direction: "asc" }] }))).toEqual([{ name: "My squat" }, { name: "User recreation" }]);
+    await expect(seedDatabase(fixture.url, root, [seed("Sage")], config)).rejects.toThrow("SEED_CONFLICT");
+    expect(await broker.read(db => db.select(table, { fields: ["name"], orderBy: [{ field: "id", direction: "asc" }] }))).toEqual([{ name: "My sage" }, { name: "User recreation" }]);
   } finally { await broker.close(); await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 240_000);
 

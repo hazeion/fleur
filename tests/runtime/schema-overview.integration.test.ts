@@ -210,11 +210,11 @@ test("drift, a pending migration and an active maintenance stage appear in db in
     const target = await applicationDatabase(fixture, "summary_app");
     try {
       const config = { stateRoot: root, toolDirectory: await fixture.pgTools(join(root, "tools")) };
-      const exercises = defineTable("exercises", { columns: { id: column.uuid().primaryKey(), name: column.string().max(100) } });
-      await generateMigration(root, [exercises]);
+      const ingredients = defineTable("ingredients", { columns: { id: column.uuid().primaryKey(), name: column.string().max(100) } });
+      await generateMigration(root, [ingredients]);
       await applyMigrations(target.url, root, config);
-      await generateMigration(root, [exercises, defineTable("notes", { columns: { id: column.uuid().primaryKey() } })]);
-      await target.sql.unsafe("ALTER TABLE exercises ALTER COLUMN name DROP NOT NULL");
+      await generateMigration(root, [ingredients, defineTable("notes", { columns: { id: column.uuid().primaryKey() } })]);
+      await target.sql.unsafe("ALTER TABLE ingredients ALTER COLUMN name DROP NOT NULL");
       const env = { FLEUR_PRIVATE_DATABASE_URL: target.url };
       const lease = await MaintenanceLease.acquire(target.url, true, config, true);
       try {
@@ -222,7 +222,7 @@ test("drift, a pending migration and an active maintenance stage appear in db in
         await lease.persist({ ...(await lease.marker())!, stage: "preparing" });
         const migration = await cli(root, ["db", "migration", "status"], env);
         const overview = await cli(root, ["db", "inspect"], env);
-        const rows = await cli(root, ["db", "inspect", "--table", "exercises"], env);
+        const rows = await cli(root, ["db", "inspect", "--table", "ingredients"], env);
         const status = await cli(root, ["status"], env);
         for (const outcome of [migration, overview, rows, status]) {
           expect(outcome.result.error).toBeNull();
@@ -234,7 +234,7 @@ test("drift, a pending migration and an active maintenance stage appear in db in
         expect(overview.result.data.migrations).toEqual(summary);
         expect(rows.result.data.migrations).toEqual(summary);
         expect((status.result.data.database as Record<string, Json>).migrations).toEqual(summary);
-        expect(migration.result.data.differences).toEqual([{ object: "column exercises.name", expected: 'text collate "C" not null', actual: 'text collate "C"' }]);
+        expect(migration.result.data.differences).toEqual([{ object: "column ingredients.name", expected: 'text collate "C" not null', actual: 'text collate "C"' }]);
         expect(migration.result.data.differencesTruncated).toBe(false);
         const reasons = (status.result.data.reasons as { code: string; action: { command: string } }[]);
         expect(reasons.map(reason => reason.code)).toEqual(["MIGRATION_PENDING", "SCHEMA_DRIFT", "MAINTENANCE_ACTIVE"]);
@@ -263,7 +263,7 @@ test("status against a stopped database exits 0 within its probe deadline and po
     expect(status.exit).toBe(0);
     expect(status.result.data).toMatchObject({ ready: false, database: { connectivity: "unreachable", failure: "rejected", target: { kind: "development", database: "stopped_app", serverVersion: null, fingerprint: null }, migrations: null } });
     expect((status.result.data.reasons as { code: string }[]).map(reason => reason.code)).toEqual(["DATABASE_UNAVAILABLE"]);
-    const rows = await cli(root, ["db", "inspect", "--table", "exercises"], { FLEUR_PRIVATE_DATABASE_URL: target.url });
+    const rows = await cli(root, ["db", "inspect", "--table", "ingredients"], { FLEUR_PRIVATE_DATABASE_URL: target.url });
     expect(rows.exit).toBe(4);
     expect(rows.result.error?.code).toBe("DATABASE_UNAVAILABLE");
     for (const outcome of [status, rows]) expectNoEndpoint(outcome, target);

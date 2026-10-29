@@ -21,7 +21,7 @@ test("database commands reject positional SQL and incomplete backup/recovery gra
   const root = await mkdtemp(`${tmpdir()}/fleur-db-grammar-`);
   try {
     await writeFile(`${root}/fleur.json`, JSON.stringify({ formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" }));
-    for (const args of [["db", "inspect", "SELECT * FROM exercises"], ["db", "backup"], ["db", "recover"], ["db", "inspect", "--limit", "501"], ["db", "inspect", "--cursor", "bad"]]) {
+    for (const args of [["db", "inspect", "SELECT * FROM ingredients"], ["db", "backup"], ["db", "recover"], ["db", "inspect", "--limit", "501"], ["db", "inspect", "--cursor", "bad"]]) {
       const outcome = await cli([...args, "--project", root]);
       expect(outcome.exit).toBe(2);
       expect(outcome.result.error?.code).toBe("ARGUMENT_INVALID");

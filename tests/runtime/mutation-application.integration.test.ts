@@ -13,18 +13,18 @@ test("restricted mutation validates both boundaries and rolls back invalid outpu
   const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
   let app: ReadApplication | undefined;
   try {
-    await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL UNIQUE, version bigint NOT NULL DEFAULT 1)");
+    await fixture.sql.unsafe("CREATE TABLE ingredients (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL UNIQUE, version bigint NOT NULL DEFAULT 1)");
     await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url);
-    await expect(app.mutate("exercise.create", { name: "Squat", extra: true })).rejects.toThrow("INPUT_INVALID");
-    await expect(app.mutate("exercise.create", { name: "   " })).rejects.toThrow("INPUT_INVALID");
-    expect(await app.query("exercise.list", {})).toEqual([]);
-    const saved = await app.mutate("exercise.create", { name: "  Squat  " }) as { id: string; name: string; version: number };
-    expect(saved).toMatchObject({ name: "Squat", version: 1 });
-    await expect(app.mutate("exercise.invalid", {})).rejects.toThrow("INTERNAL_FAILURE");
-    expect(await app.query("exercise.list", {})).toEqual([saved]);
-    expect(await app.mutate("exercise.rename", { id: saved.id, expectedVersion: 1, name: "Row" })).toEqual({ ...saved, name: "Row", version: 2 });
-    await expect(app.mutate("exercise.delete", { id: saved.id, expectedVersion: 1 })).rejects.toThrow("VERSION_CONFLICT");
-    expect(await app.mutate("exercise.delete", { id: saved.id, expectedVersion: 2 })).toEqual({ deleted: true });
+    await expect(app.mutate("ingredient.create", { name: "Sage", extra: true })).rejects.toThrow("INPUT_INVALID");
+    await expect(app.mutate("ingredient.create", { name: "   " })).rejects.toThrow("INPUT_INVALID");
+    expect(await app.query("ingredient.list", {})).toEqual([]);
+    const saved = await app.mutate("ingredient.create", { name: "  Sage  " }) as { id: string; name: string; version: number };
+    expect(saved).toMatchObject({ name: "Sage", version: 1 });
+    await expect(app.mutate("ingredient.invalid", {})).rejects.toThrow("INTERNAL_FAILURE");
+    expect(await app.query("ingredient.list", {})).toEqual([saved]);
+    expect(await app.mutate("ingredient.rename", { id: saved.id, expectedVersion: 1, name: "Rice" })).toEqual({ ...saved, name: "Rice", version: 2 });
+    await expect(app.mutate("ingredient.delete", { id: saved.id, expectedVersion: 1 })).rejects.toThrow("VERSION_CONFLICT");
+    expect(await app.mutate("ingredient.delete", { id: saved.id, expectedVersion: 2 })).toEqual({ deleted: true });
   } finally { await app?.close(); await fixture.cleanup(); await images.dispose(); }
 }, 300_000);

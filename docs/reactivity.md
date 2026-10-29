@@ -18,14 +18,14 @@ does not authorize replacing its base version or silently overwriting an edit.
 Browser islands use the inferred `useQuery` hook from `fleur/client`:
 
 ```tsx
-const exercises = useQuery(listExercises, {});
-if (exercises.data === undefined) {
-  return <p>{exercises.error?.code ?? "Loading exercises"}</p>;
+const ingredients = useQuery(listIngredients, {});
+if (ingredients.data === undefined) {
+  return <p>{ingredients.error?.code ?? "Loading ingredients"}</p>;
 }
 return <section>
-  {exercises.stale && <p>Stored data may have changed.</p>}
-  {exercises.error && <p>{exercises.error.code}</p>}
-  <ul>{exercises.data.map(row => <li key={row.id}>{row.name}</li>)}</ul>
+  {ingredients.stale && <p>Stored data may have changed.</p>}
+  {ingredients.error && <p>{ingredients.error.code}</p>}
+  <ul>{ingredients.data.map(row => <li key={row.id}>{row.name}</li>)}</ul>
 </section>;
 ```
 

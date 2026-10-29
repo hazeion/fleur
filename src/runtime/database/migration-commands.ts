@@ -1,6 +1,7 @@
 import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success } from "../../cli/result";
-import { databaseFailure, productionOption } from "./commands";
+import { databaseFailure, privilegeFailure, productionOption } from "./commands";
+import { privilegeShortfall } from "./privilege";
 
 export const migrationCommands: readonly CommandDefinition[] = [
   ...["generate", "plan", "status", "apply"].map(action => ({ name: `db migration ${action}`, usage: `db migration ${action}${action === "apply" ? " [--grant <id>]" : action === "status" ? " [--production]" : ""}`, options: action === "apply" ? [{ name: "--grant", value: true }] : action === "status" ? [productionOption] : [] })),
@@ -45,6 +46,8 @@ export const migrationCommands: readonly CommandDefinition[] = [
     }
     return failure(definition.name, 4, { code: "CONFIGURATION_MISSING", message: "Explicit private database configuration is required.", actions: [] });
     } catch(error) {
+      const shortfall=privilegeShortfall(error);
+      if(shortfall)return privilegeFailure(definition.name,shortfall);
       if(error instanceof Error&&error.message==="DATABASE_UNAVAILABLE")return databaseFailure(definition.name,error,[],{command:"fleur status",description:"Check database connectivity."});
       const code=error instanceof Error && ["AUTHORITY_REQUIRED","MIGRATION_EDITED","MIGRATIONS_PENDING","MIGRATION_INCOMPATIBLE","SCHEMA_DRIFT","MAINTENANCE_BUSY","RECOVERY_REQUIRED","CONFIGURATION_MISSING","PREREQUISITE_UNAVAILABLE","SOURCE_REJECTED","BACKUP_VERIFICATION_FAILED"].includes(error.message)?error.message:"INTERNAL_FAILURE";
       return failure(definition.name,code==="AUTHORITY_REQUIRED"?3:["SCHEMA_DRIFT","MIGRATION_EDITED","MIGRATIONS_PENDING","MAINTENANCE_BUSY","RECOVERY_REQUIRED"].includes(code)?5:["CONFIGURATION_MISSING","PREREQUISITE_UNAVAILABLE"].includes(code)?4:1,{code,message:"Migration maintenance could not complete safely.",actions:[{command:"fleur db recover --inspect",description:"Inspect actual state before taking recovery action."}]});

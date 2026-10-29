@@ -6,6 +6,7 @@ import { lstat, mkdir, open, realpath, rename, link, unlink } from "node:fs/prom
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
+import { privileged } from "./privilege";
 
 export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; readonly completeRegistry?: boolean; }
 const identitySchema = z.strictObject({ cluster: z.string().regex(/^\d+$/), database: z.string().min(1).max(63), oid: z.string().regex(/^\d+$/), owner: z.string().min(1), address: z.string(), port: z.number().int(), });
@@ -79,12 +80,14 @@ export class MaintenanceLease {
     let expired = false;
     const timer = setTimeout(() => { expired = true; void sql.close({ timeout: 0 }).catch(() => {}); void target.close({ timeout: 0 }).catch(() => {}); }, limit + drainMs);
     try {
-      const control = await sql.unsafe("SELECT system_identifier::text AS cluster, pg_backend_pid() AS pid, current_database() AS database, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system()");
+      // Privilege refusals name the capability: callers that report them unwrap the cause, others see the same code.
+      await privileged("database connect", () => sql.connect());
+      const control = await privileged("identity inspection", () => sql.unsafe("SELECT system_identifier::text AS cluster, pg_backend_pid() AS pid, current_database() AS database, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system()"));
       const current = control[0];
       if (!current || current.database !== controlUrl.pathname.slice(1) || !Number.isSafeInteger(current.pid)) throw new Error("CONFIGURATION_MISSING");
       const rows = inspect
         ? await sql.unsafe("SELECT $1::text AS database, coalesce(d.oid::text,'0') AS oid, coalesce(pg_get_userbyid(d.datdba),'missing') AS owner FROM (SELECT 1) one LEFT JOIN pg_database d ON d.datname=$1", [targetUrl.pathname.slice(1)])
-        : await target.unsafe("SELECT system_identifier::text AS cluster, current_database() AS database, d.oid::text AS oid, pg_get_userbyid(d.datdba) AS owner, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system(), pg_database d WHERE d.datname=current_database()");
+        : (await privileged("database connect", () => target.connect()), await privileged("identity inspection", () => target.unsafe("SELECT system_identifier::text AS cluster, current_database() AS database, d.oid::text AS oid, pg_get_userbyid(d.datdba) AS owner, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port FROM pg_control_system(), pg_database d WHERE d.datname=current_database()")));
       const identity = identitySchema.parse(inspect ? { ...rows[0], cluster: current.cluster, address: current.address, port: current.port } : rows[0]);
       if (identity.database !== targetUrl.pathname.slice(1) || current.cluster !== identity.cluster || current.address !== identity.address || current.port !== identity.port) throw new Error("CONFIGURATION_MISSING");
       const hash = digest(`fleur:maintenance:v1:${identity.cluster}:${identity.database}`);
@@ -101,13 +104,13 @@ export class MaintenanceLease {
         const competing = await sql.unsafe("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid<>pg_backend_pid() AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND classid=$1::oid AND objid=$2::oid AND objsubid=1 AND mode='ExclusiveLock') AS busy", [(unsigned >> 32n).toString(), (unsigned & 0xffffffffn).toString()]);
         if (competing[0]?.busy !== false) throw new Error("MAINTENANCE_BUSY");
         await sql.unsafe(`SET lock_timeout = '${drainMs}ms'`);
-        try { lock = (await sql.unsafe("SELECT true AS acquired, pg_backend_pid() AS pid FROM (SELECT pg_advisory_lock($1::bigint)) AS waited", [key])) as typeof lock; }
+        try { lock = (await privileged("maintenance locks", () => sql.unsafe("SELECT true AS acquired, pg_backend_pid() AS pid FROM (SELECT pg_advisory_lock($1::bigint)) AS waited", [key]))) as typeof lock; }
         catch (error) {
           if ((error as { errno?: unknown }).errno === "55P03") throw new Error("MAINTENANCE_BUSY");
           throw error;
         }
         await sql.unsafe("SET lock_timeout = 0");
-      } else lock = await sql.unsafe(`SELECT pg_try_advisory_lock${exclusive ? "" : "_shared"}($1::bigint) AS acquired, pg_backend_pid() AS pid`, [key]);
+      } else lock = await privileged("maintenance locks", () => sql.unsafe(`SELECT pg_try_advisory_lock${exclusive ? "" : "_shared"}($1::bigint) AS acquired, pg_backend_pid() AS pid`, [key]));
       if (lock[0]?.pid !== current.pid) throw new Error("CONFIGURATION_MISSING");
       if (lock[0]?.acquired !== true && !inspect) throw new Error("MAINTENANCE_BUSY");
       const directory = join(configuration.stateRoot ?? process.env.FLEUR_PRIVATE_STATE_ROOT ?? join(homedir(), ".local", "state", "fleur", "databases"), hash);
@@ -119,8 +122,8 @@ export class MaintenanceLease {
       if (!inspect && marker && (marker.target.cluster !== identity.cluster || marker.target.database !== identity.database || marker.target.owner !== identity.owner || marker.target.oid !== identity.oid)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect) {
         const { assertMigrationState, verifyExternalSchemaState } = await import("./migration-state");
-        const history=await assertMigrationState(target, configuration.tables,configuration.completeRegistry);
-        await verifyExternalSchemaState(target, marker);
+        const history=await privileged("schema read", () => assertMigrationState(target, configuration.tables,configuration.completeRegistry));
+        await privileged("schema read", () => verifyExternalSchemaState(target, marker));
         if(!history.length&&configuration.tables?.length)throw new Error("MIGRATIONS_PENDING");
         if(!history.length&&configuration.completeRegistry){const {emptyApplicationSchema}=await import("./migration-state");if(!await emptyApplicationSchema(target))throw new Error("SCHEMA_DRIFT");}
       }

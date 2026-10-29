@@ -1,6 +1,7 @@
 import { SQL } from "bun";
 import { z } from "zod";
 import { MaintenanceLease, databaseUrl, digest, leaseDeadline, type MaintenanceConfiguration, type MaintenanceMarker } from "./maintenance";
+import { PrivilegeInsufficient, privileged, privilegeShortfall } from "./privilege";
 
 export type TargetKind = "development" | "production";
 /** How a target is identified in output. Host, port, user and URL never appear. */
@@ -64,7 +65,12 @@ export interface InspectionSession {
   readonly marker: MaintenanceMarker | null;
   readonly target: TargetSummary;
 }
-const identity = z.strictObject({ cluster: z.string(), database: z.string(), oid: z.string(), address: z.string(), port: z.number().int(), version: z.string().min(1).max(64), backend: z.number().int() });
+const identity = z.strictObject({ cluster: z.string(), database: z.string(), oid: z.string(), address: z.string(), port: z.number().int(), version: z.string().min(1).max(64), backend: z.number().int(), history: z.boolean() });
+/**
+ * Whether Fleur's metadata is readable: USAGE on fleur_internal and SELECT on its tables. Checked explicitly because
+ * an unreadable history must never be reported as missing history, pending migrations or drift.
+ */
+const historyReadable = "NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname='fleur_internal' AND NOT has_schema_privilege(n.oid,'USAGE')) AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='fleur_internal' AND c.relkind IN ('r','p') AND NOT has_table_privilege(c.oid,'SELECT'))";
 /**
  * Opens Fleur's read-only inspection of a verified target, runs `use` and always releases it. Maintenance and drift do
  * not block it. `config.timeoutMs` bounds the whole inspection: at the deadline it fails with DATABASE_UNAVAILABLE
@@ -93,17 +99,20 @@ export async function withInspection<T>(url: string, kind: TargetKind, config: M
     if (expired) { await control.close(); throw new DatabaseUnavailable("timeout"); }
     lease = acquired = control;
     const connection = sql = new SQL(url, { max: 1, connectionTimeout: 2 });
+    await privileged("database connect", () => connection.connect());
     await connection.unsafe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await connection.unsafe("SET LOCAL statement_timeout='5s'");
     await connection.unsafe("SET LOCAL search_path=pg_catalog");
-    const actual = identity.parse((await connection.unsafe("SELECT system_identifier::text AS cluster, current_database()::text AS database, d.oid::text AS oid, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port, split_part(current_setting('server_version'),' ',1) AS version, pg_backend_pid() AS backend FROM pg_control_system(), pg_database d WHERE d.datname=current_database()"))[0]);
+    const actual = identity.parse((await privileged("identity inspection", () => connection.unsafe(`SELECT system_identifier::text AS cluster, current_database()::text AS database, d.oid::text AS oid, coalesce(inet_server_addr()::text,'') AS address, inet_server_port() AS port, split_part(current_setting('server_version'),' ',1) AS version, pg_backend_pid() AS backend, ${historyReadable} AS history FROM pg_control_system(), pg_database d WHERE d.datname=current_database()`)))[0]);
     backend = actual.backend;
     const expected = control.target;
     // The target session must reach the same cluster, database and endpoint that the control session verified.
     if (actual.cluster !== expected.cluster || actual.database !== expected.database || actual.oid !== expected.oid || actual.address !== expected.address || actual.port !== expected.port) throw new Error("CONFIGURATION_MISSING");
+    if (!actual.history) throw new PrivilegeInsufficient("schema read");
     const marker = await control.marker();
     const target = { kind, database: actual.database, serverVersion: actual.version, fingerprint: digest(`fleur:target:v1:${actual.cluster}:${actual.database}`).slice(0, 32) };
-    return await use({ sql: connection, lease: control, marker, target });
+    // Only reads remain, inside the read-only transaction: a privilege refusal is a schema read shortfall.
+    return await privileged("schema read", () => use({ sql: connection, lease: control, marker, target }));
   })();
   try {
     const result = await Promise.race([inspection, expiry]);
@@ -112,6 +121,9 @@ export async function withInspection<T>(url: string, kind: TargetKind, config: M
     return result;
   } catch (error) {
     if (expired || error instanceof DatabaseUnavailable) throw expired ? new DatabaseUnavailable("timeout") : error;
+    // A credential without the authority inspection needs is reported as that shortfall, never as an outage.
+    const shortfall = privilegeShortfall(error);
+    if (shortfall) throw shortfall;
     const failure = unavailability(error);
     if (!failure) throw error;
     // The control database answered: keep its maintenance state, which explains a replaced or missing target.

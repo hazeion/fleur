@@ -14,11 +14,13 @@ ADAPTER = r'''
 import json,pathlib,time
 cleanup_diagnostic_path=pathlib.Path(CANARY_STATE)/'cleanup-diagnostic.json'
 def cleanup_diagnostic(stage,error,arguments,count,limit):
-    record={'stage':stage,'error':type(error).__name__,'command':arguments[1] if arguments else None,
-            'quiet':'--quiet' in arguments,'count':count,'remaining':limit-time.monotonic()}
-    if type(getattr(error,'errno',None)) is int:record['errno']=error.errno
-    if type(error).__name__ in ('Failed','RuntimeError'):record['category']=str(error)
-    with cleanup_diagnostic_path.open('a') as stream:stream.write(json.dumps(record)+'\n')
+    try:
+        record={'stage':stage,'error':type(error).__name__,'command':arguments[1] if arguments else None,
+                'quiet':'--quiet' in arguments,'count':count,'remaining':limit-time.monotonic()}
+        if type(getattr(error,'errno',None)) is int:record['errno']=error.errno
+        if type(error).__name__ in ('Failed','RuntimeError'):record['category']=str(error)
+        with cleanup_diagnostic_path.open('a') as stream:stream.write(json.dumps(record)+'\n')
+    except Exception:pass # Diagnostics cannot replace the original cleanup failure.
 '''
 
 
@@ -27,7 +29,7 @@ def install_failure_diagnostics():
     source=fixtures.SUPERVISOR
     replacements={
         "except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired):\n                        children_reaped=False":
-        "except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired) as error:\n                        cleanup_diagnostic('child-retirement',error,arguments,count,limit)\n                        children_reaped=False",
+        "except (OSError,RuntimeError,AttributeError,subprocess.TimeoutExpired) as error:\n                        children_reaped=False\n                        cleanup_diagnostic('child-retirement',error,arguments,count,limit)",
         "except (Failed,OSError,ValueError,subprocess.SubprocessError):\n                cleaned=False":
         "except (Failed,OSError,ValueError,subprocess.SubprocessError) as error:\n                cleanup_diagnostic('namespace-cleanup',error,[],count,deadline)\n                cleaned=False",
     }
@@ -63,7 +65,8 @@ def run_worker():
                         'before':before,'after':observer.snapshot(),
                         'trace':[json.loads(line) for line in diagnostic.read_text().splitlines()] if diagnostic.exists() else None}),flush=True)
                     return 1
-            finally:fixture.doCleanups()
+            finally:
+                if not fixture.doCleanups():raise RuntimeError('diagnostic fixture cleanup failed')
     print(json.dumps({'passed_cases':100}),flush=True)
     return 0
 

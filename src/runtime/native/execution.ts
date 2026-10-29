@@ -1,3 +1,4 @@
+import { withoutRetrievalSecrets } from "../retrieval/environment";
 import { randomUUID } from "node:crypto";
 import { validateEndpoint, type NativeImages } from "./endpoint";
 import { FrameReader, framed } from "./host";
@@ -31,7 +32,7 @@ const ADMISSION_MS = 20_000, STARTUP_MS = 30_000, OPERATION_MS = 5000;
 // retired as unadmitted only with verified identity inside the 250-ms
 // tolerance. On a host where arming takes longer than this margin plus that
 // tolerance, the slot is deliberately quarantined and replaced (ADR 0001).
-const ARMING_MARGIN_MS = 500;
+export const ARMING_MARGIN_MS = 500;
 // After a run's budget, the controller waits up to 750 ms for the guard's
 // record, then up to one second each for the application and guard exec exits
 // (2.75 s). Replies that can follow a deadline retirement allow that plus margin.
@@ -62,7 +63,7 @@ class Slot {
       "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=512m", "--pids-limit=64", "--pull=never",
       "--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock", "--entrypoint", "/usr/bin/python3",
       images.controller, "-I", "-u", "/controller/retained_controller.py", images.worker, images.controller, owner],
-      { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } });
+      { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...withoutRetrievalSecrets(process.env), DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } });
     } catch (error) {
       // No client process exists, so no creation request reached Docker.
       await lease.abandon();

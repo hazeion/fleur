@@ -17,9 +17,14 @@ export function defineIsland<P extends object>(options: { props: Schema<P>; comp
 }
 
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { observeQuery, queryKey, queryName, type QueryState, type QueryRefreshResult } from "./runtime/query-client";
-import type { Query } from "./schema";
-export type { QueryState, QueryRefreshResult };
+import { observeQuery, queryKey, queryName, refreshRetrievalValue, type QueryState, type QueryRefreshResult, type RetrievalRefreshResult } from "./runtime/query-client";
+import type { Query, Retrieval } from "./schema";
+export type { QueryState, QueryRefreshResult, RetrievalRefreshResult };
+/**
+ * Explicitly asks this view's server to retrieve again. The server rerenders
+ * regions reading it; the browser never contacts the external destination.
+ */
+export function refreshRetrieval<I, O>(contract: Retrieval<I, O>, input: NoInfer<I>): Promise<RetrievalRefreshResult> { return refreshRetrievalValue(contract, input); }
 export function useQuery<I, O>(contract: Query<I, O>, input: NoInfer<I>): QueryState<O> {
   const validated = contract.input.parse(input);
   const key = queryKey(queryName(contract), validated);

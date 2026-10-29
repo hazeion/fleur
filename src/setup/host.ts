@@ -1,3 +1,4 @@
+import { withoutRetrievalSecrets } from "../runtime/retrieval/environment.ts";
 import { observeAptLocks } from "./apt-locks.ts";
 import { aptHealthArgs } from "./apt-health.ts";
 import { readFile } from "node:fs/promises";
@@ -76,7 +77,7 @@ async function run(args: readonly string[], timeoutMs: number, context?: HostCom
   }
   let child: ReturnType<typeof Bun.spawn>;
   const passiveStat = process.platform === "linux" && args.length === 5 && args[0] === "/usr/bin/stat" && args[1] === "--dereference" && args[2] === "--format=%d|%i|%F" && args[3] === "--" && args[4]!.startsWith("/");
-  const environment = context?.cleanEnvironment ? { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LC_ALL: "C", LANG: "C" } : { ...process.env, ...(passiveStat ? { LC_ALL: "C", LANG: "C" } : {}) };
+  const environment = context?.cleanEnvironment ? { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LC_ALL: "C", LANG: "C" } : { ...withoutRetrievalSecrets(process.env), ...(passiveStat ? { LC_ALL: "C", LANG: "C" } : {}) };
   try { child = Bun.spawn([...args], { stdin: "ignore", stdout: artifactOutput?.descriptor ?? "pipe", stderr: "pipe", ...(context?.cwd === undefined ? {} : { cwd: context.cwd }), env: args.includes("--host") ? { ...environment, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined } : environment }); }
   catch (error) { return { status: (error as { code?: string }).code === "ENOENT" ? "missing" : "completed", exitCode: 126, stdout: "", stderr: "Executable could not be started." }; }
   const stderr = child.stderr as ReadableStream<Uint8Array>;
@@ -122,4 +123,4 @@ async function confirmHuman(plan: { readonly action: string; readonly method: st
   } catch { return "deny"; }
   finally { terminal.close(); process.stdin.pause(); }
 }
-export function productionHost(): SetupHost { return { host: identity, run, aptPackageLocks: observeAptLocks, unixSocketSnapshot: async (timeoutMs) => process.platform === "linux" ? (await import("./unix-diag-native.ts")).unixSocketSnapshot(timeoutMs) : { state: "unavailable" }, environment: { ...process.env }, interactive: process.stdin.isTTY === true && process.stdout.isTTY === true, confirmHuman }; }
+export function productionHost(): SetupHost { return { host: identity, run, aptPackageLocks: observeAptLocks, unixSocketSnapshot: async (timeoutMs) => process.platform === "linux" ? (await import("./unix-diag-native.ts")).unixSocketSnapshot(timeoutMs) : { state: "unavailable" }, environment: withoutRetrievalSecrets(process.env), interactive: process.stdin.isTTY === true && process.stdout.isTTY === true, confirmHuman }; }

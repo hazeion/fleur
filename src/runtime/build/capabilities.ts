@@ -60,6 +60,7 @@ export function sourceCapabilities(program: unknown): (value: Node) => Kind {
     else if (pattern.type === "ArrayPattern") for (const value of pattern.elements as unknown[]) bind(node(value), scope);
     else if (pattern.type === "AssignmentPattern") bind(node(pattern.left), scope, node(pattern.right));
     else if (pattern.type === "RestElement") bind(node(pattern.argument), scope);
+    else if (pattern.type === "TSParameterProperty") bind(node(pattern.parameter), scope);
   };
   const declare = (value: unknown, scope: Scope): void => {
     const statement = node(value);
@@ -115,7 +116,7 @@ export function sourceCapabilities(program: unknown): (value: Node) => Kind {
       const binding = resolve(String(expression.name), scope);
       if (binding?.expression) return valueBinding(binding.expression, binding.scope, depth + 1);
     }
-    if (["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(expression.type))) return valueBinding(expression.expression, scope, depth + 1);
+    if (["TSAsExpression", "TSTypeAssertion", "TSInstantiationExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(expression.type))) return valueBinding(expression.expression, scope, depth + 1);
     return { value: expression, scope };
   };
   const knownString = (value: unknown, scope: Scope, depth: number): string | undefined => {
@@ -135,17 +136,20 @@ export function sourceCapabilities(program: unknown): (value: Node) => Kind {
       return binding ? binding.kind ?? infer(binding.expression, binding.scope, depth + 1) : globalKind(String(current.name));
     }
     if (["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration", "ClassExpression"].includes(String(current.type))) return "function";
-    if (["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ChainExpression", "ParenthesizedExpression"].includes(String(current.type))) return infer(current.expression, scope, depth + 1);
+    if (["TSAsExpression", "TSTypeAssertion", "TSInstantiationExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ChainExpression", "ParenthesizedExpression"].includes(String(current.type))) return infer(current.expression, scope, depth + 1);
     if (current.type === "MemberExpression") {
       const key = current.computed ? knownString(current.property, scope, depth + 1) : propertyName(current);
       const receiver = infer(current.object, scope, depth + 1);
-      if (key === undefined) return "unknown";
+      if (key === undefined) return ["global", "navigator", "document", "element", "parser", "function", "reflect"].includes(receiver) ? "executable" : "unknown";
       const resolved = valueBinding(current.object, scope, depth + 1);
       if (resolved.value?.type === "ObjectExpression") {
         const property = [...resolved.value.properties as Node[]].reverse().find(property => propertyName(property) === key);
         if (property) return infer(property.value, resolved.scope, depth + 1);
       }
-      if (receiver === "global") return globalKind(key);
+      if (receiver === "global") return ["parent", "top", "frames"].includes(key) ? "global" : globalKind(key);
+      if (receiver === "document" && key === "defaultView") return "global";
+      if (receiver === "element" && key === "ownerDocument") return "document";
+      if (receiver === "document" && ["body", "head", "documentElement"].includes(key)) return "element";
       if (receiver === "preact" && ["h", "createElement", "jsx", "jsxs", "jsxDEV"].includes(key)) return "factory";
       if (["executable", "transport", "injection"].includes(receiver)) return receiver;
       if (receiver === "navigator" && ["sendBeacon", "serviceWorker"].includes(key)) return "transport";

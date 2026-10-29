@@ -122,7 +122,7 @@ async function collectProject(directory: string): Promise<AdmittedProject> {
       if (!value || typeof value !== "object") return;
       if (Array.isArray(value)) { value.forEach(item => inspect(item, parent, key, typeOnly)); return; }
       const node = value as Record<string, unknown>;
-      typeOnly ||= String(node.type).startsWith("TS") && !["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSInstantiationExpression"].includes(String(node.type));
+      typeOnly ||= String(node.type).startsWith("TS") && !["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "TSInstantiationExpression", "TSParameterProperty", "TSEnumDeclaration", "TSEnumBody", "TSEnumMember", "TSModuleDeclaration", "TSModuleBlock", "TSExportAssignment"].includes(String(node.type));
       const propertyKey = key === "key" && ["Property", "MethodDefinition", "PropertyDefinition"].includes(String(parent?.type)) && !parent?.computed && !parent?.shorthand;
       const memberKey = key === "property" && parent?.type === "MemberExpression" && !parent.computed;
       if (!typeOnly && !propertyKey && !memberKey && ["Identifier", "MemberExpression"].includes(String(node.type))) checkCapability(node);

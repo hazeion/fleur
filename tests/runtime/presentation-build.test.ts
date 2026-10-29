@@ -119,6 +119,31 @@ test("complete utility selection supports computed maps, arrays, assignments and
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("class bindings support destructuring and defaults without confusing shadowed server data", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-class-bindings-"));
+  try {
+    await mkdir(join(root, "server"));
+    await writeFile(join(root, "server", "page.tsx"), `
+      const privateNote = 'content-["destructured-private-canary"]';
+      const caught = 'content-["caught-private-canary"]';
+      const local = 'content-["var-private-canary"]';
+      const Inner = 'content-["class-private-canary"]';
+      const [classes] = ["w-[173px]"];
+      function choose(value = "w-[179px]") { return value; }
+      function fromObject({value}: {value: string; private: string}) { return value; }
+      function fromArray([value]: string[]) { return value; }
+      export function Page({privateNote}: {privateNote:string}) { return <main class={privateNote}><p class={classes}/><p class={choose()}/><p class={fromObject({value: "w-[183px]", private: 'content-["unselected-argument-canary"]'})}/><p class={fromArray(["w-[187px]"])}/></main>; }
+      export function Fallback() { try { throw "unknown runtime value"; } catch (caught) { return <main class={caught}/>; } }
+      export function Hoisted() { if (true) { var local = "w-[181px]"; } return <main class={local}/>; }
+      export const Component = class Inner { render() { return <main class={Inner}/>; } };
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    for (const canary of ["destructured-private-canary", "caught-private-canary", "var-private-canary", "class-private-canary", "unselected-argument-canary"]) expect(css).not.toContain(canary);
+    for (const width of [173, 179, 181, 183, 187]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
   try {

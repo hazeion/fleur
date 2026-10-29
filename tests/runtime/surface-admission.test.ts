@@ -70,6 +70,20 @@ test("browser source rejects named transport and executable aliases before eithe
   });
 });
 
+test("executable TypeScript wrappers and ambient member paths retain source capability checks", async () => {
+  for (const source of [
+    'export const run = () => <unknown>fetch("/__fleur/view");',
+    'export const run = () => <unknown>eval("42");',
+    'export class Handler { constructor(readonly value = fetch("/__fleur/view")) {} }',
+    'export enum Values { remote = fetch("/__fleur/view") as unknown as number }',
+    'export namespace Values { export const remote = fetch("/__fleur/view"); }',
+    'export const run = () => document.defaultView!.fetch("/__fleur/view");',
+    'export const run = () => window[["fe", "tch"].join("") as "fetch"]("/__fleur/view");',
+  ]) await fixture({ "client/view.ts": source }, async root => {
+    await expect(admitProject(root), source).rejects.toThrow("SOURCE_REJECTED");
+  });
+});
+
 test("source admission rejects authored styling and HTML injection while retaining inline JSX styles", async () => {
   await fixture({ "client/view.tsx": 'export const view = (size: number) => <div class="px-4 hover:opacity-50 w-[31px]" style={{ width: size, "--accent": "red" }}>Allowed</div>;' }, async root => {
     expect((await admitProject(root)).client).toHaveLength(1);

@@ -2,7 +2,7 @@ import { parseSync } from "rolldown/utils";
 import type { AdmittedProject } from "./admission";
 
 type Node = Record<string, unknown>;
-interface Scope { readonly parent?: Scope; readonly bindings: Map<string, Binding>; }
+interface Scope { readonly parent?: Scope; readonly bindings: Map<string, Binding>; readonly function?: boolean; }
 interface Binding { readonly scope: Scope; readonly expression?: Node; readonly imported?: { module: string; name: string }; readonly factory?: "function" | "namespace"; }
 interface Module { readonly scope: Scope; readonly exports: Map<string, Binding>; readonly reexports: string[]; }
 const node = (value: unknown): Node | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Node : undefined;
@@ -18,30 +18,55 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   const assignments: { target: Node; value: Node; scope: Scope }[] = [];
   const assigned = new Map<Binding, Node[]>();
   const declare = (pattern: Node | undefined, expression: Node | undefined, scope: Scope): void => {
-    if (pattern?.type === "Identifier") scope.bindings.set(String(pattern.name), { scope, ...(expression ? { expression } : {}) });
+    if (pattern?.type === "Identifier") {
+      const existing = scope.bindings.get(String(pattern.name));
+      if (existing) { if (expression) assigned.set(existing, [...(assigned.get(existing) ?? []), expression]); }
+      else scope.bindings.set(String(pattern.name), { scope, ...(expression ? { expression } : {}) });
+    }
     else if (pattern?.type === "RestElement") declare(node(pattern.argument), expression, scope);
+    else if (pattern?.type === "TSParameterProperty") declare(node(pattern.parameter), expression, scope);
+    else if (pattern?.type === "AssignmentPattern") declare(node(pattern.left), expression ? { type: "LogicalExpression", operator: "??", left: expression, right: pattern.right } : node(pattern.right), scope);
+    else if (pattern?.type === "ArrayPattern") {
+      const elements = Array.isArray(pattern.elements) ? pattern.elements : [];
+      elements.forEach((item, index) => declare(node(item), expression ? { type: "MemberExpression", object: expression, property: { type: "Literal", value: index }, computed: true } : undefined, scope));
+    }
     else if (pattern?.type === "ObjectPattern") for (const item of nodes(pattern.properties)) {
       const key = name(item.key);
-      if (key && item.type === "Property" && expression) declare(node(item.value), { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true }, scope);
+      if (item.type === "RestElement") declare(node(item.argument), undefined, scope);
+      else if (item.type === "Property") declare(node(item.value), key && expression ? { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true } : undefined, scope);
     }
   };
   for (const [path, source] of project.sources) {
     const parsed = parseSync(path, source);
     if (parsed.errors.length) throw new Error("SOURCE_REJECTED");
-    const scope: Scope = { bindings: new Map() }, module: Module = { scope, exports: new Map(), reexports: [] };
+    const scope: Scope = { bindings: new Map(), function: true }, module: Module = { scope, exports: new Map(), reexports: [] };
     modules.set(path, module);
     const visit = (value: unknown, outer: Scope): void => {
       if (Array.isArray(value)) { value.forEach(item => visit(item, outer)); return; }
       const item = node(value);
       if (!item || typeof item.type !== "string") return;
       let current = outer;
-      if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "BlockStatement"].includes(item.type)) {
+      if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(item.type)) {
         if (item.type === "FunctionDeclaration" && name(item.id)) declare(node(item.id), item, outer);
-        current = { parent: outer, bindings: new Map() };
+        current = { parent: outer, bindings: new Map(), function: true };
+        if (item.type === "FunctionExpression") declare(node(item.id), item, current);
         for (const parameter of nodes(item.params)) declare(parameter, undefined, current);
+      } else if (["ClassDeclaration", "ClassExpression", "TSModuleDeclaration", "TSEnumDeclaration"].includes(item.type)) {
+        if (item.type !== "ClassExpression") declare(node(item.id), undefined, outer);
+        current = { parent: outer, bindings: new Map() };
+        declare(node(item.id), undefined, current);
+      } else if (item.type === "StaticBlock") {
+        current = { parent: outer, bindings: new Map(), function: true };
+      } else if (["BlockStatement", "CatchClause", "ForStatement", "ForInStatement", "ForOfStatement", "SwitchStatement"].includes(item.type)) {
+        current = { parent: outer, bindings: new Map() };
+        if (item.type === "CatchClause") declare(node(item.param), undefined, current);
       }
       contexts.set(item, current);
-      if (item.type === "VariableDeclarator") declare(node(item.id), node(item.init), current);
+      if (item.type === "VariableDeclaration") {
+        let target = current;
+        if (item.kind === "var") while (target.parent && !target.function) target = target.parent;
+        for (const declaration of nodes(item.declarations)) declare(node(declaration.id), node(declaration.init), target);
+      }
       if (item.type === "AssignmentExpression") {
         const target = node(item.left), value = node(item.right);
         if (target && value) assignments.push({ target, value, scope: current });
@@ -161,11 +186,23 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     } else if (call && ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(value.type))) {
       const local = contexts.get(value) ?? scope;
       const replacements = new Map(arguments_);
+      const replace = (pattern: Node | undefined, expression: Node | undefined): void => {
+        if (!pattern || !expression) return;
+        if (pattern.type === "Identifier") {
+          const declaration = lookup(local, String(pattern.name));
+          if (declaration) replacements.set(declaration, { scope: call.scope, expression });
+        } else if (pattern.type === "AssignmentPattern") replace(node(pattern.left), { type: "LogicalExpression", operator: "??", left: expression, right: pattern.right });
+        else if (pattern.type === "RestElement") replace(node(pattern.argument), expression);
+        else if (pattern.type === "ObjectPattern") for (const member of nodes(pattern.properties)) {
+          const key = name(member.key);
+          if (member.type === "Property" && key) replace(node(member.value), { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true });
+        }
+        else if (pattern.type === "ArrayPattern" && Array.isArray(pattern.elements)) pattern.elements.forEach((element, index) => replace(node(element), { type: "MemberExpression", object: expression, property: { type: "Literal", value: index }, computed: true }));
+      };
       nodes(value.params).forEach((parameter, index) => {
         const rest = parameter.type === "RestElement";
-        const declaration = lookup(local, String(rest ? node(parameter.argument)?.name : parameter.name));
         const expression = rest ? { type: "ArrayExpression", elements: call.values.slice(index) } : call.values[index];
-        if (declaration && expression) replacements.set(declaration, { scope: call.scope, expression });
+        replace(parameter, expression);
       });
       const body = node(value.body);
       if (body?.type !== "BlockStatement") trace(body, local, properties, seen, replacements);
@@ -179,7 +216,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
         };
         returns(body);
       }
-    } else if (["JSXExpressionContainer", "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) visit(node(value.expression), scope);
+    } else if (["JSXExpressionContainer", "TSAsExpression", "TSTypeAssertion", "TSInstantiationExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) visit(node(value.expression), scope);
     else if (properties.length === 0 && !call) {
       if (typeof value.value === "string") result.add(value.value);
       else if (value.type === "TemplateLiteral") {

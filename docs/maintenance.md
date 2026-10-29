@@ -232,10 +232,13 @@ and JSON.
 - **Failure.** A failing migration or seed rolls the whole transaction back.
   Startup reports `failed` with the error code, an exit category and one action,
   and never reports ready. The database stays new, so the next startup retries
-  after the cause is corrected. If the outcome of the commit itself cannot be
-  confirmed, startup reports `RECOVERY_REQUIRED` with `fleur dev` as its
-  action. The next startup reads the outcome of the recorded transaction from
-  PostgreSQL and never applies the chain twice.
+  after the cause is corrected. Creating the database shares the startup
+  deadline. If the outcome of the commit itself cannot be confirmed, or its
+  maintenance record cannot be written afterwards, startup reports
+  `RECOVERY_REQUIRED` with `fleur dev` as its action. The next startup reads the
+  outcome of the recorded transaction from PostgreSQL, rebuilds a missing
+  maintenance record from the committed history and never applies the chain
+  twice.
 - **Empty chain.** A new database stays new until a startup finds at least one
   committed migration. Initialization runs only at startup, never during reload.
 - **Never new again.** After a successful initialization, the creation record

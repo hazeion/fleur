@@ -79,10 +79,13 @@ async function uncontended<T>(deadline: number, step: () => Promise<T>): Promise
  * expected of it.
  */
 export async function createDevelopmentDatabase(database: DevelopmentDatabase, config: MaintenanceConfiguration = {}): Promise<{ readonly created: boolean }> {
-  const name = databaseUrl(database.url).pathname.slice(1);
+  const name = databaseUrl(database.url).pathname.slice(1), deadline = performance.now() + (config.timeoutMs ?? 60000);
   const lease = await MaintenanceLease.acquire(database.url, true, config, true);
+  // Catalog reads and CREATE DATABASE share the startup deadline.
+  const bounded = () => lease.sql.unsafe(`SET statement_timeout=${Math.max(1, Math.ceil(deadline - performance.now()))}`);
   try {
     if (lease.busy) throw new Error("MAINTENANCE_BUSY");
+    await bounded();
     const marker = await lease.marker();
     if (marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("RECOVERY_REQUIRED");
     if ((await lease.sql.unsafe("SELECT 1 FROM pg_database WHERE datname=$1", [name])).length) return { created: false };
@@ -92,7 +95,7 @@ export async function createDevelopmentDatabase(database: DevelopmentDatabase, c
     const owner = String((await lease.sql.unsafe("SELECT current_user::text AS owner"))[0].owner);
     const base = { formatVersion: 1 as const, binding: bindingDigest(database.binding), cluster: lease.target.cluster, database: name, owner, transaction: null };
     await writeRecord(lease, used ? { ...record, stage: "retired" } : { ...base, oid: null, stage: "creating" });
-    await lease.assertSession();
+    await lease.assertSession(); await bounded();
     await privileged("role and database creation", () => lease.sql.unsafe(`CREATE DATABASE ${quote(name)} OWNER ${quote(owner)} TEMPLATE template0`));
     const created = await lease.sql.unsafe("SELECT oid::text AS oid, pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname=$1", [name]);
     if (created.length !== 1 || created[0].owner !== owner) throw new Error("RECOVERY_REQUIRED");
@@ -106,6 +109,17 @@ const uncertainCommit = Symbol("uncertain initialization commit");
 /** PostgreSQL's record of a transaction: committed, aborted, in progress, or null when no longer known. */
 async function transactionStatus(lease: MaintenanceLease, xid: string): Promise<unknown> {
   return lease.sql.unsafe("SELECT pg_xact_status($1::xid8) AS status", [xid]).then(rows => rows[0]?.status, () => null);
+}
+
+/**
+ * Records a committed initialization: first the external maintenance record holding the expected catalog and history
+ * for drift detection, and only then the retired creation record, so a failure in between is retried from the
+ * transaction's status by the next startup.
+ */
+async function recordInitialized(lease: MaintenanceLease, record: CreationRecord, schemaState: { catalog: string; history: string[] }, planChecksum: string): Promise<void> {
+  const previous = await lease.marker();
+  await lease.persist({ formatVersion: 1, target: lease.target, stage: "committed", planChecksum, backup: previous?.backup ?? null, schemaState, epoch: crypto.randomUUID() });
+  await writeRecord(lease, { ...record, stage: "retired" });
 }
 
 export type InitializationStatus = "initialized" | "new" | "existing" | "failed";
@@ -137,6 +151,7 @@ async function initializeOnce(database: DevelopmentDatabase, project: string, de
   const plans = await readMigrations(project);
   if (plans.some(plan => plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
   const seeds = orderSeeds(declarations);
+  const planChecksum = (history: readonly string[]) => digest(canonical({ operation: "initialization", migrations: history, seeds: seeds.map(seed => ({ key: seed.key, table: tableDefinitions.get(seed.table)!.name, rows: seed.rows, dependsOn: seed.dependsOn?.map(parent => parent.key) ?? [] })) }));
   const lease = await MaintenanceLease.acquire(database.url, true, { ...config, timeoutMs: remaining() });
   const sql = new SQL(database.url, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, remaining());
@@ -150,7 +165,16 @@ async function initializeOnce(database: DevelopmentDatabase, project: string, de
     if (record.stage === "initializing") {
       // An earlier initialization was about to commit: its transaction status decides, never the catalog alone.
       const status = await transactionStatus(lease, record.transaction!);
-      if (status === "committed") { await writeRecord(lease, { ...record, stage: "retired" }); return existing; }
+      if (status === "committed") {
+        // Its bookkeeping may be lost: rebuild the external drift evidence from the committed history when none exists.
+        const present = await privileged("schema read", () => sql.unsafe("SELECT to_regclass('fleur_internal.migrations') IS NOT NULL AS present"));
+        const rows = present[0]?.present === true ? await sql.unsafe("SELECT checksum, catalog FROM fleur_internal.migrations ORDER BY position") : [];
+        if (rows.length && !await lease.marker()) {
+          const history = rows.map((row: { checksum: string }) => row.checksum);
+          await recordInitialized(lease, record, { catalog: String(rows.at(-1).catalog), history }, planChecksum(history));
+        } else await writeRecord(lease, { ...record, stage: "retired" });
+        return existing;
+      }
       if (status === "in progress") throw new Error("MAINTENANCE_BUSY");
       if (status !== "aborted") return existing;
       record = { ...record, stage: "new", transaction: null };
@@ -181,14 +205,10 @@ async function initializeOnce(database: DevelopmentDatabase, project: string, de
     await lease.assertSession(); commitAttempted = true; transaction = false;
     try { await sql.unsafe("COMMIT"); }
     catch (error) { if (await transactionStatus(lease, xid) !== "committed") throw error; }
-    // The initialization committed. The bookkeeping below cannot undo it: a record left `initializing` is retired by
-    // the next startup from the transaction's status, and the history rows already hold the expected catalog.
+    // The initialization committed and the bookkeeping below cannot undo it. If it fails, the record stays
+    // `initializing` and the next startup completes it from the transaction's status.
     const history = plans.map(plan => plan.checksum);
-    try {
-      await writeRecord(lease, { ...record, stage: "retired", transaction: xid });
-      const previous = await lease.marker();
-      await lease.persist({ formatVersion: 1, target: lease.target, stage: "committed", planChecksum: digest(canonical({ operation: "initialization", migrations: history, seeds: seeds.map(seed => ({ key: seed.key, table: tableDefinitions.get(seed.table)!.name, rows: seed.rows, dependsOn: seed.dependsOn?.map(parent => parent.key) ?? [] })) })), backup: previous?.backup ?? null, schemaState: { catalog, history }, epoch: crypto.randomUUID() });
-    } catch { /* Readiness, probed next from the database itself, reports any resulting difference. */ }
+    await recordInitialized(lease, { ...record, transaction: xid }, { catalog, history }, planChecksum(history));
     return { status: "initialized", migrationsApplied: plans.map(plan => plan.id), seedRowsApplied: seeded.inserted + seeded.updated };
   } catch (error) {
     if (transaction) await sql.unsafe("ROLLBACK").catch(() => {});

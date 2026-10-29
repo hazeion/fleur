@@ -112,3 +112,37 @@ test("a dropped development database is recreated as new only if it was never in
     }
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
 }, 240_000);
+
+test("a crash after the initialization committed but before its bookkeeping still leaves external drift evidence", async () => {
+  const { fixture, root, project, config, database } = await setup("bookkeeping");
+  try {
+    const categories = defineTable("bookkeeping_categories", { columns: { id: column.safeInteger().primaryKey(), name: column.string().max(40) } });
+    await generateMigration(project, [categories]);
+    const target = database("fleur_review_bookkeeping");
+    expect((await startDevelopmentDatabase(target, project, [], config)).initialization.status).toBe("initialized");
+    // Simulate losing everything written after COMMIT: the record still names the committed transaction and the
+    // external maintenance record was never written.
+    const [path] = await recordPath(config.stateRoot);
+    await writeFile(path!, JSON.stringify({ ...JSON.parse(await readFile(path!, "utf8")), stage: "initializing" }) + "\n");
+    await rm(join(path!, "..", "maintenance.json"));
+    expect(await startDevelopmentDatabase(target, project, [], config)).toMatchObject({ state: "ready", initialization: { status: "existing" } });
+    // Erasing the database's own metadata and contents cannot hide the drift from Fleur's external record.
+    const sql = new SQL(target.url, { max: 1 });
+    try { await sql.unsafe("DROP SCHEMA fleur_internal CASCADE; DROP TABLE bookkeeping_categories"); } finally { await sql.close({ timeout: 0 }); }
+    expect((await startDevelopmentDatabase(target, project, [], config)).reasons.map(reason => reason.code)).toContain("SCHEMA_DRIFT");
+  } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 240_000);
+
+test("database creation blocked past the startup deadline fails without reporting ready", async () => {
+  const { fixture, root, project, config, database } = await setup("deadline");
+  const blocker = new SQL(fixture.url, { max: 1 });
+  try {
+    // SHARE blocks the catalog insert of CREATE DATABASE while still allowing catalog reads.
+    await blocker.unsafe("BEGIN"); await blocker.unsafe("LOCK TABLE pg_catalog.pg_database IN SHARE MODE");
+    const started = performance.now();
+    const report = await startDevelopmentDatabase(database("fleur_review_deadline"), project, [], { ...config, timeoutMs: 3000 });
+    expect(performance.now() - started).toBeLessThan(15_000);
+    expect(report).toMatchObject({ ready: false, state: "failed" });
+    expect(report.error?.action.command).toBeString();
+  } finally { await blocker.unsafe("ROLLBACK").catch(() => {}); await blocker.close({ timeout: 0 }); await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }
+}, 240_000);

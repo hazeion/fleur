@@ -204,3 +204,51 @@ startup. A missing replacement database remains fenced. Explicit restore can rec
 it only when the durable reset record binds that exact retained archive and the
 original cluster, database and owner. It re-verifies the archive in a disposable
 database before recreating the missing target.
+
+## New development database initialization
+
+`fleur dev` is not in this release. The shared-core startup step it will call
+already exists, and this section describes the behavior that `dev` startup
+gets from it. Until `dev` ships, apply migrations and seeds explicitly.
+
+A **new development database** is one that Fleur created for a storage binding
+and that has provably never been initialized. Before creating the database,
+Fleur writes a durable private creation record in its state directory. The
+record is bound to the cluster, database name, owner and storage binding, and
+to the database OID once the database exists. At startup, initialization holds
+the maintenance lock and proves newness again. The creation record must match
+the database, and the catalog must contain no application relations, functions
+or types and no `fleur_internal` metadata. Emptiness alone never qualifies.
+
+A new development database receives the whole committed migration chain in one
+transaction, followed by the declared seeds. The chain must pass the same
+validation as `db migration plan`. A chain that contains removals is included,
+because there is no data to remove. Initialization takes no backup and needs no
+human approval. It records the expected catalog in the migration history and in
+the maintenance record for drift detection. Startup then reports migrations
+applied, seed rows applied and the resulting migration summary in human output
+and JSON.
+
+- **Failure.** A failing migration or seed rolls the whole transaction back.
+  Startup reports `failed` with the error code, an exit category and one action,
+  and never reports ready. The database stays new, so the next startup retries
+  after the cause is corrected. If the outcome of the commit itself cannot be
+  proven, startup reports `RECOVERY_REQUIRED`. The next startup resolves the
+  outcome from the transaction's recorded status and never applies the chain
+  twice.
+- **Empty chain.** A new database stays new until a startup finds at least one
+  committed migration. Initialization runs only at startup, never during reload.
+- **Never new again.** After a successful initialization, the creation record
+  is retired, so later migrations use `db migration apply` and later seeds use
+  `db seed`. The record is also retired when startup finds that something else,
+  such as an explicit apply, changed the database first. A database emptied
+  afterwards is not new.
+- **Other databases.** Adopted volumes, another binding's database, a database
+  Fleur did not create, a database that reset recreated, production targets and
+  test or backup-verification databases have no matching creation record. They
+  are never initialized automatically and keep the explicit flow. Reset keeps
+  its approval, backup and `--seed` behavior. Production `start` never
+  initializes.
+- **Concurrency.** Two startups that race for the same binding serialize on the
+  maintenance lock. One creates and initializes the database, and the other
+  waits, finds it initialized and changes nothing.

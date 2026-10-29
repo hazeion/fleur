@@ -404,6 +404,18 @@ test("the database section names only operations in the pinned release and marks
     expect(unavailable).not.toContain(capability);
   }
 });
+test("the database section limits fleur dev initialization to a new development database and keeps the explicit flow", async () => {
+  // Requirements: docs/planning/V1-SPEC.md "New development database initialization" (#71). `dev` is not in this
+  // release, so the rule appears only in the unavailable list, and the explicit flow stays the instruction.
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  const section = await databaseSection(cwd);
+  const unavailable = section.slice(section.indexOf("\n### Not available in this release\n"));
+  const bullet = unavailable.split("\n").find((line) => line.includes("`fleur dev`"));
+  expect(bullet).toBeDefined();
+  const text = bullet!.toLowerCase();
+  for (const phrase of ["new development database", "fleur created", "never initialized", "one transaction", "committed migrations", "declared seeds", "empty", "`fleur db migration apply`", "`fleur db seed`"]) expect({ phrase, present: text.includes(phrase) }).toEqual({ phrase, present: true });
+});
 test("the database section explains DATABASE_PRIVILEGE_INSUFFICIENT without sending agents after credentials", async () => {
   // Requirements: docs/planning/V1-SPEC.md "Inspection authority" (#73).
   const cwd = await root();

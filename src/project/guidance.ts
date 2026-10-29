@@ -66,7 +66,7 @@ Run these checks and report which ones actually ran:
 
 Fleur ${releaseVersion} does not include the operations below. Do not call, simulate or claim them; later releases update this section.
 
-- \`fleur dev\`, including automatic initialization of a new development database. Apply migrations and seeds explicitly.
+- \`fleur dev\`, including its startup initialization of a new development database: one Fleur created for its storage binding and never initialized gets the committed migrations and declared seeds in one transaction. Every other database, even an empty one, is never initialized automatically. Apply migrations and seeds explicitly with \`fleur db migration apply\` and \`fleur db seed\`.
 - \`fleur db query\`. \`db query\` is a development-only diagnostic for reading development data, never a data access path for application code.
 `;
 const instructionGuidance = {

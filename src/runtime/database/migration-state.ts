@@ -53,10 +53,25 @@ export async function migrationHistory(sql: Connection) {
     throw new Error("SCHEMA_DRIFT");
   }
 }
-export async function assertMigrationState(sql: Connection, tables?: readonly Table[],completeRegistry=false) {
-  const history = await migrationHistory(sql), last = history.at(-1);
+/** Database drift evidence shared by reports and executable admission/apply gates. Read failures propagate. */
+export async function readDatabaseMigrationState(sql: Connection, marker: MaintenanceMarker | null = null) {
+  const history = await migrationHistory(sql).catch(error => {
+    if (error instanceof Error && error.message === "SCHEMA_DRIFT") return null;
+    throw error;
+  });
+  if (!history) return { history, catalog: null, expectedCatalog: undefined, recordedHistoryChanged: false, unrecordedObjects: false, drift: true };
+  const last = history.at(-1), recorded = marker?.schemaState;
+  const recordedHistoryChanged = recorded !== undefined && JSON.stringify(recorded.history) !== JSON.stringify(history.map(row => row.checksum));
+  const unrecordedObjects = !last && !recorded && !await emptyApplicationSchema(sql);
+  const catalog = last || recorded || unrecordedObjects ? await catalogFingerprint(sql) : null;
+  const expectedCatalog = [last?.catalog, recorded?.catalog].find(value => value !== undefined && value !== catalog);
+  return { history, catalog, expectedCatalog, recordedHistoryChanged, unrecordedObjects, drift: recordedHistoryChanged || expectedCatalog !== undefined || unrecordedObjects };
+}
+export async function assertMigrationState(sql: Connection, tables?: readonly Table[],completeRegistry=false, marker: MaintenanceMarker | null = null) {
+  const state = await readDatabaseMigrationState(sql, marker);
+  if (state.drift || !state.history) throw new Error("SCHEMA_DRIFT");
+  const history = state.history, last = history.at(-1);
   if (last) {
-    if (await catalogFingerprint(sql) !== last.catalog) throw new Error("SCHEMA_DRIFT");
     if (tables && snapshotSignature(describeTables(tables)) !== snapshotSignature(describeTables(restoreTables(last.snapshot)).filter(expected=>completeRegistry||tables.some(table=>tableDefinitions.get(table)?.name===expected.name)))) throw new Error("MIGRATIONS_PENDING");
   }
   return history;
@@ -64,10 +79,6 @@ export async function assertMigrationState(sql: Connection, tables?: readonly Ta
 export async function emptyApplicationSchema(sql: Connection): Promise<boolean> {
   const rows=await sql.unsafe(`SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE ${namespace}) OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE ${namespace}) OR EXISTS(SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE ${namespace} AND t.typtype IN ('d','e','r')) AS occupied`);
   return rows[0]?.occupied === false;
-}
-
-export async function verifyExternalSchemaState(sql:Connection,marker:MaintenanceMarker|null):Promise<void> {
-  if(marker?.schemaState && (await catalogFingerprint(sql)!==marker.schemaState.catalog || JSON.stringify((await migrationHistory(sql)).map(row=>row.checksum))!==JSON.stringify(marker.schemaState.history)))throw new Error("SCHEMA_DRIFT");
 }
 
 function snapshotSignature(value:unknown):string {

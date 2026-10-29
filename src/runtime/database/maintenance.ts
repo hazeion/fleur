@@ -124,11 +124,9 @@ export class MaintenanceLease {
       if (!inspect && marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect && marker && (marker.target.cluster !== identity.cluster || marker.target.database !== identity.database || marker.target.owner !== identity.owner || marker.target.oid !== identity.oid)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect) {
-        const { assertMigrationState, verifyExternalSchemaState } = await import("./migration-state");
-        const history=await privileged("schema read", () => assertMigrationState(target, configuration.tables,configuration.completeRegistry));
-        await privileged("schema read", () => verifyExternalSchemaState(target, marker));
+        const { assertMigrationState } = await import("./migration-state");
+        const history=await privileged("schema read", () => assertMigrationState(target, configuration.tables,configuration.completeRegistry,marker));
         if(!history.length&&configuration.tables?.length)throw new Error("MIGRATIONS_PENDING");
-        if(!history.length&&configuration.completeRegistry){const {emptyApplicationSchema}=await import("./migration-state");if(!await emptyApplicationSchema(target))throw new Error("SCHEMA_DRIFT");}
       }
       return lease;
     } catch (error) {

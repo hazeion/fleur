@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { readMigrations } from "./migration-plan";
-import { assertMigrationState, catalogFingerprint, emptyApplicationSchema, migrationHistory } from "./migration-state";
+import { assertMigrationState, catalogFingerprint, migrationHistory } from "./migration-state";
 import { readMigrationStatus } from "./migration-status";
 import { withInspection, type TargetKind } from "./target";
 import { backupDatabase, type BackupConfiguration } from "./backup";
@@ -40,7 +40,6 @@ export async function applyMigrations(url: string, project: string, config: Back
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
     const history=await assertMigrationState(sql);
     if (history.some((row,index)=>row.checksum!==plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
-    if (!history.length && !await emptyApplicationSchema(sql)) throw new Error("SCHEMA_DRIFT");
     const pending=plans.slice(history.length);
     if (!pending.length) return {applied:[],backup:null};
     // Before approval, backup or any marker: applying needs backup verification and schema ownership.

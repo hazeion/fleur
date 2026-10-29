@@ -159,6 +159,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   const arrayLength = (value: Node | undefined, scope: Scope, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): number | undefined => {
     if (!value) return;
     scope = contexts.get(value) ?? scope;
+    if (["TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return arrayLength(node(value.expression), scope, arguments_, seen);
     if (value.type === "Identifier") {
       const binding = resolveBinding(lookup(scope, String(value.name)));
       const selected = binding && (arguments_.get(binding) ?? binding);
@@ -195,7 +196,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       const selected = value.computed ? keys(node(value.property), scope, new Set(), arguments_) : [name(value.property)];
       for (const key of selected) if (key) visit(node(value.object), scope, [{ key }, ...properties]);
     } else if (value.type === "ObjectRest" && properties[0]) {
-      const definite = nodes(value.excluded).flatMap(value => { const selected = keys(value, scope, new Set(), arguments_); return selected.length === 1 ? selected : []; });
+      const definite = nodes(value.excluded).flatMap(value => { const selected = keys(value, scope, new Set(), arguments_); return selected.length === 1 && selected[0] !== "*" ? selected : []; });
       const selected = properties[0], excluded = new Set([...(selected.excluded ?? []), ...definite]);
       if (!excluded.has(selected.key) && !excluded.has("*")) visit(node(value.argument), scope, [{ ...selected, excluded }, ...properties.slice(1)]);
     } else if (value.type === "ObjectExpression" && properties[0]) {

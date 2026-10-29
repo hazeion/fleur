@@ -13,6 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - {runner: ubuntu-24.04, machine: x86_64}
           - {runner: ubuntu-24.04-arm, machine: aarch64}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 9
@@ -25,8 +26,11 @@ jobs:
           test "$(uname -m)" = '${{ matrix.machine }}'
           uname -srm
           python3 --version
-      - name: Trace original observer cleanup requirements
-        run: python3 -B experiments/compatibility/runtime-probe/diagnose_observer_cleanup.py > observer-cleanup-diagnostic.json
+      - name: Full runtime-probe suite, first run
+        run: python3 -B experiments/compatibility/runtime-probe/diagnose_observer_cleanup.py --suite
+      - name: Full runtime-probe suite, second run
+        if: always()
+        run: python3 -B experiments/compatibility/runtime-probe/diagnose_observer_cleanup.py --suite
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:

@@ -4,6 +4,8 @@ import json
 import subprocess
 import sys
 import time
+import pathlib
+import unittest
 
 from test_containerd_observer import ObserverTests, ObserverUnverified
 
@@ -67,6 +69,25 @@ def run_worker():
 
 
 def main():
+    if '--suite' in sys.argv:
+        install_failure_diagnostics()
+        original=ObserverTests.canary_observer
+        active=[]
+        def canary(self,mode='valid',timeout=5,adapter_extra=''):
+            observer,state=original(self,mode,timeout,adapter_extra=adapter_extra+ADAPTER)
+            if mode in ('missing-echo','wrong-nonce'):active.append((mode,observer,state))
+            return observer,state
+        ObserverTests.canary_observer=canary
+        class DiagnosticResult(unittest.TextTestResult):
+            def addSubTest(self,test,subtest,error):
+                if error is not None:
+                    for mode,observer,state in active:
+                        path=state/'cleanup-diagnostic.json'
+                        self.stream.write(json.dumps({'mode':mode,'snapshot':observer.snapshot(),
+                            'trace':[json.loads(line) for line in path.read_text().splitlines()] if path.exists() else None})+'\n')
+                super().addSubTest(test,subtest,error)
+        suite=unittest.defaultTestLoader.discover(str(pathlib.Path(__file__).parent),pattern='test_*.py')
+        return int(not unittest.TextTestRunner(resultclass=DiagnosticResult).run(suite).wasSuccessful())
     if '--worker' in sys.argv:return run_worker()
     def worker(number):
         started=time.monotonic()

@@ -124,7 +124,11 @@ test("isolated retrieval handlers obtain declared external data only through the
     const rendering = performance.now();
     const slowRender = await app.render("/slow").then(() => "rendered", (error: unknown) => (error as Error).message);
     const settled = performance.now();
-    expect(slowRender).toBe("RETRIEVAL_TIMEOUT");
+    // The retrieval normally reports its own timeout. A loaded host can leave the
+    // rerun no time to start before the render deadline; the render then fails at
+    // that deadline with QUERY_TIMEOUT, as docs/retrieval.md documents. Never earlier.
+    expect(["RETRIEVAL_TIMEOUT", "QUERY_TIMEOUT"]).toContain(slowRender);
+    if (slowRender === "QUERY_TIMEOUT") expect(settled - rendering).toBeGreaterThanOrEqual(4_900);
     expect(settled - rendering).toBeLessThan(8_000);
     // Under load the capped request deadline may already have passed when the
     // render reaches the retrieval, and then no request is made at all. A

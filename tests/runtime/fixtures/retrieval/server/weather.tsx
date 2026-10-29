@@ -52,7 +52,7 @@ registerPage(slowPage, { component: async () => <p>{(await readRetrieval(strictF
 // A page that reaches its retrieval late in the render, about two seconds before
 // its deadline; the handler must still see RETRIEVAL_TIMEOUT and fall back.
 registerPage(latePage, { component: async () => {
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  await new Promise(resolve => setTimeout(resolve, 2500));
   const current = await readRetrieval(forecast, { city: "slow" });
   return <p aria-label="Temperature">{current.available ? `${current.temperature} degrees` : "Weather unavailable"}</p>;
 } });

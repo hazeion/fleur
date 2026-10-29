@@ -202,8 +202,11 @@ export class ReadApplication {
     const deadline = Math.min(this.#outbound.deadline(), limit);
     // External requests end early enough that the handler still runs after a
     // timeout and can handle RETRIEVAL_TIMEOUT explicitly. The reserve always
-    // covers a run's arming margin; when less remains, no request is made.
-    const requestDeadline = deadline - Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.max(ARMING_MARGIN_MS + 250, Math.floor((deadline - performance.now()) / 4)));
+    // covers a run's arming margin. It also covers the rerun as the run that asked
+    // for the request measured it: its slot wait plus the larger of the arming
+    // margin and its execution, so a loaded host still has time for the rerun.
+    // When less remains, no request is made.
+    const reserve = Math.min(RETRIEVAL_HANDLER_RESERVE_MS, Math.max(ARMING_MARGIN_MS + 250, Math.floor((deadline - performance.now()) / 4)));
     const outcomes = new Map<string, { value: unknown } | { error: unknown }>();
     // RETRIEVAL_TIMEOUT means the whole retrieval deadline expired, or too
     // little of it remains for a run to start. A worker run that exceeds its
@@ -224,9 +227,11 @@ export class ReadApplication {
       };
       let result: { value: unknown } | { error: unknown };
       let reservation: Reservation;
-      const reserveBy = Math.min(deadline, performance.now() + 5000);
+      const runStarted = performance.now();
+      const reserveBy = Math.min(deadline, runStarted + 5000);
       try { reservation = limit === Infinity ? await this.#execution.reserve(reserveBy) : await this.#reserveNested(reserveBy, abandoned); }
       catch (error) { throw expired(error); }
+      const reserved = performance.now();
       try {
         const budget = Math.min(5000, Math.floor(deadline - performance.now()));
         if (budget < 1) throw new Error("QUERY_TIMEOUT");
@@ -237,6 +242,8 @@ export class ReadApplication {
         if ("error" in result) throw expired(result.error);
         try { return operation.output.parse(result.value); } catch { throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT"); }
       }
+      const rerun = reserved - runStarted + Math.max(ARMING_MARGIN_MS, performance.now() - reserved) + 250;
+      const requestDeadline = deadline - Math.max(reserve, rerun);
       await Promise.all([...pending].map(async ([key, request]) => {
         try { outcomes.set(key, { value: await this.#outbound.request(request, requestDeadline, abandoned) }); }
         catch (error) { outcomes.set(key, { error: error instanceof RetrievalError ? error : new RetrievalError("RETRIEVAL_TRANSPORT_FAILURE") }); }

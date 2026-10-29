@@ -126,8 +126,11 @@ still run, catch `RETRIEVAL_TIMEOUT` and return a fallback. The reserve is a
 quarter of the time remaining when the retrieval starts, at most two seconds
 and at least 750 ms: the 500 ms a handler run needs to start plus a 250-ms
 margin. For a nested retrieval that remaining time is what is left of the
-render. When no more than the reserve remains, no request is made and the
-handler sees `RETRIEVAL_TIMEOUT` at once. An unhandled timeout fails the
+render. The reserve also covers the rerun as the run that asked for the
+request measured it: that run's slot wait plus the larger of 500 ms and its
+execution, plus 250 ms. A slow or loaded host therefore still leaves the rerun
+time to start. When no more than the reserve remains, no request is made and
+the handler sees `RETRIEVAL_TIMEOUT` at once. An unhandled timeout fails the
 retrieval within the whole-operation deadline.
 
 ## Enforcement

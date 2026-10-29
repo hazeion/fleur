@@ -26,6 +26,8 @@ test("isolated retrieval handlers obtain declared external data only through the
   const hits = new Map<string, number>(), credentials: (string | null)[] = [], slowClosed: number[] = [];
   const provider = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch(request) {
     const path = new URL(request.url).pathname;
+    // Local port scanners on a developer machine probe "/"; only the fixture's API paths are provider traffic.
+    if (!path.startsWith("/v1/")) return new Response(null, { status: 404 });
     const count = (hits.get(path) ?? 0) + 1;
     hits.set(path, count);
     credentials.push(request.headers.get("authorization"));
@@ -36,9 +38,9 @@ test("isolated retrieval handlers obtain declared external data only through the
   } });
   // Direct worker requests would land here. It binds 0.0.0.0 so that a worker
   // with any network path to the host (loopback, bridge gateway or
-  // host.docker.internal) would reach it; zero hits is the isolation proof.
+  // host.docker.internal) would reach it; zero hits on the fixture's /direct path is the isolation proof.
   let directHits = 0;
-  const canary = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch() { directHits++; return new Response("reached"); } });
+  const canary = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch(request) { if (new URL(request.url).pathname === "/direct") directHits++; return new Response("reached"); } });
   const origin = `http://weather.fixture.test:${provider.port}`;
   const directory = await mkdtemp(join(tmpdir(), "fleur-retrieval-fixture-"));
   let images: Awaited<ReturnType<typeof prepareNativeImages>> | undefined, fixture: Awaited<ReturnType<typeof ownedPostgres>> | undefined;

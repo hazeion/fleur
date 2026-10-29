@@ -3,7 +3,7 @@ import { definition, references, tableDefinitions } from "../declarations";
 import { restoreTables } from "../table-wire";
 import { caseFoldedKey, catalogTables, type CatalogTable } from "./catalog";
 import { readMigrations, type MigrationPlan } from "./migration-plan";
-import { catalogFingerprint, emptyApplicationSchema, migrationHistory } from "./migration-state";
+import { readDatabaseMigrationState } from "./migration-state";
 import { columnDefault, constraintName, indexKeys, tableConstraints } from "./table-ddl";
 import { maintenanceSummary, type InspectionSession, type MaintenanceSummary } from "./target";
 
@@ -118,23 +118,18 @@ export async function readMigrationStatus(session: InspectionSession, project: s
     if (!(error instanceof Error) || error.message !== "MIGRATION_EDITED") throw error;
     differences.push({ object: "migrations", expected: "committed migration files that match their reviewed plans", actual: "an edited, renamed or reordered migration file" });
   }
-  let history: Awaited<ReturnType<typeof migrationHistory>> | null = null;
-  try { history = await migrationHistory(sql); }
-  catch (error) {
-    if (!(error instanceof Error) || error.message !== "SCHEMA_DRIFT") throw error;
+  const { history, catalog, expectedCatalog, recordedHistoryChanged, unrecordedObjects } = await readDatabaseMigrationState(sql, marker);
+  if (!history) {
     differences.push({ object: "migration history", expected: "an ordered chain of reviewed migration checksums", actual: "an altered or unreadable migration history" });
   }
   let declarations: readonly Table[] = [];
   if (history) {
     if (plans) for (const [index, row] of history.entries()) if (row.checksum !== plans[index]?.checksum) differences.push({ object: `migration ${row.id}`, expected: `applied checksum ${row.checksum}`, actual: plans[index] ? `file checksum ${plans[index].checksum}` : "no migration file" });
     const recorded = marker?.schemaState, checksums = history.map(row => row.checksum);
-    if (recorded && JSON.stringify(recorded.history) !== JSON.stringify(checksums)) differences.push({ object: "migration history", expected: historyDescription(recorded.history), actual: historyDescription(checksums) });
+    if (recorded && recordedHistoryChanged) differences.push({ object: "migration history", expected: historyDescription(recorded.history), actual: historyDescription(checksums) });
     const last = history.at(-1);
     // migrationHistory verified this snapshot against its checksum chain; restore it once through the validated path.
     declarations = restoreTables(last?.snapshot ?? []);
-    const catalog = await catalogFingerprint(sql);
-    const expectedCatalog = [last?.catalog, recorded?.catalog].find(value => value !== undefined && value !== catalog);
-    const unrecordedObjects = !last && !recorded && !await emptyApplicationSchema(sql);
     if (expectedCatalog !== undefined || unrecordedObjects) {
       const structural = await schemaDifferences(sql, declarations);
       differences.push(...structural);

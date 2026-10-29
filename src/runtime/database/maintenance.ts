@@ -62,7 +62,7 @@ export class MaintenanceLease {
   private constructor(sql: SQL, target: DatabaseIdentity, key: string, directory: string, pid: number, exclusive: boolean, nonce: string, busy = false) {
     this.sql = sql; this.#target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy;
   }
-  static async acquire(urlValue: string, exclusive: boolean, configuration: MaintenanceConfiguration = {}, inspect = false, preflight?: (control: SQL, target: SQL) => Promise<void>): Promise<MaintenanceLease> {
+  static async acquire(urlValue: string, exclusive: boolean, configuration: MaintenanceConfiguration = {}, inspect = false, preflight?: (control: SQL, target: SQL) => Promise<void>, operation: "application" | "backup" = "application"): Promise<MaintenanceLease> {
     const targetUrl = databaseUrl(urlValue);
     const configuredControl = configuration.controlUrl ?? process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL;
     const controlUrl = configuredControl ? databaseUrl(configuredControl) : new URL(targetUrl);
@@ -124,10 +124,10 @@ export class MaintenanceLease {
       if (!inspect && marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect && marker && (marker.target.cluster !== identity.cluster || marker.target.database !== identity.database || marker.target.owner !== identity.owner || marker.target.oid !== identity.oid)) throw new Error("RECOVERY_REQUIRED");
       if (!inspect) {
-        const { assertMigrationState, verifyExternalSchemaState } = await import("./migration-state");
-        const history=await privileged("schema read", () => assertMigrationState(target, configuration.tables,configuration.completeRegistry));
-        await privileged("schema read", () => verifyExternalSchemaState(target, marker));
+        const { assertMigrationState } = await import("./migration-state");
+        const history=await privileged("schema read", () => assertMigrationState(target, configuration.tables,configuration.completeRegistry,marker,operation));
         if(!history.length&&configuration.tables?.length)throw new Error("MIGRATIONS_PENDING");
+        // A complete empty declaration registry cannot admit application objects, even if an external record matches.
         if(!history.length&&configuration.completeRegistry){const {emptyApplicationSchema}=await import("./migration-state");if(!await emptyApplicationSchema(target))throw new Error("SCHEMA_DRIFT");}
       }
       return lease;

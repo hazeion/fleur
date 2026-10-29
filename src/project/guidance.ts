@@ -35,6 +35,7 @@ Commit migration files with the application. Never edit or remove an applied mig
 
 ### Seeds and reset
 
+- Restore needs visibility into other roles' sessions through \`pg_read_all_stats\`, or no other roles connected to the target. Hidden session state returns \`MAINTENANCE_BUSY\`, even for idle sessions. Reconciliation requires schema-read authority; refused reconciliation and seed fences name the \`maintenance locks\` capability.
 - Seeds are declarative. Export \`defineSeed\` declarations from seeds/ with stable ownership keys and validated row values, and declare \`dependsOn\` for foreign-key ordering. \`fleur db seed\` reconciles them: it skips user-edited rows, keeps tombstones for deleted rows and rolls back the whole run on any conflict. Seeds never run shell commands or SQL.
 - \`fleur db reset\` recreates only the explicitly bound development database, and only with human approval after a verified backup. It leaves tables empty unless \`--seed\` is given. Never reset development data to make a test pass.
 

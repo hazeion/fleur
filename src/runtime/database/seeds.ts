@@ -1,7 +1,7 @@
 import { columnType } from "./table-ddl";
 import { projection, readValue } from "./selection";
 import { SQL } from "bun";
-import { requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 import type { Seed } from "../../database";
 import { orderSeeds } from "../seed-declarations";
 import { definition, tableDefinitions } from "../declarations";
@@ -105,12 +105,13 @@ export async function seedDatabase(url: string, project: string, declarations: r
     if (tables.length && !history.length) throw new Error("MIGRATIONS_PENDING");
     const beforeSchema = await catalogFingerprint(sql), beforeData = await dataIntegrity(sql);
     const intent = { operation: "seed" as const, beforeSchema, beforeData, beforeHistory: history.map(row => row.checksum), afterSchema: null as string | null, afterData: null as string | null, afterHistory: history.map(row => row.checksum) };
-    marker = { replacement: (await lease.marker())?.replacement, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: digest(canonical(seeds.map(seed => ({ key: seed.key, table: tableDefinitions.get(seed.table)!.name, rows: seed.rows, dependsOn: seed.dependsOn?.map(parent => parent.key) ?? [] })))), backup: (await lease.marker())?.backup ?? null, epoch: crypto.randomUUID(), intent };
-    await lease.persist(marker);
+    // Refuse missing lock authority before recording any maintenance stage.
     await sql.unsafe("BEGIN ISOLATION LEVEL READ COMMITTED"); transaction = true;
     await sql.unsafe("SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='3s'; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'");
-    const fence = await sql.unsafe("SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired", [lease.key]);
+    const fence = await privileged("maintenance locks", () => sql.unsafe("SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired", [lease.key]));
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
+    marker = { replacement: (await lease.marker())?.replacement, formatVersion: 1, target: lease.target, stage: "preparing", planChecksum: digest(canonical(seeds.map(seed => ({ key: seed.key, table: tableDefinitions.get(seed.table)!.name, rows: seed.rows, dependsOn: seed.dependsOn?.map(parent => parent.key) ?? [] })))), backup: (await lease.marker())?.backup ?? null, epoch: crypto.randomUUID(), intent };
+    await lease.persist(marker);
     const { result, catalog } = await reconcileSeeds(sql, seeds, async () => { marker = { ...marker!, stage: "applying" }; await lease.persist(marker); });
     marker = { ...marker, intent: { ...intent, afterSchema: catalog, afterData: await dataIntegrity(sql) } };
     await lease.persist(marker); await lease.assertSession(); commitAttempted = true;

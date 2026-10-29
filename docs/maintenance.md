@@ -45,6 +45,10 @@ PostgreSQL grants `PUBLIC` `CONNECT` on databases and `EXECUTE` on `pg_control_s
 
 A command whose credential lacks a capability it needs returns `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4 before it changes anything. Backup, apply, seed, restore and reset check their extra authority through PostgreSQL's privilege functions before any approval prompt, backup, maintenance stage or schema change, so the refusal leaves nothing to recover. The error's `expected.capability` names the missing category from the table above, and its action points here. It never names the role, host, port or URL. Under the minimum-privilege profile, `db backup`, `db migration apply`, `db restore` and `db reset` report `role and database creation`, and `db seed` reports `schema write`; `db migration apply` with nothing pending needs no extra authority and reports no applied migrations.
 
+Restore must also see the state of other roles' sessions on the target. Supply `pg_read_all_stats` or ensure that no other roles have sessions on that database. Without that visibility, PostgreSQL hides session state and Fleur refuses restore with `MAINTENANCE_BUSY`, even when those sessions are idle. This is separate from a missing-capability refusal.
+
+Reconciliation checks schema-read authority before computing catalog and data fingerprints. Refused application-database fences in reconciliation and seed return `DATABASE_PRIVILEGE_INSUFFICIENT` naming `maintenance locks`. Seeding acquires its transaction fence before recording a preparing marker, so a refused fence leaves the existing maintenance evidence unchanged.
+
 ## Schema overview and database health
 
 `db inspect` without `--table` returns the schema overview of application base tables in `public`, ordered by name. It never returns rows. Each table reports:

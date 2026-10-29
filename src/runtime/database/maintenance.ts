@@ -127,6 +127,8 @@ export class MaintenanceLease {
         const { assertMigrationState } = await import("./migration-state");
         const history=await privileged("schema read", () => assertMigrationState(target, configuration.tables,configuration.completeRegistry,marker));
         if(!history.length&&configuration.tables?.length)throw new Error("MIGRATIONS_PENDING");
+        // A complete empty declaration registry cannot admit application objects, even if an external record matches.
+        if(!history.length&&configuration.completeRegistry){const {emptyApplicationSchema}=await import("./migration-state");if(!await emptyApplicationSchema(target))throw new Error("SCHEMA_DRIFT");}
       }
       return lease;
     } catch (error) {

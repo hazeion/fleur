@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { ownedPostgres } from "./owned-postgres";
@@ -205,6 +205,96 @@ test("db backup, db migration apply, db seed, db restore and db reset under the 
   await rm(join(root, "migrations", "0002.json"));
 }, 300_000);
 
+// #97: refusals must precede control-lock acquisition, including first use of private state.
+test("insufficient maintenance authority creates no state directory on first use", async () => {
+  await generateMigration(root, [ingredients, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
+  try {
+    const directory = (await readdir(root)).find(name => /^[a-f0-9]{64}$/.test(name))!;
+    const retained = (await readdir(join(root, directory))).find(name => /^before-.*\.dump$/.test(name))!;
+    const cases = [
+      { args: ["db", "backup", "--out", join(root, "first-use.dump")], capability: "role and database creation" },
+      { args: ["db", "migration", "apply"], capability: "role and database creation" },
+      { args: ["db", "seed"], capability: "schema write" },
+      { args: ["db", "reset"], capability: "role and database creation" },
+      { args: ["db", "restore", "--from", join(root, directory, retained)], capability: "role and database creation" },
+    ];
+    for (const { args, capability } of cases) {
+      const stateRoot = join(root, `unused-${randomUUID()}`);
+      expectShortfall(await cli(args, profile({ FLEUR_PRIVATE_STATE_ROOT: stateRoot, FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL: profileUrl })), capability);
+      expect(await lstat(stateRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })).toBe(false);
+    }
+  } finally { await rm(join(root, "migrations", "0002.json")); }
+}, 300_000);
+
+test("refused maintenance never queues an exclusive control lock or blocks another admission", async () => {
+  await generateMigration(root, [ingredients, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
+  const admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+  try {
+    const unsigned = BigInt.asUintN(64, BigInt(admitted.key));
+    for (const args of [["db", "backup", "--out", join(root, "blocked.dump")], ["db", "migration", "apply"]]) {
+      let settled = false;
+      const refusal = cli(args, profile()).finally(() => { settled = true; });
+      let queued = false;
+      const deadline = performance.now() + 10_000;
+      while (!settled && !queued && performance.now() < deadline) {
+        const locks = await control.unsafe("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname='postgres') AND classid=$1::oid AND objid=$2::oid AND objsubid=1 AND mode='ExclusiveLock') AS queued", [(unsigned >> 32n).toString(), (unsigned & 0xffffffffn).toString()]);
+        queued = locks[0]?.queued === true;
+        if (!settled && !queued) await Bun.sleep(5);
+      }
+      try {
+        expect(queued).toBe(false);
+        const next = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+        await next.close();
+        expectShortfall(await refusal, "role and database creation");
+      } finally { await refusal; }
+    }
+  } finally { await admitted.close(); await rm(join(root, "migrations", "0002.json")); }
+}, 300_000);
+
+test("missing application lock authority refuses no-op apply before state creation or admission drain", async () => {
+  await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM PUBLIC");
+  let admitted: MaintenanceLease | undefined;
+  try {
+    for (const heldAdmission of [false, true]) {
+      if (heldAdmission) admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+      const stateRoot = join(root, `missing-lock-${randomUUID()}`);
+      expectShortfall(await cli(["db", "migration", "apply"], profile({ FLEUR_PRIVATE_STATE_ROOT: stateRoot })), "maintenance locks");
+      expect(await lstat(stateRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })).toBe(false);
+    }
+  } finally {
+    await admitted?.close();
+    await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO PUBLIC");
+  }
+}, 300_000);
+
+test("authority revoked while backup waits for admissions is refused again before work", async () => {
+  const maker = `${role}_revoked`;
+  await control.unsafe(`CREATE ROLE ${maker} LOGIN SUPERUSER IN ROLE ${role} PASSWORD '${password}'`);
+  const login = new URL(profileUrl); login.username = maker;
+  const admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+  const before = await observed();
+  const out = join(root, "revoked.dump");
+  const backup = cli(["db", "backup", "--out", out], { FLEUR_PRIVATE_DATABASE_URL: login.toString() });
+  try {
+    const unsigned = BigInt.asUintN(64, BigInt(admitted.key));
+    let queued = false;
+    const deadline = performance.now() + 3000;
+    while (!queued && performance.now() < deadline) {
+      queued = (await control.unsafe("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname='postgres') AND classid=$1::oid AND objid=$2::oid AND objsubid=1 AND mode='ExclusiveLock' AND NOT granted) AS queued", [(unsigned >> 32n).toString(), (unsigned & 0xffffffffn).toString()]))[0]?.queued === true;
+      if (!queued) await Bun.sleep(5);
+    }
+    expect(queued).toBe(true);
+    await control.unsafe(`ALTER ROLE ${maker} NOSUPERUSER`);
+    await admitted.close();
+    expectShortfall(await backup, "role and database creation");
+    expect(await observed()).toEqual(before);
+    expect(await Bun.file(out).exists()).toBe(false);
+  } finally {
+    await admitted.close(); await backup;
+    await control.unsafe(`DROP ROLE ${maker}`);
+  }
+}, 300_000);
+
 test("db seed through the CLI under the profile returns DATABASE_PRIVILEGE_INSUFFICIENT naming schema write and changes nothing", async () => {
   const before = await observed();
   const seed = await cli(["db", "seed"], profile());
@@ -335,7 +425,12 @@ test("db seed reports a refused transaction fence as maintenance locks without c
     const before = await observed();
     await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) FROM PUBLIC");
     try {
-      expectShortfall(await cli(["db", "seed"], profile()), "maintenance locks");
+      const stateRoot = join(root, `missing-seed-lock-${randomUUID()}`);
+      const admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+      try {
+        expectShortfall(await cli(["db", "seed"], profile({ FLEUR_PRIVATE_STATE_ROOT: stateRoot })), "maintenance locks");
+        expect(await lstat(stateRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })).toBe(false);
+      } finally { await admitted.close(); }
       expect(await observed()).toEqual(before);
       expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
     } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) TO PUBLIC"); }

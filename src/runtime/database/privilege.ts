@@ -70,3 +70,10 @@ export async function requireAuthority(control: Connection, target: Connection, 
     if (rows[0]?.granted !== true) throw new PrivilegeInsufficient(need);
   }
 }
+
+/** Inspect the exact application fence function without acquiring a lock. PostgreSQL rechecks at execution. */
+export async function requireApplicationLock(target: Connection, kind: "session" | "transaction"): Promise<void> {
+  const name = kind === "session" ? "pg_catalog.pg_try_advisory_lock(bigint)" : "pg_catalog.pg_try_advisory_xact_lock(bigint)";
+  const rows = await target.unsafe("SELECT has_function_privilege($1,'EXECUTE') AS granted", [name]);
+  if (rows[0]?.granted !== true) throw new PrivilegeInsufficient("maintenance locks");
+}

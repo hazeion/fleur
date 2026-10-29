@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { authorizeMaintenance, privateJson, type MaintenanceAuthority } from "./maintenance-authority";
 import { backupDatabase, type BackupConfiguration } from "./backup";
-import { privileged, requireAuthority } from "./privilege";
+import { privileged, requireApplicationLock, requireAuthority } from "./privilege";
 import { backupManifest, verifyRetainedArchive, cleanupInterruptedVerification } from "./restore-verification";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { readMigrations } from "./migration-plan";
@@ -19,7 +19,16 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
   const archive=resolve(from),manifest=backupManifest.parse(await privateJson(archive+".manifest.json"));
   const plans=await readMigrations(project);
   if(manifest.history?.some((checksum,index)=>checksum!==plans[index]?.checksum))throw new Error("MIGRATION_EDITED");
-  const lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()},true);
+  const lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()},true,async (control,target)=>{
+    await requireAuthority(control,target,["role and database creation"]);
+    // Interrupted reset recovery also admits a missing target. Its replacement checks run after recreation.
+    const present=await control.unsafe("SELECT 1 FROM pg_database WHERE datname=$1",[new URL(url).pathname.slice(1)]);
+    if(present.length){
+      await privileged("database connect",()=>target.connect());
+      await requireAuthority(control,target,["database replacement","schema write","schema read"]);
+      await requireApplicationLock(target,"session");
+    }
+  });
   const sql=new SQL(url,{max:1,connectionTimeout:2,idleTimeout:0,maxLifetime:0});
   const frozen=join(lease.directory,`restore-${crypto.randomUUID()}.dump`),script=frozen+".sql",command=script+".psql";
   let marker:MaintenanceMarker|undefined;

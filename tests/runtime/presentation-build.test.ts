@@ -87,6 +87,38 @@ test("presentation class tracing respects local shadows, named reexports, helper
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("complete utility selection supports computed maps, arrays, assignments and imported or method helpers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fleur-complete-selection-"));
+  try {
+    await mkdir(join(root, "server"));
+    await mkdir(join(root, "shared"));
+    await writeFile(join(root, "shared", "classes.ts"), `export function classes(...values: string[]) { return values.join(" "); }`);
+    await writeFile(join(root, "server", "page.tsx"), `
+      import * as helpers from "../shared/classes";
+      const sizes = { small: "w-[47px]", large: "w-[123px]" };
+      const heights = ["h-[71px]", "h-[83px]"];
+      const styles = { spacing() { return "p-[17px]"; } };
+      const secret = 'content-["selection-private-canary"]';
+      export function Page({wide, size}: {wide: boolean; size: "small" | "large"}) {
+        let assigned;
+        if (wide) assigned = "m-[11px]"; else assigned = "m-[19px]";
+        return <main class={helpers.classes(sizes[size], assigned, styles.spacing(), "gap-[23px]")}>
+          <p class={sizes[wide ? "small" : "large"]}/><p class={heights[0]}/><p class={heights[wide ? 0 : 1]}/>
+          <p class={secret ? "z-[31]" : "z-[37]"}/>
+        </main>;
+      }
+    `);
+    const bundle = await compileClient(await admitProject(root));
+    const css = String(bundle.files.get(bundle.stylesheet!)?.body);
+    for (const [property, values] of [["width", [47, 123]], ["height", [71, 83]], ["padding", [17]], ["margin", [11, 19]], ["gap", [23]]] as const) {
+      for (const value of values) expect(css).toMatch(new RegExp(`${property}:\\s*${value}px`));
+    }
+    expect(css).not.toContain("selection-private-canary");
+    expect(css).toMatch(/z-index:\s*31/);
+    expect(css).toMatch(/z-index:\s*37/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("client compiler independently refuses import-meta asset transforms instead of embedding unsnapshotted server files", async () => {
   const root = await mkdtemp(join(tmpdir(), "fleur-transform-guard-"));
   try {

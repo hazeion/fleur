@@ -58,12 +58,21 @@ test("browser runtime rejects authored stylesheet injection without relying on C
       element.style.setProperty("--accent", "purple");
       document.body.append(element);
       const fonts = [new FontFace("Local", 'url("/assets/font.woff2")').status, new FontFace("CDN", 'url("https://example.invalid/font.woff2") format("woff2")').status];
-      return { denied, fonts, color: getComputedStyle(element).color, accent: element.style.getPropertyValue("--accent") };
+      const attributeCoercions = ["textContent", "nodeValue"].map(property => {
+        const link = document.createElement("a");
+        link.href = "/safe";
+        const attribute = link.getAttributeNode("href")!;
+        let conversions = 0;
+        Reflect.set(attribute, property, { toString() { return ++conversions === 1 ? "/safe" : "javascript:window.bad=true"; } });
+        return { value: link.getAttribute("href"), conversions };
+      });
+      return { denied, fonts, attributeCoercions, color: getComputedStyle(element).color, accent: element.style.getPropertyValue("--accent") };
     });
     expect(result.denied).toEqual({ style: "denied", stylesheet: "denied", constructedSheet: "denied", adoptedSheets: "denied", activeSvg: "denied", eventAttribute: "denied", codeHref: "denied", codeSource: "denied", attrNode: "denied", functionConstructor: "denied", indirectConstructor: "denied", stringTimer: "denied", fetch: "denied", xhr: "denied", socket: "denied", beacon: "denied", worker: "denied", serviceWorker: "denied", fontHttp: "denied", ownedStylesheet: "denied", ownedScript: "denied" });
     expect(result.color).toBe("rgb(10, 20, 30)");
     expect(result.accent).toBe("purple");
     expect(result.fonts).toEqual(["unloaded", "unloaded"]);
+    expect(result.attributeCoercions).toEqual([{ value: "/safe", conversions: 1 }, { value: "/safe", conversions: 1 }]);
   } finally { await browser.close(); await server.stop(true); }
 }, 30_000);
 

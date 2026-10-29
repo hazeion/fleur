@@ -15,8 +15,11 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   const modules = new Map<string, Module>(), contexts = new WeakMap<Node, Scope>();
   const sinks: { value: Node; scope: Scope; property?: string }[] = [];
   const calls: { callee: Node; value: Node; scope: Scope }[] = [];
+  const assignments: { target: Node; value: Node; scope: Scope }[] = [];
+  const assigned = new Map<Binding, Node[]>();
   const declare = (pattern: Node | undefined, expression: Node | undefined, scope: Scope): void => {
     if (pattern?.type === "Identifier") scope.bindings.set(String(pattern.name), { scope, ...(expression ? { expression } : {}) });
+    else if (pattern?.type === "RestElement") declare(node(pattern.argument), expression, scope);
     else if (pattern?.type === "ObjectPattern") for (const item of nodes(pattern.properties)) {
       const key = name(item.key);
       if (key && item.type === "Property" && expression) declare(node(item.value), { type: "MemberExpression", object: expression, property: { type: "Literal", value: key }, computed: true }, scope);
@@ -39,6 +42,10 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       }
       contexts.set(item, current);
       if (item.type === "VariableDeclarator") declare(node(item.id), node(item.init), current);
+      if (item.type === "AssignmentExpression") {
+        const target = node(item.left), value = node(item.right);
+        if (target && value) assignments.push({ target, value, scope: current });
+      }
       if (item.type === "ImportDeclaration") {
         const specifier = String(node(item.source)?.value), target = project.resolutions.get(path + "\0" + specifier);
         for (const imported of nodes(item.specifiers)) {
@@ -92,6 +99,10 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     return module?.exports.get(key) ?? module?.reexports.map(path => exported(path, key, seen)).find(Boolean);
   };
   const result = new Set<string>();
+  for (const { target, value, scope } of assignments) {
+    const binding = target.type === "Identifier" && lookup(scope, String(target.name));
+    if (binding) assigned.set(binding, [...(assigned.get(binding) ?? []), value]);
+  }
   const resolveBinding = (binding: Binding | undefined, seen = new Set<Binding>()): Binding | undefined => {
     if (!binding?.imported || binding.imported.name === "*") return binding;
     if (seen.has(binding)) return;
@@ -103,67 +114,82 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     const namespace = callee.type === "MemberExpression" && node(callee.object)?.type === "Identifier" && resolveBinding(lookup(scope, String(node(callee.object)?.name)))?.factory === "namespace" && ["h", "createElement", "jsx", "jsxs", "jsxDEV"].includes(name(callee.property) ?? "");
     if (direct || namespace) for (const property of ["class", "className"]) sinks.push({ value, scope, property });
   }
-  const trace = (value: Node | undefined, outer: Scope, property?: string, seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map()): void => {
+  interface Call { readonly values: Node[]; readonly scope: Scope; }
+  // An unknown computed key selects any possible value, never the key expression itself.
+  const key = (value: Node | undefined, scope: Scope, seen = new Set<Binding>()): string => {
+    if (typeof value?.value === "string" || typeof value?.value === "number") return String(value.value);
+    if (value?.type === "Identifier") {
+      const binding = resolveBinding(lookup(scope, String(value.name)));
+      if (binding && !seen.has(binding)) return key(binding.expression, binding.scope, new Set([...seen, binding]));
+    }
+    return "*";
+  };
+  const trace = (value: Node | undefined, outer: Scope, properties: readonly string[] = [], seen = new Set<Binding>(), arguments_: ReadonlyMap<Binding, Binding> = new Map(), call?: Call): void => {
     if (!value || seen.size > 100) return;
     const scope = contexts.get(value) ?? outer;
-    const visit = (value: Node | undefined, scope: Scope, property?: string, nextSeen = seen) => trace(value, scope, property, nextSeen, arguments_);
+    const visit = (value: Node | undefined, scope: Scope, selected: readonly string[] = properties, nextSeen = seen, invocation = call) => trace(value, scope, selected, nextSeen, arguments_, invocation);
     if (value.type === "Identifier") {
       let binding = resolveBinding(lookup(scope, String(value.name)));
-      if (binding?.imported?.name === "*" && property) { binding = resolveBinding(exported(binding.imported.module, property)); property = undefined; }
+      if (binding?.imported?.name === "*" && properties[0]) { binding = resolveBinding(exported(binding.imported.module, properties[0])); properties = properties.slice(1); }
       if (!binding || seen.has(binding)) return;
       const selected = arguments_.get(binding) ?? binding;
-      visit(selected.expression, selected.scope, property, new Set([...seen, binding]));
+      const nextSeen = new Set([...seen, binding]);
+      visit(selected.expression, selected.scope, properties, nextSeen);
+      if (!arguments_.has(binding)) for (const expression of assigned.get(binding) ?? []) visit(expression, binding.scope, properties, nextSeen);
     } else if (value.type === "ConditionalExpression") {
-      visit(node(value.consequent), scope, property); visit(node(value.alternate), scope, property);
+      visit(node(value.consequent), scope); visit(node(value.alternate), scope);
     } else if (value.type === "LogicalExpression") {
-      if (value.operator !== "&&") visit(node(value.left), scope, property);
-      visit(node(value.right), scope, property);
+      if (value.operator !== "&&") visit(node(value.left), scope);
+      visit(node(value.right), scope);
     } else if (value.type === "MemberExpression") {
-      const selected = name(value.property);
-      if (selected && property === undefined) visit(node(value.object), scope, selected);
-    } else if (value.type === "ObjectExpression" && property) {
+      const selected = value.computed ? key(node(value.property), scope) : name(value.property);
+      if (selected) visit(node(value.object), scope, [selected, ...properties]);
+    } else if (value.type === "ObjectExpression" && properties[0]) {
       for (const member of nodes(value.properties)) {
-        if (member.type === "SpreadElement") visit(node(member.argument), scope, property);
-        else if (name(member.key) === property) visit(node(member.value), scope);
+        if (member.type === "SpreadElement") visit(node(member.argument), scope);
+        else if (properties[0] === "*" || name(member.key) === properties[0]) visit(node(member.value), scope, properties.slice(1));
       }
+    } else if (value.type === "ArrayExpression") {
+      const elements = Array.isArray(value.elements) ? value.elements : [];
+      elements.forEach((element, index) => {
+        if (!properties.length || properties[0] === "*" || properties[0] === String(index)) visit(node(element), scope, properties.slice(1));
+      });
     } else if (value.type === "CallExpression") {
       const callee = node(value.callee);
-      if (callee?.type === "MemberExpression" && ["join", "filter"].includes(name(callee.property) ?? "")) { visit(node(callee.object), scope, property); return; }
-      const binding = callee?.type === "Identifier" ? resolveBinding(lookup(scope, String(callee.name))) : undefined;
-      const fn = binding?.expression ?? callee;
-      if (!fn || !["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(fn.type)) || binding && seen.has(binding)) return;
-      const local = contexts.get(fn) ?? binding?.scope ?? scope;
-      const replacements = new Map(arguments_), values = nodes(value.arguments);
-      nodes(fn.params).forEach((parameter, index) => {
-        const declaration = lookup(local, String(parameter.name));
-        const expression = values[index];
-        if (declaration && expression) replacements.set(declaration, { scope, expression });
+      if (callee?.type === "MemberExpression" && ["join", "filter"].includes(name(callee.property) ?? "")) { visit(node(callee.object), scope); return; }
+      visit(callee, scope, properties, seen, { values: nodes(value.arguments), scope });
+    } else if (call && ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(value.type))) {
+      const local = contexts.get(value) ?? scope;
+      const replacements = new Map(arguments_);
+      nodes(value.params).forEach((parameter, index) => {
+        const rest = parameter.type === "RestElement";
+        const declaration = lookup(local, String(rest ? node(parameter.argument)?.name : parameter.name));
+        const expression = rest ? { type: "ArrayExpression", elements: call.values.slice(index) } : call.values[index];
+        if (declaration && expression) replacements.set(declaration, { scope: call.scope, expression });
       });
-      const nextSeen = binding ? new Set([...seen, binding]) : seen;
-      const body = node(fn.body);
-      if (body?.type !== "BlockStatement") trace(body, local, property, nextSeen, replacements);
+      const body = node(value.body);
+      if (body?.type !== "BlockStatement") trace(body, local, properties, seen, replacements);
       else {
         const returns = (value: unknown): void => {
           if (Array.isArray(value)) { value.forEach(returns); return; }
           const statement = node(value);
           if (!statement || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(String(statement.type))) return;
-          if (statement.type === "ReturnStatement") trace(node(statement.argument), contexts.get(statement) ?? local, property, nextSeen, replacements);
+          if (statement.type === "ReturnStatement") trace(node(statement.argument), contexts.get(statement) ?? local, properties, seen, replacements);
           else Object.values(statement).forEach(returns);
         };
         returns(body);
       }
-    } else if (["JSXExpressionContainer", "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) visit(node(value.expression), scope, property);
-    else if (property === undefined) {
+    } else if (["JSXExpressionContainer", "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) visit(node(value.expression), scope);
+    else if (properties.length === 0 && !call) {
       if (typeof value.value === "string") result.add(value.value);
       else if (value.type === "TemplateLiteral") {
         for (const quasi of nodes(value.quasis)) { const cooked = node(quasi.value)?.cooked; if (typeof cooked === "string") result.add(cooked); }
         for (const expression of nodes(value.expressions)) visit(expression, scope);
       } else if (value.type === "BinaryExpression" && value.operator === "+") {
         visit(node(value.left), scope); visit(node(value.right), scope);
-      } else if (value.type === "ArrayExpression") for (const element of nodes(value.elements)) visit(element, scope);
-      else if (value.type === "SequenceExpression") visit(nodes(value.expressions).at(-1), scope);
+      } else if (value.type === "SequenceExpression") visit(nodes(value.expressions).at(-1), scope);
     }
   };
-  for (const sink of sinks) trace(sink.value, sink.scope, sink.property);
+  for (const sink of sinks) trace(sink.value, sink.scope, sink.property ? [sink.property] : []);
   return [...result];
 }

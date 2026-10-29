@@ -103,8 +103,9 @@ export function restrictBrowserRealms(): void {
       const type = apply(nodeType, this, []);
       if (type === 1) validatePresentationElement(apply(localName, this, []) as string);
       if (type === 2) {
+        value = value == null ? "" : string(value);
         const owner = apply(ownerElement, this, []) as Element | null;
-        if (owner) validateAttribute(owner, apply(attributeName, this, []) as string, string(value));
+        if (owner) validateAttribute(owner, apply(attributeName, this, []) as string, value as string);
       }
       apply(descriptor.set!, this, [value]);
     }, configurable: false });

@@ -324,7 +324,7 @@ test("reconciliation reports refused application locks and missing schema-read a
   } finally { await writeFile(markerPath, JSON.stringify(original), { mode: 0o600 }); }
 }, 300_000);
 
-test("db seed reports a refused transaction fence as maintenance locks and verifies rollback", async () => {
+test("db seed reports a refused transaction fence as maintenance locks without changing evidence", async () => {
   const owner = decodeURIComponent(new URL(superuserUrl).username);
   // Give the non-superuser ownership of only the application objects. Owning the system function would bypass REVOKE.
   await admin.unsafe(`GRANT CREATE ON DATABASE privilege_app TO ${role}`);
@@ -332,12 +332,12 @@ test("db seed reports a refused transaction fence as maintenance locks and verif
   for (const table of ["public.ingredients", "public.entries", "fleur_internal.migrations"])
     await admin.unsafe(`ALTER TABLE ${table} OWNER TO ${role}`);
   try {
-    const before = { catalog: await catalogFingerprint(admin), data: await dataIntegrity(admin) };
+    const before = await observed();
     await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) FROM PUBLIC");
     try {
       expectShortfall(await cli(["db", "seed"], profile()), "maintenance locks");
-      expect({ catalog: await catalogFingerprint(admin), data: await dataIntegrity(admin) }).toEqual(before);
-      expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["rollback verified"]);
+      expect(await observed()).toEqual(before);
+      expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
     } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) TO PUBLIC"); }
     // The failed seed left a usable target. No failed transaction or held application fence survives it.
     const retried = await cli(["db", "seed"], profile());

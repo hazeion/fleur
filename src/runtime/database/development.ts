@@ -242,7 +242,12 @@ export async function startDevelopmentDatabase(database: DevelopmentDatabase, pr
   } catch (caught) { error = startupFailure(caught); }
   let health: Awaited<ReturnType<typeof databaseHealth>> | null = null;
   try {
-    health = await databaseHealth(database.url, { kind: "development", database: databaseUrl(database.url).pathname.slice(1) }, project, { ...config, timeoutMs: Math.min(5000, Math.max(1, deadline - performance.now())) });
+    // Active maintenance, such as a racing startup's brief check, is waited out until the startup deadline.
+    for (;;) {
+      health = await databaseHealth(database.url, { kind: "development", database: databaseUrl(database.url).pathname.slice(1) }, project, { ...config, timeoutMs: Math.min(5000, Math.max(1, deadline - performance.now())) });
+      if (!health.reasons.includes("MAINTENANCE_ACTIVE") || performance.now() + 250 >= deadline) break;
+      await Bun.sleep(100 + Math.random() * 150);
+    }
   } catch (caught) { error ??= startupFailure(caught); }
   const reasons = (health?.reasons ?? []).map(code => ({ code, ...readinessReasons[code] }));
   const maintenance = reasons.some(reason => reason.code === "MAINTENANCE_ACTIVE" || reason.code === "RECOVERY_REQUIRED");

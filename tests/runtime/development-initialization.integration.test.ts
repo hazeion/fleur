@@ -228,7 +228,7 @@ test("two racing startups create and initialize the database exactly once", asyn
       const target = database(name);
       const reports = await Promise.all([startDevelopmentDatabase(target, project, app.seeds, config), startDevelopmentDatabase(target, project, app.seeds, config)]);
       expect(reports.map(report => report.initialization.status).sort()).toEqual(["existing", "initialized"]);
-      expect(reports.every(report => report.ready && report.state === "ready")).toBe(true);
+      expect(reports.map(report => ({ state: report.state, ready: report.ready, reasons: report.reasons.map(reason => reason.code) }))).toEqual([{ state: "ready", ready: true, reasons: [] }, { state: "ready", ready: true, reasons: [] }]);
       expect(reports.reduce((total, report) => total + report.initialization.seedRowsApplied, 0)).toBe(3);
       expect(await withDatabase(target.url, sql => sql.unsafe("SELECT (SELECT count(*)::int FROM fleur_internal.migrations) AS migrations, (SELECT count(*)::int FROM public.race_categories) AS categories, (SELECT count(*)::int FROM public.race_items) AS items"))).toEqual([{ migrations: 2, categories: 2, items: 1 }]);
     }

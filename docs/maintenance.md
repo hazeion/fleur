@@ -251,4 +251,6 @@ and JSON.
   initializes.
 - **Concurrency.** Two startups that race for the same binding serialize on the
   maintenance lock. One creates and initializes the database, and the other
-  waits, finds it initialized and changes nothing.
+  waits, finds it initialized and changes nothing. Startup also waits, within
+  its deadline, for active maintenance to end before it reports readiness, and
+  reports `maintenance` if it does not.

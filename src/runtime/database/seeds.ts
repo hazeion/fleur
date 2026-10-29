@@ -1,6 +1,7 @@
 import { columnType } from "./table-ddl";
 import { projection, readValue } from "./selection";
 import { SQL } from "bun";
+import { requireAuthority } from "./privilege";
 import type { Seed } from "../../database";
 import { orderSeeds } from "../seed-declarations";
 import { definition, tableDefinitions } from "../declarations";
@@ -29,6 +30,8 @@ export async function seedDatabase(url: string, project: string, declarations: r
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, config.timeoutMs ?? 60000);
   let marker: MaintenanceMarker | undefined, transaction = false, commitAttempted = false;
   try {
+    // Before any marker: seeding writes Fleur's ownership metadata, triggers and rows, and digests all data.
+    await requireAuthority(lease.sql, sql, ["schema write", "schema read"]);
     const history = await assertMigrationState(sql);
     if (history.length !== plans.length || history.some((row, index) => row.checksum !== plans[index]?.checksum)) throw new Error("MIGRATIONS_PENDING");
     const tables = [...new Set(seeds.map(seed => seed.table))];

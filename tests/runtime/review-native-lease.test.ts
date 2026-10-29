@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 
-test("native lease stops creation authority before inspecting children and removes guard last", () => {
+/**
+ * Recovers a bound lease against a mocked Docker host. `kill` decides the
+ * manager kill: it stops the controller, finds it already stopped by itself
+ * (the kill fails, #89), or finds another stopped container under its name.
+ */
+function recoverLease(kill: "stops" | "stopped-itself" | "replaced") {
   // Isolate the mocked host module from the real native integration tests.
-  const child = Bun.spawnSync([process.execPath, "-e", `
+  return Bun.spawnSync([process.execPath, "-e", `
     import { mock } from "bun:test";
+    import { rm } from "node:fs/promises";
     const owner = "00000000-0000-0000-0000-000000000000";
     const boot = "11111111-1111-1111-1111-111111111111";
     const images = { worker: "sha256:" + "a".repeat(64), controller: "sha256:" + "b".repeat(64), endpoint: "unix:///var/run/docker.sock" };
@@ -13,6 +19,8 @@ test("native lease stops creation authority before inspecting children and remov
       guard: "fleur-read-" + owner + "-guard",
     };
     const ids = { controller: "c".repeat(64), worker: "d".repeat(64), guard: "e".repeat(64) };
+    const impostor = "f".repeat(64);
+    let controllerId = ids.controller;
     const remaining = new Set(Object.keys(names));
     let managerRunning = true, guardRunning = true;
     const events = [];
@@ -26,17 +34,19 @@ test("native lease stops creation authority before inspecting children and remov
         if (!role) throw new Error("unexpected name");
         if (role !== "controller" && managerRunning) throw new Error("child inspection while manager can create resources");
         events.push("inspect:" + role);
-        output = remaining.has(role) ? ids[role] : "";
+        output = remaining.has(role) ? (role === "controller" ? controllerId : ids[role]) : "";
       } else if (action === "inspect") {
-        const role = Object.keys(ids).find(role => ids[role] === args[2]);
-        output = JSON.stringify({ Id: ids[role], Name: "/" + names[role], Image: role === "worker" ? images.worker : images.controller,
-          State: { Running: role === "controller" ? managerRunning : role === "guard" ? guardRunning : false,
-            Pid: role === "controller" && managerRunning ? 123 : role === "guard" && guardRunning ? 456 : 0 },
+        const role = args[2] === impostor ? "controller" : Object.keys(ids).find(role => ids[role] === args[2]);
+        const running = args[2] === impostor ? false : role === "controller" ? managerRunning : role === "guard" ? guardRunning : false;
+        output = JSON.stringify({ Id: args[2], Name: "/" + names[role], Image: role === "worker" ? images.worker : images.controller,
+          State: { Running: running, Pid: running ? (role === "controller" ? 123 : 456) : 0 },
           Config: { Labels: { [role === "controller" ? "dev.fleur.read-controller-owner" : "fleur.compatibility.runtime-owner"]: role === "controller" ? owner : "fleur-read-" + owner },
             Entrypoint: ["/usr/bin/python3"], Cmd: ["-I", "-u", "/controller/guard.py", ids.worker, "123", "100.5", boot] } });
       } else if (action === "kill") {
         if (args.at(-1) !== ids.controller) throw new Error("only manager kill permitted");
         managerRunning = false; events.push("stop:controller");
+        if ("${kill}" === "replaced") controllerId = impostor;
+        if ("${kill}" !== "stops") return { status: "completed", exitCode: 1, stdout: "", stderr: "container is not running" };
       } else if (action === "wait") {
         guardRunning = false; events.push("wait:guard"); output = "0";
       } else if (action === "logs") {
@@ -53,16 +63,33 @@ test("native lease stops creation authority before inspecting children and remov
     await lease.bindWorker({ id: ids.worker, pid: 123, boot });
     await lease.bindGuard({ id: ids.worker, pid: 123, boot, guard: ids.guard, deadline: 100.5 });
     const recovered = await NativeLease.recover(lease.recoveryDirectory);
-    await recovered.cleanup();
-    console.log(JSON.stringify({ events, remaining: [...remaining] }));
+    let code = null;
+    try { await recovered.cleanup(); } catch (error) { code = error.message; await rm(lease.recoveryDirectory, { recursive: true, force: true }); }
+    console.log(JSON.stringify({ code, events, remaining: [...remaining] }));
   `], { cwd: new URL("../..", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
+}
+
+for (const kill of ["stops", "stopped-itself"] as const) test(`native lease stops creation authority before inspecting children and removes guard last (manager kill ${kill})`, () => {
+  const child = recoverLease(kill);
   expect(child.stderr.toString()).toBe("");
   expect(child.exitCode).toBe(0);
-  const result = JSON.parse(child.stdout.toString()) as { events: string[]; remaining: string[] };
+  const result = JSON.parse(child.stdout.toString()) as { code: string | null; events: string[]; remaining: string[] };
+  expect(result.code).toBeNull();
   expect(result.remaining).toEqual([]);
   expect(result.events.indexOf("stop:controller")).toBeLessThan(result.events.indexOf("inspect:worker"));
   expect(result.events.indexOf("remove:worker")).toBeLessThan(result.events.indexOf("remove:guard"));
   expect(result.events.indexOf("remove:guard")).toBeLessThan(result.events.indexOf("remove:controller"));
+});
+
+test("a failed manager kill is verified against that exact container, never another under its name", () => {
+  const child = recoverLease("replaced");
+  expect(child.stderr.toString()).toBe("");
+  expect(child.exitCode).toBe(0);
+  const result = JSON.parse(child.stdout.toString()) as { code: string | null; events: string[]; remaining: string[] };
+  expect(result.code).toBe("CREATION_AUTHORITY_UNCONFIRMED");
+  // No child is inspected or removed without verified creation authority.
+  expect(result.events).toEqual(["inspect:controller", "stop:controller", "inspect:controller"]);
+  expect(result.remaining.sort()).toEqual(["controller", "guard", "worker"]);
 });
 
 test("an unobserved daemon create retains its journal across recovery instead of treating absence as retirement", () => {

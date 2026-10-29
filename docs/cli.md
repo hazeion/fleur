@@ -35,6 +35,7 @@ The package includes this document, project creation guidance and prerequisite s
 | `RECOVERY_REQUIRED` | 5 | Inspect reported incomplete restoration or unsafe state before retrying. |
 | `CONFIGURATION_MISSING` | 4 | Supply the explicit private database configuration for the selected target. |
 | `DATABASE_UNAVAILABLE` | 4 when a command needs data from a database it cannot reach | Start the PostgreSQL server or correct the private database configuration, then check `status`. |
+| `DATABASE_PRIVILEGE_INSUFFICIENT` | 4 when the configured database credential lacks a capability the command needs; raised before anything changes | Grant the capability named in `expected.capability`, from the minimum-privilege profile or the additional authority in [credential authority](maintenance.md#credential-authority), then retry. |
 
 ### Readiness reasons
 

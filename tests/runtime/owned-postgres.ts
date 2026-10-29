@@ -85,6 +85,27 @@ export async function ownedPostgres() {
         await reviewSchema(tables);
       }finally{await worker.close();}
     }
-    return { sql, url, cleanup, pgTools, reviewSchema, reviewApplication };
+    /**
+     * Restarts the PostgreSQL server through crash recovery. A SIGKILLed backend makes the postmaster terminate every
+     * session, reinitialize and replay WAL from the container's storage, which outlives the server processes.
+     */
+    async function restart() {
+      const victim = new SQL(url, { max: 1, connectionTimeout: 2 });
+      try {
+        const pid = Number((await victim`SELECT pg_backend_pid() AS pid`)[0]?.pid);
+        if (!Number.isSafeInteger(pid) || pid < 1) throw new Error("Invalid backend process");
+        await docker(["exec", id!, "sh", "-c", `kill -9 ${pid}`]);
+      } finally { await victim.close({ timeout: 0 }).catch(() => {}); }
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        // Both pooled connections were terminated; exercise each before handing the pool back.
+        try { await Promise.all([sql!`SELECT 1`, sql!`SELECT 1`]); return; }
+        catch {
+          if (Date.now() >= deadline) throw new Error("Owned database did not recover after restart");
+          await Bun.sleep(100);
+        }
+      }
+    }
+    return { sql, url, cleanup, pgTools, reviewSchema, reviewApplication, restart };
   } catch (error) { await cleanup(); throw error; }
 }

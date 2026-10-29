@@ -1,5 +1,7 @@
 import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success } from "../../cli/result";
+import { privilegeFailure } from "./commands";
+import { privilegeShortfall } from "./privilege";
 
 export const seedCommands: readonly CommandDefinition[] = [
   { name: "db seed", usage: "db seed", summary: "Reconcile declared seed ownership without overwriting user edits.", options: [] },
@@ -28,6 +30,8 @@ export const seedCommands: readonly CommandDefinition[] = [
         : await (await import("./reset")).resetDatabase(url, project, seeds, config);
       return success(definition.name, JSON.parse(JSON.stringify(result)));
     } catch (error) {
+      const shortfall = privilegeShortfall(error);
+      if (shortfall) return privilegeFailure(definition.name, shortfall);
       const allowed = ["AUTHORITY_REQUIRED", "REQUEST_DENIED", "SEED_INVALID", "SEED_CONFLICT", "MIGRATION_EDITED", "MIGRATIONS_PENDING", "MIGRATION_INCOMPATIBLE", "SCHEMA_DRIFT", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE", "SOURCE_REJECTED", "BACKUP_VERIFICATION_FAILED"];
       const code = error instanceof Error && allowed.includes(error.message) ? error.message : "INTERNAL_FAILURE";
       const exit = ["AUTHORITY_REQUIRED", "REQUEST_DENIED"].includes(code) ? 3 : ["SCHEMA_DRIFT", "MIGRATION_EDITED", "MIGRATIONS_PENDING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SEED_CONFLICT"].includes(code) ? 5 : ["CONFIGURATION_MISSING", "PREREQUISITE_UNAVAILABLE"].includes(code) ? 4 : 1;

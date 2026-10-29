@@ -1,5 +1,5 @@
 import type { Table, ColumnReference } from "../../database";
-import { definition, references, tableDefinitions } from "../declarations";
+import { definition, references, tableDefinitions, type IndexKeyDefinition } from "../declarations";
 import { identifier } from "./selection";
 import { caseFoldMappings } from "../unicode/case-fold-data";
 import { createHash } from "node:crypto";
@@ -35,6 +35,10 @@ export function columnDDL(field: string, reference: ColumnReference, managedVers
 export function constraintName(table: string, field: string, tag: string): string {
   return `fleur_${tag}_${createHash("sha256").update(`${table}\0${field}\0${tag}`).digest("hex").slice(0,20)}`;
 }
+/** Name key and drift description of a declared index's ordered keys, such as `performedOn desc,id`. */
+export function indexKeys(fields: readonly IndexKeyDefinition[], separator = ","): string {
+  return fields.map(key => key.direction === "desc" ? `${key.field} desc` : key.field).join(separator);
+}
 export function tableConstraints(tables: readonly Table[]) {
   const constraints: {table:string;name:string;kind:"foreign"|"constraint"|"index";sql:string}[]=[];
   for(const table of tables) {
@@ -57,6 +61,11 @@ export function tableConstraints(tables: readonly Table[]) {
         if(!ref||!target||!tables.includes(ref.table))throw new Error("Unregistered foreign key");
         add("foreign","fk",`FOREIGN KEY (${key}) REFERENCES "public".${identifier(target.name)} (${identifier(ref.field)}) ON DELETE ${column.reference.onDelete.toUpperCase()}`);
       }
+    }
+    // Fleur orders nulls last in both directions; a descending key does too, so the index matches Fleur's ORDER BY.
+    for(const fields of spec.indexes) {
+      const name=constraintName(spec.name,indexKeys(fields),"index");
+      constraints.push({table:spec.name,name,kind:"index",sql:`CREATE INDEX ${identifier(name)} ON ${relation} (${fields.map(key=>identifier(key.field)+(key.direction==="desc"?" DESC NULLS LAST":"")).join(", ")})`});
     }
   }
   return [...constraints.filter(item=>item.kind!=="foreign"),...constraints.filter(item=>item.kind==="foreign")];

@@ -405,6 +405,16 @@ test("the database section names only operations in the pinned release and marks
     expect(unavailable).not.toContain(capability);
   }
 });
+test("the database section explains DATABASE_PRIVILEGE_INSUFFICIENT without sending agents after credentials", async () => {
+  // Requirements: docs/planning/V1-SPEC.md "Inspection authority" (#73).
+  const cwd = await root();
+  expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
+  const section = await databaseSection(cwd);
+  const paragraph = section.split("\n").find((line) => line.includes("`DATABASE_PRIVILEGE_INSUFFICIENT`"));
+  expect(paragraph).toBeDefined();
+  const text = paragraph!.toLowerCase();
+  for (const phrase of ["capability", "nothing was changed", "minimum-privilege profile", "docs/maintenance.md", "report", "never change, search for or replace"]) expect({ phrase, present: text.includes(phrase) }).toEqual({ phrase, present: true });
+});
 test("regenerating guidance replaces only the marked generated section and preserves user content around it", async () => {
   for (const name of ["AGENTS.md", "CLAUDE.md"] as const) {
     const cwd = await root();

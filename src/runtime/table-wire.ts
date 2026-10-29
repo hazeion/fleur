@@ -1,4 +1,4 @@
-import { column, defineTable, type ColumnReference, type Table, type DeleteAction } from "../database";
+import { column, defineTable, type ColumnReference, type ColumnShape, type Table, type TableIndex, type DeleteAction } from "../database";
 import { validatePublicValue } from "../schema";
 import { rehydratingTable, definition, definitions, references, tableDefinitions } from "./declarations";
 
@@ -24,7 +24,9 @@ interface WireColumn {
   readonly defaultNow?: true;
   readonly reference?: { readonly table: string; readonly field: string; readonly onDelete: DeleteAction };
 }
-interface WireTable { readonly name: string; readonly versioned: boolean; readonly columns: Readonly<Record<string, WireColumn>>; }
+interface WireIndex { readonly fields: readonly { readonly field: string; readonly direction: "asc" | "desc" }[] }
+/** `indexes` is present only when the table declares one, so snapshots of earlier releases stay byte-identical. */
+interface WireTable { readonly name: string; readonly versioned: boolean; readonly columns: Readonly<Record<string, WireColumn>>; readonly indexes?: readonly WireIndex[] }
 const fail = (): never => { throw new Error("SOURCE_REJECTED"); };
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
@@ -37,6 +39,7 @@ export function describeTables(tables: readonly Table[]): readonly WireTable[] {
   return tables.map(table => {
     const declared = tableDefinitions.get(table);
     if (!declared || declared.alias) return fail();
+    const indexes = declared.indexes.length ? { indexes: declared.indexes.map(fields => ({ fields: fields.map(({ field, direction }) => ({ field, direction })) })) } : {};
     return { name: declared.name, versioned: declared.versioned, columns: Object.fromEntries(Object.entries(declared.columns)
       .filter(([name]) => !(declared.versioned && name === "version"))
       .map(([name, value]) => {
@@ -47,7 +50,7 @@ export function describeTables(tables: readonly Table[]): readonly WireTable[] {
         const targetTable = target && tableDefinitions.get(target.table);
         if (!target || !targetTable || !tables.includes(target.table)) return fail();
         return [name, { ...fields, reference: { table: targetTable.name, field: target.field, onDelete: reference.onDelete } }];
-      })) };
+      })), ...indexes };
   });
 }
 /** The host rebuilds declaration objects without evaluating application modules. */
@@ -58,7 +61,21 @@ export function restoreTables(input: unknown): readonly Table[] {
   const byName = new Map<string, Table>();
   for (const raw of input) {
     const spec = record(raw);
-    keys(spec, ["name", "versioned", "columns"]);
+    keys(spec, ["name", "versioned", "columns", "indexes"]);
+    // Only the canonical form crosses the wire: a non-empty list of { fields: [{ field, direction }] }.
+    if (spec.indexes !== undefined && (!Array.isArray(spec.indexes) || !spec.indexes.length)) return fail();
+    // defineTable validates directions, field names, repetition and redundancy exactly as for source declarations.
+    const indexes = spec.indexes === undefined ? undefined : (spec.indexes as unknown[]).map((raw): TableIndex<ColumnShape> => {
+      const index = record(raw);
+      keys(index, ["fields"]);
+      if (!Array.isArray(index.fields)) return fail();
+      return { fields: index.fields.map((rawKey: unknown) => {
+        const key = record(rawKey);
+        keys(key, ["field", "direction"]);
+        if (typeof key.field !== "string" || typeof key.direction !== "string") return fail();
+        return { field: key.field, direction: key.direction as "asc" };
+      }) as unknown as TableIndex<ColumnShape>["fields"] };
+    });
     if (typeof spec.name !== "string" || typeof spec.versioned !== "boolean" || byName.has(spec.name)) return fail();
     const fields = record(spec.columns);
     if (Object.keys(fields).length > 256) return fail();
@@ -94,7 +111,7 @@ export function restoreTables(input: unknown): readonly Table[] {
       columns[name] = value;
       if (field.reference !== undefined) links.push([name, record(field.reference)]);
     }
-    const options={columns,versioned:spec.versioned,[rehydratingTable]:true};
+    const options={columns,versioned:spec.versioned,...(indexes?{indexes}:{}),[rehydratingTable]:true};
     const table = defineTable(spec.name,options);
     byName.set(spec.name, table);
     for (const [name, reference] of links) pending.push({ column: table[name]!, reference });

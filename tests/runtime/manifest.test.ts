@@ -19,3 +19,24 @@ test("worker table declarations reconstruct only registered, typed read authorit
   ]) expect(() => restoreTables(invalid)).toThrow();
   expect(schema.safeInteger().parse(1)).toBe(1);
 });
+
+// Requirements: issue #93. Index declarations cross the worker boundary and migration snapshots only in canonical form.
+test("table index declarations round-trip through the wire and reject non-canonical or unknown keys", () => {
+  const parents = defineTable("wire_index_parents", { columns: { id: column.uuid().primaryKey() } });
+  const children = defineTable("wire_index_children", {
+    columns: { id: column.uuid().primaryKey(), parentId: column.uuid().references(parents.id, { onDelete: "cascade" }), position: column.safeInteger() },
+    indexes: [{ fields: ["parentId", { field: "position", direction: "desc" }] }],
+  });
+  const described = describeTables([parents, children]);
+  const received = restoreTables(JSON.parse(JSON.stringify(described)));
+  expect(describeTables(received)).toEqual(described);
+  const child = described[1]!;
+  expect(child.indexes).toEqual([{ fields: [{ field: "parentId", direction: "asc" }, { field: "position", direction: "desc" }] }]);
+  for (const indexes of [
+    [],
+    [{ fields: ["parentId"] }],
+    [{ fields: [{ field: "parentId", direction: "asc" }], sql: "CREATE INDEX x ON y (z)" }],
+    [{ fields: [{ field: "missing", direction: "asc" }] }],
+    [{ fields: [{ field: "parentId", direction: "asc", collate: "C" }] }],
+  ]) expect(() => restoreTables([described[0], { ...child, indexes }])).toThrow();
+});

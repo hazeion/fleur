@@ -10,6 +10,7 @@ import { generateMigration } from "../../src/runtime/database/migration-plan";
 import { applyMigrations } from "../../src/runtime/database/migrations";
 import { catalogFingerprint } from "../../src/runtime/database/migration-state";
 import { dataIntegrity } from "../../src/runtime/database/integrity";
+import { MaintenanceLease } from "../../src/runtime/database/maintenance";
 import { seedDatabase } from "../../src/runtime/database/seeds";
 
 // Requirements: docs/planning/V1-SPEC.md "Inspection authority" (#73). A credential limited to the documented
@@ -300,4 +301,52 @@ test("each missing privilege of the profile fails read-only inspection and statu
   const restored = await cli(["status"], profile());
   expect(restored.exit).toBe(0);
   expect(restored.result.data).toMatchObject({ reasons: [], database: { connectivity: "connected" } });
+}, 300_000);
+
+// #108: exercise the reconciliation path through the public command, with a proven interrupted outcome.
+test("reconciliation reports refused application locks and missing schema-read authority without changing evidence", async () => {
+  const lease = await MaintenanceLease.acquire(superuserUrl, true, { stateRoot: root });
+  const original = (await lease.marker())!;
+  try { await lease.persist({ ...original, stage: "recovery required" }); }
+  finally { await lease.close(); }
+  const directory = (await readdir(root)).find(name => /^[a-f0-9]{64}$/.test(name))!;
+  const markerPath = join(root, directory, "maintenance.json");
+  try {
+    const before = await observed();
+    await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM PUBLIC");
+    try {
+      expectShortfall(await cli(["db", "migration", "apply"], profile()), "maintenance locks");
+      expect(await observed()).toEqual(before);
+    } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO PUBLIC"); }
+    // The profile can read tables, but cannot digest identity sequences. This must be a named preflight failure.
+    expectShortfall(await cli(["db", "migration", "apply"], profile()), "schema read");
+    expect(await observed()).toEqual(before);
+  } finally { await writeFile(markerPath, JSON.stringify(original), { mode: 0o600 }); }
+}, 300_000);
+
+test("db seed reports a refused transaction fence as maintenance locks and verifies rollback", async () => {
+  const owner = decodeURIComponent(new URL(superuserUrl).username);
+  // Give the non-superuser ownership of only the application objects. Owning the system function would bypass REVOKE.
+  await admin.unsafe(`GRANT CREATE ON DATABASE privilege_app TO ${role}`);
+  await admin.unsafe(`ALTER SCHEMA public OWNER TO ${role}; ALTER SCHEMA fleur_internal OWNER TO ${role}`);
+  for (const table of ["public.ingredients", "public.entries", "fleur_internal.migrations"])
+    await admin.unsafe(`ALTER TABLE ${table} OWNER TO ${role}`);
+  try {
+    const before = { catalog: await catalogFingerprint(admin), data: await dataIntegrity(admin) };
+    await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) FROM PUBLIC");
+    try {
+      expectShortfall(await cli(["db", "seed"], profile()), "maintenance locks");
+      expect({ catalog: await catalogFingerprint(admin), data: await dataIntegrity(admin) }).toEqual(before);
+      expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["rollback verified"]);
+    } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) TO PUBLIC"); }
+    // The failed seed left a usable target. No failed transaction or held application fence survives it.
+    const retried = await cli(["db", "seed"], profile());
+    expect(retried.exit).toBe(0);
+    expect(retried.result.data).toEqual({ inserted: 0, updated: 0, skipped: [] });
+  } finally {
+    for (const table of ["public.ingredients", "public.entries", "fleur_internal.migrations"])
+      await admin.unsafe(`ALTER TABLE ${table} OWNER TO ${owner}`);
+    await admin.unsafe(`ALTER SCHEMA public OWNER TO ${owner}; ALTER SCHEMA fleur_internal OWNER TO ${owner}`);
+    await admin.unsafe(`REVOKE CREATE ON DATABASE privilege_app FROM ${role}`);
+  }
 }, 300_000);

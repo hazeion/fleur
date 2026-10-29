@@ -1,7 +1,7 @@
 import { columnType } from "./table-ddl";
 import { projection, readValue } from "./selection";
 import { SQL } from "bun";
-import { requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 import type { Seed } from "../../database";
 import { orderSeeds } from "../seed-declarations";
 import { definition, tableDefinitions } from "../declarations";
@@ -109,7 +109,7 @@ export async function seedDatabase(url: string, project: string, declarations: r
     await lease.persist(marker);
     await sql.unsafe("BEGIN ISOLATION LEVEL READ COMMITTED"); transaction = true;
     await sql.unsafe("SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='3s'; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'");
-    const fence = await sql.unsafe("SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired", [lease.key]);
+    const fence = await privileged("maintenance locks", () => sql.unsafe("SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired", [lease.key]));
     if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
     const { result, catalog } = await reconcileSeeds(sql, seeds, async () => { marker = { ...marker!, stage: "applying" }; await lease.persist(marker); });
     marker = { ...marker, intent: { ...intent, afterSchema: catalog, afterData: await dataIntegrity(sql) } };

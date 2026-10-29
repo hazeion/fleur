@@ -74,8 +74,9 @@ async function uncontended<T>(deadline: number, step: () => Promise<T>): Promise
 
 /**
  * Creates the binding's development database when it does not exist, writing the creation record first. An existing
- * database, including an adopted volume's, is left untouched and never becomes new. A database that this binding's
- * record already describes but that has disappeared is not silently replaced.
+ * database, including an adopted volume's, is left untouched and never becomes new. When a database that may have
+ * been initialized has disappeared, its empty replacement is never new: data comes back only through the explicit
+ * flow, such as `db restore` or `db migration apply`.
  */
 export async function createDevelopmentDatabase(database: DevelopmentDatabase, config: MaintenanceConfiguration = {}): Promise<{ readonly created: boolean }> {
   const name = databaseUrl(database.url).pathname.slice(1);
@@ -86,17 +87,25 @@ export async function createDevelopmentDatabase(database: DevelopmentDatabase, c
     if (marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("RECOVERY_REQUIRED");
     if ((await lease.sql.unsafe("SELECT 1 FROM pg_database WHERE datname=$1", [name])).length) return { created: false };
     const record = await readRecord(lease);
-    if (record && record.stage !== "creating") throw new Error("RECOVERY_REQUIRED");
+    // Only a record that was never initialized, or never finished creating, lets the replacement be new.
+    const used = record !== null && (record.stage === "initializing" || record.stage === "retired");
     const owner = String((await lease.sql.unsafe("SELECT current_user::text AS owner"))[0].owner);
     const base = { formatVersion: 1 as const, binding: bindingDigest(database.binding), cluster: lease.target.cluster, database: name, owner, transaction: null };
-    await writeRecord(lease, { ...base, oid: null, stage: "creating" });
+    await writeRecord(lease, used ? { ...record, stage: "retired" } : { ...base, oid: null, stage: "creating" });
     await lease.assertSession();
     await privileged("role and database creation", () => lease.sql.unsafe(`CREATE DATABASE ${quote(name)} OWNER ${quote(owner)} TEMPLATE template0`));
     const created = await lease.sql.unsafe("SELECT oid::text AS oid, pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname=$1", [name]);
     if (created.length !== 1 || created[0].owner !== owner) throw new Error("RECOVERY_REQUIRED");
-    await writeRecord(lease, { ...base, oid: String(created[0].oid), stage: "new" });
+    await writeRecord(lease, used ? { ...record, oid: String(created[0].oid), stage: "retired" } : { ...base, oid: String(created[0].oid), stage: "new" });
     return { created: true };
   } finally { await lease.close(); }
+}
+
+/** Cause of RECOVERY_REQUIRED when the initialization commit's outcome could not be read back. */
+const uncertainCommit = Symbol("uncertain initialization commit");
+/** PostgreSQL's record of a transaction: committed, aborted, in progress, or null when no longer known. */
+async function transactionStatus(lease: MaintenanceLease, xid: string): Promise<unknown> {
+  return lease.sql.unsafe("SELECT pg_xact_status($1::xid8) AS status", [xid]).then(rows => rows[0]?.status, () => null);
 }
 
 export type InitializationStatus = "initialized" | "new" | "existing" | "failed";
@@ -140,7 +149,7 @@ async function initializeOnce(database: DevelopmentDatabase, project: string, de
     if (!record || record.binding !== binding || record.cluster !== target.cluster || record.database !== target.database || record.oid !== target.oid || record.owner !== target.owner || record.stage === "creating" || record.stage === "retired") return existing;
     if (record.stage === "initializing") {
       // An earlier initialization was about to commit: its transaction status decides, never the catalog alone.
-      const status = (await lease.sql.unsafe("SELECT pg_xact_status($1::xid8) AS status", [record.transaction]))[0]?.status;
+      const status = await transactionStatus(lease, record.transaction!);
       if (status === "committed") { await writeRecord(lease, { ...record, stage: "retired" }); return existing; }
       if (status === "in progress") throw new Error("MAINTENANCE_BUSY");
       if (status !== "aborted") return existing;
@@ -169,21 +178,24 @@ async function initializeOnce(database: DevelopmentDatabase, project: string, de
     xid = String((await sql.unsafe("SELECT pg_current_xact_id()::text AS xid"))[0].xid);
     if (JSON.stringify(await readMigrations(project)) !== JSON.stringify(plans)) throw new Error("MIGRATION_EDITED");
     await writeRecord(lease, { ...record, stage: "initializing", transaction: xid });
-    await lease.assertSession(); commitAttempted = true;
-    await sql.unsafe("COMMIT"); transaction = false;
-    await writeRecord(lease, { ...record, stage: "retired", transaction: xid });
-    await assertMigrationState(sql);
-    const previous = await lease.marker();
+    await lease.assertSession(); commitAttempted = true; transaction = false;
+    try { await sql.unsafe("COMMIT"); }
+    catch (error) { if (await transactionStatus(lease, xid) !== "committed") throw error; }
+    // The initialization committed. The bookkeeping below cannot undo it: a record left `initializing` is retired by
+    // the next startup from the transaction's status, and the history rows already hold the expected catalog.
     const history = plans.map(plan => plan.checksum);
-    await lease.persist({ formatVersion: 1, target: lease.target, stage: "committed", planChecksum: digest(canonical({ operation: "initialization", migrations: history, seeds: seeds.map(seed => ({ key: seed.key, table: tableDefinitions.get(seed.table)!.name, rows: seed.rows, dependsOn: seed.dependsOn?.map(parent => parent.key) ?? [] })) })), backup: previous?.backup ?? null, schemaState: { catalog, history }, epoch: crypto.randomUUID() });
+    try {
+      await writeRecord(lease, { ...record, stage: "retired", transaction: xid });
+      const previous = await lease.marker();
+      await lease.persist({ formatVersion: 1, target: lease.target, stage: "committed", planChecksum: digest(canonical({ operation: "initialization", migrations: history, seeds: seeds.map(seed => ({ key: seed.key, table: tableDefinitions.get(seed.table)!.name, rows: seed.rows, dependsOn: seed.dependsOn?.map(parent => parent.key) ?? [] })) })), backup: previous?.backup ?? null, schemaState: { catalog, history }, epoch: crypto.randomUUID() });
+    } catch { /* Readiness, probed next from the database itself, reports any resulting difference. */ }
     return { status: "initialized", migrationsApplied: plans.map(plan => plan.id), seedRowsApplied: seeded.inserted + seeded.updated };
   } catch (error) {
     if (transaction) await sql.unsafe("ROLLBACK").catch(() => {});
     if (record && xid !== null) {
       // The record names the transaction only once it was about to commit; restore `new` only on a proven rollback.
-      const status = commitAttempted ? await lease.sql.unsafe("SELECT pg_xact_status($1::xid8) AS status", [xid]).then(rows => rows[0]?.status, () => null) : "aborted";
-      if (status === "aborted") await writeRecord(lease, { ...record, stage: "new", transaction: null }).catch(() => {});
-      else if (commitAttempted && status !== "committed") throw new Error("RECOVERY_REQUIRED");
+      if (!commitAttempted || await transactionStatus(lease, xid) === "aborted") await writeRecord(lease, { ...record, stage: "new", transaction: null }).catch(() => {});
+      else throw new Error("RECOVERY_REQUIRED", { cause: uncertainCommit });
     }
     const { code, errno } = (error ?? {}) as { code?: unknown; errno?: unknown };
     if (["23503", "23505"].includes(String(errno)) || ["23503", "23505"].includes(String(code))) throw new Error("SEED_CONFLICT");
@@ -202,11 +214,11 @@ export interface DevelopmentDatabaseStartup {
   readonly database: DatabaseHealth | null;
   readonly error: StartupFailure | null;
 }
-const retry: RecoveryAction = { command: "fleur dev", description: "Correct the cause, then start fleur dev again. The database was rolled back and is still new, so startup retries initialization." };
+const retry: RecoveryAction = { command: "fleur dev", description: "Correct the cause, then start fleur dev again. Nothing was committed, so a new development database stays new and startup retries initialization." };
 const failures: Record<string, Omit<StartupFailure, "code">> = {
-  MIGRATION_EDITED: { exitCode: 5, message: "A committed migration file differs from the reviewed chain.", action: { command: "fleur db migration plan", description: "Restore the committed migration files, then start fleur dev again. The database is still new." } },
-  MIGRATION_INCOMPATIBLE: { exitCode: 1, message: "A committed migration needs an explicit backfill or an unsupported change.", action: { command: "fleur db migration plan", description: "Resolve the refused plan in its declarations, then start fleur dev again. The database is still new." } },
-  MIGRATIONS_PENDING: { exitCode: 5, message: "The declared seeds use tables that the committed migrations do not create.", action: { command: "fleur db migration generate", description: "Generate and review a migration for the seeded tables, or correct the seeds, then start fleur dev again. The database is still new." } },
+  MIGRATION_EDITED: { exitCode: 5, message: "A committed migration file differs from the reviewed chain.", action: { command: "fleur db migration plan", description: "Restore the committed migration files, then start fleur dev again." } },
+  MIGRATION_INCOMPATIBLE: { exitCode: 1, message: "A committed migration needs an explicit backfill or an unsupported change.", action: { command: "fleur db migration plan", description: "Resolve the refused plan in its declarations, then start fleur dev again." } },
+  MIGRATIONS_PENDING: { exitCode: 5, message: "The declared seeds use tables that the committed migrations do not create.", action: { command: "fleur db migration generate", description: "Generate and review a migration for the seeded tables, or correct the seeds, then start fleur dev again." } },
   SEED_INVALID: { exitCode: 1, message: "The declared seeds are invalid or their dependencies cannot be ordered.", action: retry },
   SEED_CONFLICT: { exitCode: 5, message: "The declared seeds conflict with each other or with a table constraint.", action: retry },
   SCHEMA_DRIFT: { exitCode: 5, message: "The database schema or migration history differs from Fleur's record.", action: readinessReasons.SCHEMA_DRIFT.action },
@@ -224,6 +236,7 @@ function startupFailure(error: unknown): StartupFailure {
     const { error: reported } = privilegeFailure("dev", shortfall).result;
     return { code: reported!.code, message: reported!.message, exitCode: 4, action: reported!.actions[0]! };
   }
+  if (error instanceof Error && error.cause === uncertainCommit) return { code: "RECOVERY_REQUIRED", exitCode: 5, message: "The outcome of the initialization commit could not be confirmed.", action: { command: "fleur dev", description: "Start fleur dev again. Startup reads the commit's outcome from PostgreSQL, records it and never applies the migrations or seeds twice." } };
   const code = unavailability(error) ? "DATABASE_UNAVAILABLE" : error instanceof Error && Object.hasOwn(failures, error.message) ? error.message : "INTERNAL_FAILURE";
   return { code, ...failures[code]! };
 }
@@ -254,7 +267,7 @@ export async function startDevelopmentDatabase(database: DevelopmentDatabase, pr
   const state = error ? error.code === "MAINTENANCE_BUSY" ? "maintenance" : "failed" : !health || reasons.length ? maintenance ? "maintenance" : "failed" : "ready";
   return {
     state, ready: state === "ready",
-    initialization: { status: error ? "failed" : initialization!.status, migrationsApplied: initialization?.migrationsApplied ?? [], seedRowsApplied: initialization?.seedRowsApplied ?? 0, migrations: health?.database.migrations ?? null },
+    initialization: { status: initialization?.status ?? "failed", migrationsApplied: initialization?.migrationsApplied ?? [], seedRowsApplied: initialization?.seedRowsApplied ?? 0, migrations: health?.database.migrations ?? null },
     reasons, database: health?.database ?? null, error,
   };
 }
@@ -265,8 +278,8 @@ export function describeDevelopmentStartup(report: DevelopmentDatabaseStartup): 
   const { initialization } = report, lines: string[] = [];
   if (initialization.status === "initialized") lines.push(`Initialized the new development database in one transaction: applied ${counted(initialization.migrationsApplied.length, "migration")} (${initialization.migrationsApplied.join(", ")}) and ${counted(initialization.seedRowsApplied, "seed row")}.`);
   else if (initialization.status === "new") lines.push("The development database is new and stays uninitialized: there are no committed migrations yet.");
-  else if (initialization.status === "failed") lines.push("Initialization did not complete. Nothing was committed, and a new development database stays new.");
-  else lines.push("Startup applied no migrations or seeds. Use fleur db migration apply and fleur db seed explicitly.");
+  else if (initialization.status === "failed") lines.push("Database startup did not complete.");
+  else lines.push("This database is not new: startup applied no migrations or seeds. Later changes use fleur db migration apply and fleur db seed.");
   const migrations = initialization.migrations;
   if (migrations) lines.push(`Migrations: ${migrations.applied.length} applied, ${migrations.pending.length} pending, ${migrations.drift ? "drift detected" : "no drift"}.`);
   if (report.error) lines.push(`${report.error.code}: ${report.error.message}`, `Next: ${report.error.action.command}. ${report.error.action.description}`);

@@ -233,16 +233,19 @@ and JSON.
   Startup reports `failed` with the error code, an exit category and one action,
   and never reports ready. The database stays new, so the next startup retries
   after the cause is corrected. If the outcome of the commit itself cannot be
-  proven, startup reports `RECOVERY_REQUIRED`. The next startup resolves the
-  outcome from the transaction's recorded status and never applies the chain
-  twice.
+  confirmed, startup reports `RECOVERY_REQUIRED` with `fleur dev` as its
+  action. The next startup reads the outcome of the recorded transaction from
+  PostgreSQL and never applies the chain twice.
 - **Empty chain.** A new database stays new until a startup finds at least one
   committed migration. Initialization runs only at startup, never during reload.
 - **Never new again.** After a successful initialization, the creation record
   is retired, so later migrations use `db migration apply` and later seeds use
   `db seed`. The record is also retired when startup finds that something else,
   such as an explicit apply, changed the database first. A database emptied
-  afterwards is not new.
+  afterwards is not new. If such a database disappears, startup creates an
+  empty replacement that is not new. Bring data back explicitly, with
+  `db restore` or `db migration apply`. A database that disappears before its
+  first initialization is recreated as new.
 - **Other databases.** Adopted volumes, another binding's database, a database
   Fleur did not create, a database that reset recreated, production targets and
   test or backup-verification databases have no matching creation record. They

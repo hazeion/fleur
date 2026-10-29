@@ -69,6 +69,8 @@ export async function readDatabaseMigrationState(sql: Connection, marker: Mainte
 }
 export async function assertMigrationState(sql: Connection, tables?: readonly Table[],completeRegistry=false, marker: MaintenanceMarker | null = null, operation: "application" | "backup" = "application") {
   const state = await readDatabaseMigrationState(sql, marker);
+  // Preserve the existing initial-migration action when tables are already registered with the application.
+  if (state.unrecordedObjects && tables?.length) throw new Error("MIGRATIONS_PENDING");
   // Backup can preserve a database before its first migration. Recorded drift and corrupt history still refuse it.
   if (!state.history || state.drift && !(operation === "backup" && state.unrecordedObjects)) throw new Error("SCHEMA_DRIFT");
   const history = state.history, last = history.at(-1);

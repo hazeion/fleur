@@ -247,8 +247,12 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   const keys = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>): string[] => constants(value, scope, point, arguments_)?.map(String) ?? ["*"];
   const before = (effect: Point, point: Point): boolean => {
     const owner = execution(effect.scope), reader = execution(point.scope);
-    for (let frame: Point | undefined = point; frame; frame = frame.caller) if (execution(frame.scope) === owner) return completion(effect.value) < (frame.offset ?? position(frame.value));
-    for (let ancestor = reader.parent; ancestor; ancestor = ancestor.parent) if (ancestor === owner) return true;
+    for (let writer: Point | undefined = effect; writer; writer = writer.caller)
+      for (let frame: Point | undefined = point; frame; frame = frame.caller)
+        if (execution(frame.scope) === execution(writer.scope)) return completion(writer.value) < (frame.offset ?? position(frame.value));
+    for (let writer: Point | undefined = effect; writer; writer = writer.caller)
+      for (let ancestor = reader.parent; ancestor; ancestor = ancestor.parent)
+        if (ancestor === execution(writer.scope)) return true;
     // Imported module initialization completes before a function can read it.
     return !owner.parent && !!reader.parent;
   };
@@ -356,6 +360,14 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     throw new SourceAdmissionError(file ? relative(project.root, file.path) : "application source", file ? file.source.slice(0, position(mutation.value)).split("\n").length : 1, "UNRESOLVED_CLASS_SORT", "Select complete classes explicitly or use a statically resolvable pure sort comparator.");
   };
   const captured = (value: Node | undefined, point: Point, arguments_: ReadonlyMap<Binding, Binding>): Node => ({ type: "ProjectedValue", expression: value, point, arguments: arguments_ });
+  const pureConstantExpression = (value: Node | undefined): boolean => {
+    if (!value || !["Literal", "Identifier", "UnaryExpression", "BinaryExpression", "LogicalExpression", "ConditionalExpression", "TSAsExpression", "TSTypeAssertion", "TSSatisfiesExpression", "TSNonNullExpression", "ParenthesizedExpression"].includes(String(value.type))) return false;
+    if (value.type === "UnaryExpression" && value.operator === "delete") return false;
+    return Object.values(value).every(child => {
+      const expression = node(child);
+      return !expression || typeof expression.type !== "string" || pureConstantExpression(expression);
+    });
+  };
   const functionValue = (value: Node | undefined, scope: Scope, point: Point, arguments_: ReadonlyMap<Binding, Binding>, seen = new Set<Binding>()): ResolvedValue | undefined => {
     if (!value) return;
     scope = contexts.get(value) ?? scope;
@@ -388,7 +400,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       let alternatives: Node[][] = [[]];
       for (const item of Array.isArray(origin.value.elements) ? origin.value.elements : []) {
         const element = node(item);
-        const choices = element?.type === "SpreadElement" ? arrays(node(element.argument), origin.scope, origin, bindings, nextSeen) : [[captured(element, origin, bindings)]];
+        const read = element ? located(element, origin.scope, origin) : origin;
+        const choices = element?.type === "SpreadElement" ? arrays(node(element.argument), origin.scope, read, bindings, nextSeen) : [[captured(element, read, bindings)]];
         if (!choices) return;
         alternatives = bounded(alternatives.flatMap(prefix => choices.map(suffix => [...prefix, ...suffix])));
       }
@@ -456,7 +469,13 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
               const body = node(fn.value.body), statements = body?.type === "BlockStatement" ? nodes(body.body).filter(value => !unreachable.has(value) && value.type !== "EmptyStatement") : [];
               if (body?.type === "BlockStatement" && (statements.length !== 1 || statements[0]?.type !== "ReturnStatement")) unresolvedSort(mutation);
               const returned = body?.type === "BlockStatement" ? node(statements[0]?.argument) : body;
-              next.sort((left, right) => {
+              if (!pureConstantExpression(returned)) unresolvedSort(mutation);
+              const entries = previous.map(value => ({ value, known: constants(value, mutation.scope, effect.point, effect.arguments) }));
+              if (entries.some(entry => entry.known?.length !== 1)) unresolvedSort(mutation);
+              const defined = entries.filter(entry => entry.known![0] !== undefined).map(entry => entry.value);
+              // JavaScript never passes undefined entries or holes to a sort
+              // comparator. Both follow all defined values in the result.
+              defined.sort((left, right) => {
                 const replacements = new Map(fn.arguments);
                 nodes(fn.value.params).forEach((parameter, index) => {
                   const binding = parameter.type === "Identifier" && lookup(fn.scope, String(parameter.name));
@@ -467,6 +486,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
                 if (result?.length !== 1) return unresolvedSort(mutation);
                 return Number(result[0]) || 0;
               });
+              next.splice(0, next.length, ...defined, ...entries.filter(entry => entry.known![0] === undefined).map(entry => entry.value));
             }
           } else if (mutation.method === "fill") {
             const start = argumentsList[1] ? numeric(argumentsList[1]) : 0, end = argumentsList[2] ? numeric(argumentsList[2]) : next.length;

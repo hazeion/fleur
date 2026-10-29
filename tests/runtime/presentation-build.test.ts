@@ -423,6 +423,31 @@ test.each([
       export const Page = () => <main class={values[0]}><p class={values[1]}/></main>;`,
     required: /width:\s*739px/, canary: "do-while-removed-private-canary",
   },
+  {
+    name: "spread argument elements capture effects from earlier elements",
+    source: `let selected = 'content-["spread-element-private-canary"]';
+      function change() { selected = "w-[743px]"; return 0; }
+      function outer(ignored: number, value: string) { selected = value; }
+      outer(...[change(), selected] as const);
+      export const Page = () => <main class={selected}/>;`,
+    required: /width:\s*743px/, canary: "spread-element-private-canary",
+  },
+  {
+    name: "earlier argument helper returns keep captured scalar values",
+    source: `let selected = "w-[751px]";
+      function get() { return selected; }
+      function change() { selected = 'content-["returned-argument-private-canary"]'; }
+      function outer(first: string, ignored: unknown) { selected = first; }
+      outer(get(), change()); export const Page = () => <main class={selected}/>;`,
+    required: /width:\s*751px/, canary: "returned-argument-private-canary",
+  },
+  ...["undefined", ""].map(empty => ({
+    name: `stable comparator moves ${empty || "holes"} after defined elements`,
+    source: `const values = [${empty}, "w-[773px]", 'content-["zero-undefined-private-canary"]'];
+      values.sort(() => 0);
+      export const Page = () => <main class={values[0]}><p class={values[2]}/></main>;`,
+    required: /width:\s*773px/, canary: "zero-undefined-private-canary",
+  })),
 ])("$name", async item => {
   const root = await mkdtemp(join(tmpdir(), "fleur-class-execution-order-"));
   try {
@@ -436,14 +461,14 @@ test.each([
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("an unresolved sort projection is refused before exposing unselected array values", async () => {
+test.each(["compare", "() => void(index = 0)"])("an unresolved sort projection %s is refused before exposing unselected array values", async comparator => {
   const root = await mkdtemp(join(tmpdir(), "fleur-class-unknown-sort-"));
   try {
     await mkdir(join(root, "server"));
     await writeFile(join(root, "server", "page.tsx"), `
-      export function Page({compare}: {compare: (a: string, b: string) => number}) {
+      export function Page({compare}: {compare: (a: string, b: string) => number}) { let index = 1;
         const values = ["bg-red-500", 'content-["unresolved-sort-private-canary"]'];
-        values.sort(compare); return <main class={values[0]}/>;
+        values.sort(${comparator}); return <main class={values[index]}/>;
       }
     `);
     const compiled = compileClient(await admitProject(root));

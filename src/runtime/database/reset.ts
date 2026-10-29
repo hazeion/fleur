@@ -10,7 +10,7 @@ import { readMigrations } from "./migration-plan";
 import { dataIntegrity } from "./integrity";
 import { quote } from "./inspection";
 import { seedDatabase } from "./seeds";
-import { privileged, requireAuthority } from "./privilege";
+import { privileged, requireApplicationLock, requireAuthority } from "./privilege";
 
 export interface ResetConfiguration extends BackupConfiguration, MaintenanceAuthority {
   /** Trusted lifecycle binding. Production configuration never supplies this value. */
@@ -22,7 +22,10 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
   const started = performance.now(), remaining = () => { const value = (config.timeoutMs ?? 60000) - (performance.now() - started); if (value <= 0) throw new Error("RECOVERY_REQUIRED"); return value; };
   const plans = await readMigrations(project), seedPlan = config.seed ? describeSeeds(seeds) : [];
   if (plans.some(plan => plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
-  const lease = await MaintenanceLease.acquire(url, true, { ...config, timeoutMs: remaining() }, false, (control, target) => requireAuthority(control, target, ["role and database creation", "database replacement", "schema write", "schema read"]));
+  const lease = await MaintenanceLease.acquire(url, true, { ...config, timeoutMs: remaining() }, false, async (control, target) => {
+    await requireAuthority(control, target, ["role and database creation", "database replacement", "schema write", "schema read"]);
+    await requireApplicationLock(target, "session");
+  });
   let sql = new SQL(url, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, remaining());
   let marker: MaintenanceMarker | undefined, replacing = false;

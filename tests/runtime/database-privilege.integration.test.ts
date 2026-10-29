@@ -251,6 +251,22 @@ test("refused maintenance never queues an exclusive control lock or blocks anoth
   } finally { await admitted.close(); await rm(join(root, "migrations", "0002.json")); }
 }, 300_000);
 
+test("missing application lock authority refuses no-op apply before state creation or admission drain", async () => {
+  await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM PUBLIC");
+  let admitted: MaintenanceLease | undefined;
+  try {
+    for (const heldAdmission of [false, true]) {
+      if (heldAdmission) admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+      const stateRoot = join(root, `missing-lock-${randomUUID()}`);
+      expectShortfall(await cli(["db", "migration", "apply"], profile({ FLEUR_PRIVATE_STATE_ROOT: stateRoot })), "maintenance locks");
+      expect(await lstat(stateRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })).toBe(false);
+    }
+  } finally {
+    await admitted?.close();
+    await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO PUBLIC");
+  }
+}, 300_000);
+
 test("authority revoked while backup waits for admissions is refused again before work", async () => {
   const maker = `${role}_revoked`;
   await control.unsafe(`CREATE ROLE ${maker} LOGIN SUPERUSER IN ROLE ${role} PASSWORD '${password}'`);
@@ -409,7 +425,12 @@ test("db seed reports a refused transaction fence as maintenance locks without c
     const before = await observed();
     await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) FROM PUBLIC");
     try {
-      expectShortfall(await cli(["db", "seed"], profile()), "maintenance locks");
+      const stateRoot = join(root, `missing-seed-lock-${randomUUID()}`);
+      const admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
+      try {
+        expectShortfall(await cli(["db", "seed"], profile({ FLEUR_PRIVATE_STATE_ROOT: stateRoot })), "maintenance locks");
+        expect(await lstat(stateRoot).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })).toBe(false);
+      } finally { await admitted.close(); }
       expect(await observed()).toEqual(before);
       expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
     } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) TO PUBLIC"); }

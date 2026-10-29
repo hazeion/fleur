@@ -39,43 +39,43 @@ function expectNoEndpoint(outcome: Outcome, target: { url: string; user: string;
   expect(values).not.toContain(String(target.port));
 }
 
-function workoutTables() {
-  const exercises = defineTable("exercises", { columns: {
+function recipeTables() {
+  const ingredients = defineTable("ingredients", { columns: {
     id: column.uuid().generated().primaryKey(),
     name: column.string().max(100).unique({ caseFold: true }),
     createdAt: column.timestamp().defaultNow(),
   } });
-  const templates = defineTable("templates", { columns: {
+  const recipes = defineTable("recipes", { columns: {
     id: column.safeInteger().generated().primaryKey(),
     name: column.string().max(100),
     notes: column.string().nullable(),
   } });
-  const templateEntries = defineTable("template_entries", { versioned: false, columns: {
+  const recipeSteps = defineTable("recipe_steps", { versioned: false, columns: {
     id: column.safeInteger().generated().primaryKey(),
-    templateId: column.safeInteger().references(templates.id, { onDelete: "cascade" }),
-    exerciseId: column.uuid().references(exercises.id, { onDelete: "restrict" }),
+    recipeId: column.safeInteger().references(recipes.id, { onDelete: "cascade" }),
+    ingredientId: column.uuid().references(ingredients.id, { onDelete: "restrict" }),
     position: column.safeInteger().unique(),
-    sets: column.safeInteger().default(3),
+    portions: column.safeInteger().default(3),
   } });
-  const sessions = defineTable("sessions", { columns: {
+  const meals = defineTable("meals", { columns: {
     id: column.uuid().generated().primaryKey(),
-    performedOn: column.localDate(),
-    templateId: column.safeInteger().nullable().references(templates.id, { onDelete: "set null" }),
-    weight: column.decimal({ precision: 6, scale: 2 }).nullable(),
+    servedOn: column.localDate(),
+    recipeId: column.safeInteger().nullable().references(recipes.id, { onDelete: "set null" }),
+    amount: column.decimal({ precision: 6, scale: 2 }).nullable(),
   } });
-  return [exercises, templates, templateEntries, sessions];
+  return [ingredients, recipes, recipeSteps, meals];
 }
 
-test("the schema overview reports every structural element of the workout fixture without rows or endpoint details", async () => {
+test("the schema overview reports every structural element of a recipe-shaped schema without rows or endpoint details", async () => {
   const fixture = await ownedPostgres();
-  const root = await project("fleur-overview-workout-");
+  const root = await project("fleur-overview-recipes-");
   try {
-    const target = await applicationDatabase(fixture, "workout_app");
+    const target = await applicationDatabase(fixture, "recipes_app");
     try {
       const tools = await fixture.pgTools(join(root, "tools"));
-      await generateMigration(root, workoutTables());
+      await generateMigration(root, recipeTables());
       expect((await applyMigrations(target.url, root, { stateRoot: root, toolDirectory: tools })).applied).toEqual(["0001"]);
-      await target.sql.unsafe("INSERT INTO exercises(name) VALUES ('Row data that must not appear')");
+      await target.sql.unsafe("INSERT INTO ingredients(name) VALUES ('Row data that must not appear')");
       const env = { FLEUR_PRIVATE_DATABASE_URL: target.url };
       const overview = await cli(root, ["db", "inspect"], env);
       expect(overview.result.error).toBeNull();
@@ -87,58 +87,58 @@ test("the schema overview reports every structural element of the workout fixtur
       expect(data.view).toBe("overview");
       expect(data.rows).toBeUndefined();
       expect(data.cursor).toBeNull();
-      expect(data.target).toMatchObject({ kind: "development", database: "workout_app" });
+      expect(data.target).toMatchObject({ kind: "development", database: "recipes_app" });
       expect((data.target as Record<string, Json>).serverVersion).toMatch(/^18\./);
       expect((data.target as Record<string, Json>).fingerprint).toMatch(/^[a-f0-9]{32}$/);
       expect(data.migrations).toEqual({ compatible: true, applied: ["0001"], pending: [], drift: false, differenceCount: 0, maintenance: { state: "idle", stage: "committed" } });
       interface Described { name: string; indexes: { name: string; columns: string[] }[]; foreignKeys: { name: string; columns: string[] }[]; primaryKey: { name: string } }
       const tables = data.tables as unknown as Described[];
-      expect(tables.map(table => table.name)).toEqual(["exercises", "sessions", "template_entries", "templates"]);
+      expect(tables.map(table => table.name)).toEqual(["ingredients", "meals", "recipe_steps", "recipes"]);
       const named = (table: string) => tables.find(item => item.name === table)!;
       const described = (table: string): unknown => named(table);
       const uniqueName = (table: string, field: string) => named(table).indexes.find(index => index.name.startsWith("fleur_unique_") && index.columns.includes(field))!.name;
-      expect(described("exercises")).toEqual({
-        name: "exercises", versioned: true,
+      expect(described("ingredients")).toEqual({
+        name: "ingredients", versioned: true,
         columns: [
           { name: "id", type: "uuid", kind: "uuid", nullable: false, default: "gen_random_uuid()", identity: false, managed: true },
           { name: "name", type: "text", kind: "string", nullable: false, default: null, identity: false, managed: false },
           { name: "createdAt", type: "timestamp with time zone", kind: "timestamp", nullable: false, default: "CURRENT_TIMESTAMP", identity: false, managed: false },
           { name: "version", type: "bigint", kind: "safeInteger", nullable: false, default: "1", identity: false, managed: true },
         ],
-        primaryKey: { name: named("exercises").primaryKey.name, columns: ["id"] },
+        primaryKey: { name: named("ingredients").primaryKey.name, columns: ["id"] },
         foreignKeys: [],
         uniqueConstraints: [],
-        indexes: [{ name: uniqueName("exercises", "name"), unique: true, columns: ["name"], caseFolded: true, definition: expect.stringContaining("fleur_casefold_17") }],
+        indexes: [{ name: uniqueName("ingredients", "name"), unique: true, columns: ["name"], caseFolded: true, definition: expect.stringContaining("fleur_casefold_17") }],
       });
-      expect(described("template_entries")).toEqual({
-        name: "template_entries", versioned: false,
+      expect(described("recipe_steps")).toEqual({
+        name: "recipe_steps", versioned: false,
         columns: [
           { name: "id", type: "bigint", kind: "safeInteger", nullable: false, default: null, identity: true, managed: true },
-          { name: "templateId", type: "bigint", kind: "safeInteger", nullable: false, default: null, identity: false, managed: false },
-          { name: "exerciseId", type: "uuid", kind: "uuid", nullable: false, default: null, identity: false, managed: false },
+          { name: "recipeId", type: "bigint", kind: "safeInteger", nullable: false, default: null, identity: false, managed: false },
+          { name: "ingredientId", type: "uuid", kind: "uuid", nullable: false, default: null, identity: false, managed: false },
           { name: "position", type: "bigint", kind: "safeInteger", nullable: false, default: null, identity: false, managed: false },
-          { name: "sets", type: "bigint", kind: "safeInteger", nullable: false, default: "3", identity: false, managed: false },
+          { name: "portions", type: "bigint", kind: "safeInteger", nullable: false, default: "3", identity: false, managed: false },
         ],
-        primaryKey: { name: named("template_entries").primaryKey.name, columns: ["id"] },
+        primaryKey: { name: named("recipe_steps").primaryKey.name, columns: ["id"] },
         foreignKeys: [
-          { name: named("template_entries").foreignKeys.find(key => key.columns[0] === "exerciseId")!.name, columns: ["exerciseId"], references: { table: "exercises", columns: ["id"] }, onDelete: "restrict" },
-          { name: named("template_entries").foreignKeys.find(key => key.columns[0] === "templateId")!.name, columns: ["templateId"], references: { table: "templates", columns: ["id"] }, onDelete: "cascade" },
+          { name: named("recipe_steps").foreignKeys.find(key => key.columns[0] === "ingredientId")!.name, columns: ["ingredientId"], references: { table: "ingredients", columns: ["id"] }, onDelete: "restrict" },
+          { name: named("recipe_steps").foreignKeys.find(key => key.columns[0] === "recipeId")!.name, columns: ["recipeId"], references: { table: "recipes", columns: ["id"] }, onDelete: "cascade" },
         ].sort((a, b) => a.name < b.name ? -1 : 1),
         uniqueConstraints: [],
-        indexes: [{ name: uniqueName("template_entries", "position"), unique: true, columns: ["position"], caseFolded: false, definition: expect.stringContaining("UNIQUE INDEX") }],
+        indexes: [{ name: uniqueName("recipe_steps", "position"), unique: true, columns: ["position"], caseFolded: false, definition: expect.stringContaining("UNIQUE INDEX") }],
       });
-      expect(described("sessions")).toMatchObject({
+      expect(described("meals")).toMatchObject({
         versioned: true,
         columns: [
           { name: "id", kind: "uuid", managed: true },
-          { name: "performedOn", type: "date", kind: "localDate", nullable: false },
-          { name: "templateId", type: "bigint", kind: "safeInteger", nullable: true },
-          { name: "weight", type: "numeric(6,2)", kind: "decimal", nullable: true, default: null },
+          { name: "servedOn", type: "date", kind: "localDate", nullable: false },
+          { name: "recipeId", type: "bigint", kind: "safeInteger", nullable: true },
+          { name: "amount", type: "numeric(6,2)", kind: "decimal", nullable: true, default: null },
           { name: "version", kind: "safeInteger", managed: true },
         ],
-        foreignKeys: [{ columns: ["templateId"], references: { table: "templates", columns: ["id"] }, onDelete: "set null" }],
+        foreignKeys: [{ columns: ["recipeId"], references: { table: "recipes", columns: ["id"] }, onDelete: "set null" }],
       });
-      expect(described("templates")).toMatchObject({ versioned: true, columns: [{ name: "id", identity: true, managed: true }, { name: "name" }, { name: "notes", nullable: true }, { name: "version", managed: true }] });
+      expect(described("recipes")).toMatchObject({ versioned: true, columns: [{ name: "id", identity: true, managed: true }, { name: "name" }, { name: "notes", nullable: true }, { name: "version", managed: true }] });
       // A table outside the reviewed declarations is still described from the catalog, with unknown Fleur metadata,
       // and PostgreSQL unique constraints are reported separately from indexes.
       await target.sql.unsafe("CREATE TABLE external_notes(code text PRIMARY KEY, label text UNIQUE)");
@@ -155,10 +155,10 @@ test("the schema overview reports every structural element of the workout fixtur
       });
       const status = await cli(root, ["status"], env);
       expect(status.exit).toBe(0);
-      const table = await cli(root, ["db", "inspect", "--table", "exercises"], env);
+      const table = await cli(root, ["db", "inspect", "--table", "ingredients"], env);
       expect(table.exit).toBe(0);
       expect(table.result.data.view).toBe("table");
-      expect(table.result.data.structure).toEqual(described("exercises") as Json);
+      expect(table.result.data.structure).toEqual(described("ingredients") as Json);
       for (const outcome of [overview, unmanaged, status, table]) expectNoEndpoint(outcome, target);
     } finally { await target.sql.close({ timeout: 0 }); }
   } finally { await fixture.cleanup(); await rm(root, { recursive: true, force: true }); }

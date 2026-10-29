@@ -71,7 +71,7 @@ test("the default development target refuses a configured database that differs 
 
 test("status against a refusing database exits 0 with the unavailable reason, its action and no endpoint details", async () => {
   const port = await refusedPort();
-  const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${port}/workout_app`, user: "health_user", password: "health_password", port };
+  const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${port}/recipes_app`, user: "health_user", password: "health_password", port };
   for (const production of [false, true]) {
     const outcome = await cli(["status", ...(production ? ["--production"] : [])], { FLEUR_PRIVATE_DATABASE_URL: endpoint.url });
     expect(outcome.exit).toBe(0);
@@ -79,7 +79,7 @@ test("status against a refusing database exits 0 with the unavailable reason, it
     expect(outcome.elapsedMs).toBeLessThan(5_000 + 3_000);
     const data = outcome.result.data as { ready: boolean; reasons: { code: string; message: string; action: { command: string; description: string } }[]; database: { connectivity: string; failure: string; target: Record<string, unknown>; migrations: unknown } };
     expect(data.ready).toBe(false);
-    expect(data.database).toMatchObject({ connectivity: "unreachable", failure: "refused", target: { kind: production ? "production" : "development", database: "workout_app", serverVersion: null, fingerprint: null }, migrations: null });
+    expect(data.database).toMatchObject({ connectivity: "unreachable", failure: "refused", target: { kind: production ? "production" : "development", database: "recipes_app", serverVersion: null, fingerprint: null }, migrations: null });
     expect(data.reasons.map(reason => reason.code)).toEqual(["DATABASE_UNAVAILABLE"]);
     expect(data.reasons[0]!.action.command).toBeString();
     expect(data.reasons[0]!.action.description).toBeString();
@@ -90,7 +90,7 @@ test("status against a refusing database exits 0 with the unavailable reason, it
 test("status reports a silent database as unreachable within its own probe deadline, adjusted by --timeout", async () => {
   const sockets: { end(): void }[] = [];
   const silent = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open(socket) { sockets.push(socket); }, data() {} } });
-  const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${silent.port}/workout_app`, user: "health_user", password: "health_password", port: silent.port };
+  const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${silent.port}/recipes_app`, user: "health_user", password: "health_password", port: silent.port };
   try {
     const adjusted = await cli(["status", "--timeout", "1"], { FLEUR_PRIVATE_DATABASE_URL: endpoint.url });
     expect(adjusted.exit).toBe(0);
@@ -110,7 +110,7 @@ test("status reports a silent database as unreachable within its own probe deadl
 
 test("commands that need data from an unreachable database return DATABASE_UNAVAILABLE with exit 4", async () => {
   const port = await refusedPort();
-  const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${port}/workout_app`, user: "health_user", password: "health_password", port };
+  const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${port}/recipes_app`, user: "health_user", password: "health_password", port };
   for (const args of [["db", "inspect", "--table", "exercises"], ["db", "inspect"], ["db", "migration", "status"]]) {
     const outcome = await cli(args, { FLEUR_PRIVATE_DATABASE_URL: endpoint.url });
     expect({ args, exit: outcome.exit, code: outcome.result.error?.code }).toEqual({ args, exit: 4, code: "DATABASE_UNAVAILABLE" });

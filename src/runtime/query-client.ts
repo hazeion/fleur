@@ -1,4 +1,4 @@
-import { validatePublicValue, type Query } from "../schema";
+import { validatePublicValue, type Query, type Retrieval } from "../schema";
 import { canonical } from "./canonical";
 
 export interface QueryRefreshResult { readonly status: "success" | "error"; readonly error?: { readonly code: string }; }
@@ -14,19 +14,28 @@ interface Entry { contract: Query; input: unknown; name: string; state: State; l
 const names = new WeakMap<object, string>();
 const entries = new Map<string, Entry>();
 let requestRefresh: ((force?: boolean) => Promise<QueryRefreshResult>) | undefined;
+export type RetrievalRefreshResult = QueryRefreshResult;
+let requestRetrieval: ((name: string, input: unknown) => Promise<RetrievalRefreshResult>) | undefined;
 export function nameQueryExports(exports: Readonly<Record<string, unknown>>): void {
-  for (const [name, value] of Object.entries(exports).sort(([a], [b]) => a.localeCompare(b))) if (value && typeof value === "object" && "kind" in value && value.kind === "query" && !names.has(value)) names.set(value, name);
+  for (const [name, value] of Object.entries(exports).sort(([a], [b]) => a.localeCompare(b))) if (value && typeof value === "object" && "kind" in value && (value.kind === "query" || value.kind === "retrieval") && !names.has(value)) names.set(value, name);
 }
 export function queryKey(name: string, input: unknown): string {
   validatePublicValue(input);
   return canonical([name, input]);
 }
-export function queryName(contract: Query): string {
+export function queryName(contract: Query | Retrieval): string {
   const name = contract.name ?? names.get(contract);
   if (!name) throw new Error("REQUEST_DENIED");
   return name;
 }
 export function installQueryRefresh(refresh: (force?: boolean) => Promise<QueryRefreshResult>): void { requestRefresh = refresh; }
+export function installRetrievalRefresh(refresh: (name: string, input: unknown) => Promise<RetrievalRefreshResult>): void { requestRetrieval = refresh; }
+/** Asks the server view to obtain this retrieval again; the browser never contacts the destination. */
+export function refreshRetrievalValue(contract: Retrieval, input: unknown): Promise<RetrievalRefreshResult> {
+  const validated = contract.input.parse(input), name = queryName(contract);
+  validatePublicValue(validated);
+  return requestRetrieval?.(name, validated) ?? Promise.resolve<RetrievalRefreshResult>({ status: "error", error: { code: "NOT_CONNECTED" } });
+}
 export function activeQueries(): { name: string; input: unknown }[] { return [...entries.values()].map(entry => ({ name: entry.name, input: entry.input })); }
 export function observeQuery(contract: Query, input: unknown, listener: () => void) {
   const validated = contract.input.parse(input), name = queryName(contract), key = queryKey(name, validated);

@@ -3,7 +3,8 @@ import { renderToStringAsync } from "preact-render-to-string";
 import { selectPage } from "./routes";
 import type { ReadDb, WriteDb } from "../database";
 import { validatePublicValue } from "../schema";
-import { pages, queries, queryNames, mutations, mutationNames, pageNames, withExecution, type SafeLog } from "./registrations";
+import { pages, queries, queryNames, mutations, mutationNames, pageNames, retrievals, retrievalNames, destinations, destinationNames, currentExecution, withExecution, type Execution, type SafeLog } from "./registrations";
+import { RetrievalError, retrievalFailureCodes } from "./retrieval/destinations";
 import { islandNames, islands } from "./islands";
 import { nameQueryExports } from "./query-client";
 import { canonical } from "./canonical";
@@ -24,7 +25,7 @@ export async function executeQuery(name: string, input: unknown, db: ReadDb, log
   return withExecution({ kind: "query", db, log }, async () => registration.handler({ input, db, log }));
 }
 /** No host filesystem, database connection, or arbitrary dispatcher is supplied. */
-export async function executePage(pathname: string, read: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
+export async function executePage(pathname: string, read: (name: string, input: unknown) => Promise<unknown>, retrieve: (name: string, input: unknown) => Promise<unknown> = async () => { throw new Error("UNSUPPORTED_CAPABILITY"); }): Promise<PageResult> {
   const selected = selectPage([...pages.keys()], pathname);
   if (!selected) throw new Error("ROUTE_NOT_FOUND");
   const page = pages.get(selected.page)!;
@@ -49,7 +50,7 @@ export async function executePage(pathname: string, read: (name: string, input: 
       // isolate failures so refresh can retain their previous complete subtree.
       if (id === "page" && !(error instanceof Error && error.message === "QUERY_PENDING")) throw error;
       descriptors.splice(descriptorStart); regions.splice(regionStart);
-      const code = error instanceof Error && ["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+      const code = error instanceof Error && ["QUERY_PENDING", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "INPUT_INVALID", "NOT_FOUND", ...retrievalFailureCodes].includes(error.message) ? error.message : "INTERNAL_FAILURE";
       Object.assign(entry, { error: code });
       return h(Fragment, null, h("template", { "data-fleur-region": id, "data-fleur-error": code, "data-fleur-stale": "true" }), h("template", { "data-fleur-end": id }));
     } finally { current = previous; }
@@ -124,7 +125,7 @@ export async function executePage(pathname: string, read: (name: string, input: 
   return withExecution({ kind: "render", read: async (name, input) => {
     current.dependencies.push({ name, input });
     return read(name, input);
-  } }, async () => {
+  }, retrieve: async (name, input) => retrieve(name, input) }, async () => {
     const node = await region("page", async () => {
       const content = await page.component(params);
       return resolve(content, `page/queries:${binding()}`);
@@ -145,6 +146,19 @@ export function nameExports(exports: Readonly<Record<string, unknown>>): void {
     for (const contract of queries.keys()) if (contract === value && !queryNames.has(contract)) queryNames.set(contract, name);
     for (const contract of mutations.keys()) if (contract === value && !mutationNames.has(contract)) mutationNames.set(contract, name);
     for (const contract of pages.keys()) if (contract === value && !pageNames.has(contract)) pageNames.set(contract, name);
+    for (const contract of retrievals.keys()) if (contract === value && !retrievalNames.has(contract)) retrievalNames.set(contract, name);
+    if (destinations.has(object) && !destinationNames.has(object)) destinationNames.set(object, name);
+  }
+  for (const contract of retrievals.keys()) {
+    const name = retrievalNames.get(contract);
+    if (!name || used.has(name)) throw new Error("Duplicate or unexported retrieval");
+    used.add(name);
+  }
+  const destinationIds = new Set<string>();
+  for (const destination of destinations.keys()) {
+    const name = destinationNames.get(destination);
+    if (!name || destinationIds.has(name)) throw new Error("Duplicate or unexported destination");
+    destinationIds.add(name);
   }
   for (const contract of queries.keys()) {
     const name = queryNames.get(contract);
@@ -164,4 +178,37 @@ export async function executeMutation(name: string, input: unknown, db: WriteDb,
   const registration = contract && mutations.get(contract);
   if (!registration) throw new Error("REQUEST_DENIED");
   return withExecution({ kind: "mutation", db, log }, async () => registration.handler({ input, db, log }));
+}
+
+/**
+ * Runs a retrieval handler with the only network authority application code
+ * receives: a capability forwarding declared requests to the trusted broker.
+ * The capability works only during this execution.
+ */
+export async function executeRetrieval(name: string, input: unknown, external: (request: unknown) => unknown, log: SafeLog): Promise<unknown> {
+  const contract = [...retrievalNames].find(([, registered]) => name === registered)?.[0];
+  const registration = contract && retrievals.get(contract);
+  if (!registration) throw new Error("REQUEST_DENIED");
+  const execution: Execution = { kind: "retrieval", external: async request => external(request), log };
+  const call = async (method: "GET" | "HEAD", destination: unknown, request: unknown = {}) => {
+    if (currentExecution() !== execution || execution.kind !== "retrieval") throw new Error("UNSUPPORTED_CAPABILITY");
+    const declared = destination && typeof destination === "object" ? destinations.get(destination) : undefined;
+    const id = declared && destinationNames.get(destination as object);
+    if (!declared || !id || !request || typeof request !== "object" || Object.keys(request).some(key => !["params", "query"].includes(key))) throw new RetrievalError("RETRIEVAL_DESTINATION_DENIED");
+    const options = request as { params?: unknown; query?: unknown };
+    const wire = { destination: id, method, params: options.params ?? {}, query: options.query ?? {} };
+    try { validatePublicValue(wire); } catch { throw new RetrievalError("RETRIEVAL_DESTINATION_DENIED"); }
+    const result = await execution.external(wire) as Record<string, unknown>;
+    const headers = result?.headers;
+    if (!result || typeof result.status !== "number" || !headers || typeof headers !== "object" || Object.values(headers).some(value => typeof value !== "string")) throw new Error("INTERNAL_FAILURE");
+    if (method === "HEAD") return Object.freeze({ status: result.status, headers: Object.freeze({ ...headers }) });
+    let body: unknown;
+    try { body = freezeValue(declared.response.parse(result.body)); } catch { throw new RetrievalError("RETRIEVAL_INVALID_OUTPUT"); }
+    return Object.freeze({ status: result.status, headers: Object.freeze({ ...headers }), body });
+  };
+  const capability = Object.freeze({
+    get: (destination: unknown, request?: unknown) => call("GET", destination, request),
+    head: (destination: unknown, request?: unknown) => call("HEAD", destination, request),
+  });
+  return withExecution(execution, async () => registration.handler({ input, external: capability, log }));
 }

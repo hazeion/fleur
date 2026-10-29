@@ -12,7 +12,7 @@ test("an uncertain commit remains uncertain when releasing its execution reserva
       async mutate() { throw new Error("OUTCOME_UNKNOWN"); }
       async close() {}
     } }));
-    mock.module(${JSON.stringify(execution)}, () => ({ NativeExecution: { open: () => ({
+    mock.module(${JSON.stringify(execution)}, () => ({ ARMING_MARGIN_MS: 500, NativeExecution: { open: () => ({
       async reserve() { return { deadline: performance.now() + 5000, run: async () => { throw new Error("unexpected run"); }, release() { throw new Error("ATTACH_EXIT_UNCONFIRMED"); } }; },
     }) } }));
     const { ReadApplication } = await import(${JSON.stringify(application)});

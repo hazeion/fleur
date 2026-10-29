@@ -20,8 +20,8 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
   const calls: { callee: Node; value: Node; scope: Scope }[] = [];
   const assignments: { target: Node; value: Node; scope: Scope }[] = [];
   const assigned = new Map<Binding, Node[]>();
-  const mutations: { target: Node; scope: Scope }[] = [];
-  const mutated = new Set<Binding>();
+  const mutations: { target: Node; scope: Scope; length?: number }[] = [];
+  const mutated = new Map<Binding, number | undefined>();
   const declare = (pattern: Node | undefined, expression: Node | undefined, scope: Scope): void => {
     if (pattern?.type === "Identifier") {
       const existing = scope.bindings.get(String(pattern.name));
@@ -75,7 +75,10 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       if (item.type === "AssignmentExpression") {
         const target = node(item.left), value = node(item.right);
         if (target && value) assignments.push({ target, value, scope: current });
-        if (target?.type === "MemberExpression" && node(target.object)) mutations.push({ target: node(target.object)!, scope: current });
+        if (target?.type === "MemberExpression" && node(target.object)) {
+          const length = name(target.property) === "length" && item.operator === "=" && typeof value?.value === "number" && Number.isSafeInteger(value.value) && value.value >= 0 ? value.value : undefined;
+          mutations.push({ target: node(target.object)!, scope: current, ...(length !== undefined ? { length } : {}) });
+        }
       }
       if (item.type === "ImportDeclaration") {
         const specifier = String(node(item.source)?.value), target = project.resolutions.get(path + "\0" + specifier);
@@ -97,7 +100,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
       }
       if (item.type === "CallExpression") {
         const value = nodes(item.arguments)[1], callee = node(item.callee); if (value && callee) calls.push({ callee, value, scope: current });
-        if (callee?.type === "MemberExpression" && ["copyWithin", "fill", "pop", "push", "reverse", "shift", "sort", "splice", "unshift"].includes(name(callee.property) ?? "") && node(callee.object)) mutations.push({ target: node(callee.object)!, scope: current });
+        if (callee?.type === "MemberExpression" && ["pop", "push", "shift", "splice", "unshift"].includes(name(callee.property) ?? "") && node(callee.object)) mutations.push({ target: node(callee.object)!, scope: current });
       }
       Object.values(item).forEach(child => visit(child, current));
     };
@@ -141,15 +144,17 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     seen.add(binding);
     return resolveBinding(exported(binding.imported.module, binding.imported.name), seen);
   };
-  const markMutation = (value: Node, scope: Scope): void => {
+  const markMutation = (value: Node, scope: Scope, length?: number, seen = new Set<Binding>()): void => {
     if (value.type === "Identifier") {
       const binding = resolveBinding(lookup(scope, String(value.name)));
-      if (!binding || mutated.has(binding)) return;
-      mutated.add(binding);
-      if (binding.expression) markMutation(binding.expression, binding.scope);
-    } else if (["TSAsExpression", "TSTypeAssertion", "TSNonNullExpression", "TSSatisfiesExpression", "ParenthesizedExpression"].includes(String(value.type)) && node(value.expression)) markMutation(node(value.expression)!, scope);
+      if (!binding || seen.has(binding)) return;
+      seen.add(binding);
+      const known = scope === binding.scope ? length : undefined;
+      mutated.set(binding, known);
+      if (binding.expression) markMutation(binding.expression, binding.scope, known, seen);
+    } else if (["TSAsExpression", "TSTypeAssertion", "TSNonNullExpression", "TSSatisfiesExpression", "ParenthesizedExpression"].includes(String(value.type)) && node(value.expression)) markMutation(node(value.expression)!, scope, length, seen);
   };
-  for (const mutation of mutations) markMutation(mutation.target, mutation.scope);
+  for (const mutation of mutations) markMutation(mutation.target, mutation.scope, mutation.length);
   for (const { callee, value, scope } of calls) {
     const direct = callee.type === "Identifier" && resolveBinding(lookup(scope, String(callee.name)))?.factory === "function";
     const namespace = callee.type === "MemberExpression" && node(callee.object)?.type === "Identifier" && resolveBinding(lookup(scope, String(node(callee.object)?.name)))?.factory === "namespace" && ["h", "createElement", "jsx", "jsxs", "jsxDEV"].includes(name(callee.property) ?? "");
@@ -176,6 +181,7 @@ export function presentationClassStrings(project: AdmittedProject): string[] {
     if (value.type === "Identifier") {
       const binding = resolveBinding(lookup(scope, String(value.name)));
       const selected = binding && (arguments_.get(binding) ?? binding);
+      if (binding && mutated.has(binding)) return mutated.get(binding);
       if (binding && selected && !seen.has(binding) && !assigned.has(binding) && !mutated.has(binding)) return arrayLength(selected.expression, selected.scope, arguments_, new Set([...seen, binding]));
     } else if (value.type === "ArrayExpression" && Array.isArray(value.elements)) {
       let length = 0;

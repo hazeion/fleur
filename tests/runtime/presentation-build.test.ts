@@ -159,12 +159,16 @@ test("spread indexing and computed rest keys retain only selected presentation v
       const typed = ["w-[257px]"] as const;
       const mutable = ["w-[331px]"] as string[];
       mutable.pop();
+      const reversed = ["w-[347px]"] as string[]; reversed.reverse();
+      const resized = ["w-[349px]"] as string[]; resized.length = 1;
       export const Page = ({wide}: {wide: boolean}) => <main class={[...pair][0]}>
         <p {...props}/><p {...choose({hidden: 'content-["rest-argument-private-canary"]', className: "w-[227px]"})}/>
         <p class={[...["w-[229px]", "w-[233px]"], "w-[239px]"][2]}/>
         <p class={choices[wide ? "small" : "large"]}/>
         <p class={[...typed, 'content-["typed-spread-private-canary"]'][0]}/>
         <p class={[...mutable, "w-[337px]"][0]}/>
+        <p class={[...reversed, 'content-["reverse-private-canary"]'][0]}/>
+        <p class={[...resized, 'content-["resize-private-canary"]'][0]}/>
       </main>;
       export function Rest({hiddenKey}: {hiddenKey: "id" | "title"}) {
         const {[hiddenKey]: omitted, ...props} = {id: "a", title: "b", className: "w-[317px]"};
@@ -173,8 +177,8 @@ test("spread indexing and computed rest keys retain only selected presentation v
     `);
     const bundle = await compileClient(await admitProject(root));
     const css = String(bundle.files.get(bundle.stylesheet!)?.body);
-    for (const canary of ["indexed-spread-private-canary", "computed-rest-private-canary", "rest-argument-private-canary", "unselected-key-private-canary", "typed-spread-private-canary"]) expect(css).not.toContain(canary);
-    for (const width of [211, 223, 227, 239, 241, 251, 257, 317, 337]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
+    for (const canary of ["indexed-spread-private-canary", "computed-rest-private-canary", "rest-argument-private-canary", "unselected-key-private-canary", "typed-spread-private-canary", "reverse-private-canary", "resize-private-canary"]) expect(css).not.toContain(canary);
+    for (const width of [211, 223, 227, 239, 241, 251, 257, 317, 337, 347, 349]) expect(css).toMatch(new RegExp(`width:\\s*${width}px`));
     for (const width of [229, 233]) expect(css).not.toMatch(new RegExp(`width:\\s*${width}px`));
   } finally { await rm(root, { recursive: true, force: true }); }
 });

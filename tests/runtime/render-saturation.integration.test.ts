@@ -31,17 +31,17 @@ const outlasting = () => new Promise<unknown>(resolve => setTimeout(() => resolv
 const brief = () => new Promise<unknown>(resolve => setTimeout(() => resolve([]), 1000));
 
 test("nested render queries fail fast only when every slot holds a render waiting on one", async () => {
-  const project = await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url)));
+  const project = await admitProject(fileURLToPath(new URL("fixtures/ingredients", import.meta.url)));
   const images = await prepareNativeImages(await compileWorker(project));
   const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
   let app: ReadApplication | undefined;
   try {
-    await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
-    await fixture.sql.unsafe("INSERT INTO exercises (id,name) VALUES ('00000000-0000-4000-8000-000000000001','Squat')");
+    await fixture.sql.unsafe("CREATE TABLE ingredients (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
+    await fixture.sql.unsafe("INSERT INTO ingredients (id,name) VALUES ('00000000-0000-4000-8000-000000000001','Sage')");
     await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url);
     const capacity = app.capacity;
-    const renders = (count: number) => Array.from({ length: count }, () => settle(app!.render("/exercises")));
+    const renders = (count: number) => Array.from({ length: count }, () => settle(app!.render("/ingredients")));
     await warm(app);
 
     // One render fewer than capacity leaves a slot for their nested queries.
@@ -50,7 +50,7 @@ test("nested render queries fail fast only when every slot holds a render waitin
     // Every slot busy, but one render waits on work that needs no slot: its
     // slot frees up, so the other renders' nested queries are admitted.
     await warm(app);
-    const busy: string[] = await Promise.all([...renders(capacity - 1), settle(app.render("/exercises", brief))]);
+    const busy: string[] = await Promise.all([...renders(capacity - 1), settle(app.render("/ingredients", brief))]);
     expect(busy).toEqual(Array(capacity).fill("rendered"));
 
     // Every slot busy until the render deadlines, with fewer nested queries
@@ -58,7 +58,7 @@ test("nested render queries fail fast only when every slot holds a render waitin
     // that stopped waiting must leave no trace, or the fresh renders below
     // would be refused with QUERY_LIMIT.
     await warm(app);
-    const expired: string[] = await Promise.all([...renders(capacity - 1), settle(app.render("/exercises", outlasting))]);
+    const expired: string[] = await Promise.all([...renders(capacity - 1), settle(app.render("/ingredients", outlasting))]);
     expect(expired).toEqual(Array(capacity).fill("QUERY_TIMEOUT"));
     await warm(app);
     expect(await Promise.all(renders(capacity - 1))).toEqual(Array(capacity - 1).fill("rendered"));
@@ -72,7 +72,7 @@ test("nested render queries fail fast only when every slot holds a render waitin
     expect(elapsed).toBeLessThan(DEADLINE / 2);
 
     // Neither ordinary queries nor later renders are starved afterwards.
-    expect(await app.query("exercise.list", {})).toHaveLength(1);
-    expect((await app.render("/exercises")).html).toContain("Squat");
+    expect(await app.query("ingredient.list", {})).toHaveLength(1);
+    expect((await app.render("/ingredients")).html).toContain("Sage");
   } finally { await app?.close(); await fixture.cleanup(); await images.dispose(); }
 }, 300_000);

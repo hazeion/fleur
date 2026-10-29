@@ -16,7 +16,7 @@ const DEADLINE = 5000, TOLERANCE = 250;
 const ready = Buffer.from([0x5a, 0, 0, 0, 5]);
 
 test("render admission that outlives the render deadline reports QUERY_TIMEOUT", async () => {
-  const project = await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url)));
+  const project = await admitProject(fileURLToPath(new URL("fixtures/ingredients", import.meta.url)));
   const images = await prepareNativeImages(await compileWorker(project));
   const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
   const sockets = new Set<Socket>();
@@ -38,7 +38,7 @@ test("render admission that outlives the render deadline reports QUERY_TIMEOUT",
   });
   let app: ReadApplication | undefined;
   try {
-    await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
+    await fixture.sql.unsafe("CREATE TABLE ingredients (id uuid PRIMARY KEY, name text NOT NULL, note text, version bigint NOT NULL DEFAULT 1)");
     await fixture.reviewApplication(images);
     await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
     const address = proxy.address();
@@ -50,10 +50,10 @@ test("render admission that outlives the render deadline reports QUERY_TIMEOUT",
     app.prepareWorkers();
     const warm = performance.now() + 120_000;
     while (performance.now() < warm && !(app.diagnostics().length === 4 && app.diagnostics().every(slot => slot.state === "idle" && slot.prepared))) await new Promise(resolve => setTimeout(resolve, 100));
-    expect((await app.render("/exercises")).html).toContain("<h1>Exercises</h1>");
+    expect((await app.render("/ingredients")).html).toContain("<h1>Ingredients</h1>");
     stall = true;
     const started = performance.now();
-    const failure = await app.render("/exercises").then(() => undefined, (error: unknown) => error as Error);
+    const failure = await app.render("/ingredients").then(() => undefined, (error: unknown) => error as Error);
     expect(failure?.message).toBe("QUERY_TIMEOUT");
     expect(performance.now() - started).toBeLessThan(DEADLINE + TOLERANCE);
   } finally {

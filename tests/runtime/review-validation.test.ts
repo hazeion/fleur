@@ -12,7 +12,7 @@ for (const key of ["limit", "where", "orderBy"]) {
 }
 
 for (const [factory, code, details] of [
-  ['publicError("NOT_FOUND", { resource: "exercise" })', "NOT_FOUND", { resource: "exercise" }],
+  ['publicError("NOT_FOUND", { resource: "ingredient" })', "NOT_FOUND", { resource: "ingredient" }],
   ['inputError({ name: "A name is required." })', "INPUT_INVALID", { name: "A name is required." }],
 ] as const) {
   test(`registered query preserves declared ${code} and safe details across worker entry`, () => {

@@ -1,27 +1,27 @@
 import { schema, type Infer, type LocalDate, type Timestamp } from "../../src/schema";
 import { column, defineTable, type Row, type Insert } from "../../src/database";
-const publicExercise = schema.object({ id: schema.uuid(), name: schema.string(), deleted: schema.boolean().nullable(), note: schema.string().optional() });
-type Exercise = Infer<typeof publicExercise>;
+const publicIngredient = schema.object({ id: schema.uuid(), name: schema.string(), deleted: schema.boolean().nullable(), note: schema.string().optional() });
+type Ingredient = Infer<typeof publicIngredient>;
 const id = schema.uuid().parse("550e8400-e29b-41d4-a716-446655440000");
-const accepted: Exercise = { id, name: "Squat", deleted: null };
+const accepted: Ingredient = { id, name: "Sage", deleted: null };
 // @ts-expect-error Nullable remains required.
-const missingNullable: Exercise = { id, name: "Squat" };
+const missingNullable: Ingredient = { id, name: "Sage" };
 // @ts-expect-error UUID is validated, not an arbitrary string.
-const arbitraryId: Exercise = { id: "wrong", name: "Squat", deleted: null };
+const arbitraryId: Ingredient = { id: "wrong", name: "Sage", deleted: null };
 const date: LocalDate = schema.localDate().parse("2024-02-29");
 // @ts-expect-error LocalDate and Timestamp are distinct.
 const instant: Timestamp = date;
-const exercises = defineTable("exercises", { columns: { id: column.uuid().primaryKey().generated(), name: column.string(), note: column.string().nullable() } });
-const row: Row<typeof exercises> = { id, name: "Squat", note: null, version: 1 };
-const insert: Insert<typeof exercises> = { name: "Squat", note: null };
+const ingredients = defineTable("ingredients", { columns: { id: column.uuid().primaryKey().generated(), name: column.string(), note: column.string().nullable() } });
+const row: Row<typeof ingredients> = { id, name: "Sage", note: null, version: 1 };
+const insert: Insert<typeof ingredients> = { name: "Sage", note: null };
 // @ts-expect-error Managed version cannot be supplied for insert.
-const badInsert: Insert<typeof exercises> = { name: "Squat", note: null, version: 1 };
+const badInsert: Insert<typeof ingredients> = { name: "Sage", note: null, version: 1 };
 // @ts-expect-error Required nullable column cannot be omitted.
-const missingColumn: Insert<typeof exercises> = { name: "Squat" };
+const missingColumn: Insert<typeof ingredients> = { name: "Sage" };
 // @ts-expect-error Foreign key types must match.
-column.safeInteger().references(exercises.id, { onDelete: "restrict" });
+column.safeInteger().references(ingredients.id, { onDelete: "restrict" });
 // @ts-expect-error Set-null requires a nullable source.
-column.uuid().references(exercises.id, { onDelete: "set null" });
+column.uuid().references(ingredients.id, { onDelete: "set null" });
 // Index keys name the table's own declared columns, with an optional asc/desc direction.
 const indexed = defineTable("indexed", { columns: { id: column.uuid().primaryKey(), parentId: column.uuid(), position: column.safeInteger() }, indexes: [{ fields: ["parentId", { field: "position", direction: "desc" }] }] });
 const indexedRow: Row<typeof indexed> = { id, parentId: id, position: 1, version: 1 };
@@ -42,33 +42,33 @@ import { eq, defineRelations } from "../../src/database";
 import { definePage, href } from "../../src/routing";
 import { defineIsland } from "../../src/client";
 import { h } from "preact";
-const list = defineQuery({ input: schema.object({ count: schema.safeInteger() }), output: schema.array(publicExercise) });
-const page = definePage({ path: "/exercises/:id", params: schema.object({ id: schema.uuid() }) });
+const list = defineQuery({ input: schema.object({ count: schema.safeInteger() }), output: schema.array(publicIngredient) });
+const page = definePage({ path: "/ingredients/:id", params: schema.object({ id: schema.uuid() }) });
 href(page, { id });
 // @ts-expect-error Required route parameter cannot be omitted.
 href(page, {});
 // @ts-expect-error Path placeholders must match the declared schema.
-definePage({ path: "/exercises/:wrong", params: schema.object({ id: schema.uuid() }) });
+definePage({ path: "/ingredients/:wrong", params: schema.object({ id: schema.uuid() }) });
 // @ts-expect-error Filter value follows the column type.
-eq(exercises.name, 1);
+eq(ingredients.name, 1);
 const Name = defineIsland({ props: schema.object({ name: schema.string() }), component: ({ name }) => h("span", null, name) });
 // @ts-expect-error Island props are contextually inferred.
 Name({ name: 4 }, {});
 // @ts-expect-error Relation references require matching column types.
-defineRelations(exercises, ({ one }) => ({ invalid: one(exercises, { fields: [exercises.name], references: [exercises.id] }) }));
+defineRelations(ingredients, ({ one }) => ({ invalid: one(ingredients, { fields: [ingredients.name], references: [ingredients.id] }) }));
 void list;
 // @ts-expect-error Optional path parameters do not satisfy a required placeholder.
-definePage({ path: "/exercises/:id", params: schema.object({ id: schema.string().optional() }) });
+definePage({ path: "/ingredients/:id", params: schema.object({ id: schema.string().optional() }) });
 // @ts-expect-error Route parameters must be string-compatible.
-definePage({ path: "/exercises/:id", params: schema.object({ id: schema.safeInteger() }) });
+definePage({ path: "/ingredients/:id", params: schema.object({ id: schema.safeInteger() }) });
 
 import type { ReadDb } from "../../src/database";
 function readContract(db: ReadDb) {
-  const result: Promise<{ id: typeof id; name: string }[]> = db.select(exercises, { fields: ["id", "name"], limit: 100 });
+  const result: Promise<{ id: typeof id; name: string }[]> = db.select(ingredients, { fields: ["id", "name"], limit: 100 });
   // @ts-expect-error Selection fields must exist on the table.
-  db.select(exercises, { fields: ["secret"] });
+  db.select(ingredients, { fields: ["secret"] });
   // @ts-expect-error Read handlers receive no write capability.
-  db.insert(exercises, { values: { name: "bad", note: null }, returning: ["id"] });
+  db.insert(ingredients, { values: { name: "bad", note: null }, returning: ["id"] });
   // @ts-expect-error Read handlers cannot open transactions.
   db.transaction(() => {});
   // @ts-expect-error Read handlers cannot obtain raw SQL connections.
@@ -78,13 +78,13 @@ function readContract(db: ReadDb) {
 void readContract;
 
 import { alias } from "../../src/database";
-const tags = defineTable("tags", { columns: { id: column.safeInteger().primaryKey(), exerciseId: column.uuid().references(exercises.id, { onDelete: "restrict" }), label: column.string() } });
+const tags = defineTable("tags", { columns: { id: column.safeInteger().primaryKey(), ingredientId: column.uuid().references(ingredients.id, { onDelete: "restrict" }), label: column.string() } });
 function joinedContract(db: ReadDb) {
-  const e = alias(exercises, "e"), t = alias(tags, "t");
-  const result = db.selectJoined({ from: e, joins: [{ type: "left", table: t, on: eq(e.id, t.exerciseId) }], fields: { exercise: e.name, tag: t.label } });
-  const correct: Promise<{ exercise: string; tag: string | null }[]> = result;
+  const e = alias(ingredients, "e"), t = alias(tags, "t");
+  const result = db.selectJoined({ from: e, joins: [{ type: "left", table: t, on: eq(e.id, t.ingredientId) }], fields: { ingredient: e.name, tag: t.label } });
+  const correct: Promise<{ ingredient: string; tag: string | null }[]> = result;
   // @ts-expect-error Left-joined fields can be absent even when the stored column is required.
-  const nonnullable: Promise<{ exercise: string; tag: string }[]> = result;
+  const nonnullable: Promise<{ ingredient: string; tag: string }[]> = result;
   void nonnullable;
   return correct;
 }
@@ -113,7 +113,7 @@ handleMutation(saveContract, async ({ input }) => input.name.length > 0);
 handleMutation(saveContract, async () => "wrong");
 function mutationTypes(db: WriteDb) {
   const mutation = useMutation(saveContract);
-  mutation.run({ name: "Squat" });
+  mutation.run({ name: "Sage" });
   // @ts-expect-error Client input is inferred.
   mutation.run({ name: 1 });
   const generated = defineTable("generated", { columns: { id: column.uuid().generated().primaryKey(), name: column.string() } });
@@ -127,11 +127,11 @@ function mutationTypes(db: WriteDb) {
   // @ts-expect-error Generated branding survives fluent declaration order.
   db.insert(generated, { values: { id, name: "Forbidden" }, returning: ["id"] });
   // @ts-expect-error Managed version cannot be assigned.
-  db.updateVersioned(exercises, { id, expectedVersion: 1, set: { version: 3 }, returning: ["id"] });
+  db.updateVersioned(ingredients, { id, expectedVersion: 1, set: { version: 3 }, returning: ["id"] });
   // @ts-expect-error Expected version is mandatory.
-  db.deleteVersioned(exercises, { id });
+  db.deleteVersioned(ingredients, { id });
   // @ts-expect-error Versioned tables cannot use unversioned writes.
-  db.update(exercises, { id, set: { name: "Wrong" }, returning: ["id"] });
+  db.update(ingredients, { id, set: { name: "Wrong" }, returning: ["id"] });
   const unversioned = defineTable("unversioned", { versioned: false, columns: { id: column.uuid().primaryKey(), name: column.string() } });
   // @ts-expect-error Unversioned tables cannot use versioned writes.
   db.updateVersioned(unversioned, { id, expectedVersion: 1, set: { name: "Wrong" }, returning: ["id"] });
@@ -142,24 +142,24 @@ function mutationTypes(db: WriteDb) {
 void mutationTypes;
 function reactiveTypes() {
   const result = useQuery(list, { count: 10 });
-  const data: readonly Exercise[] | undefined = result.data;
+  const data: readonly Ingredient[] | undefined = result.data;
   const refreshing: boolean = result.refreshing;
   void data; void refreshing;
   // @ts-expect-error Query input derives from its contract.
   useQuery(list, { count: "10" });
   // @ts-expect-error Mutation contracts are not reactive read contracts.
   useQuery(saveContract, { name: "test" });
-  // @ts-expect-error Output remains the inferred public exercise array.
+  // @ts-expect-error Output remains the inferred public ingredient array.
   const wrong: number = result.data;
   void wrong;
 }
 void reactiveTypes;
 
 import { defineSeed } from "../../src/database";
-const typedSeed = defineSeed({ key: "exercises", table: exercises, rows: [{ ownerKey: "squat", values: { name: "Squat", note: null } }] });
+const typedSeed = defineSeed({ key: "ingredients", table: ingredients, rows: [{ ownerKey: "sage", values: { name: "Sage", note: null } }] });
 const seedName: string = typedSeed.rows[0]!.values.name;
 void seedName;
 // @ts-expect-error Seed values retain the table's inferred insert types.
-defineSeed({ key: "invalid", table: exercises, rows: [{ ownerKey: "bad", values: { name: 4, note: null } }] });
+defineSeed({ key: "invalid", table: ingredients, rows: [{ ownerKey: "bad", values: { name: 4, note: null } }] });
 // @ts-expect-error Seed values cannot assign a managed version.
-defineSeed({ key: "invalid", table: exercises, rows: [{ ownerKey: "bad", values: { name: "Squat", note: null, version: 4 } }] });
+defineSeed({ key: "invalid", table: ingredients, rows: [{ ownerKey: "bad", values: { name: "Sage", note: null, version: 4 } }] });

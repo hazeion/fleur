@@ -4,10 +4,10 @@ import { column, defineTable, defineSeed } from "../../src/database";
 
 const table = defineTable("seed_names", { columns: { id: column.safeInteger().primaryKey(), name: column.string().max(8) } });
 test("seed declarations validate ownership keys and values and freeze the declaration", () => {
-  const rows = [{ ownerKey: "first", values: { id: 1, name: "Squat" } }];
-  const seed = defineSeed({ key: "exercises", table, rows });
+  const rows = [{ ownerKey: "first", values: { id: 1, name: "Sage" } }];
+  const seed = defineSeed({ key: "ingredients", table, rows });
   rows[0]!.values.name = "Changed";
-  expect(seed.rows[0]!.values.name).toBe("Squat");
+  expect(seed.rows[0]!.values.name).toBe("Sage");
   expect(Object.isFrozen(seed.rows[0]!.values)).toBe(true);
   for (const key of ["", " a", "a/b"]) expect(() => defineSeed({ key, table, rows })).toThrow("SEED_INVALID");
   expect(() => defineSeed({ key: "names", table, rows: [...rows, ...rows] })).toThrow("SEED_INVALID");
@@ -20,7 +20,7 @@ test("seed declarations cross registration as validated data with table identity
   // `bun test` process populate. A fresh process registers only these exports,
   // as the real registration worker does.
   const { restoreManifest } = await import("../../src/runtime/manifest-wire");
-  const rows = [{ ownerKey: "first", values: { id: 1, name: "Squat" } }];
+  const rows = [{ ownerKey: "first", values: { id: 1, name: "Sage" } }];
   const child = Bun.spawn([process.execPath, "-e", `
     import { column, defineTable, defineSeed } from "./src/database.ts";
     import { makeRunner } from "./src/runtime/worker-entry.ts";

@@ -14,7 +14,7 @@ import { serveReadApplication } from "../../src/runtime/http";
 import { ownedPostgres } from "./owned-postgres";
 
 test("browser reports maintenance, resumes after verified completion and startup rejects interrupted work", async () => {
-  const project = await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url)));
+  const project = await admitProject(fileURLToPath(new URL("fixtures/ingredients", import.meta.url)));
   const bundle = await compileClient(project);
   const images = await prepareNativeImages(await compileWorker(project));
   const fixture = await ownedPostgres().catch(async error => { await images.dispose(); throw error; });
@@ -28,7 +28,7 @@ test("browser reports maintenance, resumes after verified completion and startup
   const started = performance.now();
   let complete = false;
   try {
-    await fixture.sql.unsafe("CREATE TABLE exercises (id uuid PRIMARY KEY,name text NOT NULL,note text,version bigint NOT NULL DEFAULT 1)");
+    await fixture.sql.unsafe("CREATE TABLE ingredients (id uuid PRIMARY KEY,name text NOT NULL,note text,version bigint NOT NULL DEFAULT 1)");
     await fixture.reviewApplication(images);
     app = await ReadApplication.open(images, fixture.url, config);
     for (const name of ["revision", "render", "query"] as const) {
@@ -43,13 +43,13 @@ test("browser reports maintenance, resumes after verified completion and startup
     const page = await browser.newPage();
     for (let repeat = 0; repeat < 2; repeat++) {
       owner = await MaintenanceLease.acquire(fixture.url, true, config);
-      const response = await page.goto(server.url.origin+"/exercises");
+      const response = await page.goto(server.url.origin+"/ingredients");
       expect(response?.status()).toBe(503);
       await browserExpect(page.getByRole("heading", { name: "Database maintenance" })).toBeVisible();
       await owner.close(); owner = undefined;
       trace.push({ at: Math.round(performance.now() - started), released: repeat });
       await page.reload();
-      await browserExpect(page.getByRole("heading", { name: "Exercises", exact: true })).toBeVisible();
+      await browserExpect(page.getByRole("heading", { name: "Ingredients", exact: true })).toBeVisible();
     }
     owner = await MaintenanceLease.acquire(fixture.url, true, config);
     await owner.persist({ formatVersion: 1, target: owner.target, stage: "preparing", backup: null, planChecksum: "b".repeat(64), epoch: crypto.randomUUID() });

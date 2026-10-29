@@ -11,9 +11,9 @@ test("mutation validates input before handler and output before returning to its
   server.handleMutation(mutation, async () => { calls++; return { saved: true }; });
   const db = {} as WriteDb;
   const log = { info() {}, warn() {} };
-  await expect(execution.executeMutation("contract.save", { name: "Squat", extra: true }, db, log)).rejects.toThrow();
+  await expect(execution.executeMutation("contract.save", { name: "Sage", extra: true }, db, log)).rejects.toThrow();
   expect(calls).toBe(0);
-  expect(await execution.executeMutation("contract.save", { name: "Squat" }, db, log)).toEqual({ saved: true });
+  expect(await execution.executeMutation("contract.save", { name: "Sage" }, db, log)).toEqual({ saved: true });
   expect(calls).toBe(1);
   const invalid = contracts.defineMutation({ name: "contract.invalid", input: contracts.schema.object({}), output: contracts.schema.boolean() });
   server.handleMutation(invalid, async () => "private SQL and secret" as unknown as boolean);

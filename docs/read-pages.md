@@ -15,27 +15,27 @@ the Fleur entry points and approved Preact entry points. Client/shared modules
 cannot import server modules, `fleur/server` or `fleur/database`.
 
 ```ts
-// shared/exercises.ts
+// shared/ingredients.ts
 import { defineQuery, schema } from "fleur/schema";
-export const listExercises = defineQuery({
-  name: "exercises.list",
+export const listIngredients = defineQuery({
+  name: "ingredients.list",
   input: schema.object({}),
   output: schema.array(schema.object({ id: schema.uuid(), name: schema.string() })),
 });
 
-// server/exercises.ts
+// server/ingredients.ts
 import { column, defineTable } from "fleur/database";
 import { handleQuery } from "fleur/server";
-import { listExercises } from "../shared/exercises";
-export const exercises = defineTable("exercises", { columns: {
+import { listIngredients } from "../shared/ingredients";
+export const ingredients = defineTable("ingredients", { columns: {
   id: column.uuid().primaryKey(), name: column.string().max(100),
 } });
-handleQuery(listExercises, async ({ db }) => db.select(exercises, {
+handleQuery(listIngredients, async ({ db }) => db.select(ingredients, {
   fields: ["id", "name"], orderBy: [{ field: "name", direction: "asc" }],
 }));
 ```
 
-`tests/runtime/fixtures/exercises` is the complete list/detail page and counter
+`tests/runtime/fixtures/ingredients` is the complete list/detail page and counter
 island example. `registerPage` infers route parameters; `readQuery` is available
 only inside the server render. `defineIsland` validates props during server
 rendering and again before hydration. Direct navigation produces server HTML;

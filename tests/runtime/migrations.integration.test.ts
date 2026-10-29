@@ -35,14 +35,14 @@ test("generation reads server declarations into reviewable SQL and snapshots wit
   try {
     await writeFile(join(root, "fleur.json"), JSON.stringify({ formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" }));
     await mkdir(join(root, "server"));
-    await writeFile(join(root, "server/tables.ts"), 'import {column,defineTable} from "fleur/database"; export const exercises=defineTable("exercises",{columns:{id:column.uuid().primaryKey(),name:column.string().max(100)}});');
+    await writeFile(join(root, "server/tables.ts"), 'import {column,defineTable} from "fleur/database"; export const ingredients=defineTable("ingredients",{columns:{id:column.uuid().primaryKey(),name:column.string().max(100)}});');
     const generated = await migrationCli(root, ["db", "migration", "generate"]);
     expect(generated.exit).toBe(0);
-    expect(generated.result.data.plan.statements.join("\n")).toContain('CREATE TABLE "public"."exercises"');
+    expect(generated.result.data.plan.statements.join("\n")).toContain('CREATE TABLE "public"."ingredients"');
     expect(generated.result.data.plan.backfills).toEqual([]);
     expect(generated.result.data.plan.removals).toEqual([]);
     const saved = JSON.parse(await readFile(join(root, "migrations/0001.json"), "utf8"));
-    expect(saved.snapshot[0].name).toBe("exercises");
+    expect(saved.snapshot[0].name).toBe("ingredients");
     expect(saved.checksum).toMatch(/^[a-f0-9]{64}$/);
     const planned = await migrationCli(root, ["db", "migration", "plan"]);
     expect(planned.exit).toBe(0);
@@ -57,7 +57,7 @@ test("applying a reviewed migration verifies backup, commits schema/history toge
   const { ReadBroker } = await import("../../src/runtime/database/broker");
   const fixture = await ownedPostgres();
   const root = await mkdtemp(join(tmpdir(), "fleur-migration-apply-"));
-  const table = defineTable("exercises", { columns: { id: column.uuid().primaryKey(), name: column.string().max(100) } });
+  const table = defineTable("ingredients", { columns: { id: column.uuid().primaryKey(), name: column.string().max(100) } });
   const broker = new ReadBroker({ url: fixture.url, tables: [table], maintenance: { stateRoot: root } });
   try {
     await writeFile(join(root, "fleur.json"), JSON.stringify({ formatVersion: 1, fleurVersion: "0.1.0", contractVersion: 1, compiler: "microsoft" }));
@@ -72,7 +72,7 @@ test("applying a reviewed migration verifies backup, commits schema/history toge
     expect(await broker.read(db => db.select(table,{fields:["id","name"]}))).toEqual([]);
     const status = await migrationCli(root,["db","migration","status"],env);
     expect(status.result.data.migrations).toMatchObject({ compatible: true, applied:["0001"], pending:[], drift: false });
-    await fixture.sql.unsafe("ALTER TABLE exercises ALTER COLUMN name DROP NOT NULL");
+    await fixture.sql.unsafe("ALTER TABLE ingredients ALTER COLUMN name DROP NOT NULL");
     let dispatched = false;
     await expect(broker.read(async () => { dispatched=true;return []; })).rejects.toThrow("SCHEMA_DRIFT");
     expect(dispatched).toBe(false);
@@ -80,7 +80,7 @@ test("applying a reviewed migration verifies backup, commits schema/history toge
     const drift = await migrationCli(root,["db","migration","status"],env);
     expect(drift.exit).toBe(0);
     expect(drift.result.data.migrations).toMatchObject({ compatible: false, drift: true, differenceCount: 1 });
-    expect(drift.result.data.differences).toEqual([{ object: "column exercises.name", expected: 'text collate "C" not null', actual: 'text collate "C"' }]);
+    expect(drift.result.data.differences).toEqual([{ object: "column ingredients.name", expected: 'text collate "C" not null', actual: 'text collate "C"' }]);
     const apply = await migrationCli(root,["db","migration","apply"],env);
     expect(apply.exit).toBe(5);
     expect(apply.result.error.code).toBe("SCHEMA_DRIFT");
@@ -92,20 +92,20 @@ test("declaration changes preserve existing rows, report required backfills and 
   const { generateMigration, readMigrations } = await import("../../src/runtime/database/migration-plan");
   const { readFile } = await import("node:fs/promises");
   const root=await mkdtemp(join(tmpdir(),"fleur-migration-change-"));
-  const original=defineTable("exercises",{columns:{id:column.uuid().primaryKey(),name:column.string().max(100)}});
+  const original=defineTable("ingredients",{columns:{id:column.uuid().primaryKey(),name:column.string().max(100)}});
   try {
     await generateMigration(root,[original]);
-    const evolved=defineTable("exercises",{columns:{id:column.uuid().primaryKey(),name:column.string().max(200),notes:column.string().nullable(),active:column.boolean().default(true)}});
+    const evolved=defineTable("ingredients",{columns:{id:column.uuid().primaryKey(),name:column.string().max(200),notes:column.string().nullable(),active:column.boolean().default(true)}});
     const changed=await generateMigration(root,[evolved]);
     expect(changed.plan.incompatibilities).toEqual([]);
     expect(changed.plan.backfills).toEqual([]);
     expect(changed.plan.removals).toEqual([]);
     expect(changed.plan.statements.join("\n")).toContain("ALTER TABLE");
     expect(changed.plan.statements.join("\n")).not.toContain("DROP TABLE");
-    const required=defineTable("exercises",{columns:{id:column.uuid().primaryKey(),name:column.string().max(200),notes:column.string().nullable(),active:column.boolean().default(true),required:column.string()}});
-    expect((await generateMigration(root,[required])).plan.backfills).toContain("exercises.required");
+    const required=defineTable("ingredients",{columns:{id:column.uuid().primaryKey(),name:column.string().max(200),notes:column.string().nullable(),active:column.boolean().default(true),required:column.string()}});
+    expect((await generateMigration(root,[required])).plan.backfills).toContain("ingredients.required");
     const path=join(root,"migrations/0001.json"), raw=JSON.parse(await readFile(path,"utf8"));
-    raw.statements.push("CREATE INDEX CONCURRENTLY unsafe ON exercises(name)");
+    raw.statements.push("CREATE INDEX CONCURRENTLY unsafe ON ingredients(name)");
     await writeFile(path,JSON.stringify(raw));
     await expect(readMigrations(root)).rejects.toThrow("MIGRATION_EDITED");
   } finally {await rm(root,{recursive:true,force:true});}

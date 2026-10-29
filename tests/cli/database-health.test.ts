@@ -53,7 +53,7 @@ test("status is a catalogued command and status and db inspect admit the shared 
 test("a production target without explicit credentials returns CONFIGURATION_MISSING", async () => {
   const development = "postgres://dev:secret@127.0.0.1:1/devdb";
   for (const environment of [{}, { FLEUR_PRIVATE_DATABASE_URL: "postgres://127.0.0.1:1/appdb" }, { FLEUR_PRIVATE_DATABASE_URL: development, FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL: development }]) {
-    for (const args of [["status", "--production"], ["db", "inspect", "--production"], ["db", "inspect", "--table", "exercises", "--production"], ["db", "migration", "status", "--production"]]) {
+    for (const args of [["status", "--production"], ["db", "inspect", "--production"], ["db", "inspect", "--table", "ingredients", "--production"], ["db", "migration", "status", "--production"]]) {
       const outcome = await cli(args, environment);
       expect({ args, environment, exit: outcome.exit, code: outcome.result.error?.code }).toEqual({ args, environment, exit: 4, code: "CONFIGURATION_MISSING" });
       expect(outcome.stdout).not.toContain("secret");
@@ -111,7 +111,7 @@ test("status reports a silent database as unreachable within its own probe deadl
 test("commands that need data from an unreachable database return DATABASE_UNAVAILABLE with exit 4", async () => {
   const port = await refusedPort();
   const endpoint = { url: `postgres://health_user:health_password@127.0.0.1:${port}/recipes_app`, user: "health_user", password: "health_password", port };
-  for (const args of [["db", "inspect", "--table", "exercises"], ["db", "inspect"], ["db", "migration", "status"]]) {
+  for (const args of [["db", "inspect", "--table", "ingredients"], ["db", "inspect"], ["db", "migration", "status"]]) {
     const outcome = await cli(args, { FLEUR_PRIVATE_DATABASE_URL: endpoint.url });
     expect({ args, exit: outcome.exit, code: outcome.result.error?.code }).toEqual({ args, exit: 4, code: "DATABASE_UNAVAILABLE" });
     expect(outcome.result.error!.actions.length).toBeGreaterThan(0);

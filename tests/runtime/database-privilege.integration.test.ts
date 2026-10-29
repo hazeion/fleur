@@ -25,8 +25,8 @@ let admin: SQL, control: SQL;
 let superuserUrl: string, profileUrl: string;
 const role = `fleur_profile_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 const password = randomUUID();
-const exercises = defineTable("exercises", { columns: { id: column.uuid().generated().primaryKey(), name: column.string().max(100) } });
-const entries = defineTable("entries", { versioned: false, columns: { id: column.safeInteger().generated().primaryKey(), exerciseId: column.uuid().references(exercises.id, { onDelete: "cascade" }), sets: column.safeInteger().default(3) } });
+const ingredients = defineTable("ingredients", { columns: { id: column.uuid().generated().primaryKey(), name: column.string().max(100) } });
+const entries = defineTable("entries", { versioned: false, columns: { id: column.safeInteger().generated().primaryKey(), ingredientId: column.uuid().references(ingredients.id, { onDelete: "cascade" }), portions: column.safeInteger().default(3) } });
 
 async function cli(args: string[], env: Record<string, string>): Promise<Outcome> {
   const inherited: Record<string, string> = {};
@@ -99,10 +99,10 @@ beforeAll(async () => {
   controlUrl.pathname = "/postgres";
   control = new SQL(controlUrl.toString(), { max: 1, connectionTimeout: 2 });
   // The superuser owns and migrates the application, as an operator's maintenance credential would.
-  await generateMigration(root, [exercises, entries]);
+  await generateMigration(root, [ingredients, entries]);
   expect((await applyMigrations(superuserUrl, root, { stateRoot: root, toolDirectory: tools })).applied).toEqual(["0001"]);
-  await admin.unsafe("INSERT INTO exercises(name) VALUES ('Squat'),('Press')");
-  await admin.unsafe("INSERT INTO entries(\"exerciseId\") SELECT id FROM exercises");
+  await admin.unsafe("INSERT INTO ingredients(name) VALUES ('Sage'),('Pepper')");
+  await admin.unsafe("INSERT INTO entries(\"ingredientId\") SELECT id FROM ingredients");
   // A login role holding exactly the documented profile. PUBLIC's default CONNECT, TEMPORARY, public-schema USAGE
   // and function EXECUTE grants for the profile's privileges are revoked, so only the explicit grants below remain.
   await control.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
@@ -138,7 +138,7 @@ test("the schema overview, db inspect --table, db migration status and status he
   try {
     // Bun SQL queries run only when awaited, so each one is awaited here rather than handed to expect().
     const refusal = async (statement: string) => { try { await probe.unsafe(statement); return "accepted"; } catch (error) { return (error as { errno?: unknown }).errno; } };
-    expect(await refusal("INSERT INTO exercises(name) VALUES ('Denied')")).toBe("42501");
+    expect(await refusal("INSERT INTO ingredients(name) VALUES ('Denied')")).toBe("42501");
     expect(await refusal("CREATE TABLE denied(id int)")).toBe("42501");
   } finally { await probe.close({ timeout: 0 }); }
   const summary = { compatible: true, applied: ["0001"], pending: [], drift: false, differenceCount: 0, maintenance: { state: "idle", stage: "committed" } };
@@ -146,14 +146,14 @@ test("the schema overview, db inspect --table, db migration status and status he
   expect(overview.result.error).toBeNull();
   expect(overview.exit).toBe(0);
   expect(overview.result.data!.migrations).toEqual(summary);
-  expect((overview.result.data!.tables as { name: string }[]).map(table => table.name)).toEqual(["entries", "exercises"]);
+  expect((overview.result.data!.tables as { name: string }[]).map(table => table.name)).toEqual(["entries", "ingredients"]);
   // The profile sees the same overview as the owning credential.
   const owned = await cli(["db", "inspect"], { FLEUR_PRIVATE_DATABASE_URL: superuserUrl });
   expect(overview.result.data).toEqual(owned.result.data);
-  const table = await cli(["db", "inspect", "--table", "exercises"], profile());
+  const table = await cli(["db", "inspect", "--table", "ingredients"], profile());
   expect(table.result.error).toBeNull();
   expect(table.exit).toBe(0);
-  expect((table.result.data!.rows as { name: string }[]).map(row => row.name).sort()).toEqual(["Press", "Squat"]);
+  expect((table.result.data!.rows as { name: string }[]).map(row => row.name).sort()).toEqual(["Pepper", "Sage"]);
   const migration = await cli(["db", "migration", "status"], profile());
   expect(migration.result.error).toBeNull();
   expect(migration.exit).toBe(0);
@@ -167,7 +167,7 @@ test("the schema overview, db inspect --table, db migration status and status he
 
 test("db backup, db migration apply, db seed, db restore and db reset under the profile return DATABASE_PRIVILEGE_INSUFFICIENT, change nothing and leave no maintenance stage", async () => {
   // A pending reviewed migration that apply would otherwise back up and apply.
-  await generateMigration(root, [exercises, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
+  await generateMigration(root, [ingredients, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
   const stateDirectory = (await readdir(root)).find(name => /^[a-f0-9]{64}$/.test(name))!;
   const retained = (await readdir(join(root, stateDirectory))).find(name => /^before-.*\.dump$/.test(name))!;
   expect(retained).toBeDefined();
@@ -193,7 +193,7 @@ test("db backup, db migration apply, db seed, db restore and db reset under the 
     expectShortfall(creator, "role and database creation");
     expect(creator.stdout).not.toContain(maker);
   } finally { await control.unsafe(`DROP ROLE ${maker}`); }
-  await expect(seedDatabase(profileUrl, root, [defineSeed({ key: "catalog", table: exercises, rows: [{ ownerKey: "row", values: { name: "Row" } }] })], { stateRoot: root })).rejects.toMatchObject({ message: "DATABASE_PRIVILEGE_INSUFFICIENT", capability: "schema write" });
+  await expect(seedDatabase(profileUrl, root, [defineSeed({ key: "catalog", table: ingredients, rows: [{ ownerKey: "row", values: { name: "Row" } }] })], { stateRoot: root })).rejects.toMatchObject({ message: "DATABASE_PRIVILEGE_INSUFFICIENT", capability: "schema write" });
   expect(await observed()).toEqual(before);
   expect(await Bun.file(out).exists()).toBe(false);
   expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
@@ -243,7 +243,7 @@ test("a refused advisory lock in the application database returns DATABASE_PRIVI
 }, 300_000);
 
 test("a credential that can create roles and databases but owns nothing reaches the schema write and database replacement preflights of apply, restore and reset", async () => {
-  await generateMigration(root, [exercises, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
+  await generateMigration(root, [ingredients, entries, defineTable("notes", { columns: { id: column.uuid().generated().primaryKey() } })]);
   const stateDirectory = (await readdir(root)).find(name => /^[a-f0-9]{64}$/.test(name))!;
   const retained = (await readdir(join(root, stateDirectory))).find(name => /^before-.*\.dump$/.test(name))!;
   const creator = `${role}_creator`;
@@ -283,8 +283,8 @@ test("each missing privilege of the profile fails read-only inspection and statu
     { name: "cursor key lock", capability: "maintenance locks", on: control, revoke: `REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_xact_lock(bigint) FROM ${role}`, grant: `GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_xact_lock(bigint) TO ${role}`, args: [["db", "inspect"]] },
     { name: "fleur_internal USAGE", capability: "schema read", on: admin, revoke: `REVOKE USAGE ON SCHEMA fleur_internal FROM ${role}`, grant: `GRANT USAGE ON SCHEMA fleur_internal TO ${role}`, args: [["db", "inspect"], ["db", "migration", "status"], ["status"]] },
     { name: "migration history SELECT", capability: "schema read", on: admin, revoke: `REVOKE SELECT ON fleur_internal.migrations FROM ${role}`, grant: `GRANT SELECT ON fleur_internal.migrations TO ${role}`, args: [["db", "inspect"], ["db", "migration", "status"], ["status"]] },
-    { name: "public USAGE", capability: "schema read", on: admin, revoke: `REVOKE USAGE ON SCHEMA public FROM ${role}`, grant: `GRANT USAGE ON SCHEMA public TO ${role}`, args: [["db", "inspect", "--table", "exercises"]] },
-    { name: "application table SELECT", capability: "schema read", on: admin, revoke: `REVOKE SELECT ON public.exercises FROM ${role}`, grant: `GRANT SELECT ON public.exercises TO ${role}`, args: [["db", "inspect", "--table", "exercises"]] },
+    { name: "public USAGE", capability: "schema read", on: admin, revoke: `REVOKE USAGE ON SCHEMA public FROM ${role}`, grant: `GRANT USAGE ON SCHEMA public TO ${role}`, args: [["db", "inspect", "--table", "ingredients"]] },
+    { name: "application table SELECT", capability: "schema read", on: admin, revoke: `REVOKE SELECT ON public.ingredients FROM ${role}`, grant: `GRANT SELECT ON public.ingredients TO ${role}`, args: [["db", "inspect", "--table", "ingredients"]] },
   ];
   for (const variant of variants) {
     await variant.on.unsafe(variant.revoke);

@@ -7,7 +7,7 @@ import { ReactiveProject } from "../../src/runtime/reactive-project";
 import type { RefreshRequest } from "../../src/runtime/reactive-project";
 
 test("two browser views discard obsolete responses, recover missed wakeups and history restoration, and reconcile epochs", async () => {
-  const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url))));
+  const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/ingredients", import.meta.url))));
   let value = "Initial", revision = "0", epoch = "00000000-0000-4000-8000-000000000000", obsolete = false;
   const project = new ReactiveProject({
     revision: async () => ({ epoch, revision }), validate: (_name, input) => input, query: async () => value,
@@ -69,7 +69,7 @@ test("two browser views discard obsolete responses, recover missed wakeups and h
 }, 45_000);
 
 test("the first refresh reconciles a page beginning with a region anchor in place, retaining island state", async () => {
-  const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/exercises", import.meta.url))));
+  const bundle = await compileClient(await admitProject(fileURLToPath(new URL("fixtures/ingredients", import.meta.url))));
   const project = new ReactiveProject({
     revision: async () => ({ epoch: "00000000-0000-4000-8000-000000000000", revision: "0" }), validate: (_name, input) => input, query: async () => "Stored",
     render: async (_path, read) => {

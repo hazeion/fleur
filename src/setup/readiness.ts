@@ -15,6 +15,8 @@ export interface VerifiedReadinessProfile {
   readonly compose: string;
   readonly image: string;
   readonly evidence: { readonly readinessSha256: string; readonly isolationSha256: string };
+  /** `minimum` admits the measured tuple or newer Docker component versions with the same isolation options; `exact` (default) admits one build. */
+  readonly admission?: "exact" | "minimum";
 }
 
 /** Reviewed release authority only. Observations and installer grants do not add entries. */
@@ -39,7 +41,7 @@ function securityOptions(value: unknown): { readonly operatingMode: "rootful" | 
   return { operatingMode: names.has("rootless") ? "rootless" : "rootful", entries: [...value].sort() };
 }
 function validProfile(value: unknown): value is VerifiedReadinessProfile {
-  if (!shape(value, ["id", "host", "bun", "cli", "engine", "containerd", "runc", "compose", "image", "evidence"])) return false;
+  if (!shape(value, ["id", "host", "bun", "cli", "engine", "containerd", "runc", "compose", "image", "evidence"]) && !(shape(value, ["id", "host", "bun", "cli", "engine", "containerd", "runc", "compose", "image", "evidence", "admission"]) && (value.admission === "exact" || value.admission === "minimum"))) return false;
   const host = value.host;
   if (typeof value.id !== "string" || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(value.id) || !shape(host, ["system", "distribution", "release", "architecture"])) return false;
   if ((host.system !== "darwin" && host.system !== "linux") || (host.architecture !== "x64" && host.architecture !== "arm64") || typeof host.release !== "string" || !/^(?:\d+(?:\.\d+){0,2}|rolling)$/.test(host.release)) return false;
@@ -61,12 +63,39 @@ export function snapshotReadinessProfiles(values: readonly VerifiedReadinessProf
   const result: VerifiedReadinessProfile[] = [];
   for (const value of values) {
     if (!validProfile(value)) return Object.freeze([]);
-    const tuple = JSON.stringify([value.host.system, value.host.distribution, value.host.release, value.host.architecture, value.bun, value.cli.version, value.cli.commit, value.engine.version, value.engine.commit, value.engine.kernel, value.engine.platform, value.engine.cgroupDriver, value.engine.cgroupVersion, value.engine.operatingMode, securityOptions(value.engine.securityOptions)!.entries, value.containerd.version, value.containerd.commit, value.runc.version, value.runc.commit, value.compose, value.image]);
+    const tuple = JSON.stringify([value.host.system, value.host.distribution, value.host.release, value.host.architecture, value.bun, value.cli.version, value.cli.commit, value.engine.version, value.engine.commit, value.engine.kernel, value.engine.platform, value.engine.cgroupDriver, value.engine.cgroupVersion, value.engine.operatingMode, securityOptions(value.engine.securityOptions)!.entries, value.containerd.version, value.containerd.commit, value.runc.version, value.runc.commit, value.compose, value.image, value.admission ?? "exact"]);
     if (ids.has(value.id) || tuples.has(tuple)) return Object.freeze([]);
     ids.add(value.id); tuples.add(tuple);
     result.push(Object.freeze({ ...value, host: Object.freeze({ ...value.host }), cli: Object.freeze({ ...value.cli }), engine: Object.freeze({ ...value.engine, securityOptions: Object.freeze([...value.engine.securityOptions].sort()) }), containerd: Object.freeze({ ...value.containerd }), runc: Object.freeze({ ...value.runc }), evidence: Object.freeze({ ...value.evidence }) }));
   }
   return Object.freeze(result);
+}
+
+/** Numeric semantic-version floor; `minimum` profiles admit equal or newer, `exact` profiles admit equal only. */
+function versionAdmitted(profile: VerifiedReadinessProfile, observed: unknown, expected: string): boolean {
+  if (typeof observed !== "string") return false;
+  if (profile.admission !== "minimum") return observed === expected;
+  const parse = (value: string) => /^v?\d+\.\d+\.\d+$/.test(value) ? value.replace(/^v/, "").split(".").map(Number) : undefined;
+  const actual = parse(observed), floor = parse(expected);
+  if (!actual || !floor || observed.startsWith("v") !== expected.startsWith("v")) return false;
+  for (let index = 0; index < 3; index += 1) if (actual[index] !== floor[index]) return actual[index]! > floor[index]!;
+  return true;
+}
+/** A build commit identifies one exact build; minimum profiles compare versions instead. */
+function commitAdmitted(profile: VerifiedReadinessProfile, observed: unknown, expected: string): boolean { return profile.admission === "minimum" ? revision(observed) : observed === expected; }
+/** Kernels keep their exact flavor suffix (for example `-linuxkit`); only the numeric release may be newer. */
+function kernelAdmitted(profile: VerifiedReadinessProfile, observed: unknown): boolean {
+  if (profile.admission !== "minimum") return observed === profile.engine.kernel;
+  const split = (value: unknown) => typeof value === "string" ? /^(\d+\.\d+\.\d+)(.*)$/.exec(value) : null;
+  const actual = split(observed), floor = split(profile.engine.kernel);
+  return !!actual && !!floor && actual[2] === floor[2] && versionAdmitted(profile, actual[1], floor[1]!);
+}
+/** Platform names such as `Docker Desktop 4.96.1 (244132)` keep their product prefix; the version may be newer and the build number is free. */
+function platformAdmitted(profile: VerifiedReadinessProfile, observed: unknown): boolean {
+  if (profile.admission !== "minimum") return observed === profile.engine.platform;
+  const split = (value: unknown) => typeof value === "string" ? /^(.*?) (\d+\.\d+\.\d+)(?: \(\d+\))?$/.exec(value) : null;
+  const actual = split(observed), floor = split(profile.engine.platform);
+  return !!actual && !!floor && actual[1] === floor[1] && versionAdmitted(profile, actual[2], floor[2]!);
 }
 
 function nativeServerArchitecture(identity: HostIdentity): string { return identity.architecture === "x64" ? "amd64" : "arm64"; }
@@ -80,19 +109,19 @@ export function readinessCandidates(profiles: readonly VerifiedReadinessProfile[
   const security = securityOptions(info.SecurityOptions)!;
   const client = /^Docker version (\d+\.\d+\.\d+), build ([a-f0-9]{7,40})$/.exec(cli.trim());
   if (!client) return [];
-  return profiles.filter((profile) => profile.host.system === identity.system && profile.host.distribution === (identity.distribution ?? null) && profile.host.release === identity.release && profile.host.architecture === identity.architecture && profile.bun === bun && profile.cli.version === client[1] && profile.cli.commit === client[2] && profile.compose === compose.trim() && profile.image === image && profile.engine.version === info.ServerVersion && profile.engine.kernel === info.KernelVersion && profile.engine.cgroupVersion === info.CgroupVersion && profile.engine.cgroupDriver === info.CgroupDriver && profile.engine.operatingMode === security.operatingMode && JSON.stringify(profile.engine.securityOptions) === JSON.stringify(security.entries));
+  return profiles.filter((profile) => profile.host.system === identity.system && profile.host.distribution === (identity.distribution ?? null) && profile.host.release === identity.release && profile.host.architecture === identity.architecture && profile.bun === bun && versionAdmitted(profile, client[1], profile.cli.version) && commitAdmitted(profile, client[2], profile.cli.commit) && versionAdmitted(profile, compose.trim(), profile.compose) && profile.image === image && versionAdmitted(profile, info.ServerVersion, profile.engine.version) && kernelAdmitted(profile, info.KernelVersion) && profile.engine.cgroupVersion === info.CgroupVersion && profile.engine.cgroupDriver === info.CgroupDriver && profile.engine.operatingMode === security.operatingMode && JSON.stringify(profile.engine.securityOptions) === JSON.stringify(security.entries));
 }
 
-function component(server: RecordValue, name: string, expected: BuildIdentity): boolean {
+function component(profile: VerifiedReadinessProfile, server: RecordValue, name: string, expected: BuildIdentity): boolean {
   if (!Array.isArray(server.Components)) return false;
   const rows = server.Components.filter((row: unknown) => object(row) && row.Name === name);
   const row: unknown = rows[0];
-  return rows.length === 1 && object(row) && row.Version === expected.version && object(row.Details) && row.Details.GitCommit === expected.commit;
+  return rows.length === 1 && object(row) && versionAdmitted(profile, row.Version, expected.version) && object(row.Details) && commitAdmitted(profile, row.Details.GitCommit, expected.commit);
 }
 export function matchReadinessServer(profiles: readonly VerifiedReadinessProfile[], identity: HostIdentity, server: unknown): VerifiedReadinessProfile | undefined {
   if (!object(server) || server.Os !== "linux" || server.Arch !== nativeServerArchitecture(identity) || !object(server.Platform)) return undefined;
   const platform = server.Platform;
-  const matches = profiles.filter((profile) => server.Version === profile.engine.version && server.GitCommit === profile.engine.commit && server.KernelVersion === profile.engine.kernel && platform.Name === profile.engine.platform && component(server, "Engine", profile.engine) && component(server, "containerd", profile.containerd) && component(server, "runc", profile.runc));
+  const matches = profiles.filter((profile) => versionAdmitted(profile, server.Version, profile.engine.version) && commitAdmitted(profile, server.GitCommit, profile.engine.commit) && kernelAdmitted(profile, server.KernelVersion) && platformAdmitted(profile, platform.Name) && component(profile, server, "Engine", profile.engine) && component(profile, server, "containerd", profile.containerd) && component(profile, server, "runc", profile.runc));
   return matches.length === 1 ? matches[0] : undefined;
 }
 export function sameReadinessDaemon(before: unknown, after: unknown): boolean {

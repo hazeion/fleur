@@ -684,6 +684,7 @@ disposable PostgreSQL containers and real Chromium.
 | `tests/runtime/development-readiness.integration.test.ts` | 1 pass |
 | `tests/runtime/development-replacement-browser.test.ts` | 17 pass after the counter correction; each layout repeats twice internally |
 | Superseded-reload public case after the admission fix | pass (two separate runs: one diagnostic, one clean) |
+| `tests/runtime/development-lifecycle.integration.test.ts`, complete run after all corrections | 21 pass, 0 fail, 1,167 s; this is the second complete pass of the timing-sensitive public cases |
 | Save-during-retirement and invalid-source public cases | pass once each after the corrections |
 | Types, both lint engines | pass after every change above |
 | CLI lifecycle, readiness policy, Desktop profile and PostgreSQL files after the review corrections | 104 pass |

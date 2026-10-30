@@ -15,7 +15,7 @@ async function admittedHTML(rendered: PageResult): Promise<void> {
   } }).transform(new Response(rendered.html)).text();
 }
 
-/** Loopback fixture/application adapter; lifecycle commands are a later slice. */
+/** Loopback application adapter with a private framework-only liveness path. */
 export function serveReadApplication(app: ReadApplication, browser: BrowserBuild) {
   app.prepareWorkers();
   const project = new ReactiveProject({
@@ -38,9 +38,11 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
   // notification connection fails or a wakeup is dropped.
   const watching = app.watch(() => { void project.wake(); }).catch(() => undefined);
   let origin = "";
+  const healthPath = "/__fleur/health/"+randomBytes(32).toString("hex");
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 30, async fetch(request) {
     const url = new URL(request.url);
     if (url.origin !== origin) return new Response("Unrecognized origin", { status: 403 });
+    if (url.pathname === healthPath && request.method === "GET") return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
     if (url.pathname === "/__fleur/mutation") return mutationResponse(app, request, url);
     if (url.pathname === "/__fleur/view") return viewResponse(project, request, url);
     if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
@@ -73,7 +75,7 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
   origin = server.url.origin;
   const stop = server.stop.bind(server);
   server.stop = async (closeActiveConnections?: boolean) => { const closing = project.close(); await stop(closeActiveConnections); await closing; await (await watching)?.(); };
-  return server;
+  return Object.assign(server, { healthURL: new URL(healthPath, origin) });
 }
 
 async function readBody(request: Request): Promise<unknown> {

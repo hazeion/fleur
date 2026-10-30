@@ -120,19 +120,44 @@ export function clientCompatibility(project: AdmittedProject, runtime: string): 
       });
       return result;
     };
-    const dependent = new Set<string>(), dependents = new Map<string, Set<string>>();
+    const dependent = new Set<string>(), stateful = new Set<string>(), ownedState = new Set<string>(), dependents = new Map<string, Set<string>>();
     walk(program, item => {
-      if (item.type !== "VariableDeclarator") return;
-      const bindings = references(item.id), init = node(item.init);
+      if (!["VariableDeclarator", "FunctionDeclaration"].includes(String(item.type))) return;
+      const bindings = references(item.id), init = node(item.type === "FunctionDeclaration" ? item.body : item.init);
       if (kind(init?.callee) === "hook:useQuery") for (const binding of bindings) dependent.add(binding);
+      else if (kind(init?.callee)?.startsWith("hook:")) {
+        for (const binding of bindings) stateful.add(binding);
+        if (kind(init?.callee) !== "hook:useMutation") for (const binding of bindings) ownedState.add(binding);
+      }
       for (const reference of references(init)) {
         const found = dependents.get(reference) ?? new Set<string>();
         for (const binding of bindings) found.add(binding);
         dependents.set(reference, found);
       }
     });
-    const queue = [...dependent];
-    while (queue.length) for (const binding of dependents.get(queue.pop()!) ?? []) if (!dependent.has(binding)) { dependent.add(binding); queue.push(binding); }
+    for (const roots of [dependent, stateful, ownedState]) {
+      const queue = [...roots];
+      while (queue.length) for (const binding of dependents.get(queue.pop()!) ?? []) if (!roots.has(binding)) { roots.add(binding); queue.push(binding); }
+    }
+    const derived = (value: unknown) => [...references(value)].some(reference => dependent.has(reference));
+    walk(program, (item, _parent, _key, ancestors) => {
+      if (!ancestors.some(ancestor => components.has(ancestor))) return;
+      // Assignment can escape through members, aliases, destructuring or a
+      // closure. Without a state-migration proof, retain the whole generation.
+      if (["AssignmentExpression", "UpdateExpression", "ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement", "TryStatement"].includes(String(item.type)) || item.type === "UnaryExpression" && item.operator === "delete") uncertain = true;
+      if (item.type === "CallExpression" && kind(item.callee) !== "hook:useQuery") {
+        if (derived(item.arguments)) uncertain = true;
+        const callee = node(item.callee), calleeState = [...references(callee)].some(reference => ownedState.has(reference));
+        const owner = [...ancestors].reverse().find(isFunction);
+        if (calleeState && (callee?.type === "MemberExpression" || owner !== undefined && components.has(owner))) uncertain = true;
+        const touchesState = [...references([item.callee, item.arguments])].some(reference => stateful.has(reference));
+        const controlled = ancestors.some(ancestor => ["IfStatement", "ConditionalExpression", "SwitchCase", "WhileStatement", "DoWhileStatement", "ForStatement"].includes(String(ancestor.type)) && derived(ancestor.test) || ancestor.type === "LogicalExpression" && derived(ancestor.left) || ancestor.type === "SwitchStatement" && derived(ancestor.discriminant));
+        if (controlled && (touchesState || node(item.callee)?.type === "Identifier")) uncertain = true;
+      }
+      // Passing query values into another component can initialize its local
+      // state, even when this component only appears to read those values.
+      if (item.type === "JSXOpeningElement" && (node(item.name)?.type !== "JSXIdentifier" || /^[A-Z]/.test(name(item.name) ?? "")) && derived(item.attributes)) uncertain = true;
+    });
     let queryState = false;
     walk(program, item => {
       if (item.type === "CallExpression" && kind(item.callee)?.startsWith("hook:") && kind(item.callee) !== "hook:useQuery" && [...references(item.arguments)].some(reference => dependent.has(reference))) queryState = true;

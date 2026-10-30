@@ -85,8 +85,14 @@ The compatibility proof recognizes directly imported hooks in unconditional
 prefix statements of inline declared island components. It compares hook order,
 bindings, state/memo/ref initializers, effect configuration and props/declaration
 dependencies. Pure query results used through useQuery are invalidated before
-compatible code receives fresh values. Custom hooks, dynamic aliases, conditional
-layouts, classes and uncertain local call paths require explicit navigation after
+compatible code receives fresh values. Assignments, updates, loops and exception handling inside islands conservatively
+require navigation. Query-derived values passed into calls or child components,
+and query-controlled setters or opaque local calls, also require navigation.
+Alias, destructuring and getter-function dependencies are followed conservatively.
+Opaque member calls on hook-owned state and state writes during render also
+require navigation. Custom hooks,
+dynamic aliases, conditional hook layouts, classes and uncertain local call paths
+require explicit navigation after
 an application edit. Declaration/shared-schema changes may also conservatively
 require navigation. One uncertain module conservatively guards the whole browser
 graph, so some safe edits also require navigation. This analysis does not migrate state or prove arbitrary
@@ -130,6 +136,14 @@ require verified operator recovery; do not remove them to force a restart.
 Data and backup deletion require their own deliberate authority.
 
 ## Machine output and bounded logs
+
+An individual cancelled upload, failed response body or request deadline does not
+stop a healthy application. Forwarding never retries an uncertain mutation. A
+separate bounded probe of the private framework listener must confirm connection
+refusal before a forwarding error fails the whole instance. An inconclusive probe
+retains the prior lifecycle state and returns the individual failure truthfully.
+The private liveness path is not forwarded through the public gateway and is not
+a database/schema/readiness check.
 
 A failed dev may include diagnostic partial data containing state and startup
 initialization details; it still has `ok: false` and an error exit.

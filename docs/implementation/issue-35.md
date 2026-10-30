@@ -387,3 +387,109 @@ No Docker workload was launched during this quiet window. The final full root
 suite and PostgreSQL regressions remain unexecuted at this revision; the earlier
 complete-suite failure and subsequent focused results above retain their stated
 scope. The unrelated inherited clean-CI commit is not an ancestor of this branch.
+
+
+## Independent spec findings: acceptance before correction
+
+- Query-derived assignments through refs, aliases, destructuring, setters or
+  control flow must not be treated as a proven compatible state migration.
+  Admitted compiled browser versions must retain the previous generation, draft,
+  focus and unknown outcome, refuse obsolete operations, and recover through
+  explicit navigation. Existing compatible edits must remain automatic.
+  This browser seam catches actual hook state reuse and diagnostics; it does not
+  qualify public lifecycle startup, SQL outcomes or the current Docker profile.
+- A cancelled HTTP upload or a failed response body is an individual request
+  failure unless separate service-health evidence proves the application is gone.
+  Healthy siblings and status must remain usable. Confirmed service loss must
+  still close global creation/admission and require explicit restart. HTTP
+  operation tests isolate forwarding and health from Docker orchestration;
+  qualified CLI crash/publication proof remains a separate gate.
+
+
+## Spec finding corrections after the parent identity fix
+
+The parent commit `695e00b` is preserved. No Docker, PostgreSQL or native tests
+were run during this correction turn; the quiet window and profile gate remain
+unchanged.
+
+P1 red commands, before each corresponding correction, used pinned Bun 1.4.3:
+
+- `bun test tests/runtime/development-replacement-browser.test.ts --test-name-pattern 'layout (ref-|state-control)'`
+  failed all three new admitted compilation comparisons: direct ref assignment,
+  destructured aliases and a setter after control flow produced identical old/new
+  compatibility hashes despite changing query output from string to object.
+- `--test-name-pattern 'layout state-getter'` subsequently failed the same-hash
+  assertion for a getter function hiding query data from the setter. This exposed
+  a further alias edge before its correction.
+
+The analyzer now follows variable/destructuring and function-declaration
+relationships for query values and hook-owned state. Assignments, updates,
+loops, exception handling and opaque hook-state member calls conservatively
+retain the previous browser. Query-derived call arguments, child-component
+props and query-controlled setters or opaque calls also require navigation.
+These checks inspect admitted AST structure; a source digest is used for the
+uncertain fallback, never as proof that changed state shapes are compatible.
+The analysis over-approximates dependencies and can require navigation for safe
+edits. It does not migrate state or prove arbitrary JavaScript behavior.
+
+The expanded real-browser file covers nine layouts, each with two repetitions.
+It checks that a captured old string remains intact alongside the draft, original
+focused input, nested state and unknown mutation outcome; old operations receive
+SOURCE_CHANGED. Explicit navigation then loads the object-shaped value without
+errors or replay. The compatible edit still updates code, CSS and fresh query
+validation automatically. An intermediate expanded fixture omitted the snapshot
+label from its initial server HTML; its locator failures were corrected by
+matching that initial markup, without weakening any assertion.
+
+P2 first extracted the existing forwarding operation without changing its
+failure classification. Then:
+
+- `bun test tests/runtime/development-forwarding.test.ts` failed three cases
+  because raw TCP upload cancellation, a truncated upstream response body and a
+  request deadline all changed the owner observation to failed. The separately
+  closed real listener case passed, establishing the required crash behavior.
+
+Forwarding now propagates request cancellation and its deadline, returns a
+truthful individual failure and never retries a mutation. A separate one-second
+probe of the private framework listener must get connection refusal before the
+supervisor receives service-loss evidence. A timed-out or otherwise inconclusive
+probe cannot fail the global instance. The supervisor's existing generation-identity
+check, failed-state guard, admission closure and creation cancellation remain in
+the service-loss callback; stale callbacks cannot fail a replacement generation.
+The framework liveness path performs no application or database work and does
+not replace readiness. Only its exact random path is hidden by the gateway.
+A new route-preservation assertion caught an intermediate over-broad prefix
+block; it was red before that block was narrowed.
+
+The HTTP component fixture uses actual listeners, TCP cancellation, truncated
+bodies and timeouts. It covers healthy siblings during and after failure,
+read-only status observation, inconclusive health, confirmed listener loss,
+unknown mutation response loss with one submission, and private-path isolation.
+Each fault runs twice. It observes the real forwarding operation's service-loss
+callback; it does not prove the full CLI owner, candidate race or SQL commit
+outcome. Those qualified public cases remain pending.
+
+Results already observed during this correction turn:
+
+| Check | Result |
+| --- | --- |
+| Broad browser/admission/reactive/forwarding group | 97 passed, 538 assertions across 12 files, before the final getter case was added |
+| Browser and forwarding repeat | 14 passed, 178 assertions; each case also repeats internally, before the final getter and exact-path assertions |
+| Expanded browser file with getter | Nine passed, 109 assertions; final repetition recorded below |
+| Final HTTP forwarding file, two separate runs | Each passed six tests, 92 assertions; each fault repeats twice internally |
+| CLI lifecycle and project guidance | 41 passed, 450 assertions |
+| Types, lint, reference build | Passed after forwarding integration; final checks recorded below |
+| Generated-project verification, two separate runs | Both passed after generated guidance was updated |
+
+No historical component result is promoted to qualified public or release proof.
+The PostgreSQL component regressions, qualified public lifecycle matrix, final
+full root suite and independent rechecks remain pending parent coordination.
+
+
+Final correction checks passed: the complete nine-layout browser file passed
+again with 109 assertions, each layout repeated twice internally. Types, both
+lint engines and reference build passed on the completed implementation. The
+HTTP cases retained their two independent passing runs with 92 assertions each,
+in addition to their internal repetitions. No existing acceptance assertion,
+operation deadline, profile or CI gate was weakened. Full runtime/public proof
+remains blocked by the parent's quiet-window and admission coordination.

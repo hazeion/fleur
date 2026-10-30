@@ -20,7 +20,7 @@ import { serveReadApplication } from "../http";
 import { DevelopmentPostgres } from "./postgres";
 import { adoptLock, binding, lock, monotonicNanoseconds, readState, save, startIdentity, type State } from "./state";
 import { verifyDevelopmentReadiness } from "./readiness";
-import { browserVersionHeaders, refuseStaleBrowser } from "./browser-version";
+import { forwardDevelopmentRequest } from "./forwarding";
 import { DevelopmentAssets } from "./assets";
 import { publicState } from "./protocol";
 
@@ -288,32 +288,12 @@ export async function supervise(project: string, host: string, requestedPort: nu
       }
       active++;
       const target = generation, marker = `${state.instance}:${state.generation}`;
-      try {
-        const headers = new Headers(request.headers); headers.delete("host");
-        const origin = headers.get("origin");
-        if (origin && origin !== expected) return new Response(null, { status: 403 });
-        const stale = refuseStaleBrowser(request, { marker, browser: target.browser });
-        if (stale) return stale;
-        if (origin) headers.set("origin", target.server.url.origin);
-        const response = await fetch(new URL(incoming.pathname + incoming.search, target.server.url), { method: request.method, headers, body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body, signal: AbortSignal.timeout(30000) });
-        const output = new Headers(response.headers);
-        const csp = output.get("content-security-policy");
-        if (csp) {
-          let policy = csp.replaceAll(target.server.url.origin, expected);
-          // The stable development document must admit a later compiler-owned
-          // stylesheet. Application stylesheet injection remains prohibited.
-          if (target.browser.stylesheet) policy = policy.replace(new URL(target.browser.stylesheet, expected).href, new URL("/assets/", expected).href);
-          output.set("content-security-policy", policy);
-        }
-        for (const [name, value] of Object.entries(browserVersionHeaders({ marker, browser: target.browser }))) output.set(name, value);
-        const result = new Response(await response.arrayBuffer(), { status: response.status, headers: output });
-        return output.get("content-type")?.startsWith("text/html") ? new HTMLRewriter().on("head", { element(element) { element.append(`<meta name="fleur-development" content="${marker}"><meta name="fleur-client-compatibility" content="${target.browser.compatibility ?? ""}">`, { html: true }); } }).transform(result) : result;
-      } catch {
+      try { return await forwardDevelopmentRequest(request, expected, { url: target.server.url, healthURL: target.server.healthURL, browser: target.browser, marker }, async () => {
         if (!closed && generation === target) {
           state.state = "failed"; closed = true; creation.abort(); state.error = "INSTANCE_UNAVAILABLE";
           await log("INSTANCE_UNAVAILABLE", "Application transport failed. Inspect retained logs and explicitly stop before restarting.");
         }
-        return incoming.pathname === "/__fleur/mutation" ? Response.json({ status: "outcome-unknown" }, { status: 503 }) : Response.json({ error: { code: "INSTANCE_UNAVAILABLE" } }, { status: 503 }); }
+      }); }
       finally { active--; }
     };
     let port = requestedPort ?? 3000;

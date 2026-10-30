@@ -9,7 +9,7 @@ import { compileClient } from "../../src/runtime/build/client";
 import { ReactiveProject, type RefreshRequest } from "../../src/runtime/reactive-project";
 
 // Browser transport/component evidence only. No database or public dev gate is substituted.
-for (const layout of ["compatible", "incompatible", "uncertain", "dependent-state"] as const) test(`source replacement retains draft, focus and nested hooks; layout ${layout}`, async () => {
+for (const layout of ["compatible", "incompatible", "uncertain", "dependent-state", "ref-assignment", "ref-alias", "state-control", "state-control-alias", "state-getter"] as const) test(`source replacement retains draft, focus and nested hooks; layout ${layout}`, async () => {
   const incompatible = layout !== "compatible";
   const root = await mkdtemp(join(await realpath(tmpdir()), "fleur-browser-replacement-"));
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -17,20 +17,32 @@ for (const layout of ["compatible", "incompatible", "uncertain", "dependent-stat
   const projects: ReactiveProject[] = [];
   try {
     await mkdir(join(root, "client"));
-    let source = 'import { defineIsland, useQuery, useMutation } from "fleur/client"; import { schema, defineQuery, defineMutation } from "fleur/schema"; import { useState, useEffect } from "preact/hooks"; export const Child = defineIsland({ props: schema.object({}), component: () => { const [count,setCount] = useState(0); return <button onClick={() => setCount(value => value+1)}>Child {count}</button>; } }); export const touch = defineMutation({ name: "catalog.touch", input: schema.object({}), output: schema.object({}) }); export const summary = defineQuery({ name: "catalog.summary", input: schema.object({}), output: schema.string() }); export const Editor = defineIsland({ props: schema.object({ name: schema.string() }), component: ({name}) => { const query = useQuery(summary, {}); const mutation = useMutation(touch); const [draft,setDraft] = useState(name), [clicks,setClicks] = useState(0), [mounts,setMounts] = useState(0); useEffect(() => {setMounts(value => value+1);}, []); return <section><Child key="nested"/><label>Draft<input value={draft} onInput={event => setDraft(event.currentTarget.value)}/></label><button onClick={() => setClicks(value => value+1)}>Clicks {clicks}</button><p>Mounts {mounts}</p><button onClick={() => mutation.run({})}>Submit</button><p aria-label="Mutation">{mutation.status} {mutation.error?.code ?? ""}</p><p aria-label="Summary">{query.status === "success" ? query.data : query.status}</p></section>; } });';
+    let source = 'import { defineIsland, useQuery, useMutation } from "fleur/client"; import { schema, defineQuery, defineMutation } from "fleur/schema"; import { useState, useEffect, useRef } from "preact/hooks"; export const Child = defineIsland({ props: schema.object({}), component: () => { const [count,setCount] = useState(0); return <button onClick={() => setCount(value => value+1)}>Child {count}</button>; } }); export const touch = defineMutation({ name: "catalog.touch", input: schema.object({}), output: schema.object({}) }); export const summary = defineQuery({ name: "catalog.summary", input: schema.object({}), output: schema.string() }); export const Editor = defineIsland({ props: schema.object({ name: schema.string() }), component: ({name}) => { const query = useQuery(summary, {}); const mutation = useMutation(touch); const [draft,setDraft] = useState(name), [clicks,setClicks] = useState(0), [mounts,setMounts] = useState(0); useEffect(() => {setMounts(value => value+1);}, []); return <section><Child key="nested"/><label>Draft<input value={draft} onInput={event => setDraft(event.currentTarget.value)}/></label><button onClick={() => setClicks(value => value+1)}>Clicks {clicks}</button><p>Mounts {mounts}</p><button onClick={() => mutation.run({})}>Submit</button><p aria-label="Mutation">{mutation.status} {mutation.error?.code ?? ""}</p><p aria-label="Summary">{query.status === "success" ? query.data : query.status}</p></section>; } });';
     if (layout === "uncertain") source = source.replace("export const Editor =", "const useEditorDraft = (value: string) => useState(value); export const Editor =").replace("useState(name)", "useEditorDraft(name)");
     if (layout === "dependent-state") source = source.replace("useState(name)", "useState<unknown>(query.data ?? name)").replace("value={draft}", 'value={typeof draft === "string" ? draft : JSON.stringify(draft)}');
+    if (layout === "ref-assignment" || layout === "ref-alias") {
+      const capture = layout === "ref-assignment" ? 'if (query.status === "success" && snapshot.current === null) snapshot.current = query.data;' : 'const holder = snapshot; const {data: queryValue, status: queryStatus} = query; if (queryStatus === "success" && holder.current === null) { const storedQueryValue = queryValue; holder.current = storedQueryValue; }';
+      source = source.replace('return <section><Child', `const snapshot = useRef<unknown>(null); ${capture} return <section><p aria-label="Snapshot">{typeof snapshot.current === "string" ? snapshot.current : "Empty"}</p><Child`);
+    }
+    if (layout === "state-control") source = source.replace('return <section><Child', 'const [snapshot,setSnapshot] = useState("Empty"); const {status, data} = query; if (status === "success" && snapshot === "Empty") setSnapshot(data); return <section><p aria-label="Snapshot">{snapshot}</p><Child');
+    if (layout === "state-control-alias") source = source.replace('return <section><Child', 'const [snapshot,setSnapshot] = useState<unknown>(null); const storeSnapshot = setSnapshot; const querySuccessful = query.status === "success"; if (querySuccessful && snapshot === null) storeSnapshot("cached"); return <section><p aria-label="Snapshot">{typeof snapshot === "string" ? snapshot : "Empty"}</p><Child');
+    if (layout === "state-getter") source = source.replace('return <section><Child', 'const [snapshot,setSnapshot] = useState<unknown>(null); function currentData() { return query.data; } if (snapshot === null && currentData() !== undefined) setSnapshot(currentData()); return <section><p aria-label="Snapshot">{typeof snapshot === "string" ? snapshot : "Empty"}</p><Child');
     await writeFile(join(root, "client/Editor.tsx"), source);
     const first = await compileClient(await admitProject(root));
     let replacement = source;
     if (layout === "incompatible") replacement = replacement.replace("const [draft,setDraft]", 'const [introduced] = useState("Introduced"); const [draft,setDraft]').replace("return <section>", "return <section><p>{introduced}</p>");
+    if (layout === "ref-assignment" || layout === "ref-alias") replacement = replacement.replace('typeof snapshot.current === "string" ? snapshot.current : "Empty"', '(snapshot.current as {title: string} | null)?.title.toUpperCase() ?? "Empty"');
+    if (layout === "state-control") replacement = replacement.replace('useState("Empty")', 'useState<unknown>("Empty")').replace('{snapshot}</p>', '{typeof snapshot === "object" && snapshot ? (snapshot as {title:string}).title.toUpperCase() : "Empty"}</p>');
+    if (layout === "state-control-alias") replacement = replacement.replace('storeSnapshot("cached")', 'storeSnapshot({title:"cached"})').replace('typeof snapshot === "string" ? snapshot : "Empty"', 'typeof snapshot === "object" && snapshot ? (snapshot as {title:string}).title.toUpperCase() : "Empty"');
+    if (layout === "state-getter") replacement = replacement.replace('typeof snapshot === "string" ? snapshot : "Empty"', 'typeof snapshot === "object" && snapshot ? (snapshot as {title:string}).title.toUpperCase() : "Empty"');
     await writeFile(join(root, "client/Editor.tsx"), replacement.replace("Clicks {clicks}", "Taps {clicks}").replaceAll("<button onClick", '<button class="italic" onClick').replace("output: schema.string()", "output: schema.object({ title: schema.string() })").replace("? query.data :", "? query.data.title.toUpperCase() :"));
     const second = await compileClient(await admitProject(root));
+    if (["ref-assignment", "ref-alias", "state-control", "state-control-alias", "state-getter"].includes(layout)) expect(second.compatibility).not.toBe(first.compatibility);
     const files = new Map([...first.files, ...second.files]);
     let generation = 1, opened = 0, documents = 0, submitted = 0;
     const makeProject = () => {
       const project = new ReactiveProject({ revision: async () => ({ epoch: "00000000-0000-4000-8000-000000000000", revision: "0" }), validate: (_name, input) => input, query: async () => generation === 1 ? "Original summary" : { title: "Replacement summary" },
-        render: async () => ({ html: `<h1>Generation ${generation}</h1><div data-fleur-island="island-0" data-fleur-identity="editor"><section><button>Child 0</button><label>Draft<input value="Stored"></label><button>${generation === 1 ? "Clicks" : "Taps"} 0</button><p>Mounts 0</p></section></div>`, islands: [{ key: "island-0", id: "client/Editor.tsx#Editor", props: { name: "Stored" } }], regions: [] }) });
+        render: async () => ({ html: `<h1>Generation ${generation}</h1><div data-fleur-island="island-0" data-fleur-identity="editor"><section>${["ref-assignment", "ref-alias", "state-control", "state-control-alias", "state-getter"].includes(layout) ? '<p aria-label="Snapshot">Empty</p>' : ""}<button>Child 0</button><label>Draft<input value="Stored"></label><button>${generation === 1 ? "Clicks" : "Taps"} 0</button><p>Mounts 0</p></section></div>`, islands: [{ key: "island-0", id: "client/Editor.tsx#Editor", props: { name: "Stored" } }], regions: [] }) });
       projects.push(project); return project;
     };
     let project = makeProject();
@@ -61,6 +73,8 @@ for (const layout of ["compatible", "incompatible", "uncertain", "dependent-stat
       await page.goto(server.url.href);
       await browserExpect(page.getByText("Mounts 1", { exact: true })).toBeVisible();
       await browserExpect(page.getByLabel("Summary")).toHaveText("Original summary");
+      if (["ref-assignment", "ref-alias", "state-control", "state-getter"].includes(layout)) await browserExpect(page.getByLabel("Snapshot")).toHaveText("Original summary");
+      if (layout === "state-control-alias") await browserExpect(page.getByLabel("Snapshot")).toHaveText("cached");
       if (incompatible) {
         await page.route("**/__fleur/mutation", async route => { await route.fetch(); await route.abort("failed"); });
         await page.getByRole("button", { name: "Submit", exact: true }).click();
@@ -76,6 +90,8 @@ for (const layout of ["compatible", "incompatible", "uncertain", "dependent-stat
       generation = 2; await project.close(); project = makeProject();
       if (incompatible) {
         await browserExpect(page.getByRole("status")).toContainText("Navigate or reload explicitly", { timeout: 15000 });
+        if (["ref-assignment", "ref-alias", "state-control", "state-getter"].includes(layout)) await browserExpect(page.getByLabel("Snapshot")).toHaveText("Original summary");
+        if (layout === "state-control-alias") await browserExpect(page.getByLabel("Snapshot")).toHaveText("cached");
         await browserExpect(draft).toHaveValue("Unsaved draft"); await browserExpect(draft).toBeFocused();
         await browserExpect(page.getByRole("button", { name: "Child 2" })).toBeVisible();
         await browserExpect(page.getByRole("button", { name: "Clicks 1" })).toBeVisible();
@@ -89,6 +105,8 @@ for (const layout of ["compatible", "incompatible", "uncertain", "dependent-stat
         await browserExpect(page.getByRole("heading", { name: "Generation 2" })).toBeVisible();
         await browserExpect(page.getByRole("textbox", { name: "Draft" })).toHaveValue("Stored");
         await browserExpect(page.getByRole("button", { name: "Taps 0" })).toBeVisible();
+        if (["ref-assignment", "ref-alias", "state-control", "state-getter"].includes(layout)) await browserExpect(page.getByLabel("Snapshot")).toHaveText("REPLACEMENT SUMMARY");
+        if (layout === "state-control-alias") await browserExpect(page.getByLabel("Snapshot")).toHaveText("CACHED");
         expect(submitted).toBe(beforeSubmitted); expect(errors).toEqual([]);
         await page.close(); continue;
       }

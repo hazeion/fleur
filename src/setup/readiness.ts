@@ -15,7 +15,7 @@ export interface VerifiedReadinessProfile {
   readonly compose: string;
   readonly image: string;
   readonly evidence: { readonly readinessSha256: string; readonly isolationSha256: string };
-  /** `minimum` admits the measured tuple or newer Docker component versions with the same isolation options; `exact` (default) admits one build. */
+  /** `minimum` admits the measured tuple or newer Docker component versions with the same isolation options (decision #118); `exact` (default) admits one build. */
   readonly admission?: "exact" | "minimum";
 }
 
@@ -41,7 +41,8 @@ function securityOptions(value: unknown): { readonly operatingMode: "rootful" | 
   return { operatingMode: names.has("rootless") ? "rootless" : "rootful", entries: [...value].sort() };
 }
 function validProfile(value: unknown): value is VerifiedReadinessProfile {
-  if (!shape(value, ["id", "host", "bun", "cli", "engine", "containerd", "runc", "compose", "image", "evidence"]) && !(shape(value, ["id", "host", "bun", "cli", "engine", "containerd", "runc", "compose", "image", "evidence", "admission"]) && (value.admission === "exact" || value.admission === "minimum"))) return false;
+  const required = ["id", "host", "bun", "cli", "engine", "containerd", "runc", "compose", "image", "evidence"];
+  if (!shape(value, required) && !(shape(value, [...required, "admission"]) && (value.admission === "exact" || value.admission === "minimum"))) return false;
   const host = value.host;
   if (typeof value.id !== "string" || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(value.id) || !shape(host, ["system", "distribution", "release", "architecture"])) return false;
   if ((host.system !== "darwin" && host.system !== "linux") || (host.architecture !== "x64" && host.architecture !== "arm64") || typeof host.release !== "string" || !/^(?:\d+(?:\.\d+){0,2}|rolling)$/.test(host.release)) return false;

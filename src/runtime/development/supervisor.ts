@@ -116,9 +116,12 @@ export async function supervise(project: string, host: string, requestedPort: nu
     }
   };
   let finishing: Promise<void> | undefined;
-  const stop = () => stopping ??= (async () => {
+  // An explicit stop bounds drain and retirement by the caller's deadline, never
+  // beyond the documented 30-second bound, so the caller's report and the
+  // supervisor's outcome agree. Terminal close uses the full bound.
+  const stop = (requestedMs = 30000) => stopping ??= (async () => {
     closed = true; creation.abort(); clearInterval(watching); replacing = true;
-    const deadline = performance.now() + 30000;
+    const deadline = performance.now() + Math.max(1, Math.min(30000, requestedMs));
     state.state = "maintenance"; state.error = null; await persist();
     const finish = finishing ??= (async () => {
       await pending?.catch(() => {});
@@ -152,7 +155,10 @@ export async function supervise(project: string, host: string, requestedPort: nu
   const controller = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 40, async fetch(request) {
     if (request.method !== "POST" || request.headers.get("authorization") !== `Bearer ${state.token}` || request.headers.get("x-fleur-instance") !== state.instance) return new Response(null, { status: 403 });
     const path = new URL(request.url).pathname;
-    if (path === "/stop") return Response.json(await stop());
+    if (path === "/stop") {
+      const requested = Number(request.headers.get("x-fleur-timeout-ms"));
+      return Response.json(await stop(Number.isFinite(requested) && requested > 0 ? requested : 30000));
+    }
     if (path !== "/status") return new Response(null, { status: 404 });
     let health: Awaited<ReturnType<typeof databaseHealth>> | null = null;
     if (database && state.state !== "starting" && !closed) {
@@ -288,7 +294,7 @@ export async function supervise(project: string, host: string, requestedPort: nu
       const asset = generation?.browser.files.get(incoming.pathname) ?? assets.get(incoming.pathname);
       if (!closed && asset && ["GET", "HEAD"].includes(request.method)) return new Response(request.method === "HEAD" ? null : typeof asset.body === "string" ? asset.body : new Uint8Array(asset.body).buffer, { headers: { "Content-Type": asset.type, "X-Content-Type-Options": "nosniff", "Cache-Control": asset.cache ?? "public, max-age=31536000, immutable" } });
       if (closed || replacing || !generation || state.state === "failed") {
-        const code = closed ? "REQUEST_DENIED" : "MAINTENANCE_BUSY";
+        const code = closed ? "REQUEST_DENIED" : state.state === "failed" ? "INSTANCE_UNAVAILABLE" : "MAINTENANCE_BUSY";
         return incoming.pathname === "/__fleur/mutation" ? Response.json({ status: "failure", error: { code } }, { status: 503 }) : Response.json({ error: { code } }, { status: 503 });
       }
       active++;

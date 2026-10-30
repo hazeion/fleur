@@ -21,7 +21,7 @@ export function logs(state: State, limit: number, cursor?: string) {
 }
 export async function control(bound: Binding, state: State, action: "status" | "stop", timeoutMs: number) {
   if (state.binding !== bound.id || await startIdentity(state.pid) !== state.start) throw new Error("INSTANCE_UNAVAILABLE");
-  const response = await fetch(`http://127.0.0.1:${state.control}/${action}`, { method: "POST", headers: { authorization: `Bearer ${state.token}`, "x-fleur-instance": state.instance, "x-fleur-timeout-ms": String(timeoutMs) }, signal: AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs + (action === "status" ? 500 : 0)))) });
+  const response = await fetch(`http://127.0.0.1:${state.control}/${action}`, { method: "POST", headers: { authorization: `Bearer ${state.token}`, "x-fleur-instance": state.instance, "x-fleur-timeout-ms": String(timeoutMs) }, signal: AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs + (action === "status" ? 500 : 1000)))) });
   if (!response.ok) throw new Error("INSTANCE_UNAVAILABLE");
   const value: unknown = await response.json();
   if (!value || typeof value !== "object" || !("instance" in value) || value.instance !== state.instance) throw new Error("INSTANCE_UNAVAILABLE");

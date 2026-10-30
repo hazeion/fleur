@@ -95,7 +95,7 @@ export const verifiedReadinessProfiles = [{
   },
 }, {
   id: "darwin-15.7.7-x64-desktop-4.96.1",
-  // Human decision 2026-10-30: the measured 4.96.1 tuple is a floor. Newer Docker Desktop, Engine/CLI, Compose,
+  // Human decision 2026-10-30 (hazeion/fleur#118): the measured 4.96.1 tuple is a floor. Newer Docker Desktop, Engine/CLI, Compose,
   // containerd, runc and linuxkit kernel releases with the same isolation options are admitted without re-qualification.
   admission: "minimum",
   host: { system: "darwin", distribution: null, release: "15.7.7", architecture: "x64" },

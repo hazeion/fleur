@@ -12,7 +12,7 @@ import { save, type Binding } from "./state";
 const image = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336";
 export const databaseLabel = "dev.fleur.development-binding";
 const schema = z.strictObject({ formatVersion: z.literal(1), binding: z.string(), endpoint: z.string(), container: z.string().regex(/^[a-f0-9]{64}$/).nullable(), password: z.string().uuid(), volume: z.string(), stage: z.enum(["creating", "owned"]), cluster: z.string().nullable() });
-type Record = z.infer<typeof schema>;
+type PostgresRecord = z.infer<typeof schema>;
 /** Private handoffs and generated tools never follow or overwrite foreign files. */
 async function verifyPrivateFile(path: string, contents: string, mode: number) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -39,8 +39,8 @@ async function publishPrivateFile(path: string, contents: string, mode: number):
 }
 export class DevelopmentPostgres {
   readonly #bound: Binding;
-  readonly #record: Record;
-  private constructor(bound: Binding, record: Record) { this.#bound = bound; this.#record = record; }
+  readonly #record: PostgresRecord;
+  private constructor(bound: Binding, record: PostgresRecord) { this.#bound = bound; this.#record = record; }
   #command(args: string[], timeout = 5000) { return nativeCommand(["docker", "--host", this.#record.endpoint, ...args], timeout); }
   static async read(bound: Binding): Promise<DevelopmentPostgres | null> {
     try {

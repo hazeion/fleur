@@ -35,8 +35,10 @@ restarts it. There is no separate restart command.
 Fleur binds storage to repository project metadata and the machine-local
 checkout's canonical filesystem identity. New projects contain a portable
 `projectId` in `fleur.json`. Local paths, resource identities, ports, credentials,
-logs and ownership journals stay in private machine state. A copied checkout,
-including ignored files, gets a new storage binding and copies no database data.
+logs and ownership journals stay in private machine state. A copied or moved checkout,
+including ignored files, gets a new storage binding and copies no database data;
+the previous binding's volume and backups remain until they are stopped and
+removed explicitly. There is no adoption command in this release.
 Foreign containers and volumes are never silently adopted.
 
 Application binding defaults to `127.0.0.1`. Automatic ports start at 3000; the
@@ -119,6 +121,10 @@ existing state-verifying operations; never delete a maintenance marker.
 ## Stop, failure and recovery
 
 Replacement and stop close new admission and drain within a 30-second bound.
+An explicit `stop --timeout` below 30 seconds bounds the drain and retirement
+to that value, so the command's report and the supervisor's outcome agree.
+While admission is closed, requests receive `MAINTENANCE_BUSY`; a failed
+instance answers `INSTANCE_UNAVAILABLE` until it is explicitly stopped.
 A response lost after submission remains outcome-unknown. Inspect stored data
 before deciding what to do; neither recovery nor reload replays the mutation.
 Stop refuses held or queued database maintenance instead of interrupting it.

@@ -140,7 +140,7 @@ test("an abruptly killed real foreground PTY session stops only its owned instan
   } finally { await cleanup(root, cli); }
 }, 180_000);
 
-test("invalid source preserves the usable app and corrected server and island source reaches an open browser", async () => {
+test("invalid source preserves the usable app; corrected source retains the open browser's draft and loads on explicit navigation", async () => {
   const { root, project, cli } = await fixture(true);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {

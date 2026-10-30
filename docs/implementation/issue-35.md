@@ -688,6 +688,8 @@ disposable PostgreSQL containers and real Chromium.
 | Save-during-retirement and invalid-source public cases | pass once each after the corrections |
 | Types, both lint engines | pass after every change above |
 | CLI lifecycle, readiness policy, Desktop profile and PostgreSQL files after the review corrections | 104 pass |
+| Complete root `bun run test` on the final candidate (both Bun halves concurrent, then Python) | CLI/CI 1,413 pass, 3 fail across 1,416 tests (1,658 s); runtime 450 pass, 1 fail across 451 tests (3,476 s); all five Python suites pass (59 tests). Load averages were 8 to 12 during the run. |
+| The four full-run failures rerun alone, unchanged assertions and deadlines | `tests/cli/fresh-linux-enrollment.test.ts` cases (killed by their own timeouts in the full run, exit 143 and empty JSON): 6 pass; `tests/runtime/execution-deadline.integration.test.ts` (unverified slot retirement under load): 14 pass, 219 s. The full-run failures remain recorded; the enrollment file is untouched by this branch, the execution close routine was rewritten here. |
 
 Independent standards and specification reviews ran on the committed branch.
 They confirmed the floor comparison and the test corrections, required the

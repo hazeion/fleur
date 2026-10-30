@@ -607,3 +607,100 @@ No Docker, PostgreSQL or native test was run during this correction. The held
 quiet window, public profile admission, pending PostgreSQL regressions, qualified
 public lifecycle/browser proof, full suite and fresh independent review remain
 external or later gates. No PR, push, merge or issue closure was performed.
+
+
+## Admitted-runtime continuation (2026-10-30)
+
+Baseline for this continuation is `6bf0ecd`. The repository owner decided that
+Fleur must not lock readiness to one exact Docker Desktop build; the decision
+is recorded in [#118](https://github.com/hazeion/fleur/issues/118). The Intel
+macOS profile is now a minimum-version floor, `fleur doctor` verifies this
+machine's Docker Desktop 4.97.0 runtime (exit 0, about four seconds), and the
+public lifecycle cases that the gate previously refused were executed for the
+first time. The separate Desktop 4.97 qualification tooling branch was not
+merged and is not needed.
+
+The earlier "preflight stall" was a five-second deadline on pinned-image
+inspection inside that abandoned qualification harness only. It never
+reproduced in Fleur's own Doctor or lifecycle paths; standalone Docker control
+commands here take about 0.15 seconds, and removing a disposable 1.2 GB image
+did not slow a concurrent inspect. Its cause remains unproven and is not a
+lifecycle limitation.
+
+### Defects found by the first admitted-runtime runs
+
+- **Gateway admission reopened late** (`src/runtime/development/supervisor.ts`).
+  `publish` cleared `replacing` only in its `finally`, after logging and
+  disposing the previous generation's images, while status already reported
+  the new generation ready. The first request after a reload could receive
+  `MAINTENANCE_BUSY` for about a second. Observed red: the superseded-reload
+  and save-during-retirement public cases failed with that body immediately
+  after `status` showed `generation: 2`; a diagnostic rerun recovered on the
+  third fetch. Admission now reopens at the pointer swap and after a
+  successful restore. Both cases pass afterwards.
+- **Stop bound disagreement.** The CLI bounded `stop` by `min(--timeout, 30 s)`
+  while the supervisor always drained for its own 30 seconds, so a slow but
+  successful stop could be reported as `RECOVERY_REQUIRED`. The supervisor now
+  bounds an explicit stop by the requested deadline, never beyond 30 seconds,
+  and the control client allows the response one second of slack.
+- **Failed-instance gateway code.** A health-derived failed instance answered
+  `MAINTENANCE_BUSY`; it now answers `INSTANCE_UNAVAILABLE`.
+- **Test observation errors, not behavior.** The PostgreSQL credential shim
+  matched `docker volume create` as a container create, and the browser
+  replacement counter counted this machine's local port probe (`GET /`,
+  user agent `node`, `sec-fetch-mode: cors`) as a document reload. Both now
+  observe only what they claim: container `create` arguments, and requests
+  with `sec-fetch-dest: document`.
+
+### Public reload expectation corrected
+
+The public invalid-source case expected the open browser to show the corrected
+heading automatically. The fixture island awaits a mutation result inside its
+save handler, which is outside the bounded automatic-replacement proof that the
+parent orchestrator chose. The browser correctly retained the last valid view,
+draft and focus and displayed the navigate-or-reload diagnostic. The case now
+asserts that contract: status reaches generation 2 with no error, the retained
+view keeps its draft, focus, click count and mount count, `logs` records
+`CLIENT_NAVIGATION_REQUIRED`, the original entry module stays available, and an
+explicit reload shows the corrected server and island source. Automatic
+replacement of compatible edits remains proven at the component seam by the
+17-layout real-browser file; there is no public `fleur dev` case for it.
+
+### Results actually observed on the admitted runtime
+
+Pinned Bun 1.4.3, native Intel macOS 15.7.7, Docker Desktop 4.97.0, real
+disposable PostgreSQL containers and real Chromium.
+
+| Check | Result |
+| --- | --- |
+| `bun test tests/cli/setup-readiness-policy.test.ts` and Desktop profile files | 90 pass after the floor change; newer Desktop/Engine/Compose/containerd/runc/kernel admit, older refuse, kernel flavor and security drift refuse |
+| `bun bin/fleur.ts doctor --json` on this machine | `release.state: verified`, exit 0 |
+| `bun test tests/cli/lifecycle.test.ts` | 11 pass, 102 assertions |
+| Forwarding, assets, reactive-lifetime component files | 12 pass |
+| `tests/runtime/development-lifecycle.integration.test.ts`, first complete run | 18 pass, 3 fail (the two gateway-admission cases and the public reload expectation above), 1,226 s |
+| `tests/runtime/development-postgres.integration.test.ts` | 3 pass after the shim correction, including both credential-handoff repeats |
+| `tests/runtime/development-readiness.integration.test.ts` | 1 pass |
+| `tests/runtime/development-replacement-browser.test.ts` | 17 pass after the counter correction; each layout repeats twice internally |
+| Superseded-reload public case after the admission fix | pass (two separate runs: one diagnostic, one clean) |
+| Save-during-retirement and invalid-source public cases | pass once each after the corrections |
+| Types, both lint engines | pass after every change above |
+| CLI lifecycle, readiness policy, Desktop profile and PostgreSQL files after the review corrections | 104 pass |
+
+Independent standards and specification reviews ran on the committed branch.
+They confirmed the floor comparison and the test corrections, required the
+decision link (#118), and found the stop-bound and failed-instance code issues
+corrected above. Remaining review notes are recorded as limitations below.
+
+### Remaining limitations and follow-ups
+
+- No public `fleur dev` case drives a slow in-flight request through stop or
+  replacement to observe the 30-second drain and an unknown outcome end to
+  end; forwarding and retained-execution component files cover unknown
+  outcomes and bounded close.
+- A moved checkout receives a new binding like a copy; there is no adoption
+  command. The previous binding's data remains until explicit cleanup.
+- The automatic browser replacement proof, the immutable asset cache and the
+  additional error codes exceed the minimum #35 wording; they are documented in
+  development and CLI docs.
+- Linux readiness profiles remain exact; extending the floor policy to them is
+  a separate decision.

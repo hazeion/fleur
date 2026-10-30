@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ownedPostgres } from "./owned-postgres";
 import { MaintenanceLease } from "../../src/runtime/database/maintenance";
+import { startIdentity } from "../../src/runtime/development/state";
 import { chromium, expect as browserExpect } from "@playwright/test";
 import { mkdtemp, realpath, rm, writeFile, readdir, readFile, cp } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -437,7 +438,12 @@ for (const victim of ["supervisor", "database"] as const) test(`a ${victim} cras
     const started = await cli("dev", "--background"); expect(started.exit, started.stdout).toBe(0);
     const database = await privateDatabase(root), record = JSON.parse(await readFile(join(database.state, "instance.json"), "utf8"));
     expect(record.instance).toBe(started.result.data.instance);
-    if (victim === "supervisor") process.kill(record.pid, "SIGKILL");
+    if (victim === "supervisor") {
+      const identity = await startIdentity(record.pid);
+      expect(identity).not.toBeNull();
+      expect(identity).toBe(record.start);
+      process.kill(record.pid, "SIGKILL");
+    }
     else {
       const file = join(project, "server/home.tsx");
       await writeFile(file, (await readFile(file, "utf8")).replace("Local catalog", "Candidate after crash"));

@@ -290,8 +290,9 @@ total. A final full runtime/Python gate remains required.
 
 The observed hook-order experiment inserted a state hook before a mounted
 island's existing hooks. Its stable export and key did not prevent Preact from
-assigning old state slots to different hooks and corrupting the draft. The user
-resolved recovery conservatively: incompatible or uncertain hook layouts retain
+assigning old state slots to different hooks and corrupting the draft. The parent
+orchestrator chose conservative recovery within the existing draft-preservation
+requirements: incompatible or uncertain hook layouts retain
 the previous browser generation until explicit navigation. No specification
 amendment or automatic draft reset was introduced.
 

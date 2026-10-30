@@ -17,9 +17,13 @@ ROOT=Path('/controller')
 UUID=r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
 OWNER='dev.fleur.desktop-runtime-owner'
 ROLE='dev.fleur.desktop-runtime-role'
+# Measurement candidates only; never readiness admission. Selected by bound ID.
+DESKTOP_CANDIDATES={'desktop-4.96.1-244132':'Docker Desktop 4.96.1 (244132)',
+                    'desktop-4.97.0-244584':'Docker Desktop 4.97.0 (244584)'}
 
 def valid_binding(value):
-    if type(value) is not dict or set(value)!={'nonce','bootId','daemonId','kernel','sourceCommit','sources','guardianId','preparedImage'}:return False
+    if type(value) is not dict or set(value)!={'candidate','nonce','bootId','daemonId','kernel','sourceCommit','sources','guardianId','preparedImage'}:return False
+    if type(value['candidate']) is not str or value['candidate'] not in DESKTOP_CANDIDATES:return False
     if any(type(value[key]) is not str for key in ('nonce','bootId','daemonId','kernel','sourceCommit')):return False
     if not re.fullmatch(UUID,value['nonce']) or not re.fullmatch(UUID,value['bootId']):return False
     if value['kernel']!='7.0.14-linuxkit' or not re.fullmatch(r'[a-f0-9]{40}',value['sourceCommit']):return False
@@ -115,6 +119,7 @@ def main():
         if len(raw.encode())>65536:raise RuntimeError('BINDING_BOUND')
         binding=json.loads(raw)
         if not valid_binding(binding):raise RuntimeError('BINDING_INVALID')
+        outcome['candidate']=binding['candidate']
         guardian=mode=='--guardian'
         if guardian!=(binding['guardianId'] is None) or (guardian and binding['preparedImage'] is not None):raise RuntimeError('ROLE_BINDING_INVALID')
         if platform.system()!='Linux' or platform.machine()!='x86_64' or os.geteuid()!=0 or platform.release()!=binding['kernel']:raise RuntimeError('NATIVE_LINUX_MANAGER_REQUIRED')
@@ -141,7 +146,7 @@ def main():
             time.sleep(900)
             return 0
         server=json.loads(command(['docker','version','--format','{{json .Server}}']))
-        if (server.get('Platform',{}).get('Name'),server.get('Version'),server.get('GitCommit'),server.get('KernelVersion'),server.get('Arch'))!=('Docker Desktop 4.96.1 (244132)','29.9.2','0367cbe',binding['kernel'],'amd64'):raise RuntimeError('DESKTOP_TUPLE_CHANGED')
+        if (server.get('Platform',{}).get('Name'),server.get('Version'),server.get('GitCommit'),server.get('KernelVersion'),server.get('Arch'))!=(DESKTOP_CANDIDATES[binding['candidate']],'29.9.2','0367cbe',binding['kernel'],'amd64'):raise RuntimeError('DESKTOP_TUPLE_CHANGED')
         if json.loads(command(['docker','info','--format','{{json .ID}}']))!=binding['daemonId']:raise RuntimeError('DAEMON_IDENTITY_CHANGED')
         guard=json.loads(command(['docker','inspect',binding['guardianId'],'--format','{{json .}}']))
         own=json.loads(command(['docker','inspect',manager_id,'--format','{{json .}}']))

@@ -11,9 +11,10 @@ spec=importlib.util.spec_from_file_location('review_root_callsite_entry',Path(__
 entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
 
 class RootLaunchCallsite(unittest.TestCase):
-    def execute(self,fault=None):
+    def execute(self,fault=None,*,binding_override=None,server_override=None,mode="--capabilities"):
         cid='a'*64;guardian='d'*64;events=[];frames=[]
-        binding={'nonce':'a1234567-1234-4234-8234-123456789abc','bootId':'b1234567-1234-4234-8234-123456789abc','daemonId':'actual-daemon','kernel':'7.0.14-linuxkit','sourceCommit':'b'*40,'sources':{'entry.py':hashlib.sha256(b'source').hexdigest()},'guardianId':guardian,'preparedImage':None}
+        binding={'candidate':'desktop-4.96.1-244132','nonce':'a1234567-1234-4234-8234-123456789abc','bootId':'b1234567-1234-4234-8234-123456789abc','daemonId':'actual-daemon','kernel':'7.0.14-linuxkit','sourceCommit':'b'*40,'sources':{'entry.py':hashlib.sha256(b'source').hexdigest()},'guardianId':guardian,'preparedImage':None}
+        if binding_override is not None:binding=json.loads(json.dumps(binding_override))
         class FakePath:
             def __init__(self,value):self.value=str(value)
             def __truediv__(self,value):return FakePath(self.value+'/'+value)
@@ -28,6 +29,7 @@ class RootLaunchCallsite(unittest.TestCase):
             events.append(('command',args))
             if args[:2]==['docker','version']:
                 body={'Platform':{'Name':'Docker Desktop 4.96.1 (244132)'},'Version':'29.9.2','GitCommit':'0367cbe','KernelVersion':binding['kernel'],'Arch':'amd64'}
+                if server_override is not None:body=server_override
             elif args[:2]==['docker','info']:body='foreign' if fault=='daemon' else binding['daemonId']
             elif args[:3]==['docker','inspect',guardian]:
                 body={'Id':guardian,'Image':'fixed-image','Mounts':[],'Config':{'Labels':{entry.OWNER:binding['nonce'],entry.ROLE:'foreign' if fault=='guardian' else 'guardian'}},'State':{'Running':True}}
@@ -39,7 +41,7 @@ class RootLaunchCallsite(unittest.TestCase):
             raise RuntimeError('ROOT_LAUNCH_UNCONFIRMED')
         fake_module=SimpleNamespace(bounded=bounded)
         fake_spec=SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module:None))
-        with patch.object(entry,'Path',FakePath),patch.object(entry,'ROOT',FakePath('/controller')),patch.object(entry.platform,'system',return_value='Linux'),patch.object(entry.platform,'machine',return_value='x86_64'),patch.object(entry.platform,'release',return_value=binding['kernel']),patch.object(entry.os,'geteuid',return_value=0),patch.object(entry.os,'readlink',return_value='pid:[fixed]'),patch.dict(entry.os.environ,{'FLEUR_DESKTOP_BINDING':json.dumps(binding)}),patch.object(entry.sys,'argv',['entry.py','--capabilities']),patch.object(entry.importlib.util,'spec_from_file_location',return_value=fake_spec),patch.object(entry.importlib.util,'module_from_spec',return_value=fake_module),patch.object(entry,'emit',side_effect=frames.append),patch.object(entry,'acknowledge',return_value=None),patch.object(entry,'root_launch',side_effect=root_launch):
+        with patch.object(entry,'Path',FakePath),patch.object(entry,'ROOT',FakePath('/controller')),patch.object(entry.platform,'system',return_value='Linux'),patch.object(entry.platform,'machine',return_value='x86_64'),patch.object(entry.platform,'release',return_value=binding['kernel']),patch.object(entry.os,'geteuid',return_value=0),patch.object(entry.os,'readlink',return_value='pid:[fixed]'),patch.dict(entry.os.environ,{'FLEUR_DESKTOP_BINDING':json.dumps(binding)}),patch.object(entry.sys,'argv',['entry.py',mode]),patch.object(entry.importlib.util,'spec_from_file_location',return_value=fake_spec),patch.object(entry.importlib.util,'module_from_spec',return_value=fake_module),patch.object(entry,'emit',side_effect=frames.append),patch.object(entry,'acknowledge',return_value=None),patch.object(entry,'root_launch',side_effect=root_launch),patch.object(entry.time,'sleep',side_effect=lambda seconds:events.append(('guardian-sleep',seconds))):
             code=entry.main()
         return code,events,frames
 

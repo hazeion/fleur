@@ -8,7 +8,7 @@ spec.loader.exec_module(entry)
 
 class BindingTests(unittest.TestCase):
     def good(self):
-        return {'nonce':'a1234567-1234-4234-8234-123456789abc', 'bootId':'b1234567-1234-4234-8234-123456789abc',
+        return {'candidate':'desktop-4.96.1-244132','nonce':'a1234567-1234-4234-8234-123456789abc', 'bootId':'b1234567-1234-4234-8234-123456789abc',
                 'daemonId':'abcd:efgh', 'kernel':'7.0.14-linuxkit', 'sourceCommit':'a'*40,
                 'sources':{'runtime-probe/run.py':'b'*64, 'entry.py':'c'*64},'guardianId':'d'*64,'preparedImage':None}
     def test_exact_controller_binding(self):

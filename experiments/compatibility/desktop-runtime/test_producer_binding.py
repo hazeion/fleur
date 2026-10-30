@@ -17,7 +17,7 @@ class ProducerBindingFormat(unittest.TestCase):
             for name in ('Dockerfile', 'entry.py', 'export_worker.py', 'processes.py', 'guardian_guard.py')}
         sources.update({'runtime-probe/run.py': 'a' * 64, 'rendering/package.json': 'b' * 64,
             'rendering/bun.lock': 'c' * 64})
-        return {'nonce': 'a1234567-1234-4234-8234-123456789abc',
+        return {'candidate':'desktop-4.96.1-244132','nonce': 'a1234567-1234-4234-8234-123456789abc',
             'bootId': 'b1234567-1234-4234-8234-123456789abc', 'daemonId': 'owned-desktop-daemon',
             'kernel': '7.0.14-linuxkit', 'sourceCommit': 'd' * 40, 'sources': sources,
             'guardianId': 'e' * 64, 'preparedImage': None}

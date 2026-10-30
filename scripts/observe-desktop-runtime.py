@@ -28,7 +28,6 @@ ROLE='dev.fleur.desktop-runtime-role'
 SHA=r'[a-f0-9]{64}'
 # Extracted from the Darwin x64 1.4.3 ZIP authenticated by platforms/bootstrap.py.
 BUN_SHA256='c2a945a9d33f9088b32ac3550d1d1fd485a7fc10d71c66f91ef0d33b41cefa7c'
-CANDIDATES=('desktop-4.96.1-244132','desktop-4.97.0-244584')
 UUID=r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
 
 
@@ -38,6 +37,7 @@ def module(name,path):
 
 processes=module('desktop_outer_processes',DIRECTORY/'processes.py')
 entry=module('desktop_outer_entry',DIRECTORY/'entry.py')
+CANDIDATES=tuple(entry.DESKTOP_CANDIDATES)
 artifacts=module('desktop_outer_artifacts',DIRECTORY/'artifact_inputs.py')
 sys.path.insert(0,str(ROOT/'experiments/compatibility/runtime-probe'))
 
@@ -464,7 +464,7 @@ def observe(mode,images_directory, *, candidate="desktop-4.96.1-244132",pinned_b
             relative='experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
         report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
-        binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
+        binding={'candidate':candidate,'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
         if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         phase='archive-validation'
         oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={};image_identities={}
@@ -561,7 +561,7 @@ def observe(mode,images_directory, *, candidate="desktop-4.96.1-244132",pinned_b
                 frame=manager_channel.frame(work_end);report['controllerFrames'].append(frame)
         report['controller']=frame
         extra,errors=manager_channel.drain(work_end);manager_channel.close(work_end);channels.remove(manager_channel)
-        if extra or errors or manager_channel.child.returncode or frame.get('kind')!='result' or frame.get('ok') is not True or frame.get('nonce')!=nonce or frame.get('bootId')!=boot or frame.get('sourceCommit')!=origin['sourceCommit'] or frame.get('sources')!=source['sources'] or frame.get('managerId')!=manager['cid'] or frame.get('managerPid')!=manager_ready['managerPid']:raise RuntimeError('CONTROLLER_RESULT_UNPROVEN')
+        if extra or errors or manager_channel.child.returncode or frame.get('kind')!='result' or frame.get('ok') is not True or frame.get('candidate')!=candidate or frame.get('nonce')!=nonce or frame.get('bootId')!=boot or frame.get('sourceCommit')!=origin['sourceCommit'] or frame.get('sources')!=source['sources'] or frame.get('managerId')!=manager['cid'] or frame.get('managerPid')!=manager_ready['managerPid']:raise RuntimeError('CONTROLLER_RESULT_UNPROVEN')
         if mode=='--qualify':
             runtime=frame['runtime']
             if not entry.complete_result(0,runtime):raise RuntimeError('ORIGINAL_RUNTIME_ORACLES_FAILED')

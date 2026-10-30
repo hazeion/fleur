@@ -81,22 +81,26 @@ or replays a submitted mutation to make replacement succeed. Old browser
 operations receive a known source-changed refusal before reaching the new app.
 Current schema and maintenance fencing remains authoritative.
 
-The compatibility proof recognizes directly imported hooks in unconditional
-prefix statements of inline declared island components. It compares hook order,
-bindings, state/memo/ref initializers, effect configuration and props/declaration
-dependencies. Pure query results used through useQuery are invalidated before
-compatible code receives fresh values. Assignments, updates, loops and exception handling inside islands conservatively
-require navigation. Query-derived values passed into calls or child components,
-and query-controlled setters or opaque local calls, also require navigation.
-Alias, destructuring and getter-function dependencies are followed conservatively.
-Opaque member calls on hook-owned state and state writes during render also
-require navigation. Custom hooks,
-dynamic aliases, conditional hook layouts, classes and uncertain local call paths
-require explicit navigation after
-an application edit. Declaration/shared-schema changes may also conservatively
-require navigation. One uncertain module conservatively guards the whole browser
-graph, so some safe edits also require navigation. This analysis does not migrate state or prove arbitrary
-JavaScript behavior. Unchanged server-only edits continue automatic replacement.
+Automatic replacement uses a bounded proof. It keeps the hook setup, handlers,
+effects and JSX structure fixed. It permits plain text edits, the compiler-owned
+italic/not-italic font styles, and effect-free query-text projections checked
+against required scalar/object schemas. Changed query contracts must be published
+by the client bundle and validated before activation. Direct named shared query
+imports with a local client re-export participate in this check.
+
+The supported hook subset uses plain JSON state initialized from literals or
+validated props, simple inline state updates and effects, and direct useQuery and
+useMutation declarations. Unknown calls, callback/value escapes, tagged helpers,
+lazy initializer references, refs/reducers/custom hooks, indirect exports,
+ambiguous operation names and unproved schemas or rendering require navigation.
+Other stylesheet changes also require navigation because they can hide or remove
+the focused field. These patterns remain admitted application code; Fleur keeps
+the previous browser rather than guessing how to migrate it.
+
+One uncertain module guards the whole browser graph, so some safe edits require
+navigation too. This is a closed supported subset, not general JavaScript
+analysis or state migration. Changes confined to server/ with unchanged client/shared sources and compatible
+styles continue automatic replacement.
 
 Published immutable browser modules and styles remain available to retained views
 until stop, within a 256 MiB cache. A capacity refusal preserves the current app;

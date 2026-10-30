@@ -112,5 +112,5 @@ async function compileBrowser(project: AdmittedProject): Promise<BrowserBuild> {
   const css = await compileStyles(project);
   const stylesheet = `/assets/styles-${createHash("sha256").update(css).digest("hex").slice(0, 16)}.css`;
   files.set(stylesheet, { body: css, type: "text/css; charset=utf-8" });
-  return Object.freeze({ entry: bootstrap, module: filename, compatibility: clientCompatibility(project, runtime.entry), stylesheet, files });
+  return Object.freeze({ entry: bootstrap, module: filename, compatibility: clientCompatibility(project, runtime.entry, css), stylesheet, files });
 }

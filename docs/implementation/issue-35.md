@@ -493,3 +493,117 @@ HTTP cases retained their two independent passing runs with 92 assertions each,
 in addition to their internal repetitions. No existing acceptance assertion,
 operation deadline, profile or CI gate was weakened. Full runtime/public proof
 remains blocked by the parent's quiet-window and admission coordination.
+
+
+## Recheck counterexamples: acceptance before correction
+
+The independent recheck found query values escaping through callback parameters
+and tagged helpers. Both admitted old/new programs work after fresh navigation,
+but equal compatibility hashes let new code read an object field from retained
+string state, throwing and resetting the draft. The correction must retain the
+previous browser for both paths, keep the same focused input, draft, captured
+query value, nested state and unknown mutation outcome, and allow recovery only
+through explicit navigation. Obsolete operations must remain fenced. Existing
+proven compatible text/style/query-display edits must remain automatic.
+
+The browser seam uses actual source admission, compiled bundles and runtime
+replacement against a controlled protocol producer. It catches browser state
+corruption; it cannot qualify public CLI ownership, SQL outcomes or Docker.
+The compatibility boundary will prove a bounded supported presentation subset
+and reject uncertain effects, rather than claim general JavaScript dataflow.
+
+
+## Positive proof after the callback/tag recheck
+
+Baseline for this correction is `fce666f3484e256f45264da7a9a0379267a33cf2`.
+The independent recheck correctly demonstrated that its P1 claim was incomplete;
+its P2 forwarding correction is preserved without production edits.
+
+Before production edits, the tracked browser command
+`bun test tests/runtime/development-replacement-browser.test.ts --test-name-pattern 'layout (callback-parameter|tagged-helper)'`
+failed both new cases after automatic replacement corrupted the subtree and
+broke the single draft-input assertion. The independent compiler reproducer also
+reported equal hashes for both pairs. Running the provided private browser
+reproducer confirmed each twice: two length-read errors, replacement of the
+original input and draft reset to Stored, without a navigation diagnostic.
+These are actual red failures, not prerequisite refusals.
+
+The former dependency/name propagation has been replaced by a closed proof:
+
+- Inline islands have an unconditional supported hook prefix and a single JSX
+  return. Hook arguments, event handlers, effects, non-query expressions and
+  render structure remain in the compatibility fingerprint.
+- Query values may only appear in certified effect-free text projections. Those
+  projections use explicit success guards and statically checked required scalar
+  or object fields. Zero-argument string read transformations are checked against
+  the declared result type. Query values cannot escape into state, callbacks,
+  tags, aliases or child props. No general callback-parameter dataflow is claimed.
+- Automatic query-schema changes require an unambiguous explicit operation name
+  and a contract published by the client bundle for validation before activation.
+  Other contracts keep their schema fingerprint. Named shared imports with a local
+  re-export are covered by an additional real-browser automatic-update control.
+- State initializers and writer arguments use a closed plain-JSON expression
+  grammar. Updates preserve that supported value shape. Effect/event callbacks
+  are inline synchronous actions; lazy callbacks, unsupported hooks and escaped
+  writers are unproved. Unknown invocations, getters, mutable module state,
+  indirect exports and unsupported declarations retain the old browser.
+- Plain JSX text and the owned compiler's exact italic/not-italic rules are the
+  supported presentation changes. Other style changes retain their fingerprint.
+  A new browser regression first showed a hidden-class change removing the draft
+  field without a stale diagnostic; the stylesheet/class proof now refuses it.
+
+A separate negative control for an escaped initializer function was also red
+before hook-argument certification: it updated automatically without the required
+uncertainty diagnostic. It now retains the prior browser. Additional opaque
+callback coverage leaves the snapshot-render expression unchanged, so the suite
+cannot pass solely because the snapshot expression changed. A directly escaped
+state writer is covered as well.
+
+The bounded subset is intentionally conservative. Valid applications using more
+complex hooks, callbacks, schema expressions, dynamic exports or styles continue
+to run, but changed browser code requires explicit navigation. This does not
+amend the last-valid-view contract or claim arbitrary JavaScript/CSS equivalence.
+
+Using pinned Bun 1.4.3, the complete expanded browser file passed 16 tests and 205
+assertions. Each case runs twice internally. Both reviewer counterexamples now
+retain the captured string, unsaved draft, original focused input, nested state
+and unknown outcome, refuse obsolete operations, and load the object-shaped
+result only after explicit navigation, without page errors or replay.
+Final repeated checks are recorded below when completed. All results remain
+component/browser evidence, not qualified public lifecycle or SQL proof.
+
+
+## Checkpoint results and host interruption
+
+| Check | Observed result |
+| --- | --- |
+| Complete bounded-proof browser file | 16 passed, 205 assertions; two repetitions per case |
+| Broader browser/admission/reactive/forwarding group | 105 passed, 657 assertions across 12 files; includes a second complete browser pass and unchanged P2 forwarding cases |
+| Independent compiler reproducer after correction | All six admitted old/new pairs have different compatibility hashes, including callback and tagged helper |
+| CLI lifecycle and project guidance | 41 passed, 442 assertions |
+| Pinned types, both lint engines, reference build | Passed again after the final metadata guard |
+| Generated-project verification | Two completed passing runs after guidance was updated |
+| Final ambiguous-query-name control | Intended equal-hash red observed before widening the unique-name guard; a subsequent real admission/compile pair passed the new refusal requirement |
+
+The broader completed group preceded the final conservative query-name guard.
+A seventeenth browser control now checks that duplicate logical query names are
+unproved even when only one declaration is exported. The final browser/HTTP/asset
+attempt reported the existing HTTP and asset cases, then stalled while launching
+the first Chromium process. The owned Chromium child was observed in macOS
+uninterruptible state. The owned Bun run was interrupted after kernel start
+identity verification and exited 130; both test and Chromium processes were then
+confirmed absent. This attempt is not passing browser evidence. The final
+seventeen-case browser run remains required.
+
+The default Git executable also left read-only checks in uninterruptible state.
+Their working directory, command and kernel start identities were verified
+before interrupt/kill requests. Retirement remains unconfirmed and private
+ownership evidence is retained. No pending Git mutation or worktree index lock
+was present. The existing system Git completed read-only checks and is used for
+the local checkpoint; no host configuration, readiness profile or test gate was
+changed. No additional browser workload was launched after cleanup.
+
+No Docker, PostgreSQL or native test was run during this correction. The held
+quiet window, public profile admission, pending PostgreSQL regressions, qualified
+public lifecycle/browser proof, full suite and fresh independent review remain
+external or later gates. No PR, push, merge or issue closure was performed.

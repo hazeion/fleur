@@ -714,6 +714,13 @@ now carry the same minimum-version admission as the Intel Desktop profile
 (#118); the job also prints the runner's Docker tuple and `doctor` output so a
 future refusal is explainable from the log.
 
+The third pull-request run admitted the runner and executed the public cases,
+but the read-runtime job reached its 30-minute budget: the lifecycle file alone
+takes about 20 minutes on a runner and the rest of `tests/runtime` about 20
+more. The budget is now 50 minutes. Splitting the lifecycle file into its own
+parallel job would cut wall time without reducing coverage and is left as a
+CI follow-up.
+
 ### Remaining limitations and follow-ups
 
 - No public `fleur dev` case drives a slow in-flight request through stop or

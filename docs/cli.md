@@ -1,8 +1,8 @@
 # CLI foundation
 
-The release package uses Bun 1.4.3 directly. Its executable is `bin/fleur.ts`, with a Bun shebang. Node and npm are not bootstrap requirements. The initial package version is 0.1.0; project creation pins the release package version exactly. The current catalog implements help, `new`, `init`, `doctor`, `setup`, `setup grants list` and `setup grants revoke <id>`. Setup supports scoped authorized smoke-image acquisition. It does not install Docker packages or run applications.
+The release package uses Bun 1.4.3 directly. Its executable is `bin/fleur.ts`, with a Bun shebang. Node and npm are not bootstrap requirements. The initial package version is 0.1.0; project creation pins the release package version exactly. The catalog implements project creation and prerequisites, shared database operations, and `dev [--background] [--host <address>] [--port <number>]`, `stop`, `status` and `logs [--limit 200] [--cursor <token>] [--follow]`. Setup supports scoped authorized smoke-image acquisition. It does not install Docker packages or run applications.
 
-Run `bun bin/fleur.ts --help` for the available command catalog. `--json` returns one JSON version 1 object on stdout. Diagnostic logs belong on stderr. Every finite result contains `formatVersion`, `command`, `ok`, `data`, `error` and `truncated`. Successful results have `error: null`; failures have structured recovery actions and null data unless diagnostic partial data is explicitly documented.
+Run `bun bin/fleur.ts --help` for the available command catalog. Finite commands return one JSON version 1 object on stdout with `--json`. Foreground dev and opt-in log follow emit monotonic newline-delimited events ending with a completed result; see [development lifecycle](development.md). Diagnostic logs belong on stderr. Every finite result contains `formatVersion`, `command`, `ok`, `data`, `error` and `truncated`. Successful results have `error: null`; failures have structured recovery actions and null data unless diagnostic partial data is explicitly documented.
 
 Common options are `--project <dir>`, `--json`, `--timeout <seconds>` and `--help`. Paths resolve from the invocation directory. The default timeout is 60 seconds; an explicit timeout must be finite and positive, at most 2,147,483 seconds. Duplicate, unknown and malformed options return exit 2. Commands are named operations; arbitrary shell arguments are rejected.
 
@@ -18,7 +18,7 @@ Ordinary interruption of a delegated launcher forwards SIGINT, SIGTERM or SIGHUP
 
 The package includes this document, project creation guidance and prerequisite setup guidance for offline reading. `docs` is not yet an implemented command. Generated projects contain working pinned test, type and lint tooling; this is separate from a Fleur application build or native installation proof. CI verifies the complete CLI suite and both compiler/lint graphs, then creates and checks a fresh packed project twice with separate dependency caches.
 
-## Initial error catalog
+## Error catalog
 
 | Code | Exit | Recovery |
 | --- | --- | --- |
@@ -28,10 +28,11 @@ The package includes this document, project creation guidance and prerequisite s
 | `VERSION_MISMATCH` | 4 | Restore intended exact metadata or explicitly install the matching local release. |
 | `PREREQUISITE_UNAVAILABLE` | 4 for unavailable or incompatible prerequisites; 1 for a failed authorized acquisition | Run doctor and inspect required setup actions. |
 | `READINESS_TIMEOUT` | 4 | Recheck prerequisites before explicitly retrying. |
+| `BROWSER_ASSET_CAPACITY` | 4 when startup cannot fit the bounded cache; a reload retains the current app | Explicitly stop and dev to clear disposable browser assets, preserving data and backups. |
 | `AUTHORITY_REQUIRED` | 3 | Have a human inspect and authorize the exact proposed action. |
 | `HUMAN_ACTION_REQUIRED` | 3 | Complete the documented manual prerequisite action, then rerun setup. |
 | `PROJECT_COLLISION` | 5 | Choose an empty target or resolve reported protected files explicitly. |
-| `MAINTENANCE_BUSY` | 5 | Wait for the current setup operation to finish. |
+| `MAINTENANCE_BUSY` | 5 | Wait for the current setup or database maintenance owner to finish, then explicitly retry. |
 | `RECOVERY_REQUIRED` | 5 | Inspect reported incomplete restoration or unsafe state before retrying. |
 | `CONFIGURATION_MISSING` | 4 | Supply the explicit private database configuration for the selected target. |
 | `DATABASE_UNAVAILABLE` | 4 when a command needs data from a database it cannot reach | Start the PostgreSQL server or correct the private database configuration, then check `status`. |
@@ -83,3 +84,14 @@ or deleted rows and rolls back the whole run on conflicts. `db reset [--seed]
 human approval and restore-verified backup. Empty data is the default; seeding is
 explicit. Production reset is unavailable. See [owned seeds and development
 reset](maintenance.md#owned-seeds-and-development-reset).
+
+
+Development adds `PORT_OCCUPIED` (exit 4; select a free explicit port or omit the
+option), `INSTANCE_UNAVAILABLE` (exit 1; inspect logs, stop, then restart),
+`MIGRATIONS_PENDING` (exit 5; review/apply the schema change) and
+`EXECUTION_RECOVERY_REQUIRED` or `IMAGE_RECOVERY_REQUIRED` (exit 5; retain
+ownership evidence for verified recovery). `SOURCE_OBSOLETE` identifies a
+superseded compilation; it cannot replace a later admitted snapshot.
+`SOURCE_REJECTED` remains exit 1 and never replaces the last valid generation.
+Status reports failure findings as exit-0 data. The lifecycle uses the same
+shared database operations and private maintenance owner as database commands.

@@ -1,7 +1,7 @@
 import { createContext, h, type ComponentChild } from "preact";
 import { useContext } from "preact/hooks";
 import type { Schema } from "../schema";
-export interface IslandDefinition { schema: Schema; validate(value: unknown): unknown; render(value: unknown): ComponentChild; }
+export interface IslandDefinition { schema: Schema; validate(value: unknown): unknown; render(value: unknown): ComponentChild; invoke(value: unknown): ComponentChild; }
 export const islands = new WeakMap<object, IslandDefinition>();
 export const islandNames = new Map<object, string>();
 const IslandParent = createContext(false);

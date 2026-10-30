@@ -16,6 +16,7 @@
     "docs/setup-artifact-evidence.md",
     "dist/reference",
     "docs/read-pages.md",
+    "docs/development.md",
     "docs/application-surface.md",
     "docs/reactivity.md",
     "docs/mutations.md",

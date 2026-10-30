@@ -120,3 +120,75 @@ test("close drains admission and removes every owned container", async () => {
   await expect(execution.execute({}, () => null)).rejects.toThrow("APPLICATION_CLOSED");
   for (const slot of slots) expect(await owned(slot)).toBe("");
 }, 120_000);
+
+for (let repeat = 1; repeat <= 2; repeat++) test(`a bounded close reports uncertain retirement without reopening admission or dropping ownership, repeat ${repeat}`, async () => {
+  const execution = await NativeExecution.open(images, { capacity: 1 });
+  try {
+    await execution.execute({}, () => null);
+    const started = performance.now();
+    await expect(execution.close(1)).rejects.toThrow("EXECUTION_RECOVERY_REQUIRED");
+    expect(performance.now()-started).toBeLessThan(1000);
+    await expect(execution.execute({}, () => null)).rejects.toThrow("APPLICATION_CLOSED");
+    // Until physical retirement is verified, diagnostics must retain capacity.
+    const diagnostics = execution.diagnostics();
+    expect(diagnostics).toHaveLength(1);
+    for (const slot of diagnostics) expect(slot.state).not.toBe("closed");
+  } finally { await execution.close(); }
+}, 60000);
+
+for (let repeat = 1; repeat <= 2; repeat++) test(`lost Docker retirement verification retains quarantined capacity until explicit verified recovery, repeat ${repeat}`, async () => {
+  const { createServer, connect } = await import("node:net");
+  const { mkdtemp, realpath, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = await mkdtemp(join(await realpath(tmpdir()), "fleur-retire-proxy-")), socket = join(directory, "docker.sock");
+  let denied = false;
+  const clients = new Set<import("node:net").Socket>();
+  const proxy = createServer(client => {
+    clients.add(client); client.on("close", () => clients.delete(client));
+    if (denied) { client.destroy(); return; }
+    const daemon = connect(images.endpoint.slice("unix://".length));
+    daemon.on("error", () => client.destroy()); client.on("error", () => daemon.destroy());
+    client.on("close", () => daemon.destroy()); daemon.on("close", () => client.destroy());
+    client.pipe(daemon); daemon.pipe(client);
+  });
+  await new Promise<void>((resolve, reject) => { proxy.once("error", reject); proxy.listen(socket, resolve); });
+  let execution: NativeExecution | undefined, leaseDirectory: string | undefined;
+  try {
+    execution = await NativeExecution.open({ ...images, endpoint: "unix://"+socket }, { capacity: 1 });
+    await execution.execute({}, () => null);
+    const owner = execution.diagnostics()[0]!.slot;
+    const { readdir, readFile } = await import("node:fs/promises");
+    for (const name of await readdir(tmpdir())) if (name.startsWith("fleur-retained-lease-")) {
+      try { const record = JSON.parse(await readFile(join(tmpdir(), name, "lease.json"), "utf8")); if (record.owner === owner && record.images.endpoint === "unix://"+socket) leaseDirectory = join(tmpdir(), name); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    expect(leaseDirectory).toBeDefined();
+    denied = true; // Actual control transport loss, never a fabricated successful Docker reply.
+    await expect(execution.close()).rejects.toThrow("EXECUTION_RECOVERY_REQUIRED");
+    expect(execution.diagnostics()).toMatchObject([{ slot: owner, state: "quarantined" }]);
+    await expect(execution.execute({}, () => null)).rejects.toThrow("APPLICATION_CLOSED");
+    denied = false;
+    await execution.close();
+    expect(execution.diagnostics()).toEqual([]);
+    expect(await owned(owner)).toBe("");
+  } finally {
+    denied = false;
+    try { await execution?.close(); }
+    catch (error) {
+      // Even a red assertion must retire only its exact private owned lease.
+      expect(leaseDirectory, error instanceof Error ? error.message : "Retirement requires ownership evidence").toBeDefined();
+      const { RetainedLease } = await import("../../src/runtime/native/retained-lease");
+      await (await RetainedLease.recover(leaseDirectory!)).cleanup();
+    }
+    finally { for (const client of clients) client.destroy(); await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())); await rm(directory, { recursive: true, force: true }); }
+  }
+}, 120000);
+
+test("cancelled application creation never opens a native execution owner", async () => {
+  const cancellation = new AbortController(); cancellation.abort();
+  let opened: NativeExecution | undefined;
+  try {
+    await expect(NativeExecution.open(images, { signal: cancellation.signal }).then(execution => { opened = execution; return execution; })).rejects.toThrow("APPLICATION_CLOSED");
+  } finally { await opened?.close(); }
+}, 60000);

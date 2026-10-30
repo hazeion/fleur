@@ -100,7 +100,9 @@ jobs:
           - runner: ubuntu-24.04-arm
             architecture: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # The public development lifecycle file alone takes about 20 minutes on a
+    # runner; with the rest of tests/runtime the job needs about 40.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
         with:
@@ -112,6 +114,14 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Explicit browser verification prerequisites
         run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Pinned development images
+        run: bun scripts/pull-pinned-development-images.ts
+      - name: Runner Docker tuple and prerequisite readiness
+        run: |
+          docker version
+          docker info --format 'engine={{.ServerVersion}} kernel={{.KernelVersion}} cgroup={{.CgroupDriver}}/{{.CgroupVersion}} security={{.SecurityOptions}}'
+          docker compose version --short
+          bun bin/fleur.ts doctor --json || true
       - name: Restricted reads, owned PostgreSQL and browser production fixture
         run: bun test tests/runtime
       - name: Controller admission and physical exit regressions

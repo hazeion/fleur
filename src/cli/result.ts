@@ -16,7 +16,7 @@ export interface CommandResult {
   readonly error: CommandError | null;
   readonly truncated: boolean;
 }
-export interface CliOutcome { readonly exitCode: ExitCode; readonly result: CommandResult }
+export interface CliOutcome { readonly human?: string; readonly streamed?: boolean; readonly exitCode: ExitCode; readonly result: CommandResult }
 export function success(command: string, data: Json): CliOutcome {
   return { exitCode: 0, result: { formatVersion: 1, command, ok: true, data, error: null, truncated: false } };
 }

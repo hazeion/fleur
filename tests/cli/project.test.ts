@@ -305,7 +305,8 @@ test("both instruction files reference offline pinned guidance and the approved 
   expect(offline).toContain("docs/reactivity.md");
   expect(offline).toContain("Use stable keys to preserve island drafts, focus and local state");
   expect(offline).toContain("External retrieval is documented in docs/retrieval.md");
-  expect(offline).toContain("Lifecycle commands and production operations require their later implementations");
+  expect(offline).toContain("Use dev/stop/status/logs as documented in package docs/development.md");
+  expect(offline).toContain("Production operations remain separate work");
   expect(offline).toContain("bun run types");
   expect(offline).toContain("TypeScript 6.0.3");
 });
@@ -391,12 +392,14 @@ test("the database section names only operations in the pinned release and marks
   expect(named.length).toBeGreaterThan(0);
   for (const command of named) expect({ command, released: resolves(command) }).toEqual({ command, released: true });
   for (const command of released.filter((name) => name.startsWith("db "))) expect({ command, named: named.includes(command) }).toEqual({ command, named: true });
-  for (const later of ["db query", "dev"]) {
+  for (const later of ["db query"]) {
     expect(resolves(later)).toBe(false);
     expect(named).not.toContain(later);
     expect(namedCommands(unavailable)).toContain(later);
   }
   expect(unavailable).toContain("`db query`");
+  expect(named).toContain("dev");
+  expect(namedCommands(unavailable)).not.toContain("dev");
   // The schema overview and status database health are in this release (#72).
   expect(named).toContain("status");
   expect(namedCommands(unavailable)).not.toContain("status");
@@ -406,13 +409,13 @@ test("the database section names only operations in the pinned release and marks
   }
 });
 test("the database section limits fleur dev initialization to a new development database and keeps the explicit flow", async () => {
-  // Requirements: docs/planning/V1-SPEC.md "New development database initialization" (#71). `dev` is not in this
-  // release, so the rule appears only in the unavailable list, and the explicit flow stays the instruction.
+  // Requirements: V1-SPEC new-database initialization and #35. Development is now available; its narrow
+  // startup exception and the explicit existing/adopted-database flow remain unchanged.
   const cwd = await root();
   expect((await runCli(["init", "--no-git"], { cwd, handlers: projectCommands })).exitCode).toBe(0);
   const section = await databaseSection(cwd);
-  const unavailable = section.slice(section.indexOf("\n### Not available in this release\n"));
-  const bullet = unavailable.split("\n").find((line) => line.includes("`fleur dev`"));
+  const available = section.slice(0, section.indexOf("\n### Not available in this release\n"));
+  const bullet = available.split("\n").find((line) => line.includes("`fleur dev`"));
   expect(bullet).toBeDefined();
   const text = bullet!.toLowerCase();
   for (const phrase of ["new development database", "fleur created", "never initialized", "one transaction", "committed migrations", "declared seeds", "empty", "`fleur db migration apply`", "`fleur db seed`"]) expect({ phrase, present: text.includes(phrase) }).toEqual({ phrase, present: true });

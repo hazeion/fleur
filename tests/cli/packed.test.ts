@@ -51,6 +51,9 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "db migration status", usage: "db migration status [--production]", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [{ name: "--production", value: false }] },
     { name: "db migration apply", usage: "db migration apply [--grant <id>]", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [{ name: "--grant", value: true }] },
     { name: "db restore", usage: "db restore --from <file> [--grant <id>]", summary: "Review transactional migrations and explicitly recover database maintenance.", options: [{ name: "--from", value: true }, { name: "--grant", value: true }] },
+    { name: "dev", summary: "Run the owned development environment.", usage: "dev [--background] [--host <address>] [--port <number>]", options: [{ name: "--background", value: false }, { name: "--host", value: true }, { name: "--port", value: true }] },
+    { name: "stop", summary: "Stop owned development resources, preserving data and backups.", usage: "stop" },
+    { name: "logs", summary: "Read bounded development logs.", usage: "logs [--limit 200] [--cursor <token>] [--follow]", options: [{ name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--follow", value: false }] },
   ]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });

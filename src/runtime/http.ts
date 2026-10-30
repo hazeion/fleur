@@ -15,7 +15,7 @@ async function admittedHTML(rendered: PageResult): Promise<void> {
   } }).transform(new Response(rendered.html)).text();
 }
 
-/** Loopback fixture/application adapter; lifecycle commands are a later slice. */
+/** Loopback application adapter with a private framework-only liveness path. */
 export function serveReadApplication(app: ReadApplication, browser: BrowserBuild) {
   app.prepareWorkers();
   const project = new ReactiveProject({
@@ -38,9 +38,11 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
   // notification connection fails or a wakeup is dropped.
   const watching = app.watch(() => { void project.wake(); }).catch(() => undefined);
   let origin = "";
+  const healthPath = "/__fleur/health/"+randomBytes(32).toString("hex");
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 30, async fetch(request) {
     const url = new URL(request.url);
     if (url.origin !== origin) return new Response("Unrecognized origin", { status: 403 });
+    if (url.pathname === healthPath && request.method === "GET") return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
     if (url.pathname === "/__fleur/mutation") return mutationResponse(app, request, url);
     if (url.pathname === "/__fleur/view") return viewResponse(project, request, url);
     if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
@@ -60,7 +62,7 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
       return new Response(request.method === "HEAD" ? null : html, { headers: {
         "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
         "Cross-Origin-Opener-Policy": "same-origin",
-        "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}'; script-src-attr 'none'; style-src-elem ${browser.stylesheet ? new URL(browser.stylesheet, origin).href : "'none'"}; style-src-attr 'unsafe-inline'; img-src 'self' https:; font-src 'self' https:; media-src 'self' https:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'none'`,
+        "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}' 'strict-dynamic'; script-src-attr 'none'; style-src-elem ${browser.stylesheet ? new URL(browser.stylesheet, origin).href : "'none'"}; style-src-attr 'unsafe-inline'; img-src 'self' https:; font-src 'self' https:; media-src 'self' https:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'none'`,
       } });
     } catch (error) {
       if (error instanceof Error && ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) return new Response(`<!doctype html><html lang="en"><title>Database maintenance</title><h1>Database maintenance</h1><p>${error.message === "RECOVERY_REQUIRED" ? "Maintenance needs inspection before this application can resume." : "Database maintenance is in progress. Refresh after it completes."}</p></html>`, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -73,7 +75,7 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
   origin = server.url.origin;
   const stop = server.stop.bind(server);
   server.stop = async (closeActiveConnections?: boolean) => { const closing = project.close(); await stop(closeActiveConnections); await closing; await (await watching)?.(); };
-  return server;
+  return Object.assign(server, { healthURL: new URL(healthPath, origin) });
 }
 
 async function readBody(request: Request): Promise<unknown> {
@@ -109,8 +111,9 @@ async function viewResponse(project: ReactiveProject, request: Request, url: URL
     const result = command.action === "open" ? await project.open(command.path) : await project.refresh(command);
     return Response.json(result, { headers });
   } catch (error) {
-    const code = error instanceof Error && ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "INPUT_INVALID", "REQUEST_DENIED", "CONNECTION_EXPIRED", "RESPONSE_OBSOLETE", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "ROUTE_INVALID", "ROUTE_NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
-    return fail(code, ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code) ? 503 : code === "CONNECTION_EXPIRED" ? 410 : code === "RESPONSE_OBSOLETE" ? 409 : 422);
+    if (error instanceof PublicOperationError) return Response.json({ error: { code: error.code } }, { status: error.code === "NOT_FOUND" ? 404 : error.code === "INPUT_INVALID" ? 400 : 422, headers });
+    const code = error instanceof Error && ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "INPUT_INVALID", "REQUEST_DENIED", "CONNECTION_EXPIRED", "RESPONSE_OBSOLETE", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING", "ROUTE_INVALID", "ROUTE_NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+    return fail(code, ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(code) ? 503 : code === "CONNECTION_EXPIRED" ? 410 : code === "RESPONSE_OBSOLETE" ? 409 : 422);
   }
 }
 

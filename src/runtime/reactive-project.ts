@@ -326,12 +326,18 @@ export class ReactiveProject {
     this.#connections.delete(id);
     connection.queries.clear(); connection.retrievals.clear();
   }
-  async close(): Promise<void> {
+  async close(timeoutMs = 30000): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) throw new Error("REQUEST_DENIED");
     this.#closed = true;
     clearInterval(this.#expiry);
     for (const connection of this.#connections.values()) { connection.disposed = true; connection.queries.clear(); }
     this.#connections.clear();
-    while (this.#work.size) await Promise.allSettled(this.#work);
-    await this.#revisionProbe?.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([(async () => {
+        while (this.#work.size) await Promise.allSettled(this.#work);
+        await this.#revisionProbe?.catch(() => {});
+      })(), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("REACTIVE_DRAIN_UNCONFIRMED")), timeoutMs); })]);
+    } finally { clearTimeout(timer); }
   }
 }

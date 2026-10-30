@@ -38,6 +38,10 @@ function publicBound(value: unknown): void {
 type NestedRead = (name: string, input: unknown, abandoned?: AbortSignal) => Promise<unknown>;
 export class ReadApplication {
   readonly registry: Registry;
+  #databaseBlock: "SCHEMA_DRIFT" | "MIGRATIONS_PENDING" | undefined;
+  /** Lifecycle admission fence for an incompatible candidate; the retained app cannot grant old database authority. */
+  blockDatabase(code: "SCHEMA_DRIFT" | "MIGRATIONS_PENDING"): void { this.#databaseBlock = code; }
+  #assertDatabase(): void { if (this.#databaseBlock) throw new Error(this.#databaseBlock); }
   readonly #broker: ReadBroker;
   readonly #maintenance: MaintenanceConfiguration;
   readonly #url: string;
@@ -51,13 +55,15 @@ export class ReadApplication {
     this.#execution = execution;
   }
   /** `retrieval` is trusted startup configuration: limits, credential bindings and local-service exceptions. */
-  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}, retrieval: RetrievalConfiguration = {}): Promise<ReadApplication> {
+  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}, retrieval: RetrievalConfiguration = {}, creation?: AbortSignal): Promise<ReadApplication> {
+    const checkCreation = () => { if (creation?.aborted) throw new Error("APPLICATION_CLOSED"); };
+    checkCreation();
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
     let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
     const session = randomUUID();
     let registry: Registry;
     try {
-      worker = await startWorker(images);
+      checkCreation(); worker = await startWorker(images);
       const result = record(await worker.run({ mode: "register", session }, () => { throw new Error("REQUEST_DENIED"); }));
       if (result.kind !== "complete" || result.session !== session || result.sequence !== 0 || Object.keys(result).length !== 4) throw new Error("SOURCE_REJECTED");
       registry=restoreManifest(result.value);
@@ -66,10 +72,11 @@ export class ReadApplication {
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
     // Declared credentials must be configured and bound before any worker starts.
     // Bindings come from the trusted startup environment unless supplied explicitly.
+    checkCreation();
     const outbound = new OutboundBroker(registry.destinations, { ...retrieval, credentials: retrieval.credentials ?? credentialsFromEnvironment(process.env) });
     // Cold slot creation is startup work and never holds maintenance admission.
-    const execution = await NativeExecution.open(images);
-    try { return new ReadApplication(execution, registry, url, maintenance, outbound); }
+    const execution = await NativeExecution.open(images, creation ? { signal: creation } : {});
+    try { checkCreation(); return new ReadApplication(execution, registry, url, maintenance, outbound); }
     catch (error) { await execution.close(); throw error; }
   }
   async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: NestedRead = (name, input) => this.query(name, input), retrieve: NestedRead = (name, input) => this.retrieve(name, input), external?: (request: unknown) => Promise<unknown>): Promise<unknown> {
@@ -129,6 +136,7 @@ export class ReadApplication {
   query(name: string, rawInput: unknown): Promise<unknown> { return this.#query(name, rawInput); }
   /** `limit` caps a nested query by its enclosing render's deadline; `abandoned` aborts once that render stops waiting. */
   async #query(name: string, rawInput: unknown, limit = Infinity, abandoned?: AbortSignal): Promise<unknown> {
+    this.#assertDatabase();
     const operation = this.registry.queries.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
@@ -137,6 +145,7 @@ export class ReadApplication {
     const started = Math.min(performance.now(), limit - 5000);
     const reservation = limit === Infinity ? await this.#execution.reserve(started + 5000) : await this.#reserveNested(started + 5000, abandoned);
     try {
+      this.#assertDatabase();
       return await this.#broker.read(async (db, remaining) => operation.output.parse(await this.#execute(reservation, { mode: "query", operation: name, input }, db, remaining())), queryIdentity(name, operation.input, input), started);
     } finally { reservation.release(); }
   }
@@ -163,6 +172,7 @@ export class ReadApplication {
     finally { leave(); abandoned?.removeEventListener("abort", leave); }
   }
   async mutate(name: string, rawInput: unknown): Promise<unknown> {
+    this.#assertDatabase();
     const operation = this.registry.mutations.get(name);
     if (!operation) throw new Error("REQUEST_DENIED");
     let input: unknown;
@@ -172,6 +182,7 @@ export class ReadApplication {
     // A run returns only after its guard confirmed physical exit and that only
     // the container's idle init remains, so retirement precedes COMMIT.
     try {
+      this.#assertDatabase();
       return await this.#broker.mutate(async (db, remaining) =>
         operation.output.parse(await this.#execute(reservation, { mode: "mutation", operation: name, input }, db, remaining())), { operation: name, input }, started);
     } finally {
@@ -250,14 +261,15 @@ export class ReadApplication {
       }));
     }
   }
-  revision(): Promise<DatabaseRevision> { return this.#broker.revision(); }
+  revision(): Promise<DatabaseRevision> { this.#assertDatabase(); return this.#broker.revision(); }
   prepareWorkers(): void { this.#execution.warm(); }
   /** Slot states for operator visibility; no secrets or application data. */
   diagnostics(): ReturnType<NativeExecution["diagnostics"]> { return this.#execution.diagnostics(); }
   /** The most slots this application's execution holds. */
   get capacity(): number { return this.#execution.capacity; }
   watch(wakeup: () => void): Promise<() => Promise<void>> { return this.#broker.watch(wakeup); }
-  async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>, retrieve?: (name: string, input: unknown) => Promise<unknown>): Promise<PageResult> {
+  async render(path: string, read?: (name: string, input: unknown) => Promise<unknown>, retrieve?: (name: string, input: unknown) => Promise<unknown> ): Promise<PageResult> {
+    this.#assertDatabase();
     // Route validation also runs in the trusted host before application entry.
     try {
       if (!selectPage([...this.registry.pages.values()], path)) throw new Error("ROUTE_NOT_FOUND");
@@ -317,5 +329,7 @@ export class ReadApplication {
       return result as unknown as PageResult;
     }
   }
+  /** Read-only lifecycle diagnostics; no container, process or credential identifiers. */
+  executionStatus() { return this.#execution.status(); }
   async close(): Promise<void> { try { await this.#execution.close(); } finally { await this.#broker.close(); } }
 }

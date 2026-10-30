@@ -16,7 +16,7 @@ export function nameMutationExports(exports: Readonly<Record<string, unknown>>):
     if (value && typeof value === "object" && "kind" in value && value.kind === "mutation" && !names.has(value)) names.set(value, name);
   }
 }
-const codes = new Set(["INPUT_INVALID", "NOT_FOUND", "CONSTRAINT_CONFLICT", "VERSION_CONFLICT", "UNSUPPORTED_CAPABILITY", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "INTERNAL_FAILURE"]);
+const codes = new Set(["INPUT_INVALID", "NOT_FOUND", "CONSTRAINT_CONFLICT", "VERSION_CONFLICT", "UNSUPPORTED_CAPABILITY", "QUERY_TIMEOUT", "QUERY_LIMIT", "RESULT_TOO_LARGE", "REQUEST_DENIED", "INTERNAL_FAILURE", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING", "SOURCE_CHANGED"]);
 async function responseJSON(response: Response): Promise<unknown> {
   if (!response.headers.get("content-type")?.startsWith("application/json") || !response.body) throw new Error("Invalid response");
   const reader = response.body.getReader();

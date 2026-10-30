@@ -6,6 +6,8 @@ export interface CommandInput {
   /** True when --timeout was given; commands with their own shorter default deadline use it only then. */
   readonly timeoutExplicit?: boolean;
   readonly json: boolean;
+  /** Trusted private invocation configuration, never application input. */
+  readonly environment?: Record<string, string | undefined>;
 }
 export interface CommandDefinition {
   readonly name: string;
@@ -19,7 +21,7 @@ export interface CommandDefinition {
 export const helpCommand = { name: "help", summary: "Show available commands and global options." } as const;
 export const globalOptions = [
   { name: "--project", value: "dir", description: "Select the project directory." },
-  { name: "--json", value: null, description: "Print one JSON version 1 result." },
+  { name: "--json", value: null, description: "Print JSON version 1 results or newline-delimited stream events." },
   { name: "--timeout", value: "seconds", description: "Set a positive operation timeout; default 60 seconds." },
   { name: "--help", value: null, description: "Show available commands and global options." },
 ] as const;

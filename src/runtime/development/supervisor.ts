@@ -107,6 +107,7 @@ export async function supervise(project: string, host: string, requestedPort: nu
       item.app = app; item.server = server; item.cancellation = cancellation;
       runtimes.delete(item); retiring.delete(item);
       state.state = "ready"; state.error = null;
+      if (!closed) replacing = false;
     } catch (error) {
       cancellation.abort();
       await Promise.allSettled([server?.stop(true), app?.close()]);
@@ -246,6 +247,10 @@ export async function supervise(project: string, host: string, requestedPort: nu
         retainAssets();
         generation = next; fingerprint = stamp; epoch = nextEpoch; state.generation++;
         state.state = "ready"; state.error = null;
+        // The new generation serves from this point. Reopening public admission
+        // here keeps status and the gateway consistent while the previous
+        // generation's images are still being disposed below.
+        replacing = false;
       } catch (error) { if (old && !closed) await restore(old); throw error; }
       await log("READY", "Database, source, rendering, browser assets and reactive transport verified.");
       if (old && old.browser.compatibility !== next.browser.compatibility) await log("CLIENT_NAVIGATION_REQUIRED", "An incompatible or uncertain client edit retains existing views and drafts. Navigate or reload explicitly to use the new generation.");

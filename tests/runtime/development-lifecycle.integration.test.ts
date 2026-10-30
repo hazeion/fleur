@@ -166,14 +166,25 @@ test("invalid source preserves the usable app and corrected server and island so
     expect((await fetch(new URL("/reactive", started.result.data.url))).status).toBe(200);
     await writeFile(client, (await readFile(client, "utf8")).replace("Clicks {clicks}", "Taps {clicks}"));
     await writeFile(server, valid.replace("<h1>Reactive items</h1>", "<h1>Corrected catalog</h1>"));
-    await browserExpect(page.getByRole("heading", { name: "Corrected catalog" })).toBeVisible({ timeout: 90000 });
-    await browserExpect(page.getByRole("button", { name: "Taps 1", exact: true })).toBeVisible({ timeout: 10000 });
+    await browserExpect.poll(async () => (await cli("status")).result.data, { timeout: 90000 }).toMatchObject({ state: "ready", ready: true, generation: 2, error: null });
+    // The fixture island awaits a mutation result inside its save handler, which
+    // is outside the bounded automatic-replacement proof. The open browser keeps
+    // the last valid generation, draft and focus, and says to navigate explicitly.
+    await browserExpect(page.getByText("Navigate or reload explicitly")).toBeVisible({ timeout: 30000 });
+    await browserExpect(page.getByRole("heading", { name: "Reactive items" })).toBeVisible();
+    await browserExpect(page.getByRole("button", { name: "Clicks 1", exact: true })).toBeVisible();
     await browserExpect(draft).toHaveValue("Unsaved across source replacement");
     await browserExpect(draft).toBeFocused();
     expect(await page.evaluate(() => (globalThis as unknown as { originalDraft: Element }).originalDraft === document.activeElement)).toBe(true);
     await browserExpect(page.getByRole("region", { name: "Draft 1", exact: true })).toContainText("Mounts 1");
-    expect((await cli("status")).result.data).toMatchObject({ state: "ready", ready: true, generation: 2, error: null });
+    expect((await cli("logs")).result.data.logs.some((entry: { code: string }) => entry.code === "CLIENT_NAVIGATION_REQUIRED")).toBe(true);
+    // Retained browser assets stay available to the old view until stop.
     expect((await fetch(new URL(originalEntry!, started.result.data.url))).status).toBe(200);
+    // Explicit navigation loads the corrected server and island source.
+    await page.reload();
+    await browserExpect(page.getByRole("heading", { name: "Corrected catalog" })).toBeVisible({ timeout: 30000 });
+    await browserExpect(page.getByRole("button", { name: "Taps 0", exact: true })).toBeVisible();
+    expect(await page.locator("script[type=module][src]").getAttribute("src")).not.toBe(originalEntry);
     const first = await cli("logs", "--limit", "2");
     expect(first.result.truncated).toBe(true);
     expect(first.result.data.logs).toHaveLength(2);

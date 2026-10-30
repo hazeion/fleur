@@ -114,7 +114,8 @@ execute this private copy. They never execute the selected source pathname.
 Atomic pathname replacement and in-place updates to the source therefore cannot
 change the launched bytes. Source rechecks still refuse drift after either
 command; those checks are evidence checks, not the execution-custody mechanism.
-The copy is removed after bounded command clients retire, including refusal paths.
+The copy is removed on scope exit, including refusal paths. Unconfirmed command
+retirement remains a failure under the existing bounded runner.
 It is temporary qualification scratch, not a host installation.
 
 The threat model trusts the observer and its private directory, consistent with

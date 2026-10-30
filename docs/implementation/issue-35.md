@@ -707,6 +707,13 @@ compiled smoke pin and the pinned multi-architecture PostgreSQL image before
 the runtime tests. A workflow test checks the step order and that the script
 repeats no digest. No readiness profile or lifecycle behavior changed.
 
+The second pull-request run pulled both images and then refused every public
+case with `release: unverified`: the GitHub-hosted runner's Docker tuple had
+moved past the exact `docker-28.0.4-azure` profiles. Those two runner profiles
+now carry the same minimum-version admission as the Intel Desktop profile
+(#118); the job also prints the runner's Docker tuple and `doctor` output so a
+future refusal is explainable from the log.
+
 ### Remaining limitations and follow-ups
 
 - No public `fleur dev` case drives a slow in-flight request through stop or

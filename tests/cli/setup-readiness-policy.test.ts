@@ -528,16 +528,19 @@ for (const architecture of ["x64", "arm64"] as const) {
   }
 }
 
+// GitHub-hosted runner profiles are version floors (#118): older components, a
+// different kernel flavor and isolation drift refuse; newer components admit.
 for (const architecture of ["x64", "arm64"] as const) {
-  for (const change of ["kernel", "containerd", "rootless", "client"] as const) {
-    test(`the ${architecture} runner admission refuses neighboring ${change} metadata`, async () => {
+  for (const change of ["kernel", "kernel-flavor", "containerd", "rootless", "client"] as const) {
+    test(`the ${architecture} runner admission refuses ${change} drift below or outside the measured floor`, async () => {
       const fixture = azureRunnerFixture(architecture);
       const baseline = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
       expect(baseline.exitCode).toBe(0);
-      if (change === "kernel") { fixture.info.KernelVersion = "6.17.0-1023-azure"; fixture.server.KernelVersion = "6.17.0-1023-azure"; }
-      if (change === "containerd") fixture.server.Components[1]!.Details.GitCommit = "unmeasured-containerd-build";
+      if (change === "kernel") { fixture.info.KernelVersion = "6.17.0-1021-azure"; fixture.server.KernelVersion = "6.17.0-1021-azure"; }
+      if (change === "kernel-flavor") { fixture.info.KernelVersion = "6.17.0-1022-generic"; fixture.server.KernelVersion = "6.17.0-1022-generic"; }
+      if (change === "containerd") fixture.server.Components[1]!.Version = "v2.4.0";
       if (change === "rootless") fixture.info.SecurityOptions.push("name=rootless");
-      const host: SetupHost = change === "client" ? { ...fixture.host, run: async (args, timeout, context) => args.join(" ") === "docker --version" ? { status: "completed", exitCode: 0, stdout: "Docker version 28.0.4, build b8034c1", stderr: "" } : fixture.host.run(args, timeout, context) } : fixture.host;
+      const host: SetupHost = change === "client" ? { ...fixture.host, run: async (args, timeout, context) => args.join(" ") === "docker --version" ? { status: "completed", exitCode: 0, stdout: "Docker version 28.0.3, build b8034c1", stderr: "" } : fixture.host.run(args, timeout, context) } : fixture.host;
       const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
       expect(outcome.exitCode).toBe(4);
       expect(outcome.result).toMatchObject({ ok: false, data: { components: { release: { state: "unverified" }, smoke: { cleanup: true } } } });
@@ -647,4 +650,22 @@ test("compiled Intel Desktop policy still refuses Docker components below the me
   expect(matchReadinessServer(profiles, identity, { ...fixture.server, Platform: { Name: "Docker Engine - Community" } })).toBeUndefined();
   expect(matchReadinessServer(profiles, identity, { ...fixture.server, Components: fixture.server.Components.map((row) => row.Name === "runc" ? { ...row, Version: "1.5.1" } : row) })).toBeUndefined();
   expect(matchReadinessServer(profiles, identity, { ...fixture.server, Components: fixture.server.Components.map((row) => row.Name === "containerd" ? { ...row, Version: "v2.4.1" } : row) })).toBeUndefined();
+});
+
+for (const architecture of ["x64", "arm64"] as const) test(`the ${architecture} runner admission accepts a newer Docker tuple on the same kernel flavor and isolation options`, async () => {
+  const fixture = azureRunnerFixture(architecture);
+  Object.assign(fixture.info, { ServerVersion: "29.1.0", KernelVersion: "6.17.0-1030-azure" });
+  Object.assign(fixture.server, { Version: "29.1.0", GitCommit: "abcdef1", KernelVersion: "6.17.0-1030-azure" });
+  Object.assign(fixture.server.Components[0]!, { Version: "29.1.0", Details: { GitCommit: "abcdef1" } });
+  Object.assign(fixture.server.Components[1]!, { Version: "v2.4.3", Details: { GitCommit: "fedcba9876543210fedcba9876543210fedcba98" } });
+  Object.assign(fixture.server.Components[2]!, { Version: "1.5.3", Details: { GitCommit: "v1.5.3-0-g0000000" } });
+  const host: SetupHost = { ...fixture.host, run: async (args, timeout, context) => {
+    if (args.join(" ") === "docker --version") return { status: "completed", exitCode: 0, stdout: "Docker version 29.1.0, build 1234567", stderr: "" };
+    if (args[3] === "compose") return { status: "completed", exitCode: 0, stdout: "2.40.0", stderr: "" };
+    return fixture.host.run(args, timeout, context);
+  } };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+  expect(outcome.exitCode).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: `ubuntu-24.04-${architecture}-docker-28.0.4-azure` } } } });
+  expect(fixture.containers.size).toBe(0);
 });

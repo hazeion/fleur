@@ -114,6 +114,12 @@ jobs:
         run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
       - name: Pinned development images
         run: bun scripts/pull-pinned-development-images.ts
+      - name: Runner Docker tuple and prerequisite readiness
+        run: |
+          docker version
+          docker info --format 'engine={{.ServerVersion}} kernel={{.KernelVersion}} cgroup={{.CgroupDriver}}/{{.CgroupVersion}} security={{.SecurityOptions}}'
+          docker compose version --short
+          bun bin/fleur.ts doctor --json || true
       - name: Restricted reads, owned PostgreSQL and browser production fixture
         run: bun test tests/runtime
       - name: Controller admission and physical exit regressions

@@ -40,6 +40,8 @@ export const verifiedReadinessProfiles = [{
   },
 }, {
   id: "ubuntu-24.04-arm64-docker-28.0.4-azure",
+  // GitHub-hosted runner images update Docker continuously; per #118 the measured tuple is a floor here too.
+  admission: "minimum",
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "arm64" },
   bun: "1.4.3",
   cli: { version: "28.0.4", commit: "b8034c0" },
@@ -58,6 +60,8 @@ export const verifiedReadinessProfiles = [{
   },
 }, {
   id: "ubuntu-24.04-x64-docker-28.0.4-azure",
+  // GitHub-hosted runner images update Docker continuously; per #118 the measured tuple is a floor here too.
+  admission: "minimum",
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64" },
   bun: "1.4.3",
   cli: { version: "28.0.4", commit: "b8034c0" },

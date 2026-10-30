@@ -84,19 +84,27 @@ function versionAdmitted(profile: VerifiedReadinessProfile, observed: unknown, e
 }
 /** A build commit identifies one exact build; minimum profiles compare versions instead. */
 function commitAdmitted(profile: VerifiedReadinessProfile, observed: unknown, expected: string): boolean { return profile.admission === "minimum" ? revision(observed) : observed === expected; }
-/** Kernels keep their exact flavor suffix (for example `-linuxkit`); only the numeric release may be newer. */
+/** Kernels keep their exact flavor suffix (`-linuxkit`, `-azure`); the numeric release, including a `-<build>` number, may be newer. */
 function kernelAdmitted(profile: VerifiedReadinessProfile, observed: unknown): boolean {
   if (profile.admission !== "minimum") return observed === profile.engine.kernel;
-  const split = (value: unknown) => typeof value === "string" ? /^(\d+\.\d+\.\d+)(.*)$/.exec(value) : null;
+  const split = (value: unknown) => typeof value === "string" ? /^(\d+(?:\.\d+)*(?:-\d+)?)(.*)$/.exec(value) : null;
   const actual = split(observed), floor = split(profile.engine.kernel);
-  return !!actual && !!floor && actual[2] === floor[2] && versionAdmitted(profile, actual[1], floor[1]!);
+  if (!actual || !floor || actual[2] !== floor[2]) return false;
+  const numbers = (value: string) => value.split(/[.-]/).map(Number);
+  const current = numbers(actual[1]!), minimum = numbers(floor[1]!);
+  if (current.length !== minimum.length) return false;
+  for (let index = 0; index < minimum.length; index += 1) if (current[index] !== minimum[index]) return current[index]! > minimum[index]!;
+  return true;
 }
 /** Platform names such as `Docker Desktop 4.96.1 (244132)` keep their product prefix; the version may be newer and the build number is free. */
 function platformAdmitted(profile: VerifiedReadinessProfile, observed: unknown): boolean {
   if (profile.admission !== "minimum") return observed === profile.engine.platform;
   const split = (value: unknown) => typeof value === "string" ? /^(.*?) (\d+\.\d+\.\d+)(?: \(\d+\))?$/.exec(value) : null;
-  const actual = split(observed), floor = split(profile.engine.platform);
-  return !!actual && !!floor && actual[1] === floor[1] && versionAdmitted(profile, actual[2], floor[2]!);
+  const floor = split(profile.engine.platform);
+  // A platform name without a version, such as "Docker Engine - Community", must match exactly.
+  if (!floor) return observed === profile.engine.platform;
+  const actual = split(observed);
+  return !!actual && actual[1] === floor[1] && versionAdmitted(profile, actual[2], floor[2]!);
 }
 
 function nativeServerArchitecture(identity: HostIdentity): string { return identity.architecture === "x64" ? "amd64" : "arm64"; }

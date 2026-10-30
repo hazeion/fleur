@@ -1,7 +1,7 @@
 import { activeQueries, installQueryRefresh, installRetrievalRefresh, publishQueries, queryConnectionState, queryKey, type QueryRefreshResult } from "./query-client";
 import { viewIdentity, viewResponse, type ViewIdentity } from "./reactive-wire";
 import { validatePublicValue } from "../schema";
-import { reactiveSend } from "./browser-transport";
+import { reactiveSend, replaceStylesheet, setDevelopmentGeneration } from "./browser-transport";
 import type { PageResult } from "./worker-execution";
 
 async function boundedJSON(response: Response): Promise<unknown> {
@@ -21,7 +21,12 @@ async function boundedJSON(response: Response): Promise<unknown> {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
-export function startReactiveView(raw: unknown, reconcile: (page: PageResult) => void): void {
+export function startReactiveView(raw: unknown, reconcile: (page: PageResult) => void, replace?: (path: string) => Promise<() => void>): void {
+  let reloadRequired = false, pendingDevelopment: string | undefined;
+  const compatibility = document.head.querySelector<HTMLMetaElement>('meta[name="fleur-client-compatibility"]')?.content;
+  let activate: (() => void) | undefined;
+  let stylesheet: string | null = null;
+  let development = document.head.querySelector<HTMLMetaElement>('meta[name="fleur-development"]')?.content;
   let identity: ViewIdentity = viewIdentity.parse(raw);
   let generation = identity.generation, sequence = identity.sequence;
   let current = true, force = false, reopen = false, pending = false, trailing = false;
@@ -34,7 +39,7 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
     document.documentElement.dataset.fleurRefresh = state;
     for (const region of document.querySelectorAll("[data-fleur-region]")) region.setAttribute("data-fleur-stale", state === "current" && !region.hasAttribute("data-fleur-error") ? "false" : "true");
     const status = document.getElementById("fleur-refresh-status");
-    if (status) status.textContent = state === "maintenance" ? "Database maintenance is in progress." : state === "reconnecting" ? "Reconnecting. Displayed data may be stale." : state === "error" || document.querySelector("[data-fleur-error]:not([data-fleur-error='QUERY_PENDING'])") ? "Some data is unavailable." : state === "refreshing" || document.querySelector("[data-fleur-error='QUERY_PENDING']") ? "Refreshing stored data." : "";
+    if (status) status.textContent = state === "reload-required" ? "Application source changed. Your draft is retained. Navigate or reload explicitly to use the new version." : state === "maintenance" ? "Database maintenance is in progress." : state === "reconnecting" ? "Reconnecting. Displayed data may be stale." : state === "error" || document.querySelector("[data-fleur-error]:not([data-fleur-error='QUERY_PENDING'])") ? "Some data is unavailable." : state === "refreshing" || document.querySelector("[data-fleur-error='QUERY_PENDING']") ? "Refreshing stored data." : "";
   };
   const refresh = (): Promise<QueryRefreshResult> => {
     if (!current) return Promise.resolve({ status: "error", error: { code: "NOT_CONNECTED" } });
@@ -52,13 +57,27 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
     active = (async (): Promise<QueryRefreshResult> => {
       try {
         const response = await reactiveSend("/__fleur/view", { method: "POST", headers: { "Content-Type": "application/json", "X-Fleur-Request": "view" }, credentials: "same-origin", redirect: "error", cache: "no-store", signal: abort!.signal,
-          body: JSON.stringify(reopen ? { action: "open", path: location.pathname } : { action: "refresh", ...sent, force: refreshAll, queries: activeQueries(), ...(asked.length ? { retrievals: asked.map(({ name, input }) => ({ name, input })) } : {}) }) });
-        const development = document.head.querySelector<HTMLMetaElement>('meta[name="fleur-development"]')?.content;
+          body: JSON.stringify(reopen ? { action: "open", path: location.pathname } : { action: "refresh", ...sent, force: refreshAll, queries: activeQueries(), ...(asked.length ? { retrievals: asked.map(({ name, input }) => ({ name, input })) } : {}) }) }, pendingDevelopment);
         const delivered = response.headers.get("X-Fleur-Development");
-        if (development && delivered && development !== delivered) {
-          // Source replacement loads its matching island bundle. Mutations are never resubmitted.
-          current = false; location.reload();
-          return { status: "error", error: { code: "SOURCE_CHANGED" } };
+        if (development && delivered && (pendingDevelopment ?? development) !== delivered) {
+          const nextCompatibility = response.headers.get("X-Fleur-Client-Compatibility");
+          if (!compatibility || !/^[a-f0-9]{64}$/.test(compatibility) || compatibility !== nextCompatibility) {
+            reloadRequired = true; current = false;
+            queryConnectionState("reconnecting"); regions("reload-required");
+            answer(() => ({ status: "error", error: { code: "RELOAD_REQUIRED" } }));
+            return { status: "error", error: { code: "RELOAD_REQUIRED" } };
+          }
+          const module = response.headers.get("X-Fleur-Client");
+          if (!replace || !module || !/^\/assets\/client-[a-zA-Z0-9_-]+\.js$/.test(module)) throw new Error("SOURCE_CHANGED");
+          activate = await replace(module);
+          pendingDevelopment = delivered;
+          stylesheet = response.headers.get("X-Fleur-Stylesheet");
+          // A different owner has no authority over the previous view identity.
+          // Reopen once; discard this response instead of applying stale results.
+          reopen = true; generation++; force = true; trailing = true;
+          queryConnectionState("reconnecting"); regions("reconnecting");
+          answer(() => ({ status: "error", error: { code: "RESPONSE_OBSOLETE" } }));
+          return { status: "error", error: { code: "RESPONSE_OBSOLETE" } };
         }
         const rawResult = await boundedJSON(response);
         if (!response.ok) {
@@ -74,6 +93,12 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
         if (reopen) { generation++; sequence = result.sequence; force = true; trailing = true; }
         identity = viewIdentity.parse({ connection: result.connection, page: result.page, generation: result.generation, sequence: result.sequence, epoch: result.epoch, revision: result.revision, status: result.status });
         reopen = false;
+        if (activate) {
+          activate(); activate = undefined;
+          if (pendingDevelopment) { development = pendingDevelopment; setDevelopmentGeneration(development); pendingDevelopment = undefined; }
+          if (stylesheet) replaceStylesheet(stylesheet);
+          stylesheet = null;
+        }
         // Query schemas validate all results before any island receives new data.
         publishQueries(result.queries);
         reconcile(result.rendered);
@@ -114,14 +139,14 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
     if (pending) trailing = true;
     else void refresh();
   }));
-  window.addEventListener("offline", () => { generation++; force = true; abort?.abort(); queryConnectionState("reconnecting"); regions("reconnecting"); });
-  window.addEventListener("online", () => { generation++; force = true; void refresh(); });
+  window.addEventListener("offline", () => { if (reloadRequired) return; generation++; force = true; abort?.abort(); queryConnectionState("reconnecting"); regions("reconnecting"); });
+  window.addEventListener("online", () => { if (reloadRequired) return; generation++; force = true; void refresh(); });
   window.addEventListener("pagehide", () => {
     current = false; clearTimeout(timer); abort?.abort();
     void reactiveSend("/__fleur/view", { method: "POST", headers: { "Content-Type": "application/json", "X-Fleur-Request": "view" }, credentials: "same-origin", keepalive: true, body: JSON.stringify({ action: "dispose", connection: identity.connection, page: identity.page }) }).catch(() => {});
   });
   window.addEventListener("pageshow", event => {
-    if (!event.persisted) return;
+    if (!event.persisted || reloadRequired) return;
     current = true; generation++; force = true; reopen = true;
     queryConnectionState("reconnecting"); regions("reconnecting"); void refresh();
   });

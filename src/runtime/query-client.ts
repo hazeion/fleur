@@ -19,6 +19,21 @@ let requestRetrieval: ((name: string, input: unknown) => Promise<RetrievalRefres
 export function nameQueryExports(exports: Readonly<Record<string, unknown>>): void {
   for (const [name, value] of Object.entries(exports).sort(([a], [b]) => a.localeCompare(b))) if (value && typeof value === "object" && "kind" in value && (value.kind === "query" || value.kind === "retrieval") && !names.has(value)) names.set(value, name);
 }
+/** Source replacement cannot deliver values validated by a previous contract to new code. */
+export function replaceQueryExports(exports: Readonly<Record<string, unknown>>): void {
+  nameQueryExports(exports);
+  const contracts = new Map<string, Query>();
+  for (const value of Object.values(exports)) if (value && typeof value === "object" && "kind" in value && value.kind === "query") {
+    const contract = value as Query;
+    contracts.set(queryName(contract), contract);
+  }
+  for (const entry of entries.values()) {
+    const contract = contracts.get(entry.name);
+    if (contract) entry.contract = contract;
+    entry.state = { status: "loading", connection: "reconnecting", stale: true, refreshing: true };
+    for (const listener of entry.listeners) listener();
+  }
+}
 export function queryKey(name: string, input: unknown): string {
   validatePublicValue(input);
   return canonical([name, input]);

@@ -60,7 +60,7 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
       return new Response(request.method === "HEAD" ? null : html, { headers: {
         "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
         "Cross-Origin-Opener-Policy": "same-origin",
-        "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}'; script-src-attr 'none'; style-src-elem ${browser.stylesheet ? new URL(browser.stylesheet, origin).href : "'none'"}; style-src-attr 'unsafe-inline'; img-src 'self' https:; font-src 'self' https:; media-src 'self' https:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'none'`,
+        "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}' 'strict-dynamic'; script-src-attr 'none'; style-src-elem ${browser.stylesheet ? new URL(browser.stylesheet, origin).href : "'none'"}; style-src-attr 'unsafe-inline'; img-src 'self' https:; font-src 'self' https:; media-src 'self' https:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'none'`,
       } });
     } catch (error) {
       if (error instanceof Error && ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) return new Response(`<!doctype html><html lang="en"><title>Database maintenance</title><h1>Database maintenance</h1><p>${error.message === "RECOVERY_REQUIRED" ? "Maintenance needs inspection before this application can resume." : "Database maintenance is in progress. Refresh after it completes."}</p></html>`, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -109,6 +109,7 @@ async function viewResponse(project: ReactiveProject, request: Request, url: URL
     const result = command.action === "open" ? await project.open(command.path) : await project.refresh(command);
     return Response.json(result, { headers });
   } catch (error) {
+    if (error instanceof PublicOperationError) return Response.json({ error: { code: error.code } }, { status: error.code === "NOT_FOUND" ? 404 : error.code === "INPUT_INVALID" ? 400 : 422, headers });
     const code = error instanceof Error && ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "INPUT_INVALID", "REQUEST_DENIED", "CONNECTION_EXPIRED", "RESPONSE_OBSOLETE", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING", "ROUTE_INVALID", "ROUTE_NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
     return fail(code, ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(code) ? 503 : code === "CONNECTION_EXPIRED" ? 410 : code === "RESPONSE_OBSOLETE" ? 409 : 422);
   }

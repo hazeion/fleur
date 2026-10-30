@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
+import { readdir } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import type { CommandInput } from "../../cli/catalog";
 import { failure, success, type CliOutcome, type Json } from "../../cli/result";
-import { binding, lock, monotonicNanoseconds, readState, save, startIdentity, type Binding, type State } from "./state";
+import { binding, lock, monotonicNanoseconds, ownershipHeld, readState, save, startIdentity, type Binding, type State } from "./state";
 import { control, logs, publicState } from "./protocol";
 import { DevelopmentPostgres } from "./postgres";
 
@@ -11,7 +13,7 @@ function failed(command: string, code: string, diagnostic: Json = null): CliOutc
   return diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic) && "initializationSummary" in diagnostic && typeof diagnostic.initializationSummary === "string" ? { ...outcome, human: `${code}: Development did not become ready.\n${diagnostic.initializationSummary}Next: fleur logs.\n` } : outcome;
 }
 async function inspect(bound: Binding, state: State, timeoutMs: number) {
-  if (state.state === "stopped") return publicState(state);
+  if (state.state === "stopped") return { ...publicState(state), database: null };
   try { return await control(bound, state, "status", timeoutMs); }
   catch { return { ...publicState(state), state: "failed", ready: false, error: "INSTANCE_UNAVAILABLE" }; }
 }
@@ -21,7 +23,9 @@ export async function developmentStatus(project: string, timeoutMs = 5000): Prom
   try { bound = await binding(project, false); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; return { state: "failed", ready: false, error: "RECOVERY_REQUIRED", database: null }; }
   try {
     const state = await readState(bound);
-    return state ? JSON.parse(JSON.stringify(await inspect(bound, state, timeoutMs))) as Json : null;
+    if (state && !(state.state === "stopped" && await ownershipHeld(bound))) return JSON.parse(JSON.stringify(await inspect(bound, state, timeoutMs))) as Json;
+    const evidence = await readdir(bound.directory).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
+    return await ownershipHeld(bound) || evidence.some(name => name !== "owner.lock") ? { state: "failed", ready: false, error: "RECOVERY_REQUIRED", database: null, reasons: [{ code: "RECOVERY_REQUIRED", action: { command: "fleur logs", description: "Publication evidence is missing or stale while ownership or resource evidence remains. Retain records and inspect logs before explicit recovery." } }] } : null;
   } catch { return { state: "failed", ready: false, error: "RECOVERY_REQUIRED", database: null, reasons: [{ code: "RECOVERY_REQUIRED", action: { command: "fleur logs", description: "Inspect retained lifecycle ownership evidence before recovery." } }] }; }
 }
 type Emit = (event: string, data: unknown) => void;
@@ -55,10 +59,21 @@ async function executeLifecycle(command: string, input: CommandInput, emit: Emit
                 const result = await control(bound, previous, "stop", Math.max(1, deadline - performance.now()));
                 return "state" in result && result.state === "stopped" ? success(command, JSON.parse(JSON.stringify(result)) as Json) : failed(command, "RECOVERY_REQUIRED");
               }
-              const { recoverExecution } = await import("./recovery");
-              await recoverExecution(bound);
-              await (await DevelopmentPostgres.read(bound))?.stop(Math.max(1, deadline - performance.now()));
-              previous.state = "stopped"; previous.error = null; await save(bound.directory, "instance.json", previous);
+            }
+            // A lost publication record never proves resources were absent.
+            // Reconcile private ownership journals even when state is missing
+            // or says stopped; unverified evidence must survive a failed stop.
+            const { recoverExecution } = await import("./recovery");
+            await recoverExecution(bound);
+            await (await DevelopmentPostgres.read(bound))?.stop(Math.max(1, deadline - performance.now()));
+            if (previous || (await readdir(bound.directory)).some(name => name !== "owner.lock")) {
+              // A durable stopped receipt allows explicit restart after missing
+              // publication evidence has been reconciled. It grants no live owner.
+              const start = previous?.start ?? await startIdentity(process.pid);
+              if (!start) throw new Error("RECOVERY_REQUIRED");
+              const receipt: State = previous ?? { formatVersion: 1, binding: bound.id, instance: crypto.randomUUID(), pid: process.pid, start, token: randomBytes(32).toString("hex"), control: 1, state: "stopped", url: null, generation: 0, error: null, initialization: null, initializationSummary: "", prerequisites: null, logs: [], logSequence: 0 };
+              receipt.state = "stopped"; receipt.error = null;
+              await save(bound.directory, "instance.json", receipt);
             }
             return success(command, { state: "stopped", ready: false });
           } finally { await ownership.close(); }
@@ -87,11 +102,15 @@ async function executeLifecycle(command: string, input: CommandInput, emit: Emit
       const ownership = await lock(bound.directory);
       if (ownership) {
         try {
-          // The child inherits this exact locked file description: there is no
-          // unlocked gap before supervisor publication, even if its launcher dies.
-          launched = Bun.spawn([process.execPath, fileURLToPath(new URL("entry.ts", import.meta.url)), bound.project, value(input.args, "--host") ?? "127.0.0.1", value(input.args, "--port") ?? "auto", String(monotonicNanoseconds() + BigInt(Math.max(1, Math.ceil((deadline - performance.now()) * 1000000)))), input.args.includes("--background") ? "background" : "foreground", "owned-fd-3"], { env: { ...process.env }, stdio: ["pipe", "ignore", "ignore", ownership.fd], detached: true });
-          launched.unref();
-          if (input.args.includes("--background")) launched.stdin.end();
+          state = await readState(bound);
+          if (!state && (await readdir(bound.directory)).some(name => name !== "owner.lock")) return failed(command, "RECOVERY_REQUIRED");
+          if (!state || state.state === "stopped") {
+            // The child inherits this exact locked file description: there is no
+            // unlocked gap before supervisor publication, even if its launcher dies.
+            launched = Bun.spawn([process.execPath, fileURLToPath(new URL("entry.ts", import.meta.url)), bound.project, value(input.args, "--host") ?? "127.0.0.1", value(input.args, "--port") ?? "auto", String(monotonicNanoseconds() + BigInt(Math.max(1, Math.ceil((deadline - performance.now()) * 1000000)))), input.args.includes("--background") ? "background" : "foreground", "owned-fd-3"], { env: { ...process.env }, stdio: ["pipe", "ignore", "ignore", ownership.fd], detached: true });
+            launched.unref();
+            if (input.args.includes("--background")) launched.stdin.end();
+          }
         } finally { await ownership.close(); }
       }
     }

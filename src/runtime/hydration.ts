@@ -1,12 +1,38 @@
 import { nameMutationExports } from "./mutation-client";
-import { nameQueryExports } from "./query-client";
+import { nameQueryExports, replaceQueryExports } from "./query-client";
 import { startReactiveView } from "./reactive-browser";
 import { parseServerHTML } from "./browser-transport";
-import { h, hydrate, render, type ComponentType } from "preact";
-import { islands } from "./islands";
+import { h, hydrate, render, options, type ComponentType } from "preact";
+import { islands, islandNames } from "./islands";
 import { validatePublicValue } from "../schema";
 
-export function hydrateAdmitted(exports: Readonly<Record<string, unknown>>): void {
+export function hydrateAdmitted(initial: Readonly<Record<string, unknown>>, load?: (path: string) => Promise<Readonly<Record<string, unknown>>>): void {
+  let exports = initial;
+  const components = new Map<string, ComponentType<Record<string, unknown>>>();
+  const componentFor = (id: string): ComponentType<Record<string, unknown>> => {
+    const value = exports[id];
+    if (typeof value !== "function" || !islands.has(value)) throw new Error("Unregistered island");
+    let component = components.get(id);
+    if (!component) {
+      // The keyed wrapper owns hooks. Source replacement changes its render
+      // implementation without changing the component/DOM identity.
+      component = props => islands.get(exports[id] as object)!.invoke(props);
+      components.set(id, component);
+    }
+    return component;
+  };
+  const nameIslands = (values: Readonly<Record<string, unknown>>) => {
+    for (const [id, value] of Object.entries(values)) if (typeof value === "function" && islands.has(value)) islandNames.set(value, id);
+  };
+  nameIslands(exports);
+  const beforeVNode = options.vnode;
+  options.vnode = node => {
+    beforeVNode?.(node);
+    if (typeof node.type === "function" && islands.has(node.type)) {
+      const id = islandNames.get(node.type);
+      if (id) node.type = componentFor(id);
+    }
+  };
   nameMutationExports(exports);
   nameQueryExports(exports);
   const payload = document.getElementById("fleur-islands");
@@ -29,7 +55,7 @@ export function hydrateAdmitted(exports: Readonly<Record<string, unknown>>): voi
     if (!props || typeof props !== "object" || Array.isArray(props)) throw new Error("Invalid island props");
     const elements = document.querySelectorAll(`[data-fleur-island="${item.key}"]`);
     if (elements.length !== 1) throw new Error("Invalid island boundary");
-    prepared.push({ component: component as ComponentType<Record<string, unknown>>, props: props as Record<string, unknown>, element: elements[0]! });
+    prepared.push({ component: componentFor(item.id), props: props as Record<string, unknown>, element: elements[0]! });
   }
   // Validate every descriptor before any component gains browser execution.
   for (const item of prepared) hydrate(h(item.component, item.props), item.element);
@@ -63,7 +89,7 @@ export function hydrateAdmitted(exports: Readonly<Record<string, unknown>>): voi
         if (elements.length !== 1) throw new Error("Invalid island boundary");
         const element = elements[0]!, identity = element.getAttribute("data-fleur-identity");
         if (!identity || updates.has(identity)) throw new Error("Invalid island identity");
-        updates.set(identity, { component: component as ComponentType<Record<string, unknown>>, props: props as Record<string, unknown>, element });
+        updates.set(identity, { component: componentFor(descriptor.id), props: props as Record<string, unknown>, element });
       }
       const active = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
       const selection = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection } : undefined;
@@ -140,7 +166,14 @@ export function hydrateAdmitted(exports: Readonly<Record<string, unknown>>): voi
         active.focus({ preventScroll: true });
         if (selection && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) active.setSelectionRange(selection.start, selection.end, selection.direction ?? undefined);
       }
-    });
+    }, load ? async path => {
+      const next = await load(path);
+      // Activate only alongside a validated fresh view, never an obsolete reply.
+      return () => {
+        nameIslands(next); nameMutationExports(next); replaceQueryExports(next);
+        exports = next;
+      };
+    } : undefined);
   }
   document.documentElement.dataset.fleurHydrated = "true";
 }

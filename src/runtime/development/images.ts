@@ -11,11 +11,12 @@ const hex = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const schema = z.strictObject({ formatVersion: z.literal(1), binding: z.string().regex(/^[a-f0-9]{64}$/), owner: z.string().uuid(), endpoint: z.string(), directory: z.string().regex(/^fleur-read-build-[A-Za-z0-9]+$/), stage: z.enum(["controller", "worker", "complete"]), controller: hex.nullable(), worker: hex.nullable() });
 const name = (owner: string) => `fleur-image-${owner}.json`;
 /** Image creation intent and immutable IDs live outside the disposable build context. */
-export function prepareDevelopmentImages(application: string, bound: Binding) {
+export function prepareDevelopmentImages(application: string, bound: Binding, checkOpen: () => void = () => {}) {
   const root = join(bound.directory, "native");
   return prepareNativeImages(application, {
     binding: bound.id,
     async record(record) {
+      if (record.stage !== "complete") checkOpen();
       if (resolve(record.directory, "..") !== root) throw new Error("RECOVERY_REQUIRED");
       await save(root, name(record.owner), schema.parse({ ...record, formatVersion: 1, binding: bound.id, directory: basename(record.directory) }));
     },

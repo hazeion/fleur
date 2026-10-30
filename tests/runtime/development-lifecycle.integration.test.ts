@@ -149,6 +149,11 @@ test("invalid source preserves the usable app and corrected server and island so
     const page = await browser.newPage();
     await page.goto(new URL("/reactive", started.result.data.url).href);
     await browserExpect(page.getByRole("heading", { name: "Reactive items" })).toBeVisible();
+    const draft = page.getByRole("textbox", { name: "Draft 1", exact: true });
+    await draft.fill("Unsaved across source replacement");
+    await page.getByRole("button", { name: "Clicks 0", exact: true }).click();
+    await draft.focus();
+    await page.evaluate(() => { (globalThis as unknown as { originalDraft: Element | null }).originalDraft = document.activeElement; });
     const originalEntry = await page.locator("script[type=module][src]").getAttribute("src");
     expect(originalEntry).toBeString();
     const server = join(project, "server/items.tsx"), client = join(project, "client/Views.tsx");
@@ -161,7 +166,11 @@ test("invalid source preserves the usable app and corrected server and island so
     await writeFile(client, (await readFile(client, "utf8")).replace("Clicks {clicks}", "Taps {clicks}"));
     await writeFile(server, valid.replace("<h1>Reactive items</h1>", "<h1>Corrected catalog</h1>"));
     await browserExpect(page.getByRole("heading", { name: "Corrected catalog" })).toBeVisible({ timeout: 90000 });
-    await browserExpect(page.getByRole("button", { name: "Taps 0", exact: true })).toBeVisible({ timeout: 10000 });
+    await browserExpect(page.getByRole("button", { name: "Taps 1", exact: true })).toBeVisible({ timeout: 10000 });
+    await browserExpect(draft).toHaveValue("Unsaved across source replacement");
+    await browserExpect(draft).toBeFocused();
+    expect(await page.evaluate(() => (globalThis as unknown as { originalDraft: Element }).originalDraft === document.activeElement)).toBe(true);
+    await browserExpect(page.getByRole("region", { name: "Draft 1", exact: true })).toContainText("Mounts 1");
     expect((await cli("status")).result.data).toMatchObject({ state: "ready", ready: true, generation: 2, error: null });
     expect((await fetch(new URL(originalEntry!, started.result.data.url))).status).toBe(200);
     const first = await cli("logs", "--limit", "2");
@@ -394,3 +403,172 @@ test("ambient private database configuration cannot redirect development ownersh
     expect((await cli("status")).result.data).toMatchObject({ state: "ready", ready: true });
   } finally { await cleanup(root, cli); await foreign.cleanup(); }
 }, 180_000);
+
+test("dynamic-only pages satisfy rendering and reactive readiness without a static fixture route", async () => {
+  const { root, project, cli } = await fixture();
+  try {
+    await writeFile(join(project, "shared/pages.ts"), 'import { definePage } from "fleur/routing"; import { schema } from "fleur/schema"; export const detail = definePage({ path: "/catalog/:kind", params: schema.object({ kind: schema.enum(["neutral", "other"]) }) });\n');
+    await writeFile(join(project, "server/home.tsx"), 'import { registerPage } from "fleur/server"; import { detail } from "../shared/pages"; registerPage(detail, { component: ({ params }) => <main><h1>Catalog {params.kind}</h1></main> });\n');
+    const started = await cli("dev", "--background");
+    expect(started.exit, started.stdout).toBe(0);
+    expect(started.result.data).toMatchObject({ state: "ready", ready: true });
+    expect(await (await fetch(new URL("/catalog/neutral", started.result.data.url))).text()).toContain("Catalog neutral");
+  } finally { await cleanup(root, cli); }
+}, 180_000);
+
+for (const mode of ["background", "attached"] as const) test(`real PTY death of a ${mode} launcher preserves the existing background owner`, async () => {
+  const { root, project, cli } = await fixture();
+  try {
+    const owner = mode === "attached" ? await cli("dev", "--background") : undefined;
+    if (owner) expect(owner.exit, owner.stdout).toBe(0);
+    const terminal = Bun.spawn(["python3", join(import.meta.dir, "lifecycle-terminal.py"), process.execPath, executable, project, mode], { env: { ...process.env, HOME: root, DOCKER_CONFIG: process.env.DOCKER_CONFIG ?? join(homedir(), ".docker") }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, exit] = await Promise.all([new Response(terminal.stdout).text(), new Response(terminal.stderr).text(), terminal.exited]);
+    expect(exit, stderr).toBe(0); expect(JSON.parse(stdout).ready).toBe(true);
+    const status = await cli("status");
+    expect(status.exit, status.stdout).toBe(0); expect(status.result.data).toMatchObject({ ready: true, state: "ready" });
+    if (owner) expect(status.result.data.instance).toBe(owner.result.data.instance);
+    expect((await fetch(status.result.data.url)).status).toBe(200);
+  } finally { await cleanup(root, cli); }
+}, 180000);
+
+for (const victim of ["supervisor", "database"] as const) test(`a ${victim} crash stays failed on observation and requires explicit stop and dev`, async () => {
+  const { root, project, cli } = await fixture();
+  try {
+    const started = await cli("dev", "--background"); expect(started.exit, started.stdout).toBe(0);
+    const database = await privateDatabase(root), record = JSON.parse(await readFile(join(database.state, "instance.json"), "utf8"));
+    expect(record.instance).toBe(started.result.data.instance);
+    if (victim === "supervisor") process.kill(record.pid, "SIGKILL");
+    else {
+      const file = join(project, "server/home.tsx");
+      await writeFile(file, (await readFile(file, "utf8")).replace("Local catalog", "Candidate after crash"));
+      await browserExpect.poll(async () => (await cli("logs")).result.data.logs.filter((entry: { code: string }) => entry.code === "CLIENT_COMPILED").length, { timeout: 10000 }).toBeGreaterThanOrEqual(2);
+      const metadata = Bun.spawn(["docker", "inspect", database.record.container, "--format", '{{index .Config.Labels "dev.fleur.development-binding"}}'], { stdout: "pipe", stderr: "pipe" });
+      expect((await new Response(metadata.stdout).text()).trim()).toBe(database.record.binding); expect(await metadata.exited).toBe(0);
+      const killed = Bun.spawn(["docker", "kill", database.record.container], { stdout: "ignore", stderr: "pipe" });
+      expect(await killed.exited, await new Response(killed.stderr).text()).toBe(0);
+    }
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const status = await cli("status"); expect(status.exit, status.stdout).toBe(0);
+      expect(status.result.data).toMatchObject({ state: "failed", ready: false, instance: record.instance });
+      expect((await cli("dev", "--background")).exit).not.toBe(0);
+      const logs = await cli("logs"); expect(logs.exit, logs.stdout).toBe(0); expect(logs.result.data.logs.length).toBeGreaterThan(0);
+    }
+    if (victim === "database") {
+      // Even explicit infrastructure recovery cannot let an in-flight reload
+      // silently restart the failed application owner.
+      const restartedDatabase = Bun.spawn(["docker", "start", database.record.container], { stdout: "ignore", stderr: "pipe" });
+      expect(await restartedDatabase.exited, await new Response(restartedDatabase.stderr).text()).toBe(0);
+      expect((await cli("status")).result.data).toMatchObject({ state: "failed", ready: false, instance: record.instance });
+    }
+    expect((await cli("stop")).exit).toBe(0);
+    const restarted = await cli("dev", "--background"); expect(restarted.exit, restarted.stdout).toBe(0);
+    expect(restarted.result.data).toMatchObject({ ready: true, state: "ready" });
+    expect(restarted.result.data.instance).not.toBe(record.instance);
+    expect(restarted.result.data.initialization.status).toBe("existing");
+  } finally { await cleanup(root, cli); }
+}, 240000);
+
+test("a departed maintenance owner's uncertain durable stage blocks stop until shared state-verifying reconciliation", async () => {
+  const { root, project, cli } = await fixture();
+  let database: Awaited<ReturnType<typeof privateDatabase>> | undefined;
+  let maintenance: MaintenanceLease | undefined, uncertain = false;
+  const { inspectMaintenance, reconcileMaintenance } = await import("../../src/runtime/database/recovery");
+  try {
+    const started = await cli("dev", "--background"); expect(started.exit, started.stdout).toBe(0);
+    database = await privateDatabase(root);
+    const before = await inspectMaintenance(database.url, database.config); expect(before.actual).not.toBeNull();
+    maintenance = await MaintenanceLease.acquire(database.url, true, database.config);
+    // Model owner loss after durable intent, before any database mutation.
+    await maintenance.persist({ formatVersion: 1, target: maintenance.target, stage: "applying", planChecksum: "a".repeat(64), backup: null, epoch: crypto.randomUUID(), intent: { operation: "migration", beforeSchema: before.actual!.schema, beforeData: before.actual!.data, beforeHistory: before.actual!.history, afterSchema: null, afterHistory: null } });
+    const marker = await maintenance.marker(); uncertain = true;
+    await maintenance.close(); maintenance = undefined;
+    const inspection = await cli("db", "recover", "--inspect"); expect(inspection.exit, inspection.stdout).toBe(0);
+    expect((await inspectMaintenance(database.url, database.config)).maintenance).toEqual(marker);
+    const stop = await cli("stop"); expect(stop.exit, stop.stdout).toBe(5);
+    expect(stop.result.error.code).toBe("RECOVERY_REQUIRED");
+    expect((await cli("status")).result.data).toMatchObject({ ready: false });
+    const proof = await reconcileMaintenance(database.url, project, { ...database.config, confirm: async approval => approval.action === "reconcile" });
+    expect(proof).toMatchObject({ applied: [], reconciled: "rollback verified" }); uncertain = false;
+    expect((await inspectMaintenance(database.url, database.config)).actual).toEqual(before.actual);
+    expect((await cli("stop")).exit).toBe(0);
+  } finally {
+    await maintenance?.close();
+    if (uncertain && database) await reconcileMaintenance(database.url, project, { ...database.config, confirm: async approval => approval.action === "reconcile" });
+    await cleanup(root, cli);
+  }
+}, 180000);
+
+test("a save during verified retirement never publishes the superseded candidate and preserves the last valid app", async () => {
+  const { root, project, cli } = await fixture();
+  const paused: string[] = [];
+  const docker = async (...args: string[]) => {
+    const child = Bun.spawn(["docker", ...args], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code, stderr).toBe(0); return stdout.trim();
+  };
+  try {
+    const started = await cli("dev", "--background"); expect(started.exit, started.stdout).toBe(0);
+    const database = await privateDatabase(root), file = join(project, "server/home.tsx"), source = await readFile(file, "utf8");
+    // Wait for the existing bounded warm window to end before pausing idle
+    // controllers. No preparation timeout may substitute for the retirement race.
+    await browserExpect.poll(async () => {
+      const execution = (await cli("status")).result.data.execution;
+      return execution && execution.starting === 0 && execution.prepared === 0 && execution.idle === execution.occupied && execution.occupied > 0;
+    }, { timeout: 65000 }).toBe(true);
+    const containers = (await docker("ps", "-q", "--no-trunc", "--filter", `label=dev.fleur.development-binding=${database.record.binding}`)).split("\n").filter(Boolean);
+    for (const id of containers) {
+      const metadata = JSON.parse(await docker("inspect", id, "--format", "{{json .}}"));
+      if (!metadata.Name.startsWith("/fleur-exec-controller-")) continue;
+      const owner = metadata.Config.Labels["dev.fleur.execution-owner"];
+      expect(metadata.Config.Labels["dev.fleur.development-binding"]).toBe(database.record.binding);
+      const names = await readdir(join(database.state, "native"));
+      let verified = false;
+      for (const name of names.filter(name => name.startsWith("fleur-retained-lease-"))) {
+        const record = JSON.parse(await readFile(join(database.state, "native", name, "lease.json"), "utf8"));
+        if (record.owner === owner && record.images.controller === metadata.Image) verified = true;
+      }
+      expect(verified).toBe(true); expect(metadata.Id).toBe(id);
+      await docker("pause", id); paused.push(id);
+    }
+    expect(paused.length).toBeGreaterThan(0);
+    await writeFile(file, source.replace("Local catalog", "Superseded A"));
+    await browserExpect.poll(async () => (await cli("logs")).result.data.logs.some((entry: { code: string }) => entry.code === "DRAINING"), { timeout: 90000 }).toBe(true);
+    await writeFile(file, source+'\nimport { readFile } from "node:fs";\n');
+    while (paused.length) { await docker("unpause", paused[0]!); paused.shift(); }
+    await browserExpect.poll(async () => (await cli("status")).result.data, { timeout: 90000 }).toMatchObject({ state: "ready", ready: true, generation: 1, error: "SOURCE_REJECTED" });
+    const retained = await (await fetch(started.result.data.url)).text();
+    expect(retained).toContain("Local catalog"); expect(retained).not.toContain("Superseded A");
+    await writeFile(file, source.replace("Local catalog", "Latest B"));
+    await browserExpect.poll(async () => (await cli("status")).result.data, { timeout: 90000 }).toMatchObject({ state: "ready", ready: true, generation: 2, error: null });
+    expect(await (await fetch(started.result.data.url)).text()).toContain("Latest B");
+  } finally {
+    const resumed = await Promise.allSettled(paused.map(id => docker("unpause", id)));
+    try { await cleanup(root, cli); }
+    finally { expect(resumed.filter(result => result.status === "rejected"), "Every paused owned controller must resume or report failed cleanup").toEqual([]); }
+  }
+}, 300000);
+
+test("presentation asset bytes participate in admission snapshots and invalid edits preserve the last valid asset", async () => {
+  const { root, project, cli } = await fixture();
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  const { mkdir } = await import("node:fs/promises");
+  try {
+    await mkdir(join(project, "assets"), { recursive: true });
+    const file = join(project, "assets/badge.svg"), svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path fill="red" d="M0 0h8v8H0z"/></svg>';
+    await writeFile(file, svg);
+    await writeFile(join(project, "server/home.tsx"), 'import { registerPage } from "fleur/server"; import { home } from "../shared/pages"; import badge from "../assets/badge.svg"; registerPage(home, { component: () => <main><h1>Local catalog</h1><img src={badge} alt="Catalog badge"/></main> });');
+    const started = await cli("dev", "--background"); expect(started.exit, started.stdout).toBe(0);
+    browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); await page.goto(started.result.data.url);
+    await browserExpect(page.getByRole("img", { name: "Catalog badge" })).toHaveJSProperty("naturalWidth", 8);
+    const url = new URL("/assets/badge.svg", started.result.data.url);
+    expect(await (await fetch(url)).text()).toBe(svg);
+    const corrected = svg.replace('fill="red"', 'fill="blue"'); await writeFile(file, corrected);
+    await browserExpect.poll(async () => (await cli("status")).result.data.generation, { timeout: 90000 }).toBe(2);
+    expect(await (await fetch(url)).text()).toBe(corrected);
+    await writeFile(file, corrected.replace("</svg>", "<script>throw 1</script></svg>"));
+    await browserExpect.poll(async () => (await cli("status")).result.data.error, { timeout: 10000 }).toBe("SOURCE_REJECTED");
+    expect(await (await fetch(url)).text()).toBe(corrected);
+    expect((await cli("status")).result.data).toMatchObject({ state: "ready", ready: true, generation: 2 });
+    await page.reload(); await browserExpect(page.getByRole("img", { name: "Catalog badge" })).toHaveJSProperty("naturalWidth", 8);
+  } finally { await browser?.close(); await cleanup(root, cli); }
+}, 240000);

@@ -33,7 +33,7 @@ test("two views refresh server regions and queries while retaining keyed drafts,
     for (let repeat = 1; repeat <= 2; repeat++) {
       const first = await browser.newPage(), second = await browser.newPage();
       const errors: string[] = [];
-      first.on("pageerror", error => errors.push(error.message)); second.on("pageerror", error => errors.push(error.message));
+      first.on("pageerror", error => { errors.push(error.message); trace.push({ browserError: error.message }); }); second.on("pageerror", error => { errors.push(error.message); trace.push({ browserError: error.message }); });
       const started = performance.now();
       second.on("response", async response => {
         if (!response.url().endsWith("/__fleur/view")) return;

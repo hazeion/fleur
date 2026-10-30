@@ -28,6 +28,7 @@ The package includes this document, project creation guidance and prerequisite s
 | `VERSION_MISMATCH` | 4 | Restore intended exact metadata or explicitly install the matching local release. |
 | `PREREQUISITE_UNAVAILABLE` | 4 for unavailable or incompatible prerequisites; 1 for a failed authorized acquisition | Run doctor and inspect required setup actions. |
 | `READINESS_TIMEOUT` | 4 | Recheck prerequisites before explicitly retrying. |
+| `BROWSER_ASSET_CAPACITY` | 4 when startup cannot fit the bounded cache; a reload retains the current app | Explicitly stop and dev to clear disposable browser assets, preserving data and backups. |
 | `AUTHORITY_REQUIRED` | 3 | Have a human inspect and authorize the exact proposed action. |
 | `HUMAN_ACTION_REQUIRED` | 3 | Complete the documented manual prerequisite action, then rerun setup. |
 | `PROJECT_COLLISION` | 5 | Choose an empty target or resolve reported protected files explicitly. |

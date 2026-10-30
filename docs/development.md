@@ -1,5 +1,12 @@
 # Development lifecycle
 
+`fleur status` includes aggregate execution capacity, pending creation and
+quarantine counts without exposing process or container identifiers.
+
+`fleur status` reports an unused project as stopped without requiring database
+configuration or starting resources. Explicit private database configuration still
+uses the shared health probe when no lifecycle binding exists.
+
 `fleur dev` owns a development supervisor, restricted application execution and
 persistent PostgreSQL for the selected checkout. It does not launch a coding
 agent. Use the project's exact Fleur pin and the supported Bun/Docker runtime.
@@ -56,11 +63,42 @@ Reload never initializes a database. See [maintenance](maintenance.md).
 
 An invalid edit retains the last valid application and safe file/line/action
 diagnostics in `logs`. Correct source and save again. Publication rechecks the
-latest admitted snapshot so an older compilation cannot replace a later edit.
+latest admitted snapshot after drain and retirement so an older compilation
+cannot replace a later edit. If a save races retirement, the owner restores the
+last valid immutable snapshot before trying the latest source. This rollback
+does not replay initialization, migrations, seeds or mutations.
 Server and browser compilation use that same snapshot. A changed browser
-source generation loads its matching island bundle in open browsers. This
-source reload replaces the document; ordinary reactive database refreshes retain
-keyed drafts, focus and island state. Submitted mutations are never replayed.
+source generation loads its matching island module in the existing browser
+runtime and reopens the reactive view. Keyed islands keep their draft values,
+focus and component state; replacement does not reload the document. Submitted
+mutations are never replayed.
+
+Compatible source edits replace island code automatically. Incompatible or
+uncertain hook layouts retain the previous browser generation, draft, focus and
+unknown-mutation state. A stale diagnostic says to navigate or reload explicitly;
+that deliberate navigation loads the new generation. Fleur never resets a draft
+or replays a submitted mutation to make replacement succeed. Old browser
+operations receive a known source-changed refusal before reaching the new app.
+Current schema and maintenance fencing remains authoritative.
+
+The compatibility proof recognizes directly imported hooks in unconditional
+prefix statements of inline declared island components. It compares hook order,
+bindings, state/memo/ref initializers, effect configuration and props/declaration
+dependencies. Pure query results used through useQuery are invalidated before
+compatible code receives fresh values. Custom hooks, dynamic aliases, conditional
+layouts, classes and uncertain local call paths require explicit navigation after
+an application edit. Declaration/shared-schema changes may also conservatively
+require navigation. One uncertain module conservatively guards the whole browser
+graph, so some safe edits also require navigation. This analysis does not migrate state or prove arbitrary
+JavaScript behavior. Unchanged server-only edits continue automatic replacement.
+
+Published immutable browser modules and styles remain available to retained views
+until stop, within a 256 MiB cache. A capacity refusal preserves the current app;
+explicit stop and dev clears these disposable assets without deleting data or
+backups. Presentation assets retain their existing mutable no-cache URL contract.
+Their admitted bytes participate in reload snapshots; invalid edits keep the last
+valid bytes. Resource rendering can require a new navigation, as with ordinary
+browser caching.
 
 An incompatible source schema blocks database admission in the retained
 application. Review and apply migrations explicitly, or restore compatible

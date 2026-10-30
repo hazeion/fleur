@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import { recoverDevelopmentImage } from "./images";
 import { join } from "node:path";
 import { nativeCommand } from "../native/command";
@@ -10,7 +10,10 @@ import type { Binding } from "./state";
 /** Recovery runs after creation closes or with the dead owner's kernel lock acquired. Retain every uncertain journal. */
 export async function recoverExecution(bound: Binding): Promise<void> {
   const root = join(bound.directory, "native");
-  const entries = await readdir(root).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
+  const info = await lstat(root).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+  if (!info) return;
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0 || await realpath(root) !== root) throw new Error("RECOVERY_REQUIRED");
+  const entries = await readdir(root);
   if (!entries.length) return;
   for (const name of entries) {
     if (name.startsWith("fleur-retained-lease-")) await (await RetainedLease.recover(join(root, name))).cleanup();

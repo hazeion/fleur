@@ -12,6 +12,7 @@ export function defineIsland<P extends object>(options: { props: Schema<P>; comp
     schema: propsSchema,
     validate: (value: unknown) => propsSchema.parse(value),
     render: (value: unknown) => h(renderComponent, propsSchema.parse(value)),
+    invoke: (value: unknown) => renderComponent(propsSchema.parse(value)),
   }));
   return Object.freeze(component);
 }

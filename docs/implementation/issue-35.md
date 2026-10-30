@@ -117,8 +117,8 @@ endpoint. The current public background-dev test fails with exit 4,
 `ready: false`, and prerequisite `release: unverified`; no application or
 PostgreSQL resource is created. This failure is the expected external blocker,
 not passing lifecycle acceptance. An admitted runtime, or separately authorized
-qualification of the new tuple, is needed before requirements-based native
-implementation and proof can continue.
+qualification of the new tuple, is needed before qualified public runtime proof can continue. Static, browser and
+component implementation work continues independently of that qualification.
 
 ## Requirements to evidence at this checkpoint
 
@@ -129,8 +129,8 @@ implementation and proof can continue.
 | Persistent storage and backups | One separate public dev/stop/dev pass retained a browser edit, migration history and byte-identical restore-verified backup/manifest | Second pass; newly added lost-acknowledgement extension has not been executed |
 | Concurrent owners and project/copy isolation | One public concurrent-start/copy/stop-stop pass, 28 assertions; copied ignored records did not attach original storage | Two admitted-runtime passes and additional dev/stop interleavings |
 | PID plus start identity | Kernel boot/start identity, authenticated incarnation control, inherited ownership lock implemented | Public unrelated-live-PID regression is written but not executed |
-| Readiness and ports | Component public readiness/status pass; explicit occupied-port red led to early reservation; corrected broad binding and local DB proof passed once | Qualified readiness failure matrix; dynamic-only routes remain an implementation gap |
-| Invalid/corrected reload | Source diagnostic clearing red; server-only update with stale island bundle red; corrected server/island browser pass; schema-blocking browser pass | Repeat qualified proof; new old-asset retention assertion was red and its cache fix is not yet green |
+| Readiness and ports | Component public readiness/status pass; explicit occupied-port red led to early reservation; corrected broad binding and local DB proof passed once | Qualified public readiness failure matrix; dynamic-only component proof is recorded below |
+| Invalid/corrected reload | Source diagnostic clearing red; server-only update with stale island bundle red; corrected server/island browser pass; schema-blocking browser pass | Repeat qualified proof; immutable asset retention and conservative browser replacement component checks pass below |
 | Superseded A/B reload | Public test observed A publishing after B was saved; publication now rechecks the admitted snapshot | Green run and repeats remain |
 | Foreground/background | Actual PTY SIGKILL red exposed missing lifetime ownership; foreground pipe and monotonic stream writer added | Final PTY pass, background PTY survival, stale foreground caller, and completed-event proof remain |
 | Admission/drain/maintenance | Ordinary stop initially interrupted a real shared maintenance lease; fixed shared-fence test passed once, 17 assertions | Two passes; bounded-drain/unknown-write and retirement uncertainty fault matrix |
@@ -140,13 +140,13 @@ implementation and proof can continue.
 | Secret boundaries | Intended red exposed raw prerequisite version output in dev JSON; six targeted lifecycle CLI tests now pass, including tool-output redaction and unsafe-private-state denial | Qualified compiler/Docker failure and cursor/admission fault matrix |
 | Docs/catalog/generated guidance | Development docs, packaged docs, portable project ID, current generated guidance and internal candidate admission guard updated | Final offline command results below; independent standards/spec review |
 
-The current readiness implementation requires a static registered page. Dynamic-only
-applications need a specification-preserving rendering probe before #35 is complete.
+Dynamic-only rendering and declared missing-data probes have since been implemented;
+see the continuation evidence below.
 The lifecycle runtime tests retain their success assertions; none were skipped or
-relaxed to accommodate this machine's unverified profile. Source generation
-currently reloads the document; preserving the required reconnect/draft guarantees
-across source replacement still needs spec review and, if required, a state-preserving
-replacement implementation. This is not an accepted contract amendment.
+relaxed to accommodate this machine's unverified profile. Source generation now reopens the reactive view and replaces admitted application
+modules within the same browser runtime, rather than reloading the document.
+The continuation tests cover retained drafts, focus, component state, stylesheet
+replacement and query-contract changes; qualified public lifecycle proof remains required.
 
 ## Additional observed red/green corrections
 
@@ -193,3 +193,177 @@ reviews have not passed for this checkpoint. CI must select full runtime scope
 and all three required summaries later. A cancelled, skipped or unexecuted check
 is not passing evidence. Production artifact #36 and the workout proof remain
 outside this change.
+
+
+## Implementation continuation from checkpoint 7016767
+
+This continuation preserves the prerequisite profiles and Doctor gate. Installed
+Bun 1.4.4 is not used for verification; all commands explicitly select Bun 1.4.3
+and put its directory first on PATH for child processes.
+
+Additional criteria and boundaries:
+
+- The public readiness operation must render a project containing only dynamic
+  routes, including a route whose schema-valid key correctly produces declared
+  NOT_FOUND. It must reject failed rendering and end a stalled transport at the
+  supplied readiness deadline. Real restricted execution and disposable PostgreSQL
+  catch registration/schema/rendering failures; this component proof does not
+  qualify the CLI prerequisite gate or persistent-volume lifecycle.
+- Browser replacement must load new admitted island code and compiler-owned
+  Tailwind CSS without a second document, retain the same draft/focused input,
+  click/mount state, reopen the view once and reject obsolete responses. New
+  query contracts must never receive values validated only by an earlier schema.
+  Browser protocol fixtures isolate this client behavior; public CLI/browser
+  generation handoff remains a separate required proof.
+- Closing reactive or native admission must reject new work immediately and
+  report unverified drain within the supplied bound. Lost actual Docker control
+  transport must retain quarantined capacity and private lease evidence. A later
+  explicit close may release it only after verified cleanup. These use public
+  lifecycle operations and the existing native/maintenance implementations;
+  no successful Docker response or version admission is fabricated.
+- Cancellation crosses candidate registration and execution startup. No phase
+  starts after creation closes. An already accepted daemon request can remain
+  uncertain; neither a timer nor client death proves its retirement.
+
+Observed continuation red phases, separately from implementation:
+
+- The strengthened public invalid/corrected-reload test stopped at the unchanged
+  prerequisite gate, exit 4. This is blocked qualification, not a behavioral red.
+- Running the new browser replacement assertions against the committed
+  checkpoint's reactive browser implementation failed: the document reloaded,
+  the draft reverted to Stored and the counter reverted to zero.
+- A held reactive backend outlived the supplied close budget in both repetitions,
+  returning the test's unbounded sentinel instead of uncertainty.
+- Native close ignored its supplied short bound and resolved successfully in both
+  repetitions. Actual Docker transport loss retained capacity but a later close
+  kept returning the earlier rejection; the new explicit-recovery test was red.
+- New island code using its changed query output schema emitted browser errors
+  when it briefly received the old cached value. Cache invalidation before code
+  publication corrected this without resetting local island state.
+- A new Tailwind utility appeared in the DOM but remained unstyled because the
+  application realm correctly denied the ordinary stylesheet setter. The trusted
+  transport now retains a narrow validated setter; application authority is unchanged.
+- A readiness probe to a stalled listener ignored the supplied deadline and
+  returned the unbounded sentinel. The signal now covers every probe request.
+
+The first bundle-split attempt also failed because Vite removed module exports
+under application-entry defaults. Explicit entry signatures fixed that build
+integration error. One early browser fixture included excess fields in its view
+identity and was corrected before its results were used as behavioral evidence.
+
+## Continuation results and limits
+
+These checks used the pinned Bun 1.4.3. Component checks on the current host do
+not admit its Docker tuple or replace public lifecycle acceptance.
+
+| Command or boundary | Result actually observed |
+| --- | --- |
+| `bun test tests/runtime/retained-execution.integration.test.ts` | 13 passed, 107 assertions. Includes two repetitions of strict busy deadlines, bounded close and actual Docker-control transport loss with retained quarantine followed by explicit verified retirement. |
+| Dynamic-only readiness integration, two separate runs | Each passed seven assertions, including a schema-valid long dynamic key, declared NOT_FOUND, rejected rendering and bounded stalled transport. Real disposable PostgreSQL and restricted execution were used. |
+| Browser replacement, asset retention, reactive protocol/transport/regions, mutation policy, presentation build and source admission group | 83 passed, 398 assertions across ten files. Each browser replacement variant ran twice internally. |
+| `bun test tests/cli/lifecycle.test.ts` | Eleven passed, 102 assertions. Missing records, unresolved creation evidence and redirected native directories cannot produce a false stopped result. Explicit verified recovery leaves a durable stopped receipt. |
+| Types, lint and reference build | Passed after the asset-cache implementation; types and lint also passed after the recovery-directory and missing-record corrections. Later edits still require final checks. |
+| Generated-project verification, two final runs | Both passed after the latest generated guidance, with isolated frozen dependency graphs and the configured compiler/lint/bundler checks. |
+| Rendering experiment lint, types, production build and test | Passed; four tests and 20 assertions. This is an actual production application build, separate from reference declarations. |
+| Rendering experiment browser, two runs | Both passed all three tests. The experiment is not public lifecycle proof. |
+
+The complete root `bun run test` was executed during continuation and **failed**.
+It ran while implementation was still changing, so it is diagnostic evidence,
+not a final-head gate. CLI/CI reported 1,404 passes, five failures and one async
+error across 1,409 tests. The failures were the existing packed-launch timeout,
+two fresh-session cancellation deadlines, fresh enrollment resume and denied PTY
+completion. Repeating exactly those five cases, without changing their assertions
+or deadlines, passed twice with 30 assertions per run. The full-run failures
+remain recorded; targeted passes do not erase them.
+
+The runtime portion reported 399 passes and 23 failures across 422 tests. Seventeen
+public lifecycle cases were refused by the unchanged unadmitted-runtime gate.
+Two existing busy-native deadline cases failed under the concurrent full run.
+Two retirement-control-loss cases, one cancelled-open case and one compatible
+browser-replacement case used module versions loaded before their fixes. The
+later complete retained-execution file and browser group above passed with those
+fixes. Newer public fault cases were not collected by that earlier process and
+are not claimed as executed. All five native Python suites passed, 59 tests in
+total. A final full runtime/Python gate remains required.
+
+## Browser compatibility decision and additional failure cases
+
+The observed hook-order experiment inserted a state hook before a mounted
+island's existing hooks. Its stable export and key did not prevent Preact from
+assigning old state slots to different hooks and corrupting the draft. The user
+resolved recovery conservatively: incompatible or uncertain hook layouts retain
+the previous browser generation until explicit navigation. No specification
+amendment or automatic draft reset was introduced.
+
+The deterministic browser regression now covers compatible replacement,
+incompatible hook insertion, an uncertain custom hook and query-derived local
+state. It preserves the original focused DOM input, unsaved draft, nested state,
+mount count and unknown mutation outcome. Compatible edits update code, CSS and
+query validation automatically. Incompatible views display an actionable stale
+diagnostic; obsolete mutations are refused before forwarding. Explicit navigation
+opts into the new generation without replay. These are real browser component
+checks with a controlled protocol backend, not SQL commit or public dev proof.
+The conservative AST analysis and its limits are documented in development
+guidance. It does not prove arbitrary JavaScript state migration.
+
+Publication now rechecks the admitted snapshot after retirement and can reopen
+the last valid immutable application if a newer invalid save superseded the
+candidate. Candidate cancellation closes creation admission. A failed database
+or gateway closes that admission too, so a late candidate cannot implicitly
+restart a failed instance. New public tests cover these races, stable-URL asset
+bytes, uncertain maintenance, and retirement evidence; their qualified runs
+remain outstanding.
+
+Immutable browser assets remain available for retained browser generations in a
+bounded cache. Quota or conflicting content refuses replacement before retirement.
+Mutable presentation URLs continue serving the current admitted bytes. Two
+component repetitions verify retention and atomic refusal; the public asset-byte
+browser case has been written but not qualified.
+
+Docker quiet windows requested by the parent were honored. Only uniquely owned
+active workloads were retired; no global prune, unrelated container removal or
+profile edit was performed. At the latest acknowledgement, the active container
+inventory was empty and no owned supervisor/native test command remained.
+Stopped objects and original images were preserved. Lack of an active process
+alone is not evidence that an uncertain retirement was verified.
+
+Public profile admission, two qualified public timing/network passes, final
+full gates and independent standards/spec review remain outstanding. No public
+end-to-end or release result is claimed here.
+
+
+Further non-Docker recovery regressions failed for the intended behavior before
+production edits. Missing instance records hid inert unresolved creation evidence
+from status, stop and dev. The first red reported stopped; after status was fixed,
+stop still returned exit zero, and then dev reached prerequisite probing instead
+of refusing recovery. Each was corrected separately. A subsequent recovery test
+showed that verified cleanup lacked a durable stopped receipt and could not permit
+restart. The receipt is now published only after reconciliation succeeds.
+A redirected empty native directory also made stop return success. Recovery now
+checks its actual owned private directory before examining any journals. The
+foreign target remains unchanged. These checks created no database or container.
+
+The PostgreSQL image-preflight, credential-argument and tool-file ownership
+regressions are being prepared during the parent's Docker quiet window. They
+have not been executed and are not red or green evidence yet. Their direct
+resource-operation boundary will be component engineering evidence only; the
+public persistent-volume proof still requires separate CLI processes on an
+admitted runtime.
+
+
+The latest complete lifecycle CLI file passed eleven tests and 102 assertions.
+The new bounded-log case passed independently and again in that complete file.
+It verifies authenticated cursor continuation, tampering refusal without echoing
+the token, monotonic finite follow completion for a failed instance and absence
+of the machine-local project path in output. This covers an existing contract;
+no new behavioral red is claimed for that case.
+
+A stale stopped receipt under a real live ownership lock was an additional
+observed red: status reported stopped. Status now refuses both missing and stale
+publication evidence while ownership remains. The test preserves and restores
+the actual failed supervisor record before cleanup; it does not inject Doctor
+success or start any Docker workload.
+
+Project creation, project-pin enforcement and packed-launcher suites passed
+54 tests and 546 assertions after the guidance and lifecycle changes. The packed
+suite retained its interruption/grace checks and all existing deadlines.

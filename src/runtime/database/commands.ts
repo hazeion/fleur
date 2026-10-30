@@ -40,6 +40,7 @@ export const statusCommand: CommandDefinition = {
       const { developmentStatus } = await import("../development/lifecycle");
       const state = await developmentStatus(project, timeoutExplicit ? timeoutSeconds * 1000 : 5000);
       if (state) return success("status", state);
+      if (![environment.FLEUR_PRIVATE_DATABASE_URL, environment.FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL, environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL].some(value => value !== undefined)) return success("status", { state: "stopped", ready: false, instance: null, url: null, generation: 0, error: null, database: null, reasons: [] });
     }
     const { selectTarget } = await import("./target");
     let target;
@@ -49,8 +50,8 @@ export const statusCommand: CommandDefinition = {
       // The probe has its own 5 s default deadline; an explicit --timeout replaces it.
       const config = { ...(environment.FLEUR_PRIVATE_STATE_ROOT ? { stateRoot: environment.FLEUR_PRIVATE_STATE_ROOT } : {}), timeoutMs: timeoutExplicit ? timeoutSeconds * 1000 : 5000, ...(environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}) };
       const health = await databaseHealth(target.url, target, project, config);
-      // The development lifecycle is not in this release, so no Fleur-owned application instance can be running. Against
-      // production, application state is reported only for a registered production start, which this release cannot register.
+      // No lifecycle binding exists here. Explicit private targets still use
+      // shared read-only health; production registration belongs to start (#36).
       return success("status", JSON.parse(JSON.stringify({ state: production ? null : "stopped", ready: false, reasons: health.reasons.map(code => ({ code, ...readinessReasons[code] })), database: health.database })));
     } catch (error) {
       // The control and target connections reached different servers or databases: only configuration can fix that.

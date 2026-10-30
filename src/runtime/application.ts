@@ -55,13 +55,15 @@ export class ReadApplication {
     this.#execution = execution;
   }
   /** `retrieval` is trusted startup configuration: limits, credential bindings and local-service exceptions. */
-  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}, retrieval: RetrievalConfiguration = {}): Promise<ReadApplication> {
+  static async open(images: Images, url: string, maintenance: MaintenanceConfiguration = {}, retrieval: RetrievalConfiguration = {}, creation?: AbortSignal): Promise<ReadApplication> {
+    const checkCreation = () => { if (creation?.aborted) throw new Error("APPLICATION_CLOSED"); };
+    checkCreation();
     const admission = await MaintenanceLease.acquire(url, false, maintenance);
     let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
     const session = randomUUID();
     let registry: Registry;
     try {
-      worker = await startWorker(images);
+      checkCreation(); worker = await startWorker(images);
       const result = record(await worker.run({ mode: "register", session }, () => { throw new Error("REQUEST_DENIED"); }));
       if (result.kind !== "complete" || result.session !== session || result.sequence !== 0 || Object.keys(result).length !== 4) throw new Error("SOURCE_REJECTED");
       registry=restoreManifest(result.value);
@@ -70,10 +72,11 @@ export class ReadApplication {
     } finally { try { await worker?.close(); } finally { await admission.close(); } }
     // Declared credentials must be configured and bound before any worker starts.
     // Bindings come from the trusted startup environment unless supplied explicitly.
+    checkCreation();
     const outbound = new OutboundBroker(registry.destinations, { ...retrieval, credentials: retrieval.credentials ?? credentialsFromEnvironment(process.env) });
     // Cold slot creation is startup work and never holds maintenance admission.
-    const execution = await NativeExecution.open(images);
-    try { return new ReadApplication(execution, registry, url, maintenance, outbound); }
+    const execution = await NativeExecution.open(images, creation ? { signal: creation } : {});
+    try { checkCreation(); return new ReadApplication(execution, registry, url, maintenance, outbound); }
     catch (error) { await execution.close(); throw error; }
   }
   async #execute(reservation: Reservation, command: Record<string, unknown>, db?: ReadDb, budgetMs = 5000, read: NestedRead = (name, input) => this.query(name, input), retrieve: NestedRead = (name, input) => this.retrieve(name, input), external?: (request: unknown) => Promise<unknown>): Promise<unknown> {
@@ -326,5 +329,7 @@ export class ReadApplication {
       return result as unknown as PageResult;
     }
   }
+  /** Read-only lifecycle diagnostics; no container, process or credential identifiers. */
+  executionStatus() { return this.#execution.status(); }
   async close(): Promise<void> { try { await this.#execution.close(); } finally { await this.#broker.close(); } }
 }

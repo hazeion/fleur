@@ -228,7 +228,12 @@ class Slot {
   }
   #recovering: Promise<void> | undefined;
   /** Quarantine is terminal for this slot: verified removal is its recovery. */
-  recover(): Promise<void> { return this.#recovering ??= this.#recover(); }
+  recover(): Promise<void> {
+    if (this.#recovering) return this.#recovering;
+    const work = this.#recover(); this.#recovering = work;
+    void work.catch(() => { if (this.#recovering === work) this.#recovering = undefined; });
+    return work;
+  }
   async #recover(): Promise<void> {
     try { this.#child.stdin.end(); } catch { /* The controller may already be gone. */ }
     await this.lease.cleanup();
@@ -262,6 +267,7 @@ export class NativeExecution {
   #drained = false;
   #warmUntil = 0;
   #closed = false;
+  #removeCancellation: (() => void) | undefined;
   #refresh: ReturnType<typeof setInterval> | undefined;
   private constructor(images: NativeImages, capacity: number) { this.#images = images; this.#capacity = capacity; }
   /** The most slots, including starting and recovering ones, this execution holds. */
@@ -271,15 +277,23 @@ export class NativeExecution {
    * container creation is reported separately and never consumed from an
    * operation deadline. Quarantined capacity is replaced in the background.
    */
-  static async open(images: NativeImages, options: { capacity?: number } = {}): Promise<NativeExecution> {
+  static async open(images: NativeImages, options: { capacity?: number; signal?: AbortSignal } = {}): Promise<NativeExecution> {
+    if (options.signal?.aborted) throw new Error("APPLICATION_CLOSED");
     if ([images.worker, images.controller].some(value => !/^sha256:[a-f0-9]{64}$/.test(value))) throw new Error("Immutable images required");
     validateEndpoint(images.endpoint);
     const capacity = options.capacity ?? 4;
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 8) throw new Error("REQUEST_DENIED");
     const execution = new NativeExecution(images, capacity);
+    if (options.signal) {
+      const signal = options.signal, cancel = () => { void execution.close().catch(() => {}); };
+      signal.addEventListener("abort", cancel, { once: true });
+      execution.#removeCancellation = () => signal.removeEventListener("abort", cancel);
+      if (signal.aborted) cancel();
+    }
     try {
       execution.#grow();
       await Promise.allSettled(execution.#starting);
+      if (options.signal?.aborted) throw new Error("APPLICATION_CLOSED");
       if (!execution.#slots.size) throw new Error("PREREQUISITE_UNAVAILABLE");
     } catch (error) {
       // Unverified cleanup outranks the startup failure itself.
@@ -291,6 +305,11 @@ export class NativeExecution {
   /** Every slot holding capacity, including quarantined slots until their removal is verified. */
   diagnostics(): { slot: string; state: SlotState; container?: string; prepared: boolean }[] {
     return [...this.#slots, ...this.#recovering].map(slot => ({ slot: slot.owner, state: slot.state, ...(slot.binding ? { container: slot.binding.worker } : {}), prepared: slot.fresh }));
+  }
+  /** Aggregate lifecycle state includes pending creation and quarantined capacity. */
+  status() {
+    const slots = this.diagnostics();
+    return { capacity: this.#capacity, occupied: this.#occupied, starting: this.#starting.size, prepared: slots.filter(slot => slot.prepared).length, idle: slots.filter(slot => slot.state === "idle").length, quarantined: this.#recovering.size };
   }
   #track(work: Promise<void>): void {
     const tracked = work.catch(error => { if (this.#failures.length < 100) this.#failures.push(error); else this.#failures[99] = error; });
@@ -322,10 +341,10 @@ export class NativeExecution {
   #replacement: ReturnType<typeof setTimeout> | undefined;
   get #occupied(): number { return this.#slots.size + this.#starting.size + this.#recovering.size; }
   #grow(): void {
-    if (performance.now() < this.#growAfter) return;
+    if (this.#closed || performance.now() < this.#growAfter) return;
     const work = Slot.start(this.#images).then(slot => {
       // A start that outlived close()'s drain was already reported there.
-      if (this.#drained) { void slot.recover().catch(() => {}); return undefined; }
+      if (this.#drained) { this.#recover(slot, false); return undefined; }
       // A slot that becomes ready during close is still owned: close() waits
       // for every start before its verified close of all slots.
       this.#slots.add(slot);
@@ -462,24 +481,46 @@ export class NativeExecution {
     const reservation = await this.reserve(performance.now() + OPERATION_MS);
     try { return await reservation.run(command, exchange, budgetMs); } finally { reservation.release(); }
   }
-  async close(): Promise<void> {
+  #closing: Promise<void> | undefined;
+  async close(timeoutMs = 30000): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) throw new Error("REQUEST_DENIED");
     this.#closed = true;
+    this.#removeCancellation?.(); this.#removeCancellation = undefined;
     clearInterval(this.#refresh);
     clearTimeout(this.#replacement);
     this.#notify();
-    // One bounded drain covers starting slots and running or preparing operations.
-    const drain = performance.now() + 30_000;
-    await Promise.race([Promise.allSettled(this.#starting), new Promise(resolve => setTimeout(resolve, 30_000))]);
+    const closing = this.#closing ??= this.#close();
+    void closing.catch(() => { if (this.#closing === closing) this.#closing = undefined; });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([closing, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("EXECUTION_RECOVERY_REQUIRED")), timeoutMs); })]);
+    } finally { clearTimeout(timer); }
+  }
+  async #close(): Promise<void> {
+    // Cleanup may continue after a caller's bound, but admission stays closed
+    // and every unverified slot retains its capacity and private lease.
+    const drain = performance.now() + 30000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([Promise.allSettled(this.#starting), new Promise(resolve => { timer = setTimeout(resolve, 30000); })]); }
+    finally { clearTimeout(timer); }
     if (this.#starting.size) { this.#drained = true; this.#failures.push(new Error("STARTUP_UNSETTLED")); }
     while ([...this.#slots].some(slot => slot.reserved || (slot.state !== "idle" && slot.state !== "quarantined")) && performance.now() < drain) await new Promise(resolve => setTimeout(resolve, 20));
     while (this.#background.size) await Promise.allSettled(this.#background);
-    await Promise.all([...this.#slots].map(async slot => {
-      try { if (slot.state === "idle") { await slot.close(); return; } }
-      catch { /* An unverified close falls through to quarantine recovery. */ }
-      await slot.recover();
-    }).map(work => work.catch(error => { this.#failures.push(error); })));
-    this.#slots.clear();
+    await Promise.all([...new Set([...this.#slots, ...this.#recovering])].map(async slot => {
+      try {
+        try { if (slot.state === "idle") await slot.close(); else await slot.recover(); }
+        catch { await slot.recover(); }
+        this.#slots.delete(slot); this.#recovering.delete(slot);
+      } catch (error) {
+        // A failed retirement is not a free slot. Keep it visible and owned.
+        this.#slots.delete(slot); this.#recovering.add(slot);
+        this.#failures.push(error);
+      }
+    }));
     while (this.#background.size) await Promise.allSettled(this.#background);
-    if (this.#failures.length) throw new Error("EXECUTION_RECOVERY_REQUIRED");
+    if (this.#recovering.size || this.#starting.size) throw new Error("EXECUTION_RECOVERY_REQUIRED");
+    // Historical failures cease to imply uncertain ownership only after every
+    // associated resource has been verified retired by this explicit close.
+    this.#failures.length = 0;
   }
 }

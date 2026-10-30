@@ -24,7 +24,8 @@ export class DevelopmentPostgres {
       return new DevelopmentPostgres(bound, record);
     } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new Error("RECOVERY_REQUIRED"); }
   }
-  static async start(bound: Binding, deadline: number): Promise<DevelopmentPostgres> {
+  static async start(bound: Binding, deadline: number, checkOpen: () => void = () => {}): Promise<DevelopmentPostgres> {
+    checkOpen();
     let resource = await DevelopmentPostgres.read(bound);
     if (!resource) {
       const endpoint = await selectedEndpoint(), volume = `fleur-dev-${bound.id}`;
@@ -32,18 +33,20 @@ export class DevelopmentPostgres {
       // Unknown same-name resources cannot be adopted, even if stopped.
       if (await command(["ps", "--all", "--quiet", "--filter", `name=^/${volume}$`]) || await command(["volume", "ls", "--quiet", "--filter", `name=^${volume}$`])) throw new Error("RECOVERY_REQUIRED");
       resource = new DevelopmentPostgres(bound, { formatVersion: 1, binding: bound.id, endpoint, container: null, password: crypto.randomUUID(), volume, stage: "creating", cluster: null });
-      await resource.#persist();
-      await command(["volume", "create", "--label", `${databaseLabel}=${bound.id}`, volume]);
+      checkOpen(); await resource.#persist();
+      checkOpen(); await command(["volume", "create", "--label", `${databaseLabel}=${bound.id}`, volume]);
       const present = await command(["image", "inspect", "--format", "{{.Id}}", image]).then(() => true, () => false);
       if (!present) throw new Error("PREREQUISITE_UNAVAILABLE");
-      const container = await command(["create", "--name", volume, "--label", `${databaseLabel}=${bound.id}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", "--mount", `type=volume,source=${volume},target=/var/lib/postgresql`, "--publish", "127.0.0.1::5432", "--env", "POSTGRES_USER=fleur", "--env", "POSTGRES_DB=postgres", "--env", `POSTGRES_PASSWORD=${resource.#record.password}`, image]);
+      checkOpen(); const container = await command(["create", "--name", volume, "--label", `${databaseLabel}=${bound.id}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", "--mount", `type=volume,source=${volume},target=/var/lib/postgresql`, "--publish", "127.0.0.1::5432", "--env", "POSTGRES_USER=fleur", "--env", "POSTGRES_DB=postgres", "--env", `POSTGRES_PASSWORD=${resource.#record.password}`, image]);
       if (!/^[a-f0-9]{64}$/.test(container)) throw new Error("RECOVERY_REQUIRED");
       resource.#record.container = container; resource.#record.stage = "owned";
       await resource.#persist();
     }
     const metadata = await resource.#inspect();
+    checkOpen();
     if (!metadata.State.Running) await resource.#command(["start", metadata.Id]);
     for (;;) {
+      checkOpen();
       const url = await resource.url("postgres"), sql = new SQL(url, { max: 1, connectionTimeout: 1 });
       try {
         const row = (await sql.unsafe("SELECT system_identifier::text AS cluster FROM pg_control_system()"))[0];

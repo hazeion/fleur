@@ -15,12 +15,20 @@ export function monotonicNanoseconds(): bigint {
   return time[0]! * 1000000000n + time[1]!;
 }
 /** Kernel-owned lock; death releases it, stale PID records never authorize a signal. */
-export async function lock(directory: string) {
-  const file = await open(join(directory, "owner.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+export async function lock(directory: string, create = true) {
+  const file = await open(join(directory, "owner.lock"), constants.O_RDWR | (create ? constants.O_CREAT : 0) | constants.O_NOFOLLOW, 0o600);
   const info = await file.stat();
   if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink !== 1 || (info.mode & 0o077) !== 0) { await file.close(); throw new Error("RECOVERY_REQUIRED"); }
   if (libc.symbols.flock(file.fd, 2 | 4) !== 0) { await file.close(); return null; }
   return { fd: file.fd, close: () => file.close() };
+}
+/** Read-only discovery never creates an ownership file or infers a PID. */
+export async function ownershipHeld(bound: Binding): Promise<boolean> {
+  let ownership;
+  try { ownership = await lock(bound.directory, false); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  if (!ownership) return true;
+  await ownership.close(); return false;
 }
 /** The launcher transfers its locked open-file description across exec as fd 3. */
 export function adoptLock(directory: string, fd: number): { close(): Promise<void> } {

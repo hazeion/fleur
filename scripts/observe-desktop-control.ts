@@ -80,8 +80,8 @@ const repository = resolve(import.meta.dir, "..");
 const sources = ["scripts/observe-desktop-control.ts", "scripts/desktop-control-probe.ts", "src/setup/host.ts", "src/setup/commands.ts", "src/setup/profiles.ts", "package.json"] as const;
 const hash = (value: string | Uint8Array) => Bun.CryptoHasher.hash("sha256", value, "hex");
 
-/** Test-only host seam; the executable always uses productionHost and fixed inputs. */
-export async function observeDesktopControl(host: SetupHost = productionHost()) {
+/** Test-only host seam; executable selection is limited to source-owned candidates. */
+export async function observeDesktopControl(host: SetupHost = productionHost(), candidate = "desktop-4.96.1-244132") {
   const report: Record<string, unknown> = { formatVersion: 1, scope: "native-intel-desktop-control-preflight", ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, imageAcquisition: "none", containers: [], cleanup: [] };
   const deadline = performance.now() + 90000;
   const workDeadline = deadline - 20000;
@@ -145,8 +145,13 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
     }
   };
   try {
+    const platform = candidate === "desktop-4.96.1-244132" ? "Docker Desktop 4.96.1 (244132)"
+      : candidate === "desktop-4.97.0-244584" ? "Docker Desktop 4.97.0 (244584)" : undefined;
+    if (platform === undefined) throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
+    report.candidate = candidate;
     const native = await host.host();
     if (native.system !== "darwin" || native.architecture !== "x64" || native.translated !== false || Bun.version !== "1.4.3") throw new Error("NATIVE_INTEL_MAC_REQUIRED");
+    if (candidate === "desktop-4.97.0-244584" && native.release !== "15.7.7") throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
     report.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
     const commit = (await command(["git", "rev-parse", "HEAD"])).trim();
     if (!/^[a-f0-9]{40}$/.test(commit) || await command(["git", "diff", "--exit-code", "HEAD"])) throw new Error("CLEAN_COMMITTED_SOURCE_REQUIRED");
@@ -170,7 +175,24 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
         || [...endpoint].some((character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(endpoint)) throw new Error("LOCAL_ENDPOINT_REQUIRED");
     report.endpointSha256 = hash(endpoint);
     const version: unknown = JSON.parse(await docker(["version", "--format", "{{json .Server}}"]));
-    if (!object(version) || !object(version.Platform) || version.Platform.Name !== "Docker Desktop 4.96.1 (244132)" || version.Version !== "29.9.2" || version.GitCommit !== "0367cbe" || version.Os !== "linux" || version.Arch !== "amd64" || version.KernelVersion !== "7.0.14-linuxkit") throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
+    if (!object(version) || !object(version.Platform) || version.Platform.Name !== platform || version.Version !== "29.9.2" || version.GitCommit !== "0367cbe" || version.Os !== "linux" || version.Arch !== "amd64" || version.KernelVersion !== "7.0.14-linuxkit") throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
+    if (candidate === "desktop-4.97.0-244584") {
+      const compose = await docker(["compose", "version", "--short"]);
+      if (compose !== "5.6.1\n") throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
+      const cli: unknown = JSON.parse(await docker(["version", "--format", "{{json .Client}}"]));
+      const security = await docker(["info", "--format", "{{json .CgroupDriver}}|{{json .CgroupVersion}}|{{json .SecurityOptions}}"]);
+      const component = (name: string, versionPin: string, commitPin: string) => {
+        if (!Array.isArray(version.Components)) return false;
+        const rows = version.Components.filter((row: unknown) => object(row) && row.Name === name);
+        const row: unknown = rows[0];
+        return rows.length === 1 && object(row) && row.Version === versionPin && object(row.Details) && row.Details.GitCommit === commitPin;
+      };
+      if (!object(cli) || cli.Version !== "29.9.2" || cli.GitCommit !== "a82e528" || cli.Os !== "darwin" || cli.Arch !== "amd64"
+          || security !== '"cgroupfs"|"2"|["name=seccomp,profile=builtin","name=cgroupns"]\n'
+          || !component("Engine", "29.9.2", "0367cbe") || !component("containerd", "v2.4.2", "b7a25261e029d68978bbf290df0a62fc819b3c51")
+          || !component("runc", "1.5.2", "v1.5.2-0-g29dd3dc2")) throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
+      report.cli = cli; report.security = security; report.compose = "5.6.1";
+    }
     report.server = version;
     original = await inventory(); report.original = Object.fromEntries(Object.entries(original).map(([key, value]) => [key, hash(value)]));
     const images: unknown = JSON.parse(await docker(["image", "inspect", smokeImages.x64!]));
@@ -228,7 +250,9 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
 
 if (import.meta.main) {
   let report: Record<string, unknown>;
-  if (process.argv.slice(2).join(",") !== "--run" || process.env.FLEUR_DESKTOP_CONTROL_PREFLIGHT !== "yes") report = { formatVersion: 1, scope: "native-intel-desktop-control-preflight", ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, error: "EXPLICIT_PREFLIGHT_REQUIRED" };
-  else report = await observeDesktopControl();
+  const args = process.argv.slice(2);
+  const candidate = args.length === 1 ? "desktop-4.96.1-244132" : args[1]?.replace(/^--candidate=/, "");
+  if (args[0] !== "--run" || (args.length !== 1 && (args.length !== 2 || !args[1]?.startsWith("--candidate="))) || process.env.FLEUR_DESKTOP_CONTROL_PREFLIGHT !== "yes") report = { formatVersion: 1, scope: "native-intel-desktop-control-preflight", ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, error: "EXPLICIT_PREFLIGHT_REQUIRED" };
+  else report = await observeDesktopControl(productionHost(), candidate);
   process.stdout.write(JSON.stringify(report) + "\n"); process.exitCode = report.ok === true ? 0 : 4;
 }

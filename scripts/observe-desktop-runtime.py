@@ -12,6 +12,7 @@ import platform
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,9 @@ SOCKET='/var/run/docker.sock'
 OWNER='dev.fleur.desktop-runtime-owner'
 ROLE='dev.fleur.desktop-runtime-role'
 SHA=r'[a-f0-9]{64}'
+# Extracted from the Darwin x64 1.4.3 ZIP authenticated by platforms/bootstrap.py.
+BUN_SHA256='c2a945a9d33f9088b32ac3550d1d1fd485a7fc10d71c66f91ef0d33b41cefa7c'
+CANDIDATES=('desktop-4.96.1-244132','desktop-4.97.0-244584')
 UUID=r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
 
 
@@ -41,6 +45,28 @@ def native_intel_identity(system,machine,cpu):return system=='Darwin' and machin
 
 
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
+
+
+def verify_pinned_bun(path):
+    """Authenticate existing bytes before executing a fixed argv, never a shell."""
+    try:
+        if not path.is_absolute():raise ValueError('absolute executable required')
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        try:
+            before=os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or not 0<before.st_size<=268435456 or before.st_mode&0o022 or not before.st_mode&0o111:raise ValueError('unsafe executable')
+            digest=hashlib.sha256();size=0
+            while True:
+                block=os.read(fd,1048576)
+                if not block:break
+                size+=len(block)
+                if size>before.st_size:raise ValueError('executable grew')
+                digest.update(block)
+            identity=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+            if size!=before.st_size or digest.hexdigest()!=BUN_SHA256 or identity(os.fstat(fd))!=identity(before) or identity(path.stat(follow_symlinks=False))!=identity(before):raise ValueError('executable changed')
+            return identity(before)
+        finally:os.close(fd)
+    except (OSError,ValueError):raise RuntimeError('PINNED_BUN_REQUIRED') from None
 
 
 def error_category(error):
@@ -283,7 +309,7 @@ def ready_frame(value,binding,raw,cid,pid,role):
         and value['sourceCommit']==binding['sourceCommit'] and value['sources']==binding['sources'] and value['bindingSha256']==sha(raw))
 
 
-def observe(mode,images_directory):
+def observe(mode,images_directory, *, candidate="desktop-4.96.1-244132",pinned_bun=None):
     report={'formatVersion':1,'scope':'native-intel-desktop-runtime-qualification','mode':mode,'ok':False,'runtimeAdmission':False,'nativeQualification':False,'installationVerified':False,'cleanup':[]}
     end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None;phase='native-identity'
     environment={key:value for key,value in os.environ.items() if key not in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','DOCKER_API_VERSION')}
@@ -360,22 +386,35 @@ def observe(mode,images_directory):
             docker(['rm','--force',adopted['cid']],True)
             if inspect(adopted['cid'],cleanup=True) is not None:raise RuntimeError('ROLE_REMOVAL_UNCONFIRMED')
     try:
+        if candidate not in CANDIDATES:raise RuntimeError('EXACT_DESKTOP_TUPLE_REQUIRED')
+        report['candidate']=candidate
         if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or not native_intel_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype'])):raise RuntimeError('EXPLICIT_NATIVE_INTEL_MAC_REQUIRED')
         commit=command(['git','rev-parse','HEAD']).strip()
         if not re.fullmatch('[a-f0-9]{40}',commit) or command(['git','diff','--exit-code','HEAD']):raise RuntimeError('CLEAN_COMMITTED_SOURCE_REQUIRED')
         phase='operator-source'
-        operator_files=['scripts/observe-desktop-runtime.py',*['experiments/compatibility/desktop-runtime/'+name for name in ('artifact_inputs.py','oci_inputs.py','entry.py','processes.py','image-origin.json')]]
+        operator_files=['scripts/observe-desktop-runtime.py','scripts/observe-desktop-control.ts','scripts/desktop-control-probe.ts','src/setup/host.ts','src/setup/commands.ts','src/setup/profiles.ts','package.json',*['experiments/compatibility/desktop-runtime/'+name for name in ('artifact_inputs.py','oci_inputs.py','entry.py','processes.py','image-origin.json')]]
         operator_hashes={}
         for relative in operator_files:
             body=(ROOT/relative).read_bytes()
             if sha(command(['git','show',commit+':'+relative],timeout=8))!=sha(body):raise RuntimeError('OPERATOR_SOURCE_BYTES_CHANGED')
             operator_hashes[relative]=sha(body)
         report['operatorSource']={'commit':commit,'files':operator_hashes}
+        phase='pinned-bun'
+        bun=Path(pinned_bun) if pinned_bun is not None else Path.home()/'.bun/bin/bun'
+        if not bun.is_absolute():raise RuntimeError('PINNED_BUN_REQUIRED')
+        try:bun=bun.resolve(strict=True)
+        except (OSError,RuntimeError):raise RuntimeError('PINNED_BUN_REQUIRED') from None
+        bun_identity=verify_pinned_bun(bun)
+        if command([str(bun),'--version'])!='1.4.3\n':raise RuntimeError('PINNED_BUN_VERSION_REQUIRED')
+        if verify_pinned_bun(bun)!=bun_identity:raise RuntimeError('PINNED_BUN_REQUIRED')
+        report['bun']={'version':'1.4.3','sha256':BUN_SHA256}
         phase='fresh-control-preflight'
-        preflight=raw([str(Path.home()/'.bun/bin/bun'),'scripts/observe-desktop-control.ts','--run'],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
+        preflight=raw([str(bun),'scripts/observe-desktop-control.ts','--run','--candidate='+candidate],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
         # Explicitly pass the preflight flag only to this fixed command.
         if preflight.returncode:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
+        if verify_pinned_bun(bun)!=bun_identity:raise RuntimeError('PINNED_BUN_REQUIRED')
         proof=artifacts.canonical_json(preflight.stdout)
+        if proof.get('candidate')!=candidate:raise RuntimeError('CONTROL_PREFLIGHT_CANDIDATE_CHANGED')
         if proof.get('ok') is not True or proof.get('controlCapabilityVerified') is not True or proof.get('originalPreserved') is not True or proof.get('transportUncertain') is not False:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
         report['controlPreflight']=proof
         context=command(['docker','context','show']).strip();resolved=artifacts.canonical_json(command(['docker','context','inspect',context,'--format','{{json .Endpoints.docker}}']))
@@ -575,10 +614,12 @@ def observe(mode,images_directory):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--mode',required=True,choices=['--capabilities','--guardian-loss','--qualify','--controller-diagnostic']);parser.add_argument('--images-directory',required=True)
+    parser.add_argument('--candidate',choices=CANDIDATES,default=CANDIDATES[0]);parser.add_argument('--pinned-bun',help='Existing absolute Bun executable; bytes and version must match the source pin')
     args=parser.parse_args()
+    inputs={'candidate':args.candidate,'pinned_bun':args.pinned_bun}
     if args.mode=='--qualify':
-        control=observe('--guardian-loss',args.images_directory)
-        result=observe(args.mode,args.images_directory) if control['ok'] is True else {'ok':False,'scope':'native-intel-desktop-runtime-qualification','runtimeAdmission':False,'nativeQualification':False,'error':'FRESH_MANAGER_LOSS_CONTROL_REQUIRED'}
+        control=observe('--guardian-loss',args.images_directory,**inputs)
+        result=observe(args.mode,args.images_directory,**inputs) if control['ok'] is True else {'ok':False,'scope':'native-intel-desktop-runtime-qualification','runtimeAdmission':False,'nativeQualification':False,'error':'FRESH_MANAGER_LOSS_CONTROL_REQUIRED'}
         result['managerLossControl']=control
-    else:result=observe(args.mode,args.images_directory)
+    else:result=observe(args.mode,args.images_directory,**inputs)
     print(json.dumps(result,separators=(',',':')));raise SystemExit(0 if result['ok'] else 4)

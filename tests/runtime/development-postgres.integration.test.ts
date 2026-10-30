@@ -79,8 +79,9 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`PostgreSQL startup keeps crede
     await mkdir(wrappers);
     const shim = join(root, "docker-observer.ts");
     await writeFile(shim, `import {appendFile,stat,readFile} from "node:fs/promises";
-const args=process.argv.slice(2);
-if(args.includes("create")){
+const args=process.argv.slice(2), op=args[0]==="--host"?args.slice(2):args;
+// Only container creation receives the password; volume creation is a different operation.
+if(op[0]==="create"){
  const index=args.indexOf("--env-file"),path=index<0?undefined:args[index+1];
  let privateHandoff=false;
  if(path){const info=await stat(path);privateHandoff=info.isFile()&&(info.mode&0o777)===0o600&&info.uid===process.getuid?.()&&/^POSTGRES_PASSWORD=[a-f0-9-]{36}\\n$/.test(await readFile(path,"utf8"));}

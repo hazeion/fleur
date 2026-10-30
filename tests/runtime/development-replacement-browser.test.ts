@@ -81,7 +81,9 @@ for (const layout of ["compatible", "compatible-shared", "uncertain-style", "inc
           return Response.json(await (command.action === "open" ? project.open(command.path) : project.refresh(command)), { headers });
         } catch (error) { return Response.json({ error: { code: error instanceof Error ? error.message : "INTERNAL_FAILURE" } }, { status: 503, headers }); }
       }
-      documents++;
+      // Only browser navigations count as documents. An unrelated local process
+      // on this machine probes listening ports with GET /, which is not a reload.
+      if (request.headers.get("sec-fetch-dest") === "document") documents++;
       const view = await project.open("/");
       return new Response(`<!doctype html><html><head><meta name="fleur-client-compatibility" content="${(generation === 1 ? first : second).compatibility ?? ""}"><link rel="stylesheet" href="${(generation === 1 ? first : second).stylesheet}"><meta name="fleur-development" content="owner:${generation}"></head><body><div id="fleur-refresh-status" role="status"></div><div id="fleur-page">${view.rendered.html}</div><script type="application/json" id="fleur-islands">${JSON.stringify(view.rendered.islands)}</script><script type="application/json" id="fleur-view">${JSON.stringify({ connection: view.connection, page: view.page, generation: view.generation, sequence: view.sequence, epoch: view.epoch, revision: view.revision, status: view.status })}</script><script type="module" src="${(generation === 1 ? first : second).entry}"></script></body></html>`, { headers: { "Content-Type": "text/html" } });
     } });

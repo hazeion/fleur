@@ -112,6 +112,8 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Explicit browser verification prerequisites
         run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Pinned development images
+        run: bun scripts/pull-pinned-development-images.ts
       - name: Restricted reads, owned PostgreSQL and browser production fixture
         run: bun test tests/runtime
       - name: Controller admission and physical exit regressions

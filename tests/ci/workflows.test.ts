@@ -70,3 +70,17 @@ test("Desktop image preparation uses only explicit manual native x64 work and re
   expect(native.steps!.find((item) => item.name === "Preserve native observations")?.with?.path).toContain("fleur-desktop-images/");
   expect(native.steps!.find((item) => item.name === "Preserve native observations")?.with?.["retention-days"]).toBe(7);
 });
+
+test("the read-runtime job pulls the pinned development images before the runtime tests", async () => {
+  const workflow = Bun.YAML.parse(readFileSync(new URL("../../.github/workflows/cli.yml", import.meta.url), "utf8")) as { jobs: Record<string, { steps?: { name?: string; run?: string }[] }> };
+  const steps = workflow.jobs["read-runtime"]!.steps!;
+  const pull = steps.findIndex((step) => step.run === "bun scripts/pull-pinned-development-images.ts");
+  const runtime = steps.findIndex((step) => step.run === "bun test tests/runtime");
+  expect(pull).toBeGreaterThan(-1);
+  expect(runtime).toBeGreaterThan(pull);
+  // One source of truth: the script reads the compiled smoke and PostgreSQL pins rather than repeating digests.
+  const script = readFileSync(new URL("../../scripts/pull-pinned-development-images.ts", import.meta.url), "utf8");
+  expect(script).toContain("smokeImages");
+  expect(script).toContain("developmentPostgresImage");
+  expect(script).not.toMatch(/sha256:[a-f0-9]{64}/);
+});

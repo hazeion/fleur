@@ -696,6 +696,17 @@ They confirmed the floor comparison and the test corrections, required the
 decision link (#118), and found the stop-bound and failed-instance code issues
 corrected above. Remaining review notes are recorded as limitations below.
 
+### CI prerequisite found by the first pull-request run
+
+Both Ubuntu read-runtime jobs failed 20 public lifecycle cases in about one
+second each: `dev` exited 3 with `prerequisites.smoke.state: image-required`,
+because the runner never had the digest-pinned smoke image and `fleur dev`
+reports missing images instead of pulling them. The job now runs
+`scripts/pull-pinned-development-images.ts`, which pulls this architecture's
+compiled smoke pin and the pinned multi-architecture PostgreSQL image before
+the runtime tests. A workflow test checks the step order and that the script
+repeats no digest. No readiness profile or lifecycle behavior changed.
+
 ### Remaining limitations and follow-ups
 
 - No public `fleur dev` case drives a slow in-flight request through stop or

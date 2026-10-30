@@ -9,7 +9,9 @@ import { selectedEndpoint } from "../native/endpoint";
 import { privateJson } from "../database/maintenance-authority";
 import { save, type Binding } from "./state";
 
-const image = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336";
+/** Digest-pinned multi-architecture PostgreSQL image; development startup requires it to be present locally. */
+export const developmentPostgresImage = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336";
+const image = developmentPostgresImage;
 export const databaseLabel = "dev.fleur.development-binding";
 const schema = z.strictObject({ formatVersion: z.literal(1), binding: z.string(), endpoint: z.string(), container: z.string().regex(/^[a-f0-9]{64}$/).nullable(), password: z.string().uuid(), volume: z.string(), stage: z.enum(["creating", "owned"]), cluster: z.string().nullable() });
 type PostgresRecord = z.infer<typeof schema>;

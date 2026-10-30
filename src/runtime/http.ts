@@ -109,8 +109,8 @@ async function viewResponse(project: ReactiveProject, request: Request, url: URL
     const result = command.action === "open" ? await project.open(command.path) : await project.refresh(command);
     return Response.json(result, { headers });
   } catch (error) {
-    const code = error instanceof Error && ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "INPUT_INVALID", "REQUEST_DENIED", "CONNECTION_EXPIRED", "RESPONSE_OBSOLETE", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "ROUTE_INVALID", "ROUTE_NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
-    return fail(code, ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code) ? 503 : code === "CONNECTION_EXPIRED" ? 410 : code === "RESPONSE_OBSOLETE" ? 409 : 422);
+    const code = error instanceof Error && ["QUERY_LIMIT", "QUERY_TIMEOUT", "RESULT_TOO_LARGE", "INPUT_INVALID", "REQUEST_DENIED", "CONNECTION_EXPIRED", "RESPONSE_OBSOLETE", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING", "ROUTE_INVALID", "ROUTE_NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+    return fail(code, ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(code) ? 503 : code === "CONNECTION_EXPIRED" ? 410 : code === "RESPONSE_OBSOLETE" ? 409 : 422);
   }
 }
 

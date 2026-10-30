@@ -22,7 +22,7 @@ export async function createProject(command: string, target: string, git: boolea
     "lint/bun.lock": await readFile(new URL("./template/lint-bun.lock.txt", import.meta.url), "utf8"),
     "lint/eslint.config.mjs": 'import tseslint from "typescript-eslint";\nexport default [...tseslint.configs.recommended];\n',
     "shared/placeholder.ts": "// This source-only placeholder has no application runtime behavior.\nexport {};\n",
-    "fleur.json": JSON.stringify({ formatVersion: 1, fleurVersion: version, contractVersion: 1, compiler: "microsoft" }, null, 2) + "\n",
+    "fleur.json": JSON.stringify({ formatVersion: 1, fleurVersion: version, contractVersion: 1, compiler: "microsoft", projectId: crypto.randomUUID() }, null, 2) + "\n",
     "package.json": JSON.stringify(manifest, null, 2) + "\n",
     "bun.lock": await readFile(new URL("./template/bun.lock.txt", import.meta.url), "utf8"),
     ".agents/skills/fleur-tdd/SKILL.md": tddGuidance,

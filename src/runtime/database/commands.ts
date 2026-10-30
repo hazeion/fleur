@@ -34,15 +34,20 @@ export const statusCommand: CommandDefinition = {
     if (args.length > 1 || (args.length === 1 && args[0] !== productionOption.name)) return failure("status", 2, { code: "ARGUMENT_INVALID", message: "Use status with only the documented options.", actions: [] });
     return undefined;
   },
-  async run({ args, project, timeoutSeconds, timeoutExplicit }) {
+  async run({ args, project, timeoutSeconds, timeoutExplicit, environment = process.env }) {
     const production = args.includes(productionOption.name);
+    if (!production) {
+      const { developmentStatus } = await import("../development/lifecycle");
+      const state = await developmentStatus(project, timeoutExplicit ? timeoutSeconds * 1000 : 5000);
+      if (state) return success("status", state);
+    }
     const { selectTarget } = await import("./target");
     let target;
-    try { target = selectTarget(production); } catch { return configurationMissing("status"); }
+    try { target = selectTarget(production, environment); } catch { return configurationMissing("status"); }
     try {
       const { databaseHealth, readinessReasons } = await import("./health");
       // The probe has its own 5 s default deadline; an explicit --timeout replaces it.
-      const config = { timeoutMs: timeoutExplicit ? timeoutSeconds * 1000 : 5000, ...(process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}) };
+      const config = { ...(environment.FLEUR_PRIVATE_STATE_ROOT ? { stateRoot: environment.FLEUR_PRIVATE_STATE_ROOT } : {}), timeoutMs: timeoutExplicit ? timeoutSeconds * 1000 : 5000, ...(environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}) };
       const health = await databaseHealth(target.url, target, project, config);
       // The development lifecycle is not in this release, so no Fleur-owned application instance can be running. Against
       // production, application state is reported only for a registered production start, which this release cannot register.
@@ -71,14 +76,14 @@ const databaseOperations: readonly CommandDefinition[] = [
     if ((definition.name === "db backup" && !value("--out")) || (definition.name === "db recover" && !args.includes("--inspect")) || (value("--cursor") && !/^[A-Za-z0-9_-]{40,16384}$/.test(value("--cursor")!)) || (value("--limit") && (!/^[0-9]+$/.test(value("--limit")!) || Number(value("--limit")) < 1 || Number(value("--limit")) > 500))) return failure(definition.name, 2, { code: "ARGUMENT_INVALID", message: "Supply complete options and a row limit from 1 to 500.", actions: [] });
     return undefined;
   },
-  async run({ args, timeoutSeconds, project }) {
-    let url = process.env.FLEUR_PRIVATE_DATABASE_URL, kind: import("./target").TargetKind = "development";
+  async run({ args, timeoutSeconds, project, environment = process.env }) {
+    let url = environment.FLEUR_PRIVATE_DATABASE_URL, kind: import("./target").TargetKind = "development";
     if (definition.name === "db inspect") {
       const { selectTarget } = await import("./target");
-      try { ({ url, kind } = selectTarget(args.includes(productionOption.name))); } catch { return configurationMissing(definition.name); }
+      try { ({ url, kind } = selectTarget(args.includes(productionOption.name), environment)); } catch { return configurationMissing(definition.name); }
     }
     if (!url) return failure(definition.name, 4, { code: "CONFIGURATION_MISSING", message: "Explicit private database configuration is required.", actions: [] });
-    const config = { timeoutMs: timeoutSeconds*1000, ...(process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}) };
+    const config = { ...(environment.FLEUR_PRIVATE_STATE_ROOT ? { stateRoot: environment.FLEUR_PRIVATE_STATE_ROOT } : {}), timeoutMs: timeoutSeconds*1000, ...(environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}) };
     const value = (flag: string) => args.includes(flag) ? args[args.indexOf(flag)+1] : undefined;
     try {
       if (definition.name === "db recover") {
@@ -92,7 +97,7 @@ const databaseOperations: readonly CommandDefinition[] = [
         return { ...outcome, result: { ...outcome.result, truncated: result.truncated } };
       }
       const { backupDatabase } = await import("./backup");
-      return success(definition.name, await backupDatabase(url, value("--out")!, { ...config, timeoutMs: timeoutSeconds*1000, ...(process.env.FLEUR_PRIVATE_PG_TOOLS ? { toolDirectory: process.env.FLEUR_PRIVATE_PG_TOOLS } : {}) }));
+      return success(definition.name, await backupDatabase(url, value("--out")!, { ...config, timeoutMs: timeoutSeconds*1000, ...(environment.FLEUR_PRIVATE_PG_TOOLS ? { toolDirectory: environment.FLEUR_PRIVATE_PG_TOOLS } : {}) }));
     } catch (error) {
       return databaseFailure(definition.name, error, ["ARGUMENT_INVALID", "CONFIGURATION_MISSING", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "RESULT_TOO_LARGE", "UNSUPPORTED_CAPABILITY", "PREREQUISITE_UNAVAILABLE", "BACKUP_VERIFICATION_FAILED", "DESTINATION_EXISTS", "SOURCE_REJECTED"], { command: "fleur db recover --inspect", description: "Inspect maintenance state before retrying." });
     }

@@ -16,7 +16,7 @@ export const migrationCommands: readonly CommandDefinition[] = [
     if (definition.name === "db restore" && !args.includes("--from")) return failure(definition.name, 2, { code: "ARGUMENT_INVALID", message: "Select the retained backup with --from.", actions: [] });
     return undefined;
   },
-  async run({ project, timeoutSeconds, args, json }) {
+  async run({ project, timeoutSeconds, args, json, environment = process.env }) {
     try {
     if (definition.name === "db migration generate") {
       const { migrationTables } = await import("./migration-declarations");
@@ -27,16 +27,16 @@ export const migrationCommands: readonly CommandDefinition[] = [
       const { readMigrations } = await import("./migration-plan");
       return success(definition.name, JSON.parse(JSON.stringify({ migrations: await readMigrations(project) })));
     }
-    let url=process.env.FLEUR_PRIVATE_DATABASE_URL,kind:import("./target").TargetKind="development";
+    let url=environment.FLEUR_PRIVATE_DATABASE_URL,kind:import("./target").TargetKind="development";
     if (definition.name==="db migration status") {
       const { selectTarget } = await import("./target");
-      try { ({ url, kind } = selectTarget(args.includes(productionOption.name))); } catch { url = undefined; }
+      try { ({ url, kind } = selectTarget(args.includes(productionOption.name), environment)); } catch { url = undefined; }
     }
     if (url) {
       const { applyMigrations, migrationStatus, restoreDatabase } = await import("./migrations");
       const {terminalApproval}=await import("./maintenance-authority");
       const grant=args.includes("--grant")?args[args.indexOf("--grant")+1]:undefined;
-      const config={...(grant?{grant}:{}),...(!json?{confirm:(request:import("./maintenance-authority").MaintenanceApproval)=>terminalApproval(request,timeoutSeconds*1000)}:{}),timeoutMs:timeoutSeconds*1000,...(process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL?{controlUrl:process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL}:{}),...(process.env.FLEUR_PRIVATE_PG_TOOLS?{toolDirectory:process.env.FLEUR_PRIVATE_PG_TOOLS}:{})};
+      const config={...(environment.FLEUR_PRIVATE_STATE_ROOT?{stateRoot:environment.FLEUR_PRIVATE_STATE_ROOT}:{}),...(grant?{grant}:{}),...(!json?{confirm:(request:import("./maintenance-authority").MaintenanceApproval)=>terminalApproval(request,timeoutSeconds*1000)}:{}),timeoutMs:timeoutSeconds*1000,...(environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL?{controlUrl:environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL}:{}),...(environment.FLEUR_PRIVATE_PG_TOOLS?{toolDirectory:environment.FLEUR_PRIVATE_PG_TOOLS}:{})};
       if(definition.name==="db restore") return success(definition.name,JSON.parse(JSON.stringify(await restoreDatabase(url,project,args[args.indexOf("--from")+1]!,config))));
       if(definition.name==="db migration status") {
         const report=await migrationStatus(url,project,{...config,kind});

@@ -17,14 +17,14 @@ export const seedCommands: readonly CommandDefinition[] = [
     }
     return undefined;
   },
-  async run({ project, args, json, timeoutSeconds }) {
-    const url = process.env.FLEUR_PRIVATE_DATABASE_URL;
+  async run({ project, args, json, timeoutSeconds, environment = process.env }) {
+    const url = environment.FLEUR_PRIVATE_DATABASE_URL;
     if (!url) return failure(definition.name, 4, { code: "CONFIGURATION_MISSING", message: "Explicit private database configuration is required.", actions: [] });
     try {
-      const developmentUrl = process.env.FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL;
+      const developmentUrl = environment.FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL;
       if (definition.name === "db reset" && (!developmentUrl || new URL(developmentUrl).toString() !== new URL(url).toString())) throw new Error("REQUEST_DENIED");
       const grant = args.includes("--grant") ? args[args.indexOf("--grant") + 1] : undefined;
-      const config = { timeoutMs: timeoutSeconds * 1000, ...(developmentUrl ? { developmentUrl } : {}), seed: args.includes("--seed"), ...(grant ? { grant } : {}), ...(!json ? { confirm: (request: import("./maintenance-authority").MaintenanceApproval) => import("./maintenance-authority").then(module => module.terminalApproval(request, timeoutSeconds * 1000)) } : {}), ...(process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: process.env.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}), ...(process.env.FLEUR_PRIVATE_PG_TOOLS ? { toolDirectory: process.env.FLEUR_PRIVATE_PG_TOOLS } : {}) };
+      const config = { ...(environment.FLEUR_PRIVATE_STATE_ROOT ? { stateRoot: environment.FLEUR_PRIVATE_STATE_ROOT } : {}), timeoutMs: timeoutSeconds * 1000, ...(developmentUrl ? { developmentUrl } : {}), seed: args.includes("--seed"), ...(grant ? { grant } : {}), ...(!json ? { confirm: (request: import("./maintenance-authority").MaintenanceApproval) => import("./maintenance-authority").then(module => module.terminalApproval(request, timeoutSeconds * 1000)) } : {}), ...(environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}), ...(environment.FLEUR_PRIVATE_PG_TOOLS ? { toolDirectory: environment.FLEUR_PRIVATE_PG_TOOLS } : {}) };
       const seeds = definition.name === "db seed" || config.seed ? (await (await import("./migration-declarations")).applicationDeclarations(project)).seeds : [];
       const result = definition.name === "db seed"
         ? await (await import("./seeds")).seedDatabase(url, project, seeds, config)

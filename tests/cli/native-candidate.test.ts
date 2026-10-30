@@ -67,6 +67,11 @@ test("internal native candidate archive preserves the ordinary release and execu
     const internalHelp = await command([process.execPath, join(internalPackage, "bin/fleur.ts"), "--json", "--help"], scratch, environment);
     expect(internalHelp.exit).toBe(0);
     expect(JSON.parse(internalHelp.stdout)).toEqual(JSON.parse(normalHelp.stdout));
+    const application = join(await realpath(scratch), "candidate-project");
+    expect((await command([process.execPath, join(internalPackage, "bin/fleur.ts"), "new", application, "--no-git", "--json"], scratch, environment)).exit).toBe(0);
+    const refusedDevelopment = await command([process.execPath, join(internalPackage, "bin/fleur.ts"), "dev", "--background", "--project", application, "--json"], scratch, environment);
+    expect(refusedDevelopment.exit).toBe(4);
+    expect(JSON.parse(refusedDevelopment.stdout)).toMatchObject({ command: "dev", ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "The internal installation candidate has no runtime admission." } });
     expect(internalHelp.stdout.trim().split("\n")).toHaveLength(1);
     expect(internalHelp.stderr).toContain("INTERNAL NATIVE CANDIDATE");
     expect(internalHelp.stderr).toContain("installation evidence pending; runtime support unverified");
@@ -108,7 +113,7 @@ test("candidate provenance hashes actual copied source and unexpected entry shap
     const inSource = await command([process.execPath, script, "--out", join(source, "src", "internal-artifacts")], source, environment);
     expect(inSource.exit).toBe(1);
     expect(await readdir(join(source, "src"))).not.toContain("internal-artifacts");
-    await writeFile(entryPath, entry.replace("const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...seedCommands, ...migrationCommands];", "const handlers = [...projectCommands];"));
+    await writeFile(entryPath, entry.replace("const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...seedCommands, ...migrationCommands, ...lifecycleCommands];", "const handlers = [...projectCommands];"));
     const rejected = await command([process.execPath, script, "--out", join(scratch, "unexpected")], source, environment);
     expect(rejected.exit).toBe(1);
     expect(rejected.stderr).toContain("Unexpected release entry shape");

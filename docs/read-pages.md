@@ -85,11 +85,12 @@ not establish the full application's reference performance targets. This slice's
 verification runs sequentially to avoid unrelated builds or installs, following
 the specification's requirement to exclude unrelated heavy work.
 
-The internal build/render adapters support this slice's verified fixture. They
-do not add `dev`, `build` or `start` CLI commands, automatic migrations or a
-production deployment lifecycle. Those commands retain their existing catalog
-behavior until their slices land. Creating a project does not start an app.
-Styling policy remains a separate slice. [Atomic mutations](mutations.md) supply
+The [development lifecycle](development.md) supplies `dev`, `stop`, `status`
+and bounded `logs` through the shared restricted runtime. Its startup initializer
+applies the reviewed chain and seeds only to a provably new binding, never on
+reload or for an existing/adopted database. Production `build`/`start` remain
+separate work. Creating a project does not start an app. Source admission and
+the Fleur-owned Tailwind compiler enforce the approved styling policy. [Atomic mutations](mutations.md) supply
 validated writes and client mutation outcomes. [Reactive views](reactivity.md)
 refresh server regions and island queries after managed commits while preserving
 keyed local state.

@@ -7,14 +7,30 @@ import { randomUUID } from "node:crypto";
 import { selectedEndpoint, type NativeImages } from "./endpoint";
 import { nativeCommand } from "./command";
 
+export interface DevelopmentImageOwnership {
+  readonly binding: string;
+  record(record: { owner: string; endpoint: string; directory: string; stage: "controller" | "worker" | "complete"; controller: string | null; worker: string | null }): Promise<void>;
+  release(owner: string): Promise<void>;
+}
 /** Explicit build-time acquisition; serving never installs packages or builds images. */
-export async function prepareNativeImages(application: string): Promise<NativeImages & { dispose(): Promise<void> }> {
+export async function prepareNativeImages(application: string, development?: DevelopmentImageOwnership): Promise<NativeImages & { dispose(): Promise<void> }> {
+  if (development !== undefined && !/^[a-f0-9]{64}$/.test(development.binding)) throw new Error("REQUEST_DENIED");
+  const lifecycleLabel = development ? `LABEL dev.fleur.development-binding=${development.binding}\n` : "";
   const endpoint = await selectedEndpoint();
-  const command = (args: string[]) => nativeCommand([args[0]!, "--host", endpoint, ...args.slice(1)], args[1] === "build" ? 300_000 : 5000);
+  let buildUnconfirmed = false;
+  const command = async (args: string[]) => {
+    try { return await nativeCommand([args[0]!, "--host", endpoint, ...args.slice(1)], args[1] === "build" ? 300_000 : 5000); }
+    catch (error) { if (args[1] === "build") buildUnconfirmed = true; throw error; }
+  };
   const directory = await mkdtemp(join(tmpdir(), "fleur-read-build-"));
   const owner = randomUUID(), tag = `fleur-read-build-${owner}`;
   const expected = new Map<string, string>();
-  let disposed = false;
+  let disposed = false, journaled = false;
+  const record = async (stage: "controller" | "worker" | "complete") => {
+    if (!development) return;
+    await development.record({ owner, endpoint, directory, stage, controller: expected.get("controller") ?? null, worker: expected.get("worker") ?? null });
+    journaled = true;
+  };
   const dispose = async () => {
     if (disposed) return;
     for (const role of ["worker", "controller"]) {
@@ -30,6 +46,7 @@ export async function prepareNativeImages(application: string): Promise<NativeIm
       await command(["docker", "image", "rm", reference]);
       if (await lookup()) throw new Error("IMAGE_CLEANUP_UNCONFIRMED");
     }
+    if (journaled) await development?.release(owner);
     disposed = true;
   };
   try {
@@ -51,7 +68,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends python3 dock
 RUN echo '${compilerHash}  /usr/bin/${compiler}' | sha256sum --check
 COPY native/ /controller/
 RUN /usr/bin/${compiler} -shared -fPIC -O2 -std=c11 -Wall -Wextra -Werror -pthread /controller/transport.c -o /controller/filter.so
-LABEL dev.fleur.read-image-owner=${owner}
+${lifecycleLabel}LABEL dev.fleur.read-image-owner=${owner}
 ENTRYPOINT ["/usr/bin/python3", "-I", "-u", "/controller/controller.py"]
 FROM oven/bun@sha256:${base} AS worker
 WORKDIR /probe
@@ -59,17 +76,25 @@ COPY --from=controller /controller/filter.so ./
 COPY bootstrap.js application.js ./
 ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 BUN_JSC_useConcurrentJIT=0 BUN_JSC_useConcurrentGC=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
-LABEL dev.fleur.read-image-owner=${owner}
+${lifecycleLabel}LABEL dev.fleur.read-image-owner=${owner}
 ENTRYPOINT ["bun", "/probe/bootstrap.js"]
 `);
+    await record("controller");
     await command(["docker", "build", "--quiet", "--target", "controller", "-t", tag+"-controller", directory]);
-    await command(["docker", "build", "--quiet", "--target", "worker", "-t", tag+"-worker", directory]);
     const controller = await command(["docker", "image", "inspect", tag+"-controller", "--format", "{{.Id}}"]);
+    expected.set("controller", controller);
+    await record("worker");
+    await command(["docker", "build", "--quiet", "--target", "worker", "-t", tag+"-worker", directory]);
     const worker = await command(["docker", "image", "inspect", tag+"-worker", "--format", "{{.Id}}"]);
-    expected.set("controller", controller); expected.set("worker", worker);
+    expected.set("worker", worker);
+    await record("complete");
     return { worker, controller, endpoint, dispose };
   } catch (error) {
+    if (development && buildUnconfirmed) throw new Error("IMAGE_RECOVERY_REQUIRED", { cause: error });
     try { await dispose(); } catch (cleanup) { throw new AggregateError([error, cleanup], "Image preparation and cleanup failed"); }
     throw error;
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    // A timed-out build client cannot prove the daemon retired its request. Lifecycle recovery retains this intent.
+    if (!development || !buildUnconfirmed) await rm(directory, { recursive: true, force: true });
+  }
 }

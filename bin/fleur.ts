@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { lifecycleCommands } from "../src/runtime/development/commands.ts";
 import { seedCommands } from "../src/runtime/database/seed-commands.ts";
 import { renderHelp } from "../src/cli/catalog.ts";
 import { parseInvocation, runCli } from "../src/cli/main.ts";
@@ -8,11 +9,12 @@ import { projectCommands } from "../src/project/commands.ts";
 import { setupCommands } from "../src/setup/commands.ts";
 import type { CliOutcome } from "../src/cli/result.ts";
 const argv = process.argv.slice(2);
-const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...seedCommands, ...migrationCommands];
+const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...seedCommands, ...migrationCommands, ...lifecycleCommands];
 const context = { cwd: process.cwd(), handlers };
 const parsed = parseInvocation(argv, context);
 let outcome: CliOutcome | undefined;
 if ("error" in parsed) outcome = parsed.error;
+else if (!parsed.invocation.help && parsed.invocation.handler?.validateArgs?.(parsed.invocation.commandArgs)) outcome = parsed.invocation.handler.validateArgs(parsed.invocation.commandArgs);
 else {
   const { resolveProjectLauncher } = await import("../src/cli/project-pin.ts");
   const launcher = await resolveProjectLauncher(parsed.invocation, process.argv[1]!);
@@ -21,9 +23,12 @@ else {
     process.exitCode = await runDelegated(launcher.bin, argv);
   } else outcome = launcher.kind === "blocked" ? launcher.outcome : await runCli(argv, context);
 }
-if (outcome) {
+if (outcome && !outcome.streamed) {
   if (argv.includes("--json")) process.stdout.write(JSON.stringify(outcome.result) + "\n");
+  else if (outcome.human) process.stdout.write(outcome.human);
   else if (outcome.result.ok && outcome.result.command === "help") process.stdout.write(renderHelp(handlers));
   else process.stdout.write(outcome.result.error ? `${outcome.result.error.code}: ${outcome.result.error.message}\n` : JSON.stringify(outcome.result.data) + "\n");
   process.exitCode = outcome.exitCode;
 }
+
+if (outcome?.streamed) process.exitCode = outcome.exitCode;

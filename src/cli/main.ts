@@ -67,16 +67,25 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
     commands: [helpCommand, ...handlers.map(({ name, summary, usage, options }) => ({ name, summary, ...(usage ? { usage } : {}), ...(options ? { options } : {}) }))],
     options: globalOptions,
   });
+  const invalidArguments = handler.validateArgs?.(commandArgs);
+  if (invalidArguments) return invalidArguments;
   const { guardProjectPin } = await import("./project-pin.ts");
   const blocked = await guardProjectPin(handler.name, project);
   if (blocked) return blocked;
-  const invalidArguments = handler.validateArgs?.(commandArgs);
-  if (invalidArguments) return invalidArguments;
   if (Bun.version !== release.engines.bun) return failure(handler.name, 4, {
     code: "BUN_VERSION_MISMATCH", expected: release.engines.bun, actual: Bun.version,
     message: `Fleur ${release.version} requires Bun ${release.engines.bun}; invoking Bun is ${Bun.version}. Install the required Bun version manually and retry.`,
     actions: [{ command: "bun --version", description: `Inspect Bun, then install ${release.engines.bun} manually using https://bun.sh/docs/installation. Fleur does not upgrade or replace Bun.` }],
   });
-  try { return await handler.run({ args: commandArgs, project, timeoutSeconds, timeoutExplicit, json }); }
+  try {
+    let environment = process.env;
+    if (handler.name.startsWith("db ") && !["db migration generate", "db migration plan"].includes(handler.name) && !commandArgs.includes("--production")) {
+      try { environment = await (await import("../runtime/development/database-context")).databaseEnvironment(project); }
+      catch (error) {
+        if (error instanceof Error && error.message === "RECOVERY_REQUIRED") return failure(handler.name, 5, { code: "RECOVERY_REQUIRED", message: "The development storage binding could not be verified.", actions: [{ command: "fleur logs", description: "Inspect private ownership evidence before selecting a database." }] });
+        return failure(handler.name, 4, { code: "DATABASE_UNAVAILABLE", message: "The owned development database is unavailable.", actions: [{ command: "fleur dev", description: "Explicitly start the development environment before using database operations." }] }); }
+    }
+    return await handler.run({ args: commandArgs, project, timeoutSeconds, timeoutExplicit, json, environment });
+  }
   catch { return failure(handler.name, 1, { code: "INTERNAL_FAILURE", message: "The command failed unexpectedly.", actions: [] }); }
 }

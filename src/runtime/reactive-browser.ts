@@ -53,6 +53,13 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
       try {
         const response = await reactiveSend("/__fleur/view", { method: "POST", headers: { "Content-Type": "application/json", "X-Fleur-Request": "view" }, credentials: "same-origin", redirect: "error", cache: "no-store", signal: abort!.signal,
           body: JSON.stringify(reopen ? { action: "open", path: location.pathname } : { action: "refresh", ...sent, force: refreshAll, queries: activeQueries(), ...(asked.length ? { retrievals: asked.map(({ name, input }) => ({ name, input })) } : {}) }) });
+        const development = document.head.querySelector<HTMLMetaElement>('meta[name="fleur-development"]')?.content;
+        const delivered = response.headers.get("X-Fleur-Development");
+        if (development && delivered && development !== delivered) {
+          // Source replacement loads its matching island bundle. Mutations are never resubmitted.
+          current = false; location.reload();
+          return { status: "error", error: { code: "SOURCE_CHANGED" } };
+        }
         const rawResult = await boundedJSON(response);
         if (!response.ok) {
           const code = rawResult && typeof rawResult === "object" && "error" in rawResult && rawResult.error && typeof rawResult.error === "object" && "code" in rawResult.error ? String(rawResult.error.code) : "INTERNAL_FAILURE";
@@ -81,7 +88,7 @@ export function startReactiveView(raw: unknown, reconcile: (page: PageResult) =>
         if (!current) { answer(() => ({ status: "error", error: { code: "NOT_CONNECTED" } })); return { status: "error", error: { code: "NOT_CONNECTED" } }; }
         const code = error instanceof Error ? error.message : "INTERNAL_FAILURE";
         answer(() => ({ status: "error", error: { code } }));
-        const maintenance = ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED"].includes(code);
+        const maintenance = ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(code);
         queryConnectionState(maintenance ? "maintenance" : "reconnecting");
         regions(maintenance ? "maintenance" : "reconnecting");
         generation++; force = true;

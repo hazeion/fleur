@@ -189,6 +189,5 @@ The internal adapter accepts this configuration through
 or a repeated binding name or field, fails startup with `CONFIGURATION_INVALID`.
 Application workers never receive the host environment, and the host strips
 retrieval credential variables from the Docker client and other child processes
-it starts. The development and
-production lifecycle commands that will read it from the startup environment are
-later slices. `tests/runtime/fixtures/retrieval` demonstrates the contract.
+it starts. The development lifecycle reads these bindings in its trusted broker.
+Production lifecycle commands remain separate work. `tests/runtime/fixtures/retrieval` demonstrates the contract.

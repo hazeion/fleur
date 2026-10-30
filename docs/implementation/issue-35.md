@@ -1,8 +1,10 @@
 # Development lifecycle acceptance and evidence
 
-Status: blocked and incomplete. This is a reviewable implementation checkpoint,
-not a completed acceptance gate or a PR candidate. No PR, push, merge or issue
-closure was performed. Independent review remains the parent orchestrator's step.
+Status: implemented on an admitted runtime; see "Admitted-runtime continuation
+(2026-10-30)" at the end for the executed public lifecycle evidence, the
+defects it found and their corrections, and the remaining limitations. The
+earlier sections are the historical checkpoint record and keep their original
+wording.
 
 Specification: #35, the approved #9 resolution, V1-SPEC lifecycle and JSON v1
 contracts, and ADR 0001. Baseline: ab0941a9c7c2c6112fa77aedd63bbfb603b6f293.

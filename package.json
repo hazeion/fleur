@@ -16,6 +16,7 @@
     "docs/setup-artifact-evidence.md",
     "dist/reference",
     "docs/read-pages.md",
+    "docs/application-surface.md",
     "docs/reactivity.md",
     "docs/mutations.md",
     "docs/maintenance.md",
@@ -39,9 +40,11 @@
     "vite": "8.3.4"
   },
   "dependencies": {
+    "@tailwindcss/oxide": "4.3.3",
     "preact": "11.0.1",
     "preact-render-to-string": "6.8.0",
     "rolldown": "1.2.15",
+    "tailwindcss": "4.3.3",
     "zod": "4.6.7"
   },
   "exports": {

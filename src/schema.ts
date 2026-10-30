@@ -4,6 +4,9 @@ import { z } from "zod";
 import { described, description } from "./runtime/schema-descriptions";
 
 import { validators, objectFields, routeSchemas } from "./runtime/schema-metadata";
+// Fleur's browser contract forbids dynamic code generation. Configure Zod before
+// constructing schemas so validation never depends on Function or import order.
+z.config({ jitless: true });
 export type Infer<S extends Schema> = S extends Schema<infer T, boolean> ? T : never;
 export type SchemaShape = Readonly<Record<string, Schema>>;
 type OptionalKeys<S extends SchemaShape> = { [K in keyof S]: S[K] extends Schema<unknown, true> ? K : never }[keyof S];

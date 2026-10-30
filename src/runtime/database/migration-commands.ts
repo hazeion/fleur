@@ -2,6 +2,7 @@ import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success } from "../../cli/result";
 import { databaseFailure, privilegeFailure, productionOption } from "./commands";
 import { privilegeShortfall } from "./privilege";
+import { sourceFailure } from "../build/diagnostics";
 
 export const migrationCommands: readonly CommandDefinition[] = [
   ...["generate", "plan", "status", "apply"].map(action => ({ name: `db migration ${action}`, usage: `db migration ${action}${action === "apply" ? " [--grant <id>]" : action === "status" ? " [--production]" : ""}`, options: action === "apply" ? [{ name: "--grant", value: true }] : action === "status" ? [productionOption] : [] })),
@@ -46,6 +47,8 @@ export const migrationCommands: readonly CommandDefinition[] = [
     }
     return failure(definition.name, 4, { code: "CONFIGURATION_MISSING", message: "Explicit private database configuration is required.", actions: [] });
     } catch(error) {
+      const source = sourceFailure(definition.name, error);
+      if (source) return source;
       const shortfall=privilegeShortfall(error);
       if(shortfall)return privilegeFailure(definition.name,shortfall);
       if(error instanceof Error&&error.message==="DATABASE_UNAVAILABLE")return databaseFailure(definition.name,error,[],{command:"fleur status",description:"Check database connectivity."});

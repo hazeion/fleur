@@ -6,9 +6,13 @@ import { ReactiveProject } from "./reactive-project";
 import { viewRequest } from "./reactive-wire";
 import type { PageResult } from "./worker-execution";
 import { retrievalFailureCodes } from "./retrieval/destinations";
+import { validatePresentationAttribute, validatePresentationElement } from "./presentation-policy";
 
 async function admittedHTML(rendered: PageResult): Promise<void> {
-  await new HTMLRewriter().on("iframe,frame,frameset,object,embed,script,portal,fencedframe", { element() { throw new Error("UNSUPPORTED_CAPABILITY"); } }).transform(new Response(rendered.html)).text();
+  await new HTMLRewriter().on("*", { element(element) {
+    validatePresentationElement(element.tagName);
+    for (const [name, value] of element.attributes) validatePresentationAttribute(element.tagName, name, value);
+  } }).transform(new Response(rendered.html)).text();
 }
 
 /** Loopback fixture/application adapter; lifecycle commands are a later slice. */
@@ -41,7 +45,7 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
     if (url.pathname === "/__fleur/view") return viewResponse(project, request, url);
     if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
     const asset = browser.files.get(url.pathname);
-    if (asset) return new Response(request.method === "HEAD" ? null : typeof asset.body === "string" ? asset.body : new Uint8Array(asset.body).buffer, { headers: { "Content-Type": asset.type, "X-Content-Type-Options": "nosniff", "Cache-Control": "public, max-age=31536000, immutable" } });
+    if (asset) return new Response(request.method === "HEAD" ? null : typeof asset.body === "string" ? asset.body : new Uint8Array(asset.body).buffer, { headers: { "Content-Type": asset.type, "X-Content-Type-Options": "nosniff", "Cache-Control": asset.cache ?? "public, max-age=31536000, immutable" } });
     try {
       const view = await project.open(url.pathname);
       const rendered = view.rendered;
@@ -50,12 +54,13 @@ export function serveReadApplication(app: ReadApplication, browser: BrowserBuild
       const nonce = randomBytes(24).toString("base64url");
       const data = JSON.stringify(rendered.islands).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
       const identity = JSON.stringify({ connection: view.connection, page: view.page, generation: view.generation, sequence: view.sequence, epoch: view.epoch, revision: view.revision, status: view.status });
-      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fleur</title></head><body><div id="fleur-refresh-status" aria-live="polite">${rendered.regions.some(region => region.error) ? "Some data is unavailable." : ""}</div><div id="fleur-page">${rendered.html}</div><script type="application/json" id="fleur-islands">${data}</script><script type="application/json" id="fleur-view">${identity}</script><script type="module" nonce="${nonce}" src="${browser.entry}"></script></body></html>`;
+      const stylesheet = browser.stylesheet ? `<link rel="stylesheet" href="${browser.stylesheet}">` : "";
+      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fleur</title>${stylesheet}</head><body><div id="fleur-refresh-status" aria-live="polite">${rendered.regions.some(region => region.error) ? "Some data is unavailable." : ""}</div><div id="fleur-page">${rendered.html}</div><script type="application/json" id="fleur-islands">${data}</script><script type="application/json" id="fleur-view">${identity}</script><script type="module" nonce="${nonce}" src="${browser.entry}"></script></body></html>`;
       if (request.method === "HEAD") await project.dispose(view.connection, view.page);
       return new Response(request.method === "HEAD" ? null : html, { headers: {
         "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
         "Cross-Origin-Opener-Policy": "same-origin",
-        "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'self'`,
+        "Content-Security-Policy": `sandbox allow-scripts allow-same-origin allow-forms; frame-ancestors 'none'; default-src 'none'; script-src 'nonce-${nonce}'; script-src-attr 'none'; style-src-elem ${browser.stylesheet ? new URL(browser.stylesheet, origin).href : "'none'"}; style-src-attr 'unsafe-inline'; img-src 'self' https:; font-src 'self' https:; media-src 'self' https:; connect-src 'self'; base-uri 'none'; frame-src 'none'; object-src 'none'; form-action 'none'`,
       } });
     } catch (error) {
       if (error instanceof Error && ["MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "SCHEMA_DRIFT", "MIGRATIONS_PENDING"].includes(error.message)) return new Response(`<!doctype html><html lang="en"><title>Database maintenance</title><h1>Database maintenance</h1><p>${error.message === "RECOVERY_REQUIRED" ? "Maintenance needs inspection before this application can resume." : "Database maintenance is in progress. Refresh after it completes."}</p></html>`, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });

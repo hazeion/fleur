@@ -1,8 +1,9 @@
 import { SQL } from "bun";
 import { z } from "zod";
-import { writeFile } from "node:fs/promises";
-import { MaintenanceLease, privateDirectory } from "../database/maintenance";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, open, unlink } from "node:fs/promises";
+import { MaintenanceLease, privateDirectory, syncDirectory } from "../database/maintenance";
+import { dirname, join } from "node:path";
 import { nativeCommand } from "../native/command";
 import { selectedEndpoint } from "../native/endpoint";
 import { privateJson } from "../database/maintenance-authority";
@@ -12,6 +13,30 @@ const image = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b45
 export const databaseLabel = "dev.fleur.development-binding";
 const schema = z.strictObject({ formatVersion: z.literal(1), binding: z.string(), endpoint: z.string(), container: z.string().regex(/^[a-f0-9]{64}$/).nullable(), password: z.string().uuid(), volume: z.string(), stage: z.enum(["creating", "owned"]), cluster: z.string().nullable() });
 type Record = z.infer<typeof schema>;
+/** Private handoffs and generated tools never follow or overwrite foreign files. */
+async function verifyPrivateFile(path: string, contents: string, mode: number) {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await file.stat(), expected = Buffer.from(contents);
+    if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink !== 1 || (info.mode & 0o7777) !== mode || info.size !== expected.length || expected.length > 16384) throw new Error("RECOVERY_REQUIRED");
+    const bytes = Buffer.alloc(expected.length + 1); let used = 0;
+    while (used < bytes.length) { const read = await file.read(bytes, used, bytes.length - used, used); if (!read.bytesRead) break; used += read.bytesRead; }
+    const current = await lstat(path);
+    if (used !== expected.length || !bytes.subarray(0, used).equals(expected) || current.isSymbolicLink() || current.ino !== info.ino || current.dev !== info.dev) throw new Error("RECOVERY_REQUIRED");
+    return info;
+  } finally { await file.close(); }
+}
+async function publishPrivateFile(path: string, contents: string, mode: number): Promise<void> {
+  try {
+    const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode).catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+      await verifyPrivateFile(path, contents, mode); return null;
+    });
+    if (!file) return;
+    try { await file.writeFile(contents); await file.sync(); } finally { await file.close(); }
+    await verifyPrivateFile(path, contents, mode); await syncDirectory(dirname(path));
+  } catch { throw new Error("RECOVERY_REQUIRED"); }
+}
 export class DevelopmentPostgres {
   readonly #bound: Binding;
   readonly #record: Record;
@@ -32,17 +57,19 @@ export class DevelopmentPostgres {
       const command = (args: string[]) => nativeCommand(["docker", "--host", endpoint, ...args]);
       // Unknown same-name resources cannot be adopted, even if stopped.
       if (await command(["ps", "--all", "--quiet", "--filter", `name=^/${volume}$`]) || await command(["volume", "ls", "--quiet", "--filter", `name=^${volume}$`])) throw new Error("RECOVERY_REQUIRED");
+      const present = await command(["image", "inspect", "--format", "{{.Id}}", image]).then(id => /^sha256:[a-f0-9]{64}$/.test(id), () => false);
+      if (!present) throw new Error("PREREQUISITE_UNAVAILABLE");
       resource = new DevelopmentPostgres(bound, { formatVersion: 1, binding: bound.id, endpoint, container: null, password: crypto.randomUUID(), volume, stage: "creating", cluster: null });
       checkOpen(); await resource.#persist();
       checkOpen(); await command(["volume", "create", "--label", `${databaseLabel}=${bound.id}`, volume]);
-      const present = await command(["image", "inspect", "--format", "{{.Id}}", image]).then(() => true, () => false);
-      if (!present) throw new Error("PREREQUISITE_UNAVAILABLE");
-      checkOpen(); const container = await command(["create", "--name", volume, "--label", `${databaseLabel}=${bound.id}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", "--mount", `type=volume,source=${volume},target=/var/lib/postgresql`, "--publish", "127.0.0.1::5432", "--env", "POSTGRES_USER=fleur", "--env", "POSTGRES_DB=postgres", "--env", `POSTGRES_PASSWORD=${resource.#record.password}`, image]);
+      checkOpen(); await publishPrivateFile(join(bound.directory, "postgres.env"), resource.#handoff(), 0o600);
+      checkOpen(); const container = await command(["create", "--name", volume, "--label", `${databaseLabel}=${bound.id}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", "--mount", `type=volume,source=${volume},target=/var/lib/postgresql`, "--publish", "127.0.0.1::5432", "--env", "POSTGRES_USER=fleur", "--env", "POSTGRES_DB=postgres", "--env-file", join(bound.directory, "postgres.env"), image]);
       if (!/^[a-f0-9]{64}$/.test(container)) throw new Error("RECOVERY_REQUIRED");
       resource.#record.container = container; resource.#record.stage = "owned";
       await resource.#persist();
     }
     const metadata = await resource.#inspect();
+    await resource.#retireHandoff();
     checkOpen();
     if (!metadata.State.Running) await resource.#command(["start", metadata.Id]);
     for (;;) {
@@ -60,6 +87,15 @@ export class DevelopmentPostgres {
     }
   }
   #persist() { return save(this.#bound.directory, "postgres.json", this.#record); }
+  #handoff() { return `POSTGRES_PASSWORD=${this.#record.password}\n`; }
+  async #retireHandoff(): Promise<void> {
+    const path = join(this.#bound.directory, "postgres.env");
+    try {
+      const verified = await verifyPrivateFile(path, this.#handoff(), 0o600), current = await lstat(path);
+      if (current.isSymbolicLink() || current.ino !== verified.ino || current.dev !== verified.dev) throw new Error("RECOVERY_REQUIRED");
+      await unlink(path); await syncDirectory(this.#bound.directory);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("RECOVERY_REQUIRED"); }
+  }
   async #inspect() {
     const { container, volume, binding } = this.#record;
     if (!container || this.#record.stage !== "owned") throw new Error("RECOVERY_REQUIRED");
@@ -83,12 +119,13 @@ export class DevelopmentPostgres {
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
     for (const tool of ["pg_dump", "pg_restore", "psql"]) {
       const script = `#!/bin/sh\nexec docker --host ${quote(this.#record.endpoint)} exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGHOST=127.0.0.1 --env PGPORT=5432 ${quote(metadata.Id)} ${tool} "$@"\n`;
-      await writeFile(join(directory, tool), script, { mode: 0o700 });
+      await publishPrivateFile(join(directory, tool), script, 0o700);
     }
     return directory;
   }
   async stop(timeoutMs = 30000): Promise<void> {
     const metadata = await this.#inspect();
+    await this.#retireHandoff();
     if (!metadata.State.Running) return;
     // Inspect admission also works before the application database exists. It
     // holds the same shared fence as brokers, so held/queued maintenance wins.

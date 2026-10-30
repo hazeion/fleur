@@ -367,3 +367,22 @@ success or start any Docker workload.
 Project creation, project-pin enforcement and packed-launcher suites passed
 54 tests and 546 assertions after the guidance and lifecycle changes. The packed
 suite retained its interruption/grace checks and all existing deadlines.
+
+
+The PostgreSQL resource implementation now preflights the pinned image before
+writing creation intent or creating its volume. Container creation receives a
+private mode-0600 environment-file handoff rather than a password argument.
+Only verified owned creation or stop retires that handoff. Unconfirmed creation
+retains its private evidence. Generated PostgreSQL tool scripts use exclusive
+creation and verify an existing file's owner, mode, link count and exact bytes;
+they never overwrite or follow a foreign target. These changes were made while
+Docker testing was prohibited by coordination. Their written regressions are
+still unexecuted, so no behavioral red or runtime green is claimed for them.
+
+
+After these PostgreSQL file-handling edits, pinned types, lint and the reference
+build passed. The five native Python component suites also passed again, 59 tests.
+No Docker workload was launched during this quiet window. The final full root
+suite and PostgreSQL regressions remain unexecuted at this revision; the earlier
+complete-suite failure and subsequent focused results above retain their stated
+scope. The unrelated inherited clean-CI commit is not an ancestor of this branch.

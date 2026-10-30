@@ -98,12 +98,33 @@ container creation. Omitting the selection retains the 4.96.1/244132 candidate
 and its existing preflight checks.
 
 `--pinned-bun="$QUALIFICATION_BUN"` selects an existing absolute executable.
-The default remains the user's `.bun/bin/bun`. The observer resolves the path,
-requires a bounded regular executable without group/world write permission,
-authenticates its bytes before execution and requires exact `1.4.3` version
-output. It rechecks identity and bytes after the version command and preflight.
-The selected path is an argv element, never shell input, and is omitted from
-reports. The Darwin x64 executable SHA256 is
+The default remains the user's `.bun/bin/bun`. The observer resolves the path
+and requires a bounded regular executable owned by root or the observer's
+effective UID. Group/world write permission and all special mode bits, including
+setuid and setgid, refuse before either launch. Ownership participates in drift
+checks. Hash-matching bytes do not waive this authority policy.
+
+The observer copies bytes from the open source descriptor into an exclusively
+created file in its own mode-0700 temporary directory. It authenticates the source
+while copying, flushes the copy, sets its mode to 0500, closes every writable
+descriptor and independently authenticates the complete copy. The new file has
+one link and belongs to the observer; source ownership, modes and other metadata
+are not copied. Both the exact `1.4.3` version command and fixed preflight launch
+execute this private copy. They never execute the selected source pathname.
+Atomic pathname replacement and in-place updates to the source therefore cannot
+change the launched bytes. Source rechecks still refuse drift after either
+command; those checks are evidence checks, not the execution-custody mechanism.
+The copy is removed after bounded command clients retire, including refusal paths.
+It is temporary qualification scratch, not a host installation.
+
+The threat model trusts the observer and its private directory, consistent with
+the [existing host authority boundary](../../../docs/planning/V1-SPEC.md#runtime-isolation-and-production-feasibility-gate).
+It handles updates or replacements of the selected source, including writes
+through another source hard link. It does not sandbox root or a process running
+as the observer that deliberately tampers with the observer's private storage or
+code. No claim of a kernel-sealed immutable file or descriptor-based execution
+is made. The executable path is one argv element, never shell input, and private
+source/snapshot paths are omitted from reports. The Darwin x64 executable SHA256 is
 `c2a945a9d33f9088b32ac3550d1d1fd485a7fc10d71c66f91ef0d33b41cefa7c`.
 It was extracted from the 1.4.3 archive authenticated against the existing
 `platforms/bootstrap.py` archive pin
@@ -117,7 +138,9 @@ qualification-driver and refusal seams:
 | --- | --- | --- |
 | Exact candidate selection | 4.97 reaches the original proof; unknown selection, other build, OS, Compose, CLI, component or security tuple refuses before creation | `tests/cli/desktop-control-integrity.test.ts` |
 | Existing 4.96 behavior | Default still reaches original proof and preserves ownership/cleanup refusals | Existing Desktop control tests |
-| Pinned executable | Explicit path remains one argument; wrong hash or exact-version output refuses before preflight | `test_qualification_inputs.py` |
+| Pinned executable | Private copy remains one argv element; wrong source/copy hash or exact-version output refuses before preflight | `test_qualification_inputs.py`, `test_bun_execution_custody.py` |
+| Execution custody | Source pathname and in-place replacement immediately before each launch cannot execute replacement markers | `test_bun_execution_custody.py` |
+| Executable authority | Setuid, setgid and foreign source owner refuse without version/preflight launch; executed copy is observer-owned mode 0500 | `test_bun_execution_custody.py` |
 | Selected/returned candidate binding | Different candidate in successful preflight refuses before outer Docker operations | `test_qualification_inputs.py` |
 | Operator source binding | Changed preflight source refuses before Bun execution; both observer and preflight inputs are retained in operator hashes | `test_qualification_inputs.py` |
 | Producer, image and payload drift | Changed catalog, source, archive, image descriptor/config/layers or helper bytes refuse | Existing artifact, OCI, producer-binding and prepared-custody tests |
@@ -202,3 +225,35 @@ inventory. Do not add a readiness row until the two full native results have
 passed independent review. Packed public Doctor/setup readiness proof and issue
 35 public lifecycle proof remain separate follow-up gates under the parent's
 quality decision. No runtime pass is claimed by this tooling change.
+
+
+## Local execution-custody evidence
+
+The correction to the original tooling commit first reproduced eight intended
+regression failures. Four actual synthetic-program launches executed replacement
+markers at the version/preflight boundaries, through both pathname replacement
+and in-place writes. Separate launch-interception tests demonstrated missing
+setuid, setgid and foreign-owner refusals without executing special-mode files.
+The positive control also required authenticated observer-owned mode-0500 bytes.
+After the correction, every replacement marker stayed absent and both normal
+launches used only the private authenticated copy, which was removed afterward.
+
+An opt-in non-Docker test additionally uses an existing archive-authenticated
+Mach-O Bun 1.4.3 on Intel macOS. It mutates only disposable copies of the selected
+binary. Across all four launch/mutation combinations, the private executable
+returns exact version output and a fixed JavaScript probe reports its own
+executed binary SHA256 matching the source pin. No preflight script, Docker
+command or qualification workload runs in this test:
+
+```sh
+FLEUR_TEST_PINNED_BUN="$QUALIFICATION_BUN" python3 -W error::ResourceWarning \
+  -m unittest discover -s experiments/compatibility/desktop-runtime \
+  -p test_bun_execution_custody.py
+```
+
+This test passed on the required Intel macOS 15.7.7 host. A separate exploratory
+`/dev/fd` launch of the pinned Mach-O returned permission denied, so the tooling
+does not use that mechanism. Unit/probe success remains distinct from native
+Docker qualification or readiness admission. The earlier broad CLI failures and
+Linux-only pidfd/observer failures remain failed evidence; they are not converted
+into Mac passes by these targeted checks.

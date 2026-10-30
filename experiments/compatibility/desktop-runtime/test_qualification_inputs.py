@@ -27,10 +27,10 @@ class QualificationInputs(unittest.TestCase):
                 elif args[:2]==['git','show']:
                     relative=args[2].split(':',1)[1];stdout=(outer.ROOT/relative).read_bytes()
                     if drift and relative=='scripts/observe-desktop-control.ts':stdout+=b'changed'
-                elif args==[str(executable),'--version']:
+                elif args[1:]==['--version']:
                     stdout=version
                     if replace_after_version:executable.write_bytes(b'replaced after authentication')
-                elif args[0]==str(executable):
+                elif args[1:2]==['scripts/observe-desktop-control.ts']:
                     stdout=json.dumps({'ok':True,'candidate':proof_candidate,'controlCapabilityVerified':True,'originalPreserved':True,'transportUncertain':False}).encode()
                 else:raise AssertionError('unexpected external command: '+args[0])
                 return SimpleNamespace(returncode=0,stdout=stdout,stderr=b'')

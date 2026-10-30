@@ -2,6 +2,7 @@
 """Native Intel Desktop candidate evidence, with independent guardian custody."""
 import argparse
 import copy
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -47,14 +48,14 @@ def native_intel_identity(system,machine,cpu):return system=='Darwin' and machin
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
 
 
-def verify_pinned_bun(path):
-    """Authenticate existing bytes before executing a fixed argv, never a shell."""
+def verify_pinned_bun(path,destination=None):
+    """Authenticate a source descriptor, optionally copying its bytes to private storage."""
     try:
         if not path.is_absolute():raise ValueError('absolute executable required')
         fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
         try:
             before=os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or not 0<before.st_size<=268435456 or before.st_mode&0o022 or not before.st_mode&0o111:raise ValueError('unsafe executable')
+            if not stat.S_ISREG(before.st_mode) or not 0<before.st_size<=268435456 or before.st_mode&0o7022 or not before.st_mode&0o111 or before.st_uid not in (0,os.geteuid()):raise ValueError('unsafe executable')
             digest=hashlib.sha256();size=0
             while True:
                 block=os.read(fd,1048576)
@@ -62,11 +63,38 @@ def verify_pinned_bun(path):
                 size+=len(block)
                 if size>before.st_size:raise ValueError('executable grew')
                 digest.update(block)
-            identity=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+                if destination is not None:destination.write(block)
+            identity=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
             if size!=before.st_size or digest.hexdigest()!=BUN_SHA256 or identity(os.fstat(fd))!=identity(before) or identity(path.stat(follow_symlinks=False))!=identity(before):raise ValueError('executable changed')
             return identity(before)
         finally:os.close(fd)
     except (OSError,ValueError):raise RuntimeError('PINNED_BUN_REQUIRED') from None
+
+
+@contextmanager
+def pinned_bun_snapshot(source):
+    """Detach execution from the caller-controlled source path and inode.
+
+    The private directory belongs to this trusted observer, not the application.
+    Supported source updates may rename or overwrite source; they cannot mutate
+    the distinct private copy. This does not sandbox a same-UID host adversary
+    that deliberately modifies observer-owned storage or the observer itself.
+    """
+    with tempfile.TemporaryDirectory(prefix='fleur-pinned-bun-') as directory:
+        private=Path(directory)
+        info=private.stat()
+        if info.st_uid!=os.geteuid() or stat.S_IMODE(info.st_mode)!=0o700:raise RuntimeError('PINNED_BUN_REQUIRED')
+        snapshot=private/'bun'
+        fd=os.open(snapshot,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'wb') as output:
+            identity=verify_pinned_bun(source,output)
+            output.flush();os.fsync(output.fileno())
+            os.fchmod(output.fileno(),0o500)
+        # No writable descriptor survives authentication or either launch.
+        info=snapshot.stat()
+        if info.st_uid!=os.geteuid() or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o500:raise RuntimeError('PINNED_BUN_REQUIRED')
+        verify_pinned_bun(snapshot)
+        yield snapshot,identity
 
 
 def error_category(error):
@@ -404,15 +432,15 @@ def observe(mode,images_directory, *, candidate="desktop-4.96.1-244132",pinned_b
         if not bun.is_absolute():raise RuntimeError('PINNED_BUN_REQUIRED')
         try:bun=bun.resolve(strict=True)
         except (OSError,RuntimeError):raise RuntimeError('PINNED_BUN_REQUIRED') from None
-        bun_identity=verify_pinned_bun(bun)
-        if command([str(bun),'--version'])!='1.4.3\n':raise RuntimeError('PINNED_BUN_VERSION_REQUIRED')
-        if verify_pinned_bun(bun)!=bun_identity:raise RuntimeError('PINNED_BUN_REQUIRED')
-        report['bun']={'version':'1.4.3','sha256':BUN_SHA256}
-        phase='fresh-control-preflight'
-        preflight=raw([str(bun),'scripts/observe-desktop-control.ts','--run','--candidate='+candidate],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
-        # Explicitly pass the preflight flag only to this fixed command.
-        if preflight.returncode:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
-        if verify_pinned_bun(bun)!=bun_identity:raise RuntimeError('PINNED_BUN_REQUIRED')
+        with pinned_bun_snapshot(bun) as (executable,bun_identity):
+            if command([str(executable),'--version'])!='1.4.3\n':raise RuntimeError('PINNED_BUN_VERSION_REQUIRED')
+            if verify_pinned_bun(bun)!=bun_identity:raise RuntimeError('PINNED_BUN_REQUIRED')
+            report['bun']={'version':'1.4.3','sha256':BUN_SHA256}
+            phase='fresh-control-preflight'
+            preflight=raw([str(executable),'scripts/observe-desktop-control.ts','--run','--candidate='+candidate],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
+            # Both launches use the authenticated private copy, never the source path.
+            if preflight.returncode:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
+            if verify_pinned_bun(bun)!=bun_identity:raise RuntimeError('PINNED_BUN_REQUIRED')
         proof=artifacts.canonical_json(preflight.stdout)
         if proof.get('candidate')!=candidate:raise RuntimeError('CONTROL_PREFLIGHT_CANDIDATE_CHANGED')
         if proof.get('ok') is not True or proof.get('controlCapabilityVerified') is not True or proof.get('originalPreserved') is not True or proof.get('transportUncertain') is not False:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')

@@ -107,7 +107,7 @@ async function executeLifecycle(command: string, input: CommandInput, emit: Emit
           if (!state || state.state === "stopped") {
             // The child inherits this exact locked file description: there is no
             // unlocked gap before supervisor publication, even if its launcher dies.
-            launched = Bun.spawn([process.execPath, fileURLToPath(new URL("entry.ts", import.meta.url)), bound.project, value(input.args, "--host") ?? "127.0.0.1", value(input.args, "--port") ?? "auto", String(monotonicNanoseconds() + BigInt(Math.max(1, Math.ceil((deadline - performance.now()) * 1000000)))), input.args.includes("--background") ? "background" : "foreground", "owned-fd-3"], { env: { ...process.env }, stdio: ["pipe", "ignore", "ignore", ownership.fd], detached: true });
+            launched = Bun.spawn([process.execPath, "--no-env-file", fileURLToPath(new URL("entry.ts", import.meta.url)), bound.project, value(input.args, "--host") ?? "127.0.0.1", value(input.args, "--port") ?? "auto", String(monotonicNanoseconds() + BigInt(Math.max(1, Math.ceil((deadline - performance.now()) * 1000000)))), input.args.includes("--background") ? "background" : "foreground", "owned-fd-3"], { env: { ...process.env }, stdio: ["pipe", "ignore", "ignore", ownership.fd], detached: true });
             launched.unref();
             if (input.args.includes("--background")) launched.stdin.end();
           }

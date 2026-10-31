@@ -16,7 +16,7 @@ export async function runDelegated(bin: string, argv: readonly string[]): Promis
     return { signal, listener };
   });
   try {
-    child = Bun.spawn([process.execPath, bin, ...argv], { cwd: process.cwd(), env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    child = Bun.spawn([process.execPath, "--no-env-file", bin, ...argv], { cwd: process.cwd(), env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     if (interrupted) child.kill(interrupted);
     const exit = await child.exited;
     const signal = child.signalCode;

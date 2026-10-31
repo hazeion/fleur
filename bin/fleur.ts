@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import "../src/cli/startup-environment.ts";
 import { lifecycleCommands } from "../src/runtime/development/commands.ts";
 import { productionCommands } from "../src/runtime/production/commands.ts";
 import { seedCommands } from "../src/runtime/database/seed-commands.ts";

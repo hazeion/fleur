@@ -61,6 +61,7 @@ Start checks, in order, and refuses with the stable code before serving:
    need more than the 60-second default.
 
 Secrets enter only through the startup environment and stay in the trusted broker.
+Fleur does not load `.env` files, including from the directory it is run in.
 Execution containers receive none of them. There is no public configuration in
 this release, so no configuration value reaches the browser.
 

@@ -146,7 +146,7 @@ export async function setupNativeApt(input: CommandInput, host: SetupHost, obser
         if (!/^[A-Za-z0-9_./@+%~-]+$/.test(process.execPath)) throw new AptPayloadUnavailable("The Bun executable path cannot be safely framed for the standard APT tool protocol");
         const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
         const helper = fileURLToPath(new URL("./apt-pre-install.ts", import.meta.url));
-        const command = `${process.execPath} ${[helper, planPath, guardChecksum].map(quote).join(" ")}`;
+        const command = `${process.execPath} --no-env-file ${[helper, planPath, guardChecksum].map(quote).join(" ")}`;
         const guardOptions = ["-o", `DPkg::Pre-Install-Pkgs::=${command}`, "-o", `DPkg::Tools::Options::${process.execPath}::Version=2`, "-o", `DPkg::Tools::Options::${process.execPath}::InfoFD=0`];
         await authorizeAcquisition();
         const grants = [...await readGrants(host)];

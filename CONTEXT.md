@@ -39,3 +39,12 @@ The PostgreSQL role, provisioned by Fleur in its development cluster, under whic
 
 **Fleur setup grant**:
 A human authorization for a named prerequisite setup action and installation method, valid once or remembered for one OS user on one machine. It grants no authority to application handlers.
+
+**Machine tool**:
+Software the developer supplies on their own machine and Fleur only checks: Bun, Docker components, the operating system release and kernel. Fleur never installs, upgrades or embeds a machine tool.
+
+**Release pin**:
+An exact, immutable version or digest that a Fleur release owns and ships: container image digests, lockfiles, the application dependency set and the Fleur version a generated project records. Release pins are not machine tool requirements.
+
+**Version floor**:
+The lowest version of a machine tool a Fleur release admits. The floor is the version the release was measured with; equal or newer versions are admitted, older versions refuse.

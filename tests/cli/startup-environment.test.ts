@@ -18,8 +18,9 @@ async function callerDirectory(name: string, project: Record<string, unknown> | 
   if (project) await writeFile(join(directory, "fleur.json"), JSON.stringify(project));
   return directory;
 }
-async function cli(cwd: string, environment: Record<string, string>, ...args: string[]) {
-  const child = Bun.spawn([process.execPath, executable, ...args, "--json"], { cwd, env: { PATH: "/usr/bin:/bin", HOME: scratch, ...environment }, stdout: "pipe", stderr: "pipe" });
+async function cli(cwd: string, environment: Record<string, string>, ...args: string[]) { return bunCli([], cwd, environment, ...args); }
+async function bunCli(bunOptions: readonly string[], cwd: string, environment: Record<string, string>, ...args: string[]) {
+  const child = Bun.spawn([process.execPath, ...bunOptions, executable, ...args, "--json"], { cwd, env: { PATH: "/usr/bin:/bin", HOME: scratch, ...environment }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   const lines = stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
   const last = lines.at(-1) as { error?: { code: string }; data?: { result?: { ok: boolean; error?: { code: string } | null } } };
@@ -69,10 +70,23 @@ test("start gives its supervisor exactly the real startup environment", async ()
   expect(environment.FLEUR_DOTENV_CANARY).toBeUndefined();
 });
 test("arguments and exit status survive the launcher's clean start", async () => {
-  const cwd = await callerDirectory("arguments");
-  const outcome = await cli(cwd, {}, "start", "--artifact", "with space\nand newline");
-  expect(outcome.code).toBe("ARTIFACT_INVALID");
-  expect(outcome.exit).toBe(4);
+  const cwd = await callerDirectory("arguments", null);
+  const environment = { FLEUR_PRIVATE_DATABASE_URL: "postgres://real:real@127.0.0.1:1/real", FLEUR_TEST_OBSERVED: join(scratch, "arguments.json") };
+  // Only the exact path names the artifact, so reaching its supervisor proves the argument arrived intact.
+  expect((await cli(cwd, environment, "start", "--artifact", await observingArtifact("artifact with space\nand newline"))).ok).toBe(true);
+  const refused = await cli(cwd, {}, "start", "--artifact", join(scratch, "absent"));
+  expect(refused.code).toBe("ARTIFACT_INVALID");
+  expect(refused.exit).toBe(4);
+});
+test("Bun's --cwd selects the working directory once", async () => {
+  const parent = await callerDirectory("working-directory"), selected = await callerDirectory("working-directory/sub");
+  await mkdir(join(selected, "sub"));
+  await writeFile(join(selected, "sub/fleur.json"), JSON.stringify({ formatVersion: 1, contractVersion: 1, compiler: "microsoft", fleurVersion: "0.0.9" }));
+  for (const options of [["--cwd=sub"], ["--cwd", "sub"]]) {
+    // A second application lands in sub/sub, whose different pin reports VERSION_MISMATCH instead.
+    const outcome = await bunCli(options, parent, {}, "db", "inspect", "--production", "--timeout", "5");
+    expect(outcome.code, options.join(" ")).toBe("CONFIGURATION_MISSING");
+  }
 });
 test("a delegated project release does not load .env files either", async () => {
   const cwd = await callerDirectory("delegated", { fleurVersion: "0.0.9" }), local = join(cwd, "node_modules/fleur");
@@ -90,7 +104,7 @@ test("the development supervisor does not load .env files from the caller's dire
   await mkdir(tools);
   await writeFile(join(tools, "docker"), `#!/bin/sh\nprintf 'canary=%s real=%s\\n' "$FLEUR_DOTENV_CANARY" "$FLEUR_REAL_SETTING" >> '${recorded}'\nexit 1\n`, { mode: 0o700 });
   try {
-    expect((await cli(cwd, {}, "new", project, "--no-git")).ok ?? true).toBe(true);
+    expect((await cli(cwd, {}, "new", project, "--no-git")).exit).toBe(0);
     await cli(cwd, { PATH: `${tools}:/usr/bin:/bin`, FLEUR_REAL_SETTING: "real", DOCKER_HOST: "unix:///nonexistent/fleur-startup-environment.sock" }, "dev", "--background", "--project", project);
     const calls = (await Bun.file(recorded).text()).trim().split("\n");
     expect(calls.length).toBeGreaterThan(0);

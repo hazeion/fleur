@@ -2,7 +2,7 @@
 
 The release package uses Bun 1.4.3 directly. Its executable is `bin/fleur.ts`, with a Bun shebang. Node and npm are not bootstrap requirements. The initial package version is 0.1.0; project creation pins the release package version exactly. The catalog implements project creation and prerequisites, shared database operations, and `dev [--background] [--host <address>] [--port <number>]`, `stop`, `status` and `logs [--limit 200] [--cursor <token>] [--follow]`. Setup supports scoped authorized smoke-image acquisition. It does not install Docker packages or run applications.
 
-Configuration comes only from the environment the command was started with. Every command declines the `.env` files Bun would otherwise load from the working directory, and so does every Bun process Fleur starts. To use one deliberately, name it: `bun --env-file=<file> bin/fleur.ts`.
+Configuration comes only from the environment the command was started with. Every command declines the `.env` files Bun would otherwise load from the working directory, and so does every Bun process Fleur starts.
 
 Run `bun bin/fleur.ts --help` for the available command catalog. Finite commands return one JSON version 1 object on stdout with `--json`. Foreground dev and opt-in log follow emit monotonic newline-delimited events ending with a completed result; see [development lifecycle](development.md). Diagnostic logs belong on stderr. Every finite result contains `formatVersion`, `command`, `ok`, `data`, `error` and `truncated`. Successful results have `error: null`; failures have structured recovery actions and null data unless diagnostic partial data is explicitly documented.
 

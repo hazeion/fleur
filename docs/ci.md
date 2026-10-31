@@ -53,6 +53,9 @@ do not require only a conditionally skipped platform job. Existing platform job
 names remain unchanged. No assertion, deadline, architecture, repeat count,
 resource limit, isolation or cleanup check is removed.
 
+The real production artifact test runs in its own `production-artifact` job, so
+it does not consume the `read-runtime` budget. CLI verification requires both.
+
 ## Action runtimes
 
 GitHub JavaScript actions use Node 24 internally, with immutable commit pins.

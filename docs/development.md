@@ -174,5 +174,5 @@ compiler/Docker output, database URLs or credentials.
 
 For an invalid reload: inspect `logs`, correct the reported source and verify a
 new ready generation with `status` and the browser. For a crash: inspect status
-and logs, explicitly stop, restart with dev and verify retained data. Production
-artifact creation and `start` remain separate work.
+and logs, explicitly stop, restart with dev and verify retained data. See [production artifact](production.md) for `build`
+and `start`.

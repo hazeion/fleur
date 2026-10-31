@@ -21,7 +21,7 @@ async function compileAdmittedWorker(project: AdmittedProject): Promise<string> 
     `export const run = makeRunner(Object.assign({}, ${modules.map((path, index) => `Object.fromEntries(Object.entries(m${index}).map(([key,value])=>[${JSON.stringify(exportId(project, path)+"#")}+key,value]))`).join(",")}));`,
   ].join("\n");
   const result = await Bun.build({
-    entrypoints: ["fleur-worker-entry"], target: "browser", format: "cjs", jsx: { runtime: "automatic", importSource: "preact" },
+    entrypoints: ["fleur-worker-entry"], target: "browser", format: "cjs", minify: { whitespace: true }, jsx: { runtime: "automatic", importSource: "preact" },
     tsconfig: fileURLToPath(new URL("worker.tsconfig.json", import.meta.url)),
     plugins: [{ name: "fleur-admitted-worker", setup(builder) {
       builder.onResolve({ filter: /^fleur-worker-entry$/ }, () => ({ path: "entry", namespace: "fleur" }));

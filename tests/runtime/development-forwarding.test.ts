@@ -75,3 +75,24 @@ for (const fault of ["upload-disconnect", "response-disconnect", "deadline", "un
     }
   }
 }, 20000);
+
+// Real HTTP, as in the faults above: a request path can never choose the upstream host.
+test("a request path beginning with two slashes stays on the application listener", async () => {
+  let foreign = 0, local = "";
+  const elsewhere = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { foreign++; return new Response("foreign"); } });
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) { local = new URL(request.url).pathname; return new Response("local"); } });
+  const browser = { entry: "/assets/boot.js", files: new Map() };
+  const gateway = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => forwardDevelopmentRequest(request, new URL(request.url).origin, { url: upstream.url, healthURL: new URL("/__fleur/health/test-only", upstream.url), browser }, async () => {}) });
+  try {
+    // Written on a raw socket: a client library would normalize this target first.
+    const answer = await new Promise<string>((resolve, reject) => {
+      const socket = createConnection(gateway.port!, "127.0.0.1", () => socket.write(`GET //127.0.0.1:${elsewhere.port}/secret HTTP/1.1\r\nHost: 127.0.0.1:${gateway.port}\r\nConnection: close\r\n\r\n`));
+      let text = "";
+      socket.on("data", chunk => { text += chunk.toString(); });
+      socket.on("end", () => resolve(text)); socket.on("error", reject);
+    });
+    expect(foreign).toBe(0);
+    expect(answer).not.toContain("foreign");
+    expect(local).toEndWith("/secret");
+  } finally { await Promise.all([gateway.stop(true), upstream.stop(true), elsewhere.stop(true)]); }
+});

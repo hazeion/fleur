@@ -190,4 +190,4 @@ or a repeated binding name or field, fails startup with `CONFIGURATION_INVALID`.
 Application workers never receive the host environment, and the host strips
 retrieval credential variables from the Docker client and other child processes
 it starts. The development lifecycle reads these bindings in its trusted broker.
-Production lifecycle commands remain separate work. `tests/runtime/fixtures/retrieval` demonstrates the contract.
+[Production artifacts](production.md) carry the same broker: declared credentials are required startup configuration. `tests/runtime/fixtures/retrieval` demonstrates the contract.

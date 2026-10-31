@@ -17,6 +17,7 @@
     "dist/reference",
     "docs/read-pages.md",
     "docs/development.md",
+    "docs/production.md",
     "docs/application-surface.md",
     "docs/reactivity.md",
     "docs/mutations.md",

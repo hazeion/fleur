@@ -123,7 +123,7 @@ jobs:
           docker compose version --short
           bun bin/fleur.ts doctor --json || true
       - name: Restricted reads, owned PostgreSQL and browser production fixture
-        run: bun test tests/runtime
+        run: bun test tests/runtime --path-ignore-patterns=tests/runtime/production-artifact.integration.test.ts
       - name: Controller admission and physical exit regressions
         run: |
           python3 tests/runtime/review-native-controller.test.py
@@ -132,10 +132,45 @@ jobs:
           python3 tests/runtime/retained-guard-binding.test.py
           python3 tests/runtime/docker-api-head.test.py
 
+  production-artifact:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: x86_64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        with:
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture '${{ matrix.architecture }}' --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-read-bun"
+          echo "$RUNNER_TEMP/fleur-read-bun" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Explicit browser verification prerequisites
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Pinned development images
+        run: bun scripts/pull-pinned-development-images.ts
+      - name: Runner Docker tuple and prerequisite readiness
+        run: |
+          docker version
+          docker info --format 'engine={{.ServerVersion}} kernel={{.KernelVersion}} cgroup={{.CgroupDriver}}/{{.CgroupVersion}} security={{.SecurityOptions}}'
+          docker compose version --short
+          bun bin/fleur.ts doctor --json || true
+      - name: Clean production artifact, browser flow and restricted containers
+        run: bun test tests/runtime/production-artifact.integration.test.ts
+
   verification:
     name: CLI verification
     if: ${{ always() }}
-    needs: ["scope", "packed-cli", "desktop-placement-fixtures", "read-runtime"]
+    needs: ["scope", "packed-cli", "desktop-placement-fixtures", "read-runtime", "production-artifact"]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -10,7 +10,7 @@ import type { SetupHost, HostCommandResult } from "./commands.ts";
 import { smokeContainer } from "./smoke.ts";
 import { smokeImages, installationMethod } from "./profiles.ts";
 /** Endpoint callback stays within trusted prerequisite orchestration, never CLI JSON. */
-export async function doctor({ args, timeoutSeconds }: CommandInput, host: SetupHost, localEndpoint?: (endpoint: string) => void, readinessProfiles: readonly VerifiedReadinessProfile[] = nativeReadinessProfiles): Promise<CliOutcome> {
+export async function doctor({ args, timeoutSeconds }: CommandInput, host: SetupHost, localEndpoint?: (endpoint: string) => void, readinessProfiles: readonly VerifiedReadinessProfile[] = nativeReadinessProfiles, artifactImage?: (endpoint: string) => Promise<string>): Promise<CliOutcome> {
     const invalid = validateSetupArguments("doctor", args);
     if (invalid) return invalid;
     const deadline = performance.now() + timeoutSeconds * 1000;
@@ -53,12 +53,15 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
     if (daemonState === "ready") {
       const image = smokeImages[identity.architecture];
       if (image) {
-        const imageState = await run(["docker", "--host", endpoint, "image", "inspect", image, "--format", "{{json .}}"]);
+        // A production artifact proves the boundary with its own exact image, so
+        // start needs no acquired smoke image. Profiles still compare the pin.
+        const probe = artifactImage ? await artifactImage(endpoint) : image;
+        const imageState = await run(["docker", "--host", endpoint, "image", "inspect", probe, "--format", "{{json .}}"]);
         if (imageState.status === "completed" && imageState.exitCode !== 0) return failure("doctor", 3, { code: "AUTHORITY_REQUIRED", message: "The digest-pinned smoke image must be acquired explicitly before readiness can be checked.", actions: [{ command: "fleur setup", description: "Inspect the exact smoke image acquisition plan and required permission." }] }, { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: compose.status === "completed" && compose.exitCode === 0 ? "ready" : "missing" }, smoke: { state: "image-required", image } } });
         if (imageState.status === "completed" && imageState.exitCode === 0) {
           const reserve = Math.min(2000, Math.floor(remaining() / 3));
           const work = (args: readonly string[]) => remaining() > reserve ? host.run(args, remaining() - reserve) : Promise.resolve<HostCommandResult>({ status: "timeout", stdout: "", stderr: "" });
-          const smoke = await smokeContainer(work, endpoint, image, imageState.stdout, identity.architecture, run);
+          const smoke = await smokeContainer(work, endpoint, probe, imageState.stdout, identity.architecture, run, artifactImage !== undefined);
           const components = { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: compose.status === "completed" && compose.exitCode === 0 ? "ready" : "missing" }, smoke: { ...smoke }, release: { state: "unverified" } };
           if (smoke.state === "ready" && smoke.cleanup && compose.status === "completed" && compose.exitCode === 0) {
             const candidates = readinessCandidates(policy, identity, Bun.version, cli.stdout, compose.stdout, image, daemonIdentity);

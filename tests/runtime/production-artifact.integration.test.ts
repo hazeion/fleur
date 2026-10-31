@@ -139,7 +139,7 @@ registerPage(isolationPage, { component: async ({ params }) => <main><p id="resu
   const admitted = await admitProject(project);
   const sources = new Map(admitted.sources), probe = join(admitted.root, "server/isolation.tsx");
   sources.set(probe, sources.get(probe)!
-    .replace('Promise.reject(new Error("TEST_ONLY_NATIVE_NETWORK_PROBE"))', `(async () => { for (const host of ["host.docker.internal", "172.17.0.1", "127.0.0.1"]) { try { await globalThis.fetch("http://" + host + ":${listener.port}/direct"); return; } catch { /* The next route may be open. */ } } throw new Error("unreachable"); })()`)
+    .replace('Promise.reject(new Error("TEST_ONLY_NATIVE_NETWORK_PROBE"))', `(async () => { for (const host of ["172.17.0.1", "127.0.0.1", "host.docker.internal"]) { try { await globalThis.fetch("http://" + host + ":${listener.port}/direct"); return; } catch { /* The next route may be open. */ } } throw new Error("unreachable"); })()`)
     .replace('Promise.reject(new Error("TEST_ONLY_NATIVE_FILE_PROBE"))', 'globalThis.Bun.file("/etc/passwd").text()')
     .replace('Promise.reject(new Error("TEST_ONLY_NATIVE_SPAWN_PROBE"))', 'globalThis.Bun.spawn(["/bin/true"]).exited')
     .replace('["TEST_ONLY_NATIVE_ENVIRONMENT_PROBE"].includes("")', `typeof process !== "undefined" && JSON.stringify(process.env).includes("${canary}")`));
@@ -226,10 +226,10 @@ test("clean start imports only the exact image, serves the browser save/read flo
   const { images } = JSON.parse(await readFile(join(artifact, "fleur-artifact.json"), "utf8")) as { images: { worker: { tag: string }; controller: { tag: string } } };
   await Bun.spawn(["docker", "image", "rm", images.worker.tag, images.controller.tag], { stdout: "ignore", stderr: "ignore" }).exited;
   await clearLog();
-  const first = await start(["--port", "47311"]);
+  const first = await start(["--port", "31311"]);
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined, stopped: Awaited<ReturnType<Started["stop"]>> | undefined;
   try {
-    expect(first.url).toBe("http://127.0.0.1:47311/");
+    expect(first.url).toBe("http://127.0.0.1:31311/");
     const issued = await logged();
     expect(issued.filter(line => /\bload\b/.test(line)).length).toBe(1);
     expect(issued.filter(acquisition)).toEqual([]);
@@ -249,7 +249,7 @@ test("clean start imports only the exact image, serves the browser save/read flo
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ status: "available" });
     expect((await fetch(new URL(`/__fleur/health/${"a".repeat(64)}`, first.url))).status).toBe(404);
-    expect((await fetch(first.url, { headers: { host: "attacker.example:47311" } })).status).toBe(403);
+    expect((await fetch(first.url, { headers: { host: "attacker.example:31311" } })).status).toBe(403);
 
     // Registration is visible to read-only status for this project only while it runs.
     await rename(`${project}-away`, project);
@@ -278,7 +278,7 @@ test("clean start imports only the exact image, serves the browser save/read flo
 
   // A second start reuses the exact owned image with no import and keeps data.
   await clearLog();
-  const second = await start(["--port", "47311"]);
+  const second = await start(["--port", "31311"]);
   try {
     expect((await logged()).filter(line => /\bload\b/.test(line) || acquisition(line))).toEqual([]);
     const html = await (await fetch(new URL("/reactive", second.url))).text();
@@ -286,7 +286,7 @@ test("clean start imports only the exact image, serves the browser save/read flo
   } finally { expect((await second.stop("SIGINT")).exit).toBe(0); }
 }, 480_000);
 test("the same runtime isolation holds: no ambient network, no secrets, restricted containers", async () => {
-  const running = await start(["--port", "47312"], {}, hostile);
+  const running = await start(["--port", "31312"], {}, hostile);
   try {
     // Positive control: with ordinary networking this same image does reach the listener,
     // so zero hits below are evidence rather than an unreachable target.
@@ -301,9 +301,10 @@ test("the same runtime isolation holds: no ambient network, no secrets, restrict
       const html = await response.text();
       outcomes[probe] = `${response.status} ${/id="result">([^<]*)</.exec(html)?.[1] ?? html.slice(0, 200)}`;
     }
-    // An attempted connection may also retire its worker. That fails closed: the exact code, and
-    // zero listener hits against the positive control above, are the evidence. Nothing else passes.
-    expect(['200 denied', '500 {"error":{"code":"INTERNAL_FAILURE"}}']).toContain(outcomes.network!);
+    // An attempted connection may also retire its worker, or stall until the query deadline while
+    // resolving the last, named route. Both fail closed: the exact code, and zero listener hits
+    // against the positive control above, are the evidence. Nothing else passes.
+    expect(['200 denied', '500 {"error":{"code":"INTERNAL_FAILURE"}}', '500 {"error":{"code":"QUERY_TIMEOUT"}}']).toContain(outcomes.network!);
     for (const probe of ["file", "spawn", "environment"]) expect(outcomes[probe], probe).toBe("200 denied");
     expect(directHits).toBe(0);
     // One hostile operation leaves the application serving healthy work.
@@ -340,8 +341,8 @@ test("the same runtime isolation holds: no ambient network, no secrets, restrict
   expect(await artifactContainers(hostile)).toEqual([]);
 }, 240_000);
 test("production binds its default loopback port and never silently changes an occupied port", async () => {
-  const blocker = Bun.serve({ hostname: "127.0.0.1", port: 47313, fetch: () => new Response("taken") });
-  try { expect(await refused(["--port", "47313"])).toMatchObject({ code: "PORT_OCCUPIED", exit: 4 }); }
+  const blocker = Bun.serve({ hostname: "127.0.0.1", port: 31313, fetch: () => new Response("taken") });
+  try { expect(await refused(["--port", "31313"])).toMatchObject({ code: "PORT_OCCUPIED", exit: 4 }); }
   finally { await blocker.stop(true); }
   let free = true;
   try { const probe = Bun.serve({ hostname: "127.0.0.1", port: 3000, fetch: () => new Response() }); await probe.stop(true); } catch { free = false; }
@@ -351,12 +352,12 @@ test("production binds its default loopback port and never silently changes an o
   finally { await running.stop(); }
 }, 240_000);
 test("a second start of the same application is refused while the first owns its state", async () => {
-  const running = await start(["--port", "47314"]);
-  try { expect(await refused(["--port", "47315"])).toMatchObject({ code: "ALREADY_RUNNING", exit: 4 }); }
+  const running = await start(["--port", "31314"]);
+  try { expect(await refused(["--port", "31315"])).toMatchObject({ code: "ALREADY_RUNNING", exit: 4 }); }
   finally { expect((await running.stop()).exit).toBe(0); }
 }, 240_000);
 test("an abruptly killed launcher stops its supervisor and owned containers", async () => {
-  const child = Bun.spawn([process.execPath, executable, "start", "--artifact", artifact, "--port", "47316", "--timeout", "240", "--json"], { cwd: root, env: environment(), stdout: "pipe", stderr: "ignore" });
+  const child = Bun.spawn([process.execPath, executable, "start", "--artifact", artifact, "--port", "31316", "--timeout", "240", "--json"], { cwd: root, env: environment(), stdout: "pipe", stderr: "ignore" });
   launchers.add(child);
   const reader = child.stdout.getReader();
   let text = "";
@@ -373,6 +374,6 @@ test("an abruptly killed launcher stops its supervisor and owned containers", as
     if (Date.now() > deadline) throw new Error("Owned containers outlived their launcher");
     await Bun.sleep(250);
   }
-  const next = await start(["--port", "47316"]);
+  const next = await start(["--port", "31316"]);
   expect((await next.stop()).exit).toBe(0);
 }, 300_000);

@@ -51,7 +51,7 @@ export async function prepareNativeImages(application: string, development?: Dev
   };
   try {
     await cp(fileURLToPath(new URL("./", import.meta.url)), join(directory, "native"), { recursive: true, filter: source => !source.includes("__pycache__") });
-    const build = await Bun.build({ entrypoints: [fileURLToPath(new URL("bootstrap.ts", import.meta.url))], target: "bun", minify: false });
+    const build = await Bun.build({ entrypoints: [fileURLToPath(new URL("bootstrap.ts", import.meta.url))], target: "bun", minify: { whitespace: true } }); // Whitespace minification also drops module-path comments.
     if (!build.success || build.outputs.length !== 1) throw new Error("Trusted bootstrap build failed");
     await writeFile(join(directory, "bootstrap.js"), await build.outputs[0]!.text());
     await writeFile(join(directory, "application.js"), application);

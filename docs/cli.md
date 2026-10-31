@@ -86,6 +86,8 @@ explicit. Production reset is unavailable. See [owned seeds and development
 reset](maintenance.md#owned-seeds-and-development-reset).
 
 
+Production `build` and `start --artifact <dir> [--host <address>] [--port <number>]` add `ARTIFACT_INVALID` and `ARTIFACT_INCOMPATIBLE` (exit 4; build or copy a complete artifact for this release) and `ALREADY_RUNNING` (exit 4). `start` streams newline-delimited events like foreground `dev`. See [production artifact](production.md).
+
 Development adds `PORT_OCCUPIED` (exit 4; select a free explicit port or omit the
 option), `INSTANCE_UNAVAILABLE` (exit 1; inspect logs, stop, then restart),
 `MIGRATIONS_PENDING` (exit 5; review/apply the schema change) and

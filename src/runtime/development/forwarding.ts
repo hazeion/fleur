@@ -1,7 +1,7 @@
 import type { BrowserBuild } from "../build/client";
 import { browserVersionHeaders, refuseStaleBrowser } from "./browser-version";
 
-export interface DevelopmentForwardTarget { readonly url: URL; readonly healthURL: URL; readonly browser: BrowserBuild; readonly marker: string }
+export interface DevelopmentForwardTarget { readonly url: URL; readonly healthURL: URL; readonly browser: BrowserBuild; readonly marker?: string }
 /** One admitted public request; ownership and draining remain with the supervisor. */
 export async function forwardDevelopmentRequest(request: Request, expected: string, target: DevelopmentForwardTarget, serviceLost: () => Promise<void>, timeoutMs = 30000): Promise<Response> {
   const incoming = new URL(request.url), marker = target.marker;
@@ -12,19 +12,24 @@ export async function forwardDevelopmentRequest(request: Request, expected: stri
     const headers = new Headers(request.headers); headers.delete("host");
     const origin = headers.get("origin");
     if (origin && origin !== expected) return new Response(null, { status: 403 });
-    const stale = refuseStaleBrowser(request, { marker, browser: target.browser });
+    const stale = marker === undefined ? undefined : refuseStaleBrowser(request, { marker, browser: target.browser });
     if (stale) return stale;
     if (origin) headers.set("origin", target.url.origin);
-    const response = await fetch(new URL(incoming.pathname + incoming.search, target.url), { method: request.method, headers, ...(["GET", "HEAD"].includes(request.method) ? {} : { body: request.body }), signal: AbortSignal.any([request.signal, deadline]), redirect: "manual" });
+    // Assign the parts: resolving "//host/path" against the listener would select that host.
+    const upstream = new URL(target.url);
+    upstream.pathname = incoming.pathname; upstream.search = incoming.search;
+    const response = await fetch(upstream, { method: request.method, headers, ...(["GET", "HEAD"].includes(request.method) ? {} : { body: request.body }), signal: AbortSignal.any([request.signal, deadline]), redirect: "manual" });
     const output = new Headers(response.headers);
     const csp = output.get("content-security-policy");
     if (csp) {
       let policy = csp.replaceAll(target.url.origin, expected);
       // The stable development document must admit a later compiler-owned
       // stylesheet. Application stylesheet injection remains prohibited.
-      if (target.browser.stylesheet) policy = policy.replace(new URL(target.browser.stylesheet, expected).href, new URL("/assets/", expected).href);
+      if (marker !== undefined && target.browser.stylesheet) policy = policy.replace(new URL(target.browser.stylesheet, expected).href, new URL("/assets/", expected).href);
       output.set("content-security-policy", policy);
     }
+    // Production has one immutable generation and no development metadata.
+    if (marker === undefined) return new Response(await response.arrayBuffer(), { status: response.status, headers: output });
     for (const [name, value] of Object.entries(browserVersionHeaders({ marker, browser: target.browser }))) output.set(name, value);
     const result = new Response(await response.arrayBuffer(), { status: response.status, headers: output });
     return output.get("content-type")?.startsWith("text/html") ? new HTMLRewriter().on("head", { element(element) { element.append(`<meta name="fleur-development" content="${marker}"><meta name="fleur-client-compatibility" content="${target.browser.compatibility ?? ""}">`, { html: true }); } }).transform(result) : result;

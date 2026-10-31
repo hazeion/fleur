@@ -88,8 +88,8 @@ the specification's requirement to exclude unrelated heavy work.
 The [development lifecycle](development.md) supplies `dev`, `stop`, `status`
 and bounded `logs` through the shared restricted runtime. Its startup initializer
 applies the reviewed chain and seeds only to a provably new binding, never on
-reload or for an existing/adopted database. Production `build`/`start` remain
-separate work. Creating a project does not start an app. Source admission and
+reload or for an existing/adopted database. See [production artifact](production.md)
+for `build` and `start`. Creating a project does not start an app. Source admission and
 the Fleur-owned Tailwind compiler enforce the approved styling policy. [Atomic mutations](mutations.md) supply
 validated writes and client mutation outcomes. [Reactive views](reactivity.md)
 refresh server regions and island queries after managed commits while preserving

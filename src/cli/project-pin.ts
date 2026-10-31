@@ -56,7 +56,7 @@ export function invalidPin(command: string): CliOutcome {
 export function versionMismatch(command: string, expected: string): CliOutcome {
   return failure(command, 4, { code: "VERSION_MISMATCH", message: "The project's exact Fleur release is not available through this launcher.", expected, actual: releaseVersion, actions: [{ command: "fleur doctor", description: "Install the intended exact project-local Fleur release explicitly, then retry. No package was fetched automatically." }] });
 }
-export function isPinIndependent(command: string): boolean { return ["help", "doctor", "setup grants list", "setup grants revoke"].includes(command); }
+export function isPinIndependent(command: string): boolean { return ["help", "doctor", "setup grants list", "setup grants revoke", "start"].includes(command); }
 export async function guardProjectPin(command: string, project: string): Promise<CliOutcome | null> {
   if (isPinIndependent(command)) return null;
   const pin = await findProjectPin(project);

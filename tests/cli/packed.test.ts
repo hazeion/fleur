@@ -54,6 +54,8 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "dev", summary: "Run the owned development environment.", usage: "dev [--background] [--host <address>] [--port <number>]", options: [{ name: "--background", value: false }, { name: "--host", value: true }, { name: "--port", value: true }] },
     { name: "stop", summary: "Stop owned development resources, preserving data and backups.", usage: "stop" },
     { name: "logs", summary: "Read bounded development logs.", usage: "logs [--limit 200] [--cursor <token>] [--follow]", options: [{ name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--follow", value: false }] },
+    { name: "build", usage: "build", summary: "Build an immutable, self-contained production artifact.", options: [] },
+    { name: "start", usage: "start --artifact <dir> [--host <address>] [--port <number>]", summary: "Serve a verified production artifact against configured PostgreSQL.", options: [{ name: "--artifact", value: true }, { name: "--host", value: true }, { name: "--port", value: true }] },
   ]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });

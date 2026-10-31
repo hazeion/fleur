@@ -50,9 +50,12 @@ export const statusCommand: CommandDefinition = {
       // The probe has its own 5 s default deadline; an explicit --timeout replaces it.
       const config = { ...(environment.FLEUR_PRIVATE_STATE_ROOT ? { stateRoot: environment.FLEUR_PRIVATE_STATE_ROOT } : {}), timeoutMs: timeoutExplicit ? timeoutSeconds * 1000 : 5000, ...(environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL ? { controlUrl: environment.FLEUR_PRIVATE_CONTROL_DATABASE_URL } : {}) };
       const health = await databaseHealth(target.url, target, project, config);
-      // No lifecycle binding exists here. Explicit private targets still use
-      // shared read-only health; production registration belongs to start (#36).
-      return success("status", JSON.parse(JSON.stringify({ state: production ? null : "stopped", ready: false, reasons: health.reasons.map(code => ({ code, ...readinessReasons[code] })), database: health.database })));
+      // No lifecycle binding exists here. Explicit private targets still use shared
+      // read-only health. Application state needs a live registered production start.
+      // A start on another database says nothing about the target selected here.
+      const registered = production ? await (await import("../production/registration")).registeredProduction(project) : null;
+      const application = registered && registered.fingerprint === health.database.target.fingerprint ? registered : null;
+      return success("status", JSON.parse(JSON.stringify({ state: production ? application?.state ?? null : "stopped", ready: application?.state === "ready" && !health.reasons.length, ...application ? { url: application.url, artifact: application.artifact } : {}, reasons: health.reasons.map(code => ({ code, ...readinessReasons[code] })), database: health.database })));
     } catch (error) {
       // The control and target connections reached different servers or databases: only configuration can fix that.
       if (error instanceof Error && error.message === "CONFIGURATION_MISSING") return failure("status", 4, { code: "CONFIGURATION_MISSING", message: "The configured database and control database do not identify the same PostgreSQL target.", actions: [configurationAction] });

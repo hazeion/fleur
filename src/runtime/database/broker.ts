@@ -99,7 +99,7 @@ export class ReadBroker {
     const control = async (action: "cancel" | "terminate"): Promise<ControlResult> => {
       if (!backend) return "failed";
       try {
-        return await startOwnedControl([process.execPath, fileURLToPath(new URL("./control-worker.ts", import.meta.url))],
+        return await startOwnedControl([process.execPath, fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./control-worker.ts" : "./control-worker.js", import.meta.url))],
           { action, ...backend }, { FLEUR_PRIVATE_DATABASE_URL: this.#url }, 250).result;
       } catch { return "failed"; }
     };

@@ -1,0 +1,161 @@
+<!doctype html>
+<!--
+  PROTOTYPE, not production. Throwaway rendering for Wayfinder ticket
+  "Prototype readiness and doctor output for a tuple admitted above the measured baseline"
+  (hazeion/fleur#131). Question: what should `fleur doctor` text and `--json` look like when a
+  machine tool is newer than the measured baseline? Double-click to open. No build, no server.
+  Resolution 2026-10-31: Variant A chosen, with a per-tool status word (verified / admitted / unverified) on every row.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE: fleur doctor output under version floors</title>
+<style>
+  body { font: 14px/1.45 -apple-system, system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1d1f23; }
+  header { padding: 14px 20px; background: #fff; border-bottom: 1px solid #e3e5e8; }
+  header h1 { font-size: 16px; margin: 0 0 4px; }
+  header p { margin: 0; color: #5b6069; }
+  .bar { display: flex; gap: 18px; flex-wrap: wrap; padding: 10px 20px; background: #fff; border-bottom: 1px solid #e3e5e8; align-items: center; }
+  .bar b { margin-right: 6px; }
+  .bar label { margin-right: 10px; cursor: pointer; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 20px; }
+  section { background: #fff; border: 1px solid #e3e5e8; border-radius: 6px; overflow: hidden; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #5b6069; margin: 0; padding: 8px 12px; border-bottom: 1px solid #e3e5e8; background: #fafbfc; }
+  pre { margin: 0; padding: 12px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow: auto; max-height: 72vh; }
+  .ok { color: #1a7f37; } .warn { color: #9a6700; } .bad { color: #cf222e; }
+  .note { grid-column: 1 / -1; background: #fff8e6; border: 1px solid #f0d78c; border-radius: 6px; padding: 10px 12px; }
+  .note p { margin: 4px 0; }
+  code { background: #eef0f3; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PROTOTYPE: <code>fleur doctor</code> output under version floors</h1>
+  <p>Pick a scenario and an output variant. Left is the human text, right is <code>--json</code>. Floor shown is the Intel macOS target's published floor, derived from the measured Desktop 4.96.1 row.</p>
+</header>
+<div class="bar">
+  <span><b>Scenario</b>
+    <label><input type="radio" name="s" value="exact" checked> exact match</label>
+    <label><input type="radio" name="s" value="above"> admitted above the floor</label>
+    <label><input type="radio" name="s" value="below"> below the floor (Bun 1.4.2)</label>
+    <label><input type="radio" name="s" value="pre"> pre-release Bun (canary)</label>
+  </span>
+  <span><b>Variant</b>
+    <label><input type="radio" name="v" value="A" checked> A: state stays "verified", admission field + per-tool status rows (chosen)</label>
+    <label><input type="radio" name="v" value="B"> B: distinct state words (verified / admitted / refused)</label>
+    <label><input type="radio" name="v" value="C"> C: minimal, list of newer tools only</label>
+  </span>
+</div>
+<main>
+  <div class="note" id="note"></div>
+  <section><h2>Human text (exit code shown last)</h2><pre id="text"></pre></section>
+  <section><h2>fleur doctor --json</h2><pre id="json"></pre></section>
+</main>
+<script>
+const floor = {
+  id: "darwin-x64-desktop",
+  measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"],
+  tools: [
+    ["macos",      "15.7.7"],
+    ["bun",        "1.4.3"],
+    ["docker-cli", "29.9.2"],
+    ["engine",     "29.9.2"],
+    ["desktop",    "4.96.1"],
+    ["kernel",     "7.0.14-linuxkit"],
+    ["containerd", "2.4.2"],
+    ["runc",       "1.5.2"],
+    ["compose",    "5.6.0"],
+  ],
+};
+const scenarios = {
+  exact: { detected: { macos: "15.7.7", bun: "1.4.3", "docker-cli": "29.9.2", engine: "29.9.2", desktop: "4.96.1", kernel: "7.0.14-linuxkit", containerd: "2.4.2", runc: "1.5.2", compose: "5.6.0" } },
+  above: { detected: { macos: "26.1",   bun: "1.4.7", "docker-cli": "29.10.1", engine: "29.10.1", desktop: "4.99.0", kernel: "7.1.2-linuxkit", containerd: "2.4.2", runc: "1.5.3", compose: "5.7.0" } },
+  below: { detected: { macos: "15.7.7", bun: "1.4.2", "docker-cli": "29.9.2", engine: "29.9.2", desktop: "4.96.1", kernel: "7.0.14-linuxkit", containerd: "2.4.2", runc: "1.5.2", compose: "5.6.0" } },
+  pre:   { detected: { macos: "15.7.7", bun: "1.4.8-canary.3+a1b2c3d", "docker-cli": "29.9.2", engine: "29.9.2", desktop: "4.96.1", kernel: "7.0.14-linuxkit", containerd: "2.4.2", runc: "1.5.2", compose: "5.6.0" } },
+};
+const notes = {
+  exact: "Every detected version equals the measured baseline. Today's output already covers this case; the variants only add the floor and per-tool detail.",
+  above: "Every version is newer than the floor, identity facts (Desktop product, -linuxkit flavour, cgroupfs rootful, security options) still match exactly. Doctor succeeds. The question is how visibly this differs from an exact match.",
+  below: "Bun 1.4.2 is older than the floor. Refusal, exit 4, PREREQUISITE_UNAVAILABLE. Today the message is the generic 'does not yet establish a verified native release profile'; the variants name the tool and both numbers.",
+  pre: "Research finding: Bun.version prints 1.4.8 even on a canary; only `bun --revision` shows -canary. Doctor would read the revision and refuse a pre-release distinctly from 'older' and from 'unparseable'. Shown so the wording can be settled now.",
+};
+function cmp(tool, detected, floorValue) {
+  if (/-canary\.|-debug|-rc|-beta/.test(detected)) return "pre-release";
+  const num = s => s.replace(/-linuxkit$/, "").split(".").map(Number);
+  const a = num(detected), f = num(floorValue);
+  for (let i = 0; i < Math.max(a.length, f.length); i++) { const x = a[i] ?? 0, y = f[i] ?? 0; if (x !== y) return x > y ? "newer" : "older"; }
+  return "equal";
+}
+const statusOf = c => c === "equal" ? "verified" : c === "newer" ? "admitted" : "unverified";
+function rows(detected) { return floor.tools.map(([tool, f]) => { const comparison = cmp(tool, detected[tool], f); return { tool, status: statusOf(comparison), floor: f, detected: detected[tool], comparison }; }); }
+function envelope(ok, data, error) { return { formatVersion: 1, command: "doctor", ok, data, error, truncated: false }; }
+const base = { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "ready", cleanup: true } };
+const evidence = { readinessSha256: "ae0b…ff41", isolationSha256: "ae0b…ff41" };
+
+function build(scenario, variant) {
+  const r = rows(scenarios[scenario].detected);
+  const blockers = r.filter(x => x.comparison === "older" || x.comparison === "pre-release");
+  const newer = r.filter(x => x.comparison === "newer").map(x => x.tool);
+  const admitted = blockers.length === 0;
+  const admission = admitted ? (newer.length ? "above-floor" : "measured") : null;
+  let release, error = null, text = [], exit = 0;
+
+  if (variant === "A") {
+    release = admitted
+      ? { state: "verified", floor: floor.id, admission, measuredRows: floor.measuredRows, machineTools: r, evidence }
+      : { state: "unverified", floor: floor.id, machineTools: r };
+  } else if (variant === "B") {
+    release = admitted
+      ? { state: newer.length ? "admitted" : "verified", floor: floor.id, measuredRows: floor.measuredRows, machineTools: r, evidence }
+      : { state: "refused", floor: floor.id, machineTools: r };
+  } else {
+    release = admitted
+      ? { state: "verified", floor: floor.id, newerThanFloor: newer, evidence }
+      : { state: "unverified", floor: floor.id, belowFloor: blockers.map(b => ({ tool: b.tool, floor: b.floor, detected: b.detected, reason: b.comparison })) };
+  }
+  if (!admitted) {
+    exit = 4;
+    const b = blockers[0];
+    const reason = b.comparison === "pre-release" ? `is a pre-release build (${b.detected}); release floors admit stable versions only` : `is ${b.detected}, below the floor ${b.floor}`;
+    error = { code: "PREREQUISITE_UNAVAILABLE", message: `Machine tool ${b.tool} ${reason}.`, actions: [{ command: "fleur setup", description: "Inspect the missing actions without replacing existing software." }], expected: { tool: b.tool, floor: b.floor }, actual: { tool: b.tool, detected: b.detected } };
+  }
+
+  // Human text
+  text.push(`fleur doctor`);
+  text.push(`  cli       ready`);
+  text.push(`  daemon    ready`);
+  text.push(`  compose   ready`);
+  text.push(`  smoke     ready, cleanup confirmed`);
+  if (admitted) {
+    const head = variant === "B" && newer.length ? `release   admitted` : `release   verified`;
+    text.push(`  <span class="ok">${head}</span>  floor ${floor.id} (measured on ${floor.measuredRows[0]})`);
+    if (variant === "C") {
+      if (newer.length) text.push(`            newer than the floor: ${newer.join(", ")}`);
+    } else {
+      for (const x of r) text.push(`            ${x.tool.padEnd(11)} ${x.status === "verified" ? `<span class="ok">verified</span>  ` : `<span class="warn">admitted</span>  `} ${x.detected.padEnd(24)} ${x.comparison === "equal" ? "= floor" : `> floor ${x.floor}`}`);
+      if (newer.length) text.push(`            ${newer.length} tool${newer.length > 1 ? "s" : ""} admitted above the measured baseline; measured evidence is for the baseline tuple.`);
+    }
+  } else {
+    text.push(`  <span class="bad">release   unverified</span>  floor ${floor.id}`);
+    for (const b of blockers) text.push(`            <span class="bad">${b.tool.padEnd(11)} unverified  ${b.detected.padEnd(24)} ${b.comparison === "pre-release" ? "pre-release, not admitted" : `< floor ${b.floor}`}</span>`);
+    if (variant !== "C") for (const x of r.filter(x => x.comparison !== "older" && x.comparison !== "pre-release")) text.push(`            ${x.tool.padEnd(11)} ${x.status === "verified" ? `<span class="ok">verified</span>  ` : `<span class="warn">admitted</span>  `} ${x.detected.padEnd(24)} ${x.comparison === "equal" ? "= floor" : `> floor ${x.floor}`}`);
+    text.push(``);
+    text.push(`<span class="bad">PREREQUISITE_UNAVAILABLE: ${error.message}</span>`);
+    text.push(`  fleur setup   Inspect the missing actions without replacing existing software.`);
+  }
+  text.push(``);
+  text.push(`exit ${exit}`);
+  return { text: text.join("\n"), json: envelope(admitted, { components: { ...base, release } }, error) };
+}
+function render() {
+  const s = document.querySelector('input[name=s]:checked').value, v = document.querySelector('input[name=v]:checked').value;
+  const out = build(s, v);
+  document.getElementById("note").innerHTML = `<p><b>${s}</b>: ${notes[s]}</p>`;
+  document.getElementById("text").innerHTML = out.text;
+  document.getElementById("json").textContent = JSON.stringify(out.json, null, 2);
+}
+document.querySelectorAll("input").forEach(i => i.addEventListener("change", render));
+render();
+</script>
+</body>
+</html>

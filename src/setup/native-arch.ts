@@ -149,7 +149,7 @@ export async function setupNativeArch(input: CommandInput, host: SetupHost, iden
         const guardChecksum = Bun.CryptoHasher.hash("sha256", guardPlan, "hex");
         const quote = (value: string) => '"' + value.replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"';
         const executable = fileURLToPath(new URL("./arch-pre-transaction.ts", import.meta.url));
-        const hook = `[Trigger]\nOperation = Install\nOperation = Upgrade\nOperation = Remove\nType = Package\nTarget = *\n[Action]\nWhen = PreTransaction\nExec = ${[process.execPath, executable, planPath, guardChecksum].map(quote).join(" ")}\nAbortOnFail\nNeedsTargets\n`;
+        const hook = `[Trigger]\nOperation = Install\nOperation = Upgrade\nOperation = Remove\nType = Package\nTarget = *\n[Action]\nWhen = PreTransaction\nExec = ${[process.execPath, "--no-env-file", executable, planPath, guardChecksum].map(quote).join(" ")}\nAbortOnFail\nNeedsTargets\n`;
         await writeFile(join(hookDirectory, "00-fleur-preserve-existing.hook"), hook, { flag: "wx", mode: 0o600 });
         const grants = [...await readGrants(host)];
         const covered = requiredAuthorities.map((action) => grants.find((grant) => matches(grant, action)));

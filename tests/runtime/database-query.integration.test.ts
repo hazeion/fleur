@@ -82,6 +82,18 @@ test("agent authority cannot connect to control or temporary targets and repairs
   expect((await query("TABLE items")).rows).toEqual([["1", "kept"]]);
   const attributes = (await admin.unsafe("SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls,rolinherit,rolconnlimit FROM pg_roles WHERE rolname=$1", [role]))[0];
   expect(attributes).toEqual({ rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, rolinherit: false, rolconnlimit: 4 });
+  login.pathname = new URL(pg.url).pathname;
+  const direct = new SQL(login.toString(), { max: 1 });
+  await admin.unsafe("CREATE SEQUENCE public.authority_sequence");
+  try {
+    await direct.unsafe("BEGIN READ WRITE");
+    const refusal = async (statement: string) => { try { await direct.unsafe(statement); return null; } catch (error) { return (error as { errno?: string }).errno; } };
+    expect(await refusal("INSERT INTO items VALUES(99,'denied')")).toBe("42501");
+    await direct.unsafe("ROLLBACK");
+    expect(await refusal("SELECT nextval('public.authority_sequence')")).toBe("42501");
+    expect(await refusal("CREATE TEMP TABLE denied(id int)")).toBe("42501");
+  } finally { await direct.unsafe("ROLLBACK").catch(() => {}); await direct.close(); await admin.unsafe("DROP SEQUENCE public.authority_sequence"); }
+
 }, 10000);
 
 test("PUBLIC function authority cannot turn agent SQL into a privileged file read", async () => {

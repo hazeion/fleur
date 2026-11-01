@@ -1,5 +1,6 @@
 import release from "../../package.json" with { type: "json" };
 import { resolve } from "node:path";
+import { bunAdmission, bunFloor } from "../project/release.ts";
 import { globalOptions, helpCommand, type CommandDefinition } from "./catalog.ts";
 import { failure, success, type CliOutcome } from "./result.ts";
 export interface CliContext { readonly cwd: string; readonly handlers?: readonly CommandDefinition[] }
@@ -72,10 +73,17 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   const { guardProjectPin } = await import("./project-pin.ts");
   const blocked = await guardProjectPin(handler.name, project);
   if (blocked) return blocked;
-  if (Bun.version !== release.engines.bun) return failure(handler.name, 4, {
-    code: "BUN_VERSION_MISMATCH", expected: release.engines.bun, actual: Bun.version,
-    message: `Fleur ${release.version} requires Bun ${release.engines.bun}; invoking Bun is ${Bun.version}. Install the required Bun version manually and retry.`,
-    actions: [{ command: "bun --version", description: `Inspect Bun, then install ${release.engines.bun} manually using https://bun.sh/docs/installation. Fleur does not upgrade or replace Bun.` }],
+  // The stored floor is validated before any comparison; an invalid floor refuses rather than admitting every Bun.
+  const admission = bunAdmission(Bun.version, bunFloor);
+  if (!admission.admitted && admission.reason === "invalid-floor") return failure(handler.name, 4, {
+    code: "BUN_VERSION_MISMATCH", expected: ">=X.Y.Z", actual: bunFloor,
+    message: `Fleur ${release.version} declares an invalid Bun floor ${JSON.stringify(bunFloor)}; its package metadata must declare >=X.Y.Z. Reinstall this exact Fleur release manually and retry.`,
+    actions: [{ command: "bun --version", description: `Inspect Bun, then reinstall Fleur ${release.version} from its official package. Fleur does not upgrade or replace Bun.` }],
+  });
+  if (!admission.admitted) return failure(handler.name, 4, {
+    code: "BUN_VERSION_MISMATCH", expected: bunFloor, actual: Bun.version,
+    message: `Fleur ${release.version} requires Bun ${bunFloor}; invoking Bun is ${Bun.version}. Install a Bun release at or above the floor manually and retry.`,
+    actions: [{ command: "bun --version", description: `Inspect Bun, then install a stable release at or above ${bunFloor} manually using https://bun.sh/docs/installation. Fleur does not upgrade or replace Bun.` }],
   });
   try {
     let environment = process.env;

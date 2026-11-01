@@ -2,9 +2,10 @@
 import { readFileSync, readlinkSync } from "node:fs";
 import { machine, release } from "node:os";
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import { bunAdmission } from "../src/project/release.ts";
 
 function probe() {
-  if (process.platform !== "linux" || process.arch !== "x64" || machine() !== "x86_64" || process.getuid?.() !== 0 || Bun.version !== "1.4.3") throw new Error("NATIVE_LINUX_MANAGER_REQUIRED");
+  if (process.platform !== "linux" || process.arch !== "x64" || machine() !== "x86_64" || process.getuid?.() !== 0 || !bunAdmission(Bun.version).admitted) throw new Error("NATIVE_LINUX_MANAGER_REQUIRED");
   const pidText = process.env.FLEUR_CONTROL_PID ?? "";
   const workerId = process.env.FLEUR_CONTROL_WORKER ?? "";
   const nonce = process.env.FLEUR_CONTROL_NONCE ?? "";

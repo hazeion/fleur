@@ -1,5 +1,6 @@
 /** Conservative Desktop control preflight. Never release or runtime admission. */
 import { readFile } from "node:fs/promises";
+import { bunAdmission } from "../src/project/release.ts";
 import { resolve } from "node:path";
 import type { HostCommandResult, SetupHost } from "../src/setup/commands.ts";
 import { productionHost } from "../src/setup/host.ts";
@@ -146,7 +147,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
   };
   try {
     const native = await host.host();
-    if (native.system !== "darwin" || native.architecture !== "x64" || native.translated !== false || Bun.version !== "1.4.3") throw new Error("NATIVE_INTEL_MAC_REQUIRED");
+    if (native.system !== "darwin" || native.architecture !== "x64" || native.translated !== false || !bunAdmission(Bun.version).admitted) throw new Error("NATIVE_INTEL_MAC_REQUIRED");
     report.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
     const commit = (await command(["git", "rev-parse", "HEAD"])).trim();
     if (!/^[a-f0-9]{40}$/.test(commit) || await command(["git", "diff", "--exit-code", "HEAD"])) throw new Error("CLEAN_COMMITTED_SOURCE_REQUIRED");

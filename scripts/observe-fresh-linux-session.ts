@@ -67,12 +67,13 @@ function admittedOrdinaryRelease(value: unknown, key: keyof typeof ordinaryQuali
   const { state, floor, admission, measuredRows, machineTools, evidence } = value as Record<string, unknown>;
   if (state !== "verified" || floor !== `${distribution}-x64-engine` || (admission !== "measured" && admission !== "above-floor")) return false;
   if (!Array.isArray(measuredRows) || !measuredRows.includes(ordinaryQualifications[key].profile) || !measuredRows.every((row) => typeof row === "string" && rows.has(row))) return false;
-  if (!Array.isArray(machineTools) || machineTools.length === 0) return false;
+  if (!Array.isArray(machineTools) || !machineTools.every((tool) => typeof tool === "object" && tool !== null)) return false;
   const tools = machineTools as Record<string, unknown>[];
-  if (!tools.every((tool) => typeof tool === "object" && tool !== null && isDeepStrictEqual(Object.keys(tool).sort(), ["comparison", "detected", "floor", "status", "tool"]) && (tool.status === "verified" || tool.status === "admitted"))) return false;
-  if (!isDeepStrictEqual(tools.filter((tool) => tool.tool === "release").map((tool) => tool.detected), [release])) return false;
+  if (!isDeepStrictEqual(tools.map((tool) => tool.tool), ["release", "kernel", "bun", "cli", "engine", "compose", "containerd", "runc"]) || tools[0]!.detected !== release) return false;
+  if (!tools.every((tool) => isDeepStrictEqual(Object.keys(tool).sort(), ["comparison", "detected", "floor", "status", "tool"]) && (tool.status === "verified" || tool.status === "admitted"))) return false;
+  // Doctor cites the row the host release and server build match exactly, else the target's first row.
   const proof = evidence as Record<string, unknown> | null;
-  return typeof proof === "object" && proof !== null && isDeepStrictEqual(Object.keys(proof).sort(), ["isolationSha256", "readinessSha256"]) && proof.readinessSha256 === proof.isolationSha256 && measuredRows.some((row) => rows.get(row as string) === proof.readinessSha256);
+  return typeof proof === "object" && proof !== null && isDeepStrictEqual(Object.keys(proof).sort(), ["isolationSha256", "readinessSha256"]) && proof.readinessSha256 === proof.isolationSha256 && [ordinaryQualifications[key].evidence, [...rows.values()][0]].includes(proof.readinessSha256 as string);
 }
 function checkOriginalOs(guest: Record<string, unknown>, binding?: Readonly<OwnedGuestBinding>, original?: Readonly<OwnedGuestOsRelease>): void {
   const custody = guest.ownedGuestCustody as Record<string, unknown> | undefined;

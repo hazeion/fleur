@@ -57,6 +57,8 @@ const invalidRounds: [string, (round: DoctorRound) => void][] = [
   ["blocking tool row", (round) => { (round.result.data.components.release!.machineTools as { status: string }[])[2]!.status = "unverified"; }],
   ["other release row", (round) => { (round.result.data.components.release!.machineTools as { detected: string }[])[0]!.detected = "26.04"; }],
   ["no tool rows", (round) => { round.result.data.components.release!.machineTools = []; }],
+  ["missing tool row", (round) => { (round.result.data.components.release!.machineTools as unknown[]).splice(1, 1); }],
+  ["other row evidence of the same target", (round) => { round.result.data.components.release!.evidence = { readinessSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07", isolationSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" }; }],
   ["foreign row evidence", (round) => { round.result.data.components.release!.evidence = { readinessSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e", isolationSha256: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e" }; }],
   ["crossed readiness proof", (round) => { round.result.data.components.release!.evidence = { readinessSha256: "0".repeat(64), isolationSha256: evidenceHash }; }],
   ["crossed isolation proof", (round) => { round.result.data.components.release!.evidence = { readinessSha256: evidenceHash, isolationSha256: "0".repeat(64) }; }],

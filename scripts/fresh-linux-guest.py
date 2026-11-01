@@ -1331,13 +1331,14 @@ def admitted_ordinary_release(value, release):
     if type(measured) is not list or f'{distribution}-{release}-x64-docker-29.9.1' not in measured or any(type(row) is not str or row not in rows for row in measured):
         return False
     tools = value['machineTools']
-    if (type(tools) is not list or not tools
-            or any(type(tool) is not dict or set(tool) != {'tool', 'status', 'floor', 'detected', 'comparison'} or tool['status'] not in ('verified', 'admitted') for tool in tools)
-            or [tool['detected'] for tool in tools if tool['tool'] == 'release'] != [release]):
+    if (type(tools) is not list or [tool.get('tool') if type(tool) is dict else None for tool in tools] != ['release', 'kernel', 'bun', 'cli', 'engine', 'compose', 'containerd', 'runc']
+            or any(set(tool) != {'tool', 'status', 'floor', 'detected', 'comparison'} or tool['status'] not in ('verified', 'admitted') for tool in tools)
+            or tools[0]['detected'] != release):
         return False
+    # Doctor cites the row the host release and server build match exactly, else the target's first row.
     evidence = value['evidence']
     return (type(evidence) is dict and set(evidence) == {'readinessSha256', 'isolationSha256'} and evidence['readinessSha256'] == evidence['isolationSha256']
-            and evidence['readinessSha256'] in {rows[row] for row in measured})
+            and evidence['readinessSha256'] in {rows[f'{distribution}-{release}-x64-docker-29.9.1'], next(iter(rows.values()))})
 
 
 def observe_ordinary_daemon(docker):

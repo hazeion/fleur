@@ -104,9 +104,9 @@ def admitted_debian_release(value):
             or value['measuredRows'] != ['debian-13-x64-docker-29.9.1']):
         return False
     tools = value['machineTools']
-    if (not isinstance(tools, list) or not tools
-            or any(not isinstance(tool, dict) or set(tool) != {'tool', 'status', 'floor', 'detected', 'comparison'} or tool['status'] not in ('verified', 'admitted') for tool in tools)
-            or [tool['detected'] for tool in tools if tool['tool'] == 'release'] != ['13']):
+    if (not isinstance(tools, list) or [tool.get('tool') if isinstance(tool, dict) else None for tool in tools] != ['release', 'kernel', 'bun', 'cli', 'engine', 'compose', 'containerd', 'runc']
+            or any(set(tool) != {'tool', 'status', 'floor', 'detected', 'comparison'} or tool['status'] not in ('verified', 'admitted') for tool in tools)
+            or tools[0]['detected'] != '13'):
         return False
     return value['evidence'] == {'readinessSha256': evidence, 'isolationSha256': evidence}
 

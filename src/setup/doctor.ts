@@ -100,7 +100,7 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
           // Identity facts gate the remaining RPC: a host matching no measured row keeps the generic refusal without a version query.
           if (smoke.state === "ready" && smoke.cleanup && compose.status === "completed" && compose.exitCode === 0 && policy.length && compareReadiness(policy, { ...observation, bun: Bun.version, server: undefined }).identity.matched) {
             // Bun.version hides a canary or debug tag; only the executable's own --revision shows it.
-            const revision = await run([process.execPath, "--revision"]);
+            const revision = await run([process.execPath, "--no-env-file", "--revision"]);
             if (revision.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Bun revision did not finish within the operation deadline.", actions: [] }, { components });
             const bun = { version: Bun.version, revision: revision.status === "completed" && revision.exitCode === 0 ? revision.stdout.trim() : "" };
             const version = await run(["docker", "--host", endpoint, "version", "--format", "{{json .Server}}"]);

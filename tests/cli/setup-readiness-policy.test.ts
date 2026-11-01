@@ -38,7 +38,7 @@ function desktopFixture() {
     run: async (args) => {
       commands.push([...args]);
       const command = args.join(" ");
-      if (args[0] === process.execPath && args[1] === "--revision") return completed(`${Bun.version}+38afee6c8\n`);
+      if (args[0] === process.execPath && args[1] === "--no-env-file" && args[2] === "--revision") return completed(`${Bun.version}+38afee6c8\n`);
       if (command === "docker --version") return completed("Docker version 29.9.2, build a82e528\n");
       if (command === "docker context show") return completed("desktop-linux\n");
       if (command === "docker context inspect desktop-linux --format {{json .Endpoints.docker}}") return completed('{"Host":"unix:///tmp/fleur-qualified-desktop.sock"}');
@@ -1095,7 +1095,7 @@ test("doctor reports an exact Intel Desktop match as measured with every machine
     { tool: "containerd", status: "verified", floor: "v2.4.2", detected: "v2.4.2", comparison: "equal" },
     { tool: "runc", status: "verified", floor: "1.5.2", detected: "1.5.2", comparison: "equal" },
   ]);
-  expect(fixture.commands).toContainEqual([process.execPath, "--revision"]);
+  expect(fixture.commands).toContainEqual([process.execPath, "--no-env-file", "--revision"]);
   expect(outcome.human).toContain("release   verified  floor darwin-x64-desktop (measured on darwin-15.7.7-x64-desktop-4.96.1)");
   expect(outcome.human).toMatch(/\n\s+bun\s+verified\s+1\.4\.3\s+= floor\n/);
   expect(outcome.human).toMatch(/\n\s+smoke\s+ready, cleanup confirmed\n/);
@@ -1143,7 +1143,7 @@ test("doctor refuses a machine tool below the floor naming the tool and both num
 test("doctor reads the Bun revision through the host runner and refuses a canary build as pre-release", async () => {
   const fixture = desktopFixture();
   const revision = `${Bun.version}-canary.3+38afee6c8`;
-  const host = withRun(fixture, (args) => args[0] === process.execPath && args[1] === "--revision" ? { status: "completed", exitCode: 0, stdout: `${revision}\n`, stderr: "" } : undefined);
+  const host = withRun(fixture, (args) => args[0] === process.execPath && args.includes("--revision") ? { status: "completed", exitCode: 0, stdout: `${revision}\n`, stderr: "" } : undefined);
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: `Machine tool bun is a pre-release build (${revision}); release floors admit stable versions only.`, expected: { tool: "bun", floor: "1.4.3" }, actual: { tool: "bun", detected: revision } } });
@@ -1155,7 +1155,7 @@ test("doctor reads the Bun revision through the host runner and refuses a canary
 
 test("an unreadable Bun revision refuses as release-less rather than admitting the executable", async () => {
   const fixture = desktopFixture();
-  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "completed", exitCode: 1, stdout: "", stderr: "unavailable" } : undefined);
+  const host = withRun(fixture, (args) => args.includes("--revision") ? { status: "completed", exitCode: 1, stdout: "", stderr: "unavailable" } : undefined);
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool bun has no parseable version.", expected: { tool: "bun", floor: "1.4.3" }, actual: { tool: "bun" } } });
@@ -1219,7 +1219,7 @@ test("an identity mismatch keeps the generic unverified refusal without floor fi
   expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Observed readiness does not yet establish a verified native release profile." }, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "unverified" } } } });
   expect(Object.keys(releaseOf(outcome))).toEqual(["state"]);
   expect(outcome.result.error).not.toHaveProperty("expected");
-  expect(fixture.commands.some((args) => args[3] === "version" || args[1] === "--revision")).toBe(false);
+  expect(fixture.commands.some((args) => args[3] === "version" || args.includes("--revision"))).toBe(false);
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -1231,7 +1231,7 @@ test("review: the running Bun executable's --revision output is the X.Y.Z+sha fo
   expect(real.exitCode, revision).toBe(0);
   expect(described?.[1], revision).toBe(Bun.version);
   const fixture = desktopFixture();
-  const host = withRun(fixture, (args) => args[0] === process.execPath && args[1] === "--revision" ? { status: "completed", exitCode: 0, stdout: real.stdout.toString(), stderr: "" } : undefined);
+  const host = withRun(fixture, (args) => args[0] === process.execPath && args.includes("--revision") ? { status: "completed", exitCode: 0, stdout: real.stdout.toString(), stderr: "" } : undefined);
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
   expect(releaseOf(outcome).machineTools!.find((row) => row.tool === "bun")).toEqual({ tool: "bun", status: "verified", floor: "1.4.3", detected: "1.4.3", comparison: "equal" });
@@ -1239,7 +1239,7 @@ test("review: the running Bun executable's --revision output is the X.Y.Z+sha fo
 
 test("review: a Bun revision for a different version than the running executable refuses as release-less and names the revision", async () => {
   const fixture = desktopFixture();
-  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "completed", exitCode: 0, stdout: "9.9.9+abcdef0\n", stderr: "" } : undefined);
+  const host = withRun(fixture, (args) => args.includes("--revision") ? { status: "completed", exitCode: 0, stdout: "9.9.9+abcdef0\n", stderr: "" } : undefined);
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool bun has no parseable version.", expected: { tool: "bun", floor: "1.4.3" }, actual: { tool: "bun", detected: "9.9.9+abcdef0" } } });
@@ -1250,7 +1250,7 @@ test("review: a Bun revision for a different version than the running executable
 
 test("review: a missing Bun revision command refuses as release-less with no detected value and no executable path in the output", async () => {
   const fixture = desktopFixture();
-  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "missing", stdout: "", stderr: "" } : undefined);
+  const host = withRun(fixture, (args) => args.includes("--revision") ? { status: "missing", stdout: "", stderr: "" } : undefined);
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool bun has no parseable version.", actual: { tool: "bun", detected: null } } });
@@ -1263,7 +1263,7 @@ test("review: a missing Bun revision command refuses as release-less with no det
 
 test("review: a Bun revision timeout returns READINESS_TIMEOUT with partial components and no human table", async () => {
   const fixture = desktopFixture();
-  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "timeout", stdout: "", stderr: "" } : undefined);
+  const host = withRun(fixture, (args) => args.includes("--revision") ? { status: "timeout", stdout: "", stderr: "" } : undefined);
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result).toMatchObject({ ok: false, error: { code: "READINESS_TIMEOUT", message: "Bun revision did not finish within the operation deadline." }, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "unverified" } } } });

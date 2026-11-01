@@ -34,14 +34,26 @@ export async function developmentQuery(project: string, options: QueryOptions) {
   try { const bound = await binding(project, false); directory = bound.directory; postgres = await DevelopmentPostgres.read(bound); }
   catch { throw new Error("DATABASE_UNAVAILABLE"); }
   if (!postgres) throw new Error("DATABASE_UNAVAILABLE");
-  return postgres.query(project, options, { stateRoot: join(directory, "maintenance") });
+  try { return await postgres.query(project, options, { stateRoot: join(directory, "maintenance") }); }
+  catch (error) {
+    if (error instanceof QueryRejected) throw error;
+    if (unavailability(error)) throw new Error("DATABASE_UNAVAILABLE");
+    if (error instanceof Error && error.message === "RECOVERY_REQUIRED") throw new Error("MAINTENANCE_BUSY");
+    throw error;
+  }
 }
 
 /** Trusted core, called only after the resource verified Docker, cluster and application identity. */
 export async function queryDevelopmentDatabase(url: string, password: string, project: string, options: QueryOptions, config: MaintenanceConfiguration) {
   if (Buffer.byteLength(options.sql) > 65536 || !options.sql.trim() || options.sql.includes("\0") || options.params.length > 65534 || options.params.some(value => value.includes("\0")) || !Number.isInteger(options.limit) || options.limit < 1 || options.limit > 500 || options.timeoutMs <= 0 || options.timeoutMs > 30000) throw new Error("ARGUMENT_INVALID");
   const started = performance.now(), remaining = () => Math.max(1, options.timeoutMs - (performance.now() - started));
-  const lease = await MaintenanceLease.acquire(url, false, { ...config, timeoutMs: remaining() }, true);
+  let lease: MaintenanceLease;
+  try { lease = await MaintenanceLease.acquire(url, false, { ...config, timeoutMs: remaining() }, true); }
+  catch (error) {
+    const failure = unavailability(error);
+    if (failure) throw new Error(failure === "timeout" ? "QUERY_TIMEOUT" : "DATABASE_UNAVAILABLE");
+    throw error;
+  }
   let wire: QueryWire | undefined, admin: SQL | undefined;
   let expired = false;
   let expire: (error: Error) => void = () => {};

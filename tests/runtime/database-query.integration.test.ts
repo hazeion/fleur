@@ -181,3 +181,8 @@ test("more than one thousand bound text parameters retain their declared positio
   const params = Array.from({ length: 1001 }, (_, index) => `text-${index + 1}`);
   expect((await query("SELECT $1::text,$1001::text", params)).rows).toEqual([["text-1", "text-1001"]]);
 });
+
+test("a deadline expiring during admission is a query timeout and leaves the database usable", async () => {
+  await expect(query("SELECT 1", [], 100, 1)).rejects.toThrow("QUERY_TIMEOUT");
+  expect((await query("SELECT 1")).rows).toEqual([["1"]]);
+});

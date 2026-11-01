@@ -7,7 +7,7 @@ import { failure, type CliOutcome } from "./result.ts";
 export const releaseVersion = release.version;
 export type ProjectPin = { readonly kind: "unconfigured" } | { readonly kind: "invalid" } | { readonly kind: "configured"; readonly root: string; readonly version: string; readonly currentCompatible: boolean };
 const exactVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-export async function readMetadata(path: string): Promise<unknown> {
+export async function readMetadataText(path: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
@@ -20,9 +20,10 @@ export async function readMetadata(path: string): Promise<unknown> {
       bytes += read.bytesRead;
     }
     if (bytes > 65536) throw new Error("Invalid metadata.");
-    return JSON.parse(buffer.subarray(0, bytes).toString("utf8"));
+    return buffer.subarray(0, bytes).toString("utf8");
   } finally { await file.close(); }
 }
+export async function readMetadata(path: string): Promise<unknown> { return JSON.parse(await readMetadataText(path)); }
 export async function findProjectPin(project: string): Promise<ProjectPin> {
   let root = project;
   for (;;) {

@@ -30,11 +30,11 @@ test("fresh Debian qualification is explicit manual x64 work and cannot bypass t
   expect(workflow.on.workflow_dispatch.inputs.debian_recovery).toEqual({ description: "Run the fixed Debian interrupted-recovery case; requires debian_helpers", type: "boolean", required: false, default: false });
   const native = workflow.jobs["existing-docker"]!;
   const qualification = native.steps!.find((step) => step.name === "Fresh Debian 13 native KVM qualification")!;
-  expect(qualification.if).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery) && matrix.architecture == 'x86_64' }}");
+  expect(qualification.if).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.workout_proof) && matrix.architecture == 'x86_64' }}");
   expect(qualification.run).toBe('python3 -I scripts/qualify-debian-kvm.py --run > "$RUNNER_TEMP/fleur-debian13-kvm.json"');
   expect(qualification.run).not.toContain("${{");
   expect(qualification.env).toEqual({ FLEUR_RUNNER_ENVIRONMENT: "${{ runner.environment }}", FLEUR_PINNED_BUN: "${{ runner.temp }}/fleur-native-bun/bun" });
-  expect(native["timeout-minutes"]).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images) && matrix.architecture == 'x86_64' && 40 || 10 }}");
+  expect(native["timeout-minutes"]).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images || inputs.workout_proof) && matrix.architecture == 'x86_64' && 40 || 10 }}");
   expect(native.steps!.some((step) => step.run === "bun scripts/verify-native-setup.ts")).toBe(true);
   expect(workflow.jobs.verification).toBeDefined();
 });
@@ -160,4 +160,36 @@ test("every CI job that runs Bun installs exactly the floor release first and no
       }
     }
   }
+});
+
+test("required native workout proof uses immutable private source and keeps its read credential in checkout", () => {
+  const workflow = Bun.YAML.parse(readFileSync(new URL("../../.github/workflows/cli.yml", import.meta.url), "utf8")) as {
+    jobs: Record<string, { strategy?: { matrix: { ubuntu: string[] } }; steps?: { uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }[] }>;
+  };
+  const job = workflow.jobs["workout-proof"]!;
+  expect(job.strategy?.matrix.ubuntu).toEqual(["24.04", "26.04"]);
+  const steps = job.steps!;
+  const checkout = steps.find(step => step.with?.repository === "hazeion/fleur-workout")!;
+  expect(checkout.with?.["persist-credentials"]).toBe(false);
+  expect(checkout.with?.["ssh-key"]).toBe("${{ secrets.FLEUR_WORKOUT_READ_KEY }}");
+  expect(checkout.with?.ref).toBe("${{ steps.workout.outputs.sha }}");
+  for (const step of steps) {
+    expect(step.run ?? "").not.toContain("FLEUR_WORKOUT_READ_KEY");
+    expect(JSON.stringify(step.env ?? {})).not.toContain("FLEUR_WORKOUT_READ_KEY");
+  }
+  expect(steps.some(step => step.run?.includes('bun scripts/verify-workout.ts "$GITHUB_WORKSPACE/workout"'))).toBe(true);
+  const pin = JSON.parse(readFileSync(new URL("../../scripts/workout-source.json", import.meta.url), "utf8"));
+  expect(pin.repository).toBe("hazeion/fleur-workout"); expect(pin.commit).toMatch(/^[a-f0-9]{40}$/);
+});
+
+test("native Debian workout remains an explicit manual case with an isolated read-only source checkout", () => {
+  const workflow = Bun.YAML.parse(readFileSync(new URL("../../.github/workflows/native-setup.yml", import.meta.url), "utf8")) as {
+    on: { workflow_dispatch: { inputs: Record<string, { type: string; default: boolean }> } };
+    jobs: Record<string, { steps: { if?: string; with?: Record<string, unknown> }[] }>;
+  };
+  expect(workflow.on.workflow_dispatch.inputs.workout_proof).toMatchObject({ type: "boolean", default: false });
+  const checkout = workflow.jobs["existing-docker"]!.steps.find(step => step.with?.repository === "hazeion/fleur-workout")!;
+  expect(checkout.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.workout_proof && matrix.architecture == 'x86_64' }}");
+  expect(checkout.with?.["persist-credentials"]).toBe(false);
+  expect(checkout.with?.["ssh-key"]).toBe("${{ secrets.FLEUR_WORKOUT_READ_KEY }}");
 });

@@ -347,10 +347,10 @@ def accepted_arch_observation(report, source):
 
 
 def qualification_case(inputs):
-    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation','desktop_runtime_images'}:
+    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation','desktop_runtime_images','workout_proof'}:
         raise ValueError('Unexpected manual inputs')
     selectors = {}
-    for name in ('debian_recovery','arch_boot_observation','desktop_runtime_images'):
+    for name in ('debian_recovery','arch_boot_observation','desktop_runtime_images','workout_proof'):
         value = inputs.get(name,False)
         if type(value) is bool:
             selectors[name] = value
@@ -360,6 +360,10 @@ def qualification_case(inputs):
             raise ValueError('Canonical case selector required')
     if selectors['desktop_runtime_images']:
         raise ValueError('Image preparation cannot select a native qualification case')
+    if selectors['workout_proof']:
+        if selectors['arch_boot_observation'] or selectors['debian_recovery'] or type(inputs.get('debian_helpers')) is not str or not inputs['debian_helpers']:
+            raise ValueError('Workout proof requires its own fixed Debian helper case')
+        return 'workout-production'
     if selectors['arch_boot_observation']:
         if selectors['debian_recovery'] or inputs.get('debian_helpers','') != '':
             raise ValueError('Arch read-only observation cannot select a Debian transaction')
@@ -743,6 +747,7 @@ def main():
             raise ValueError('Event exceeds bounded input')
         event = json.loads(event_bytes, object_pairs_hook=unique_object)
         case = qualification_case(event.get('inputs', {}))
+        workout = case == 'workout-production'
         recovery = case == 'interrupted-recovery'
         arch_observation = case == 'arch-boot-observation'
         report['case'] = case
@@ -773,6 +778,12 @@ def main():
             raise ValueError('Pinned Bun unavailable; installed Bun differs from the release floor')
         env = {'PATH': str(bun.parent) + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                'HOME': str(root), 'TMPDIR': str(root), 'FLEUR_OWNED_DISPOSABLE_HOST': 'yes', 'FLEUR_GUEST_ACCELERATOR': 'kvm'}
+        if workout:
+            workout_source = REPO / 'workout-source'
+            pin = json.loads((REPO / 'scripts/workout-source.json').read_text())
+            if workout_source.is_symlink() or not workout_source.is_dir() or run(['git','-C',str(workout_source),'rev-parse','HEAD']).stdout.decode().strip() != pin['commit'] or run(['git','-C',str(workout_source),'status','--porcelain']).stdout:
+                raise ValueError('Reviewed clean workout checkout unavailable')
+            env['FLEUR_NATIVE_WORKOUT_SOURCE'] = str(workout_source)
         report['containment'] = []
         # Actual service/cgroup seam: a detached descendant outlives its immediate parent.
         for kind in ('normal', 'stop', 'timeout', 'before-start'):
@@ -863,6 +874,10 @@ def main():
         report['serviceStderr'] = service.error.read_text()[-16384:]
         if report['service']['exitCode'] != 0 or report['service']['cancelled'] or report['service']['terminal'].get('result') != 'success' or not (accepted_arch_observation if arch_observation else accepted_recovery_guest if recovery else accepted_guest)(report['guestVerifier'], os.environ['GITHUB_SHA']):
             raise RuntimeError('Native guest qualification failed')
+        if workout:
+            proof = report['guestVerifier'].get('nativeWorkout',{})
+            if (proof.get('ok') is not True or proof.get('exitCode') != 0 or proof.get('scope') != 'native-debian-workout-production' or proof.get('source',{}) != {'fleur':os.environ['GITHUB_SHA'],'workout':pin['commit']} or proof.get('disposal',{}).get('passed') is not True or proof.get('proof',{}).get('ok') is not True or proof.get('preservation') != {'daemon':True,'daemonService':True,'nftablesService':True,'detachedCanary':True,'baselineImages':True,'noRemainingContainers':True}):
+                raise RuntimeError('Native packed workout evidence incomplete')
         report['ok'] = True
     except BaseException as error:
         report['error'] = {'type': type(error).__name__, 'message': str(error), **({'diagnostic': error.diagnostic} if hasattr(error, 'diagnostic') else {})}

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { verifyArtifact } from "../../src/runtime/production/artifact";
@@ -32,6 +32,27 @@ test("packed verification checks a public-API application and produces a verifie
     await writeFile(join(app, "shared/page.ts"), 'import { definePage } from "fleur/routing";\nimport { schema } from "fleur/schema";\nexport const page = definePage({ path: "/", params: schema.object({}) });\n');
     await writeFile(join(app, "server/page.tsx"), 'import { registerPage } from "fleur/server";\nimport { page } from "../shared/page";\nregisterPage(page, { component: () => <main><h1>Verified public application</h1></main> });\n');
     await writeFile(join(app, "tests/value.test.ts"), 'import { expect, test } from "bun:test";\nimport { schema } from "fleur/schema";\ntest("rejects invalid public input", () => { expect(() => schema.string().parse(7)).toThrow(); });\n');
+    const cli = join(app, "node_modules/fleur/bin/fleur.ts");
+    await mkdir(join(app, "tests/unit"));
+    await writeFile(join(app, "tests/unit/selected.test.ts"), 'import { expect, test } from "bun:test";\nimport { schema } from "fleur/schema";\ntest("selected input rejects", () => { expect(() => schema.localDate().parse("2026-02-30")).toThrow(); });\n');
+    for (const args of [["explain"], ["test"], ["test", "--suite", "unit"], ["test", "--filter", "selected"], ["test", "--filter", "selected input"], ["types"], ["lint"]]) {
+      const checked = await shell([process.execPath, cli, ...args, "--json"], app);
+      expect(checked.exit, checked.stdout + checked.stderr).toBe(0);
+      expect(JSON.parse(checked.stdout)).toMatchObject({ formatVersion: 1, command: args[0], ok: true, error: null, truncated: false });
+    }
+    await mkdir(join(app, "tests/browser"));
+    await writeFile(join(app, "tests/browser/interaction.test.ts"), 'import { expect, test } from "bun:test";\nimport { chromium } from "@playwright/test";\ntest("browser tool drives a real interaction", async () => { const browser = await chromium.launch({ headless: true, timeout: 10000 }); try { const page = await browser.newPage(); await page.setContent(\'<button onclick="this.textContent=String(Number(this.textContent)+1)">0</button>\'); await page.getByRole("button").click(); expect(await page.getByRole("button").textContent()).toBe("1"); } finally { await browser.close(); } }, 15000);\n');
+    const browserSuite = await shell([process.execPath, cli, "test", "--suite", "browser", "--json"], app);
+    expect(browserSuite.exit, browserSuite.stdout + browserSuite.stderr).toBe(0);
+    expect(JSON.parse(browserSuite.stdout)).toMatchObject({ command: "test", ok: true });
+    // An unselected failing file proves that the default runs the whole suite.
+    await writeFile(join(app, "tests/failing.test.ts"), 'import { expect, test } from "bun:test";\ntest("intentional rejection", () => { expect(false).toBe(true); });\n');
+    const failed = await shell([process.execPath, cli, "test", "--json"], app);
+    expect(failed.exit).toBe(1);
+    expect(JSON.parse(failed.stdout)).toMatchObject({ command: "test", ok: false, data: { failed: "tests" } });
+    const subset = await shell([process.execPath, cli, "test", "--suite", "unit", "--json"], app);
+    expect(subset.exit, subset.stdout).toBe(0);
+    await rm(join(app, "tests/failing.test.ts"));
     const result = await shell([process.execPath, join(app, "node_modules/fleur/bin/fleur.ts"), "verify", "--timeout", "240", "--json"], app);
     if (result.exit !== 0) { const diagnostic = await shell([process.execPath, "run", "types"], app); console.info("[packed-verify-type-diagnostic]", diagnostic.stdout + diagnostic.stderr); }
     expect(result.exit, result.stdout + result.stderr).toBe(0);

@@ -307,7 +307,7 @@ test("both instruction files reference offline pinned guidance and the approved 
   expect(offline).toContain("External retrieval is documented in docs/retrieval.md");
   expect(offline).toContain("Use dev/stop/status/logs as documented in package docs/development.md");
   expect(offline).toContain("fleur start --artifact <dir> as documented in package docs/production.md");
-  expect(offline).toContain("bun run types");
+  expect(offline).toContain("fleur types");
   expect(offline).toContain("TypeScript 6.0.3");
 });
 test("new protected tooling files collide before writes and existing unrelated docs remain intact", async () => {

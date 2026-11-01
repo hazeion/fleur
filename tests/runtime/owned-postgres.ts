@@ -4,39 +4,59 @@ import { randomUUID } from "node:crypto";
 const image = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336";
 const label = "fleur.issue25.database-owner";
 async function docker(args: string[], timeout = 60_000): Promise<string> {
-  const child = Bun.spawn(["docker", ...args], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([Bun.which("docker", { PATH: process.env.PATH ?? "" }) ?? "docker", ...args], { stdout: "pipe", stderr: "pipe" });
   const timer = setTimeout(() => child.kill(), timeout);
   const [output, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   clearTimeout(timer);
   if (code !== 0) throw new Error("Owned PostgreSQL Docker operation failed");
   return output.trim();
 }
-export async function ownedPostgres() {
+export async function ownedPostgres(options: { disk?: boolean } = {}) {
   const owner = randomUUID().replaceAll("-", "");
   const name = `fleur-read-${owner}`;
   const database = `fleur_read_${owner}`;
   const password = randomUUID();
   let id: string | undefined;
+  let volume: string | undefined;
   let sql: SQL | undefined;
+  const pausedListeners = new Set<number>();
   async function cleanup() {
-    if (sql) await sql.close({ timeout: 0 });
-    if (!id) return;
-    const metadata = JSON.parse(await docker(["inspect", id])) as { Id: string; Config: { Labels: Record<string, string> } }[];
-    if (metadata[0]?.Id !== id || metadata[0].Config.Labels[label] !== owner) throw new Error("Disposable database ownership changed");
-    await docker(["rm", "--force", id]);
-    const remaining = await docker(["ps", "--all", "--quiet", "--filter", `label=${label}=${owner}`]);
-    if (remaining !== "") throw new Error("Disposable database cleanup incomplete");
-    id = undefined;
+    const errors: unknown[] = [];
+    for (const pid of pausedListeners) try { await docker(["exec", id!, "kill", "-CONT", String(pid)]); } catch (error) { errors.push(error); }
+    pausedListeners.clear();
+    if (sql) try { await sql.close({ timeout: 0 }); } catch (error) { errors.push(error); }
+    if (id) try {
+      const metadata = JSON.parse(await docker(["inspect", id])) as { Id: string; Config: { Labels: Record<string, string> } }[];
+      if (metadata[0]?.Id !== id || metadata[0].Config.Labels[label] !== owner) throw new Error("Disposable database ownership changed");
+      await docker(["rm", "--force", id]);
+      const remaining = await docker(["ps", "--all", "--quiet", "--filter", `label=${label}=${owner}`]);
+      if (remaining !== "") throw new Error("Disposable database cleanup incomplete");
+      id = undefined;
+    } catch (error) { errors.push(error); }
+    if (volume) try {
+      const metadata = JSON.parse(await docker(["volume", "inspect", volume])) as { Name: string; Labels: Record<string, string> }[];
+      if (metadata[0]?.Name !== volume || metadata[0].Labels[label] !== owner) throw new Error("Disposable volume ownership changed");
+      await docker(["volume", "rm", volume]);
+      volume = undefined;
+    } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, "Disposable database cleanup failed");
   }
   try {
     // The digest pin is the identity: reuse it when already present, pull only when absent.
     const present = await docker(["image", "inspect", "--format", "{{.Id}}", image]).then(() => true, () => false);
     if (!present) await docker(["pull", image], 180_000);
-    id = await docker(["run", "--detach", "--name", name, "--label", `${label}=${owner}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", "--tmpfs", "/var/lib/postgresql:rw,size=384m", "--publish", "127.0.0.1::5432", "--env", `POSTGRES_USER=${database}`, "--env", `POSTGRES_DB=${database}`, "--env", `POSTGRES_PASSWORD=${password}`, image]);
+    if (options.disk) {
+      volume = await docker(["volume", "create", "--label", `${label}=${owner}`, `${name}-data`]);
+      if (volume !== `${name}-data`) throw new Error("Missing owned benchmark volume identity");
+    }
+    const storage = volume ? ["--mount", `type=volume,src=${volume},dst=/var/lib/postgresql`] : ["--tmpfs", "/var/lib/postgresql:rw,size=384m"];
+    id = await docker(["run", "--detach", "--name", name, "--label", `${label}=${owner}`, "--cpus", "1", "--memory", "512m", "--pids-limit", "64", ...storage, "--publish", "127.0.0.1::5432", "--env", `POSTGRES_USER=${database}`, "--env", `POSTGRES_DB=${database}`, "--env", `POSTGRES_PASSWORD=${password}`, image]);
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Missing owned container identity");
-    const metadata = JSON.parse(await docker(["inspect", id])) as { Mounts: { Type: string; Destination: string }[]; NetworkSettings: { Ports: Record<string, { HostIp: string; HostPort: string }[]> } }[];
+    const metadata = JSON.parse(await docker(["inspect", id])) as { Mounts: { Type: string; Destination: string; Name?: string }[]; HostConfig: { Tmpfs?: Record<string, string> }; NetworkSettings: { Ports: Record<string, { HostIp: string; HostPort: string }[]> } }[];
     const container = metadata[0]!;
-    if (container.Mounts.some(mount => mount.Type !== "tmpfs" || mount.Destination !== "/var/lib/postgresql")) throw new Error("Unexpected database mount");
+    if (volume) {
+      if (container.Mounts.length !== 1 || container.Mounts[0]?.Type !== "volume" || container.Mounts[0]?.Name !== volume || container.Mounts[0]?.Destination !== "/var/lib/postgresql") throw new Error("Unexpected database mount");
+    } else if (container.Mounts.length !== 0 || Object.keys(container.HostConfig.Tmpfs ?? {}).length !== 1 || container.HostConfig.Tmpfs?.["/var/lib/postgresql"] !== "rw,size=384m") throw new Error("Unexpected tmpfs database mount");
     const ports = container.NetworkSettings.Ports["5432/tcp"];
     if (ports?.length !== 1 || ports[0]?.HostIp !== "127.0.0.1") throw new Error("Database endpoint is not owned loopback");
     const url = `postgres://${database}:${password}@127.0.0.1:${ports[0].HostPort}/${database}`;
@@ -106,6 +126,18 @@ export async function ownedPostgres() {
         }
       }
     }
-    return { sql, url, cleanup, pgTools, reviewSchema, reviewApplication, restart };
-  } catch (error) { await cleanup(); throw error; }
+    async function pauseNotifications() {
+      const rows = await sql!`SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid() AND query ~* '^LISTEN[[:space:]]+"?fleur_revision"?;?$'`;
+      if (rows.length !== 1) throw new Error("Expected one owned Fleur notification listener");
+      const pid = Number(rows[0].pid);
+      if (!Number.isSafeInteger(pid) || pid < 2) throw new Error("Invalid owned listener process");
+      await docker(["exec", id!, "kill", "-STOP", String(pid)]);
+      pausedListeners.add(pid);
+      return async () => { if (pausedListeners.has(pid)) { await docker(["exec", id!, "kill", "-CONT", String(pid)]); pausedListeners.delete(pid); } };
+    }
+    return { sql, url, image, storage: volume ? "volume" : "tmpfs", cleanup, pgTools, reviewSchema, reviewApplication, restart, pauseNotifications };
+  } catch (error) {
+    try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Disposable database setup and cleanup failed"); }
+    throw error;
+  }
 }

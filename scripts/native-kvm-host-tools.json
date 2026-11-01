@@ -15,6 +15,13 @@
       "inventoryRunId": "40083092762",
       "inventoryRunAttempt": 2,
       "inventoryReportSha256": "59c91a9ef5576f8622a6e35294645dc9b9c5908cb8b7f188d1071dc468034f9c"
+    },
+    {
+      "version": "20261026.354.1",
+      "inventorySourceCommit": "4d7fcb105437ae707a932b2427b775f22041ff77",
+      "inventoryRunId": "41349899368",
+      "inventoryRunAttempt": 1,
+      "inventoryReportSha256": "628b3b5fbccb613054c9d5bf2f72b203888242f247aa413808022e6a10c60d14"
     }
   ],
   "nativeQualification": false,

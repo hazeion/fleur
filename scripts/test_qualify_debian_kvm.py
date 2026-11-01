@@ -12,6 +12,11 @@ spec.loader.exec_module(module)
 
 
 class InputContract(unittest.TestCase):
+    def test_workout_proof_is_a_separate_case_with_the_fixed_helper_pair(self):
+        self.assertEqual(module.qualification_case({'debian_helpers':'pair','workout_proof':True}), 'workout-production')
+        for inputs in ({'workout_proof':True}, {'debian_helpers':'pair','workout_proof':True,'debian_recovery':True}, {'workout_proof':True,'arch_boot_observation':True}):
+            with self.subTest(inputs=inputs), self.assertRaises(ValueError): module.qualification_case(inputs)
+
     def launch_fixture(self, directory, budget=60):
         from types import SimpleNamespace
         service = module.Service(Path(directory), 1001, 108, [], {}, budget)

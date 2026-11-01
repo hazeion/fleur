@@ -122,3 +122,21 @@ retirement are required. Cancellation, timeout, uncertain cleanup or incomplete
 native proof fails qualification, including when the outer harness later removes
 its scratch. An uploaded report alone is not passing evidence. This manual lane
 adds no ordinary release profile and establishes no human-consent proof.
+
+## Workout acceptance
+
+CLI verification also requires the packed workout and production proof on native
+Ubuntu 24.04 and 26.04 amd64 runners. The source revision is fixed in
+`scripts/workout-source.json`. A dedicated read-only deploy key supplies the
+separate private checkout, with credentials unpersisted and unavailable to
+application processes. These jobs retain sanitized results for seven days.
+
+Native Debian workout qualification is an explicit `workout_proof` manual case
+in the native setup workflow. It requires the already-recorded exact helper
+pair. All existing installation, isolation, authority, preservation, repeat,
+service/cgroup and VM-disposal gates run first and remain required. The extra
+proof transfers source-only Git packs, without checkout credentials, and refuses
+browser prerequisite plans that change existing distribution packages. Its
+successful executed report must be included in the release evidence; an ordinary
+PR's green checks do not establish that manual matrix row. Intel macOS evidence
+is likewise recorded from the separately executed native proof.

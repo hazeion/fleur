@@ -112,3 +112,21 @@ is available for bounded development-only SQL diagnosis. `--timeout` defaults to
 stopped development PostgreSQL and active maintenance. See
 [development SQL diagnosis](maintenance.md#development-sql-diagnosis) for statement
 forms, exact text results, credential restrictions and failure codes.
+
+`explain` reads the pinned environment guidance offline. `test` runs the whole
+application `tests/` tree by default. Explicit `--suite unit|database|browser`
+selects `tests/<suite>/`; `--filter <name-or-path>` selects matching test file
+paths, or a Bun test-name expression when no file path matches. These are
+subsets and do not establish whole-suite evidence. `types` runs the pinned
+Microsoft compiler, and `lint` runs both oxlint and the independent ESLint engine.
+These commands share verify's exact tool-graph check, guidance guard and bounded
+deadline. They never execute package scripts or accept shell arguments. Tool
+failure returns exit 1 with the failed check; timeout returns exit 4. No missing
+tool, dependency, compiler or browser is installed automatically.
+
+The generated test graph includes pinned `@playwright/test`. An operator prepares
+Chromium explicitly with `bun ./node_modules/@playwright/test/cli.js install chromium`
+and supplies required system libraries before browser tests. These commands run
+with Bun; Node is not required. `PLAYWRIGHT_BROWSERS_PATH` can select the prepared
+browser cache. Verification tools receive only `PATH`, `HOME` and that browser
+cache setting, without database or provider credentials.

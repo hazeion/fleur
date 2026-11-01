@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      workout_proof:
+        description: Run the fixed native Debian packed workout/production proof after all setup and isolation gates; requires debian_helpers
+        required: false
+        default: false
+        type: boolean
       desktop_runtime_images:
         description: Prepare source-bound Intel Desktop qualification images on disposable native Linux; no runtime admission
         required: false
@@ -67,7 +72,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             architecture: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images) && matrix.architecture == 'x86_64' && 40 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images || inputs.workout_proof) && matrix.architecture == 'x86_64' && 40 || 10 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
         with:
@@ -98,8 +103,22 @@ jobs:
           FLEUR_OWNED_DISPOSABLE_HOST: "yes"
           FLEUR_NATIVE_REPORT: ${{ runner.temp }}/fleur-native-setup.json
         run: bun scripts/verify-native-setup.ts
+      - name: Read the immutable workout source pin
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.workout_proof && matrix.architecture == 'x86_64' }}
+        id: workout
+        run: |
+          python3 -c 'import json,re; p=json.load(open("scripts/workout-source.json")); assert p["repository"]=="hazeion/fleur-workout" and re.fullmatch("[a-f0-9]{40}",p["commit"]); print("sha="+p["commit"])' >> "$GITHUB_OUTPUT"
+      - name: Read-only private workout source for native Debian
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.workout_proof && matrix.architecture == 'x86_64' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        with:
+          repository: hazeion/fleur-workout
+          ref: ${{ steps.workout.outputs.sha }}
+          path: workout-source
+          ssh-key: ${{ secrets.FLEUR_WORKOUT_READ_KEY }}
+          persist-credentials: false
       - name: Fresh Debian 13 native KVM qualification
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery) && matrix.architecture == 'x86_64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.workout_proof) && matrix.architecture == 'x86_64' }}
         timeout-minutes: 38
         env:
           FLEUR_RUNNER_ENVIRONMENT: ${{ runner.environment }}

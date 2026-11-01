@@ -69,12 +69,13 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });
 test("invalid invocations return category 2 JSON without interpreting shell arguments", async () => {
-  for (const args of [["--unknown"], ["unknown"], ["help", "sh", "-c", "touch sentinel"], ["--project"], ["--timeout", "0"], ["--timeout", "NaN"], ["--timeout", "Infinity"], ["--json=false"], ["--project", "--help"], ["--json", "--json"]]) {
+  // These invalid requests share no mutable state; keep the existing whole-test deadline.
+  await Promise.all([["--unknown"], ["unknown"], ["help", "sh", "-c", "touch sentinel"], ["--project"], ["--timeout", "0"], ["--timeout", "NaN"], ["--timeout", "Infinity"], ["--json=false"], ["--project", "--help"], ["--json", "--json"]].map(async args => {
     const response = await cli("--json", ...args);
     expect(response.exit).toBe(2);
     expect(response.stderr).toBe("");
     expect(JSON.parse(response.stdout)).toMatchObject({ formatVersion: 1, ok: false, data: null, error: { code: "ARGUMENT_INVALID", actions: [{ command: "fleur --help" }] }, truncated: false });
-  }
+  }));
   expect(await Bun.file(join(scratch, "sentinel")).exists()).toBe(false);
 });
 test("human help is readable, catalog-driven, and lists only implemented operations", async () => {

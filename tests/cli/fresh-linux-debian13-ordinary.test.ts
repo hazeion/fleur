@@ -20,7 +20,7 @@ test("ordinary Debian proof retains eight packages, fresh login, canary, two adm
   const report = JSON.parse(stdout);
   expect(report).toMatchObject({ ok: true, executionArtifact: { kind: "ordinary", packageName: "fleur", artifactCatalogSha256: "032a04d1b44961b92fbccadaf184f3c2695dc5cf6cdec5941a7121a2c785677d" }, sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: { bounded_probe_passed: true, cleanup_complete: true } }, debianDependencyPreservation: { backend: "nf_tables", cleanup: true } });
   expect(report.runs).toHaveLength(2);
-  for (const round of report.runs) expect(round).toMatchObject({ exitCode: 0, result: { command: "doctor", ok: true, error: null, data: { components: { release: { state: "verified", profile: "debian-13-x64-docker-29.9.1" }, smoke: { cleanup: true } } } } });
+  for (const round of report.runs) expect(round).toMatchObject({ exitCode: 0, result: { command: "doctor", ok: true, error: null, data: { components: { release: { state: "verified", floor: "debian-x64-engine", admission: "measured", measuredRows: ["debian-13-x64-docker-29.9.1"] }, smoke: { cleanup: true } } } } });
   expect(report.readySetupReprobes).toHaveLength(2);
   for (const round of report.readySetupReprobes) expect(round).toMatchObject({ exitCode: 0, snapshotPreserved: true, grantsPreserved: true });
   expect(state.simulationArguments.slice(5)).toEqual(["docker-ce=5:29.9.1-1~debian.13~trixie", "docker-ce-cli=5:29.9.1-1~debian.13~trixie", "containerd.io=2.4.2-2~debian.13~trixie", "docker-buildx-plugin=0.38.0-1~debian.13~trixie", "docker-compose-plugin=5.6.0-1~debian.13~trixie", "libjansson4=2.14-2+b3", "libnftables1=1.1.3-1", "nftables=1.1.3-1"]);

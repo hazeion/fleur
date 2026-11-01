@@ -3,6 +3,13 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+/** Doctor's floor admission shape (#138): the distribution's target floor, its measured rows and one verified row per machine tool. */
+function ordinaryRelease(distribution: "ubuntu" | "debian", version: string, evidence: string) {
+  const floors: Record<string, string> = { release: distribution === "ubuntu" ? "24.04" : "13", kernel: distribution === "ubuntu" ? "6.8.0-147-generic" : "6.12.113+deb13-cloud-amd64", bun: "1.4.3", cli: "29.9.1", engine: "29.9.1", compose: "5.6.0", containerd: "v2.4.2", runc: "1.5.2" };
+  const detected: Record<string, string> = { ...floors, release: version, kernel: version === "26.04" ? "7.0.0-38-generic" : floors.kernel! };
+  const measuredRows = distribution === "ubuntu" ? ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"] : ["debian-13-x64-docker-29.9.1"];
+  return { state: "verified", floor: `${distribution}-x64-engine`, admission: "measured", measuredRows, machineTools: Object.entries(floors).map(([tool, floor]) => ({ tool, status: "verified", floor, detected: detected[tool]!, comparison: floor === detected[tool] ? "equal" : "newer" })), evidence: { readinessSha256: evidence, isolationSha256: evidence } };
+}
 // Protocol fixtures exercise the actual retained-SSH orchestrator, not a native VM.
 async function observe(scenario = "valid26") {
   const root = await mkdtemp(join(tmpdir(), "fleur-ordinary26-session-"));
@@ -17,7 +24,7 @@ async function observe(scenario = "valid26") {
     const pending = { formatVersion: 1, ok: false, phase: "new-login-required", installationEvidence: "pending", runtimeSupport: "unverified", humanConsentProof: false, baseline, ownedGuestCustody: structuredClone(custody), checkpoint: { sha256: "c".repeat(64), bytes: 800 }, accessHandoff: { after: { user: { name: "fleur", uid: 1000 }, group: { gid: 997 }, accountGroups: [997, 1000], sessionGroups: [1000] } } };
     const qualifiedDebian = scenario.startsWith("valid13");
     const evidence = qualifiedDebian ? "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e" : os.versionId === "24.04" ? "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" : "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07";
-    const release = { state: "verified", profile: `${qualifiedDebian ? "debian" : "ubuntu"}-${os.versionId}-x64-docker-29.9.1`, evidence: { readinessSha256: evidence, isolationSha256: evidence } };
+    const release = ordinaryRelease(qualifiedDebian ? "debian" : "ubuntu", os.versionId, evidence);
     const envelope = (command: string) => ({ formatVersion: 1, command, ok: true, error: null, truncated: false, data: { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "ready", cleanup: true }, release: structuredClone(release) } } });
     const final = { formatVersion: 1, ok: true, installationEvidence: "verified-full-system-guest", runtimeSupport: "unverified", humanConsentProof: false, executionArtifact: { kind: "ordinary", packageName: "fleur" }, ownedGuestCustody: structuredClone(custody), baseline, accessResume: { checkpointSha256: "c".repeat(64), sessionGroups: [997, 1000] }, runs: [0, 1].map(() => ({ exitCode: 0, result: envelope("doctor") })), readySetupReprobes: [0, 1].map(() => ({ exitCode: 0, result: envelope("setup"), snapshotPreserved: true, grantsPreserved: true })), sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: { bounded_probe_passed: true, cleanup_complete: true } } };
     if (scenario === "missing-binding") delete target.ownedGuestBinding;
@@ -33,11 +40,11 @@ async function observe(scenario = "valid26") {
     if (scenario === "resumed-os-hash") final.ownedGuestCustody.osRelease.sha256 = "d".repeat(64);
     if (scenario === "resumed-boot") final.ownedGuestCustody.bootId = "97654321-4321-4321-8321-cba987654321";
     if (scenario === "old-profile" || scenario === "legacy-old-profile") {
-      for (const round of final.runs) round.result.data.components.release = { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2", isolationSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } };
+      for (const round of final.runs) round.result.data.components.release = ordinaryRelease("ubuntu", "24.04", "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2");
     }
     if (scenario === "crossed-evidence") final.runs[1]!.result.data.components.release.evidence.readinessSha256 = "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2";
     if (scenario === "valid13-crossed-evidence") final.runs[1]!.result.data.components.release.evidence.readinessSha256 = "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07";
-    if (scenario === "valid13-crossed-profile") final.runs[1]!.result.data.components.release.profile = "ubuntu-26.04-x64-docker-29.9.1";
+    if (scenario === "valid13-crossed-profile") final.runs[1]!.result.data.components.release.measuredRows = ["ubuntu-26.04-x64-docker-29.9.1"];
     if (scenario === "valid13-legacy") delete target.ownedGuestOsRelease;
     const tools = join(root, "tools"); await mkdir(tools);
     await writeFile(join(tools, "ssh"), `#!${process.execPath}

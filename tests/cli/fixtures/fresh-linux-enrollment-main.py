@@ -183,16 +183,21 @@ def save():p.write_text(json.dumps(s))
 def ready_protocol():return s['scenario'].startswith('ordinary-admitted') and not s['scenario'].startswith('ordinary-admitted13') or (s['scenario'].startswith('ordinary-admitted13') or s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup')) and s.get('freshSession',False)
 def envelope(command,data,code,error):
  print(json.dumps({'formatVersion':1,'command':command,'ok':False,'truncated':False,'data':data,'error':{'code':error}}));save();sys.exit(code)
+UBUNTU_ROWS=['ubuntu-24.04-x64-docker-29.9.1','ubuntu-26.04-x64-docker-29.9.1']
+def ordinary_release(distribution,version,kernel,evidence,rows):
+ floors={'release':'24.04' if distribution=='ubuntu' else '13','kernel':'6.8.0-147-generic' if distribution=='ubuntu' else '6.12.113+deb13-cloud-amd64','bun':json.loads((root/'lab/bun-floor.json').read_text())['version'],'cli':'29.9.1','engine':'29.9.1','compose':'5.6.0','containerd':'v2.4.2','runc':'1.5.2'}
+ detected={**floors,'release':version,'kernel':kernel}
+ return {'state':'verified','floor':f'{distribution}-x64-engine','admission':'measured','measuredRows':rows,'machineTools':[{'tool':tool,'status':'verified','floor':floor,'detected':detected[tool],'comparison':'equal' if floor==detected[tool] else 'newer'} for tool,floor in floors.items()],'evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
 def admitted(command):
  if command=='doctor':s['ordinaryDoctorCalls']=s.get('ordinaryDoctorCalls',0)+1
  else:s['ordinaryReadySetupCalls']=s.get('ordinaryReadySetupCalls',0)+1
  if command=='setup' and s.get('ordinaryReadySetupCalls',0)>=2 and s['scenario']=='ordinary-admitted-grant-change':
   grant=root/'.local/state/fleur/setup/grants.json';grant.parent.mkdir(parents=True,exist_ok=True);grant.write_text('{"fixtureForeignGrant":true}');grant.chmod(0o600)
- data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':{'state':'verified','profile':'ubuntu-24.04-x64-docker-29.9.1','evidence':{'readinessSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2','isolationSha256':'75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2'}}}}
+ data={'components':{'cli':{'state':'ready'},'daemon':{'state':'ready'},'compose':{'state':'ready'},'smoke':{'state':'ready','cleanup':True,'image':'oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e'},'release':ordinary_release('ubuntu','24.04','6.8.0-147-generic','75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2',UBUNTU_ROWS)}}
  if s['scenario'].startswith('ordinary-admitted26'):
-  evidence='5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07';data['components']['release']={'state':'verified','profile':'ubuntu-26.04-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
+  data['components']['release']=ordinary_release('ubuntu','26.04','7.0.0-38-generic','5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07',UBUNTU_ROWS)
  if s['scenario'].startswith('ordinary-admitted13'):
-  evidence='6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e';data['components']['release']={'state':'verified','profile':'debian-13-x64-docker-29.9.1','evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
+  data['components']['release']=ordinary_release('debian','13','6.12.113+deb13-cloud-amd64','6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e',['debian-13-x64-docker-29.9.1'])
  if s['scenario'] in ('owned13-fresh-resume','owned13-canary-cleanup'):
   data['components']['release']={'state':'unverified'};envelope(command,data,4,'PREREQUISITE_UNAVAILABLE')
  if command=='doctor' and s['scenario']=='ordinary-admitted-release-refused':

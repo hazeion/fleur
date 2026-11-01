@@ -5,10 +5,14 @@ export const smokeImages: Readonly<Record<string, string>> = {
 };
 
 import type { HostIdentity } from "./commands.ts";
+/**
+ * The official installation method of the host's OS family. Any Ubuntu or Debian release reaches readiness, where the
+ * release floor decides admission (#134); assisted installation still needs a verified installer row for the exact release.
+ */
 export function installationMethod(identity: HostIdentity): string | null {
   if (!["x64", "arm64"].includes(identity.architecture)) return null;
   if (identity.system === "darwin" && /^\d+\./.test(identity.release) && Number(identity.release.split(".")[0]) >= 13) return "docker-desktop-official-dmg";
   if (identity.system !== "linux") return null;
-  if ((identity.distribution === "ubuntu" && ["24.04", "26.04"].includes(identity.release)) || (identity.distribution === "debian" && identity.release === "13")) return "docker-official-apt";
+  if (identity.distribution === "ubuntu" || identity.distribution === "debian") return "docker-official-apt";
   return identity.distribution === "arch" && identity.architecture === "x64" ? "arch-official-pacman" : null;
 }

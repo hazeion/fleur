@@ -245,7 +245,7 @@ test("native verifier accepts two ready rounds only when its trusted build alrea
   expect(result.grantStore).toBeNull();
   expect(result.state.smokeStarts).toBe(4);
   expect(result.state.operations.some((args: string[]) => args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
-  for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", profile: "fixture-native-verified" }, smoke: { state: "ready", cleanup: true } } } });
+  for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", admission: "measured", measuredRows: ["fixture-native-verified"] }, smoke: { state: "ready", cleanup: true } } } });
   expect(result.state.containers).toEqual({});
 }, 30000);
 
@@ -255,7 +255,7 @@ test("native verifier admits a tuple above its trusted row's floor through the p
   expect(result.exit, result.report.error).toBe(0);
   expect(result.report).toMatchObject({ ok: true, verifiedReleaseProfile: true, completedRounds: 2, releaseProfile: { id: "fixture-native-verified" } });
   expect(result.report.docker.Server.Version).toBe("28.0.5");
-  for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", profile: "fixture-native-verified" }, smoke: { state: "ready", cleanup: true } } } });
+  for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", admission: "above-floor", measuredRows: ["fixture-native-verified"] }, smoke: { state: "ready", cleanup: true } } } });
   expect(result.state.containers).toEqual({});
 }, 30000);
 

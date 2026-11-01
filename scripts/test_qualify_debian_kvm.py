@@ -204,7 +204,8 @@ class InputContract(unittest.TestCase):
         evidence = '6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e'
         return {'exitCode': 0, 'result': {'formatVersion': 1, 'command': command, 'ok': True, 'error': None, 'truncated': False,
                 'data': {'components': {**{name: {'state': 'ready'} for name in ('cli', 'daemon', 'compose')},
-                    'smoke': {'state': 'ready', 'cleanup': True}, 'release': {'state': 'verified', 'profile': 'debian-13-x64-docker-29.9.1',
+                    'smoke': {'state': 'ready', 'cleanup': True}, 'release': {'state': 'verified', 'floor': 'debian-x64-engine', 'admission': 'measured', 'measuredRows': ['debian-13-x64-docker-29.9.1'],
+                        'machineTools': [{'tool': tool, 'status': 'verified', 'floor': version, 'detected': version, 'comparison': 'equal'} for tool, version in (('release', '13'), ('kernel', '6.12.113+deb13-cloud-amd64'), ('bun', '1.4.3'), ('cli', '29.9.1'), ('engine', '29.9.1'), ('compose', '5.6.0'), ('containerd', 'v2.4.2'), ('runc', '1.5.2'))],
                         'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}}}}}}
 
     def test_terminal_gate_requires_real_guest_disposal(self):

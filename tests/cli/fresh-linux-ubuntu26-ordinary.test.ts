@@ -17,7 +17,7 @@ test("ordinary Ubuntu 26 guest verification keeps exact Resolute packages, two a
     expect(exit).toBe(0);
     expect(report).toMatchObject({ ok: true, executionArtifact: { kind: "ordinary", artifactCatalogSha256: "e1d4756d2b9d6ce7dfccff783bb64e50bde09be1c36a8c36f1a2d4577937eb3a" }, sentinelCleanup: true, restrictionProbe: { exitCode: 0, result: { bounded_probe_passed: true, cleanup_complete: true } } });
     expect(report.runs).toHaveLength(2);
-    for (const round of report.runs) expect(round).toMatchObject({ exitCode: 0, result: { command: "doctor", ok: true, data: { components: { release: { state: "verified", profile: "ubuntu-26.04-x64-docker-29.9.1" } } } } });
+    for (const round of report.runs) expect(round).toMatchObject({ exitCode: 0, result: { command: "doctor", ok: true, data: { components: { release: { state: "verified", floor: "ubuntu-x64-engine", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"], evidence: { readinessSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" } } } } } });
     expect(state.simulationArguments).toContain("docker-ce=5:29.9.1-1~ubuntu.26.04~resolute");
     expect(state.simulationArguments.join(" ")).not.toContain("noble");
     expect(state.restrictionCalls).toBe(1);

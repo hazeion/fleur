@@ -74,7 +74,8 @@ export type LauncherDecision = { readonly kind: "current" } | { readonly kind: "
 function inside(parent: string, child: string): boolean { const path = relative(parent, child); return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path); }
 export async function resolveProjectLauncher(invocation: Invocation, executable: string): Promise<LauncherDecision> {
   const command = invocation.handler?.name;
-  if (invocation.help || !command || isPinIndependent(command)) return { kind: "current" };
+  const targetUpgrade = command === "upgrade" && invocation.commandArgs[invocation.commandArgs.indexOf("--to") + 1] === releaseVersion;
+  if (invocation.help || !command || targetUpgrade || (command === "docs refresh" && invocation.commandArgs.length === 1 && invocation.commandArgs[0] === "--recover") || isPinIndependent(command)) return { kind: "current" };
   const pin = await findProjectPin(invocation.project);
   if (pin.kind !== "configured" || pin.version === releaseVersion) {
     const blocked = await guardProjectPin(command, invocation.project);

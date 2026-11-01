@@ -9,6 +9,7 @@
     "bin",
     "src",
     "docs/cli.md",
+    "docs/upgrades.md",
     "docs/project-creation.md",
     "docs/setup.md",
     "docs/setup-arch-services.md",

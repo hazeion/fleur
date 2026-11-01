@@ -75,7 +75,13 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   if (invalidArguments) return invalidArguments;
   if (handler.name === "db query" && timeoutExplicit && timeoutSeconds > 30) return invalid();
   const { guardProjectPin } = await import("./project-pin.ts");
-  const blocked = await guardProjectPin(handler.name, project);
+  const recoveringFiles = handler.name === "docs refresh" && commandArgs.length === 1 && commandArgs[0] === "--recover";
+  const targetUpgrade = handler.name === "upgrade" && commandArgs[commandArgs.indexOf("--to") + 1] === release.version;
+  if (targetUpgrade) {
+    const pin = await (await import("./project-pin.ts")).findProjectPin(project);
+    if (pin.kind !== "configured") return (await import("./project-pin.ts")).invalidPin(handler.name);
+  }
+  const blocked = recoveringFiles || targetUpgrade ? null : await guardProjectPin(handler.name, project);
   if (blocked) return blocked;
   // The stored floor is validated before any comparison; an invalid floor refuses rather than admitting every Bun.
   const admission = bunAdmission(Bun.version, bunFloor);
@@ -89,6 +95,14 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
     message: `Fleur ${release.version} requires Bun ${bunFloor}; invoking Bun is ${Bun.version}. Install a Bun release at or above the floor manually and retry.`,
     actions: [{ command: "bun --version", description: `Inspect Bun, then install a stable release at or above ${bunFloor} manually using https://bun.sh/docs/installation. Fleur does not upgrade or replace Bun.` }],
   });
+  if (handler.name === "doctor" || handler.name === "verify") {
+    const pin = await (await import("./project-pin.ts")).findProjectPin(project);
+    if (pin.kind === "configured") {
+      if (pin.version !== release.version) return (await import("./project-pin.ts")).versionMismatch(handler.name, pin.version);
+      const mismatch = await (await import("../project/guidance-state.ts")).guardGuidance(handler.name, pin.root);
+      if (mismatch) return mismatch;
+    }
+  }
   try {
     let environment = process.env;
     if (handler.name !== "db query" && handler.name.startsWith("db ") && !["db migration generate", "db migration plan"].includes(handler.name) && !commandArgs.includes("--production")) {

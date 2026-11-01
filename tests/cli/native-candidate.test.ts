@@ -69,7 +69,7 @@ test("internal native candidate archive preserves the ordinary release and execu
     expect(JSON.parse(internalHelp.stdout)).toEqual(JSON.parse(normalHelp.stdout));
     const application = join(await realpath(scratch), "candidate-project");
     expect((await command([process.execPath, join(internalPackage, "bin/fleur.ts"), "new", application, "--no-git", "--json"], scratch, environment)).exit).toBe(0);
-    for (const args of [["build", "--project", application], ["start", "--artifact", application]]) {
+    for (const args of [["build", "--project", application], ["start", "--artifact", application], ["verify", "--project", application]]) {
       const refusedProduction = await command([process.execPath, join(internalPackage, "bin/fleur.ts"), ...args, "--json"], scratch, environment);
       expect(refusedProduction.exit, args[0]).toBe(4);
       expect(JSON.parse(refusedProduction.stdout)).toMatchObject({ command: args[0], ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "The internal installation candidate has no runtime admission." } });
@@ -118,7 +118,7 @@ test("candidate provenance hashes actual copied source and unexpected entry shap
     const inSource = await command([process.execPath, script, "--out", join(source, "src", "internal-artifacts")], source, environment);
     expect(inSource.exit).toBe(1);
     expect(await readdir(join(source, "src"))).not.toContain("internal-artifacts");
-    await writeFile(entryPath, entry.replace("const handlers = [...projectCommands, ...setupCommands(), ...databaseCommands, ...seedCommands, ...migrationCommands, ...lifecycleCommands, ...productionCommands];", "const handlers = [...projectCommands];"));
+    await writeFile(entryPath, entry.replace('import { commands as handlers } from "../src/cli/operations.ts";', 'import { projectCommands as handlers } from "../src/project/commands.ts";'));
     const rejected = await command([process.execPath, script, "--out", join(scratch, "unexpected")], source, environment);
     expect(rejected.exit).toBe(1);
     expect(rejected.stderr).toContain("Unexpected release entry shape");

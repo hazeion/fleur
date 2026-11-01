@@ -59,6 +59,21 @@ const ordinaryQualifications = {
   "ubuntu:26.04": { profile: "ubuntu-26.04-x64-docker-29.9.1", evidence: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" },
   "debian:13": { profile: "debian-13-x64-docker-29.9.1", evidence: "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e" },
 } as const;
+/** Doctor's floor admission (#138): the guest's distribution target, its measured row among the rows, every tool admitted, evidence of a measured row. */
+function admittedOrdinaryRelease(value: unknown, key: keyof typeof ordinaryQualifications): boolean {
+  const [distribution, release] = key.split(":") as [string, string];
+  const rows = new Map<string, string>(Object.entries(ordinaryQualifications).filter(([other]) => other.startsWith(`${distribution}:`)).map(([, row]) => [row.profile, row.evidence]));
+  if (typeof value !== "object" || value === null || !isDeepStrictEqual(Object.keys(value).sort(), ["admission", "evidence", "floor", "machineTools", "measuredRows", "state"])) return false;
+  const { state, floor, admission, measuredRows, machineTools, evidence } = value as Record<string, unknown>;
+  if (state !== "verified" || floor !== `${distribution}-x64-engine` || (admission !== "measured" && admission !== "above-floor")) return false;
+  if (!Array.isArray(measuredRows) || !measuredRows.includes(ordinaryQualifications[key].profile) || !measuredRows.every((row) => typeof row === "string" && rows.has(row))) return false;
+  if (!Array.isArray(machineTools) || machineTools.length === 0) return false;
+  const tools = machineTools as Record<string, unknown>[];
+  if (!tools.every((tool) => typeof tool === "object" && tool !== null && isDeepStrictEqual(Object.keys(tool).sort(), ["comparison", "detected", "floor", "status", "tool"]) && (tool.status === "verified" || tool.status === "admitted"))) return false;
+  if (!isDeepStrictEqual(tools.filter((tool) => tool.tool === "release").map((tool) => tool.detected), [release])) return false;
+  const proof = evidence as Record<string, unknown> | null;
+  return typeof proof === "object" && proof !== null && isDeepStrictEqual(Object.keys(proof).sort(), ["isolationSha256", "readinessSha256"]) && proof.readinessSha256 === proof.isolationSha256 && measuredRows.some((row) => rows.get(row as string) === proof.readinessSha256);
+}
 function checkOriginalOs(guest: Record<string, unknown>, binding?: Readonly<OwnedGuestBinding>, original?: Readonly<OwnedGuestOsRelease>): void {
   const custody = guest.ownedGuestCustody as Record<string, unknown> | undefined;
   if (!original) {
@@ -82,11 +97,10 @@ function checkTerminalProof(code: number, guest: Record<string, unknown>, origin
     if (artifact?.kind === "ordinary") {
       const key = originalOs ? `${originalOs.id}:${originalOs.versionId}` : "ubuntu:24.04";
       if (!Object.hasOwn(ordinaryQualifications, key)) throw new Error("Ordinary qualification is unavailable for this guest distribution.");
-      const { profile, evidence } = ordinaryQualifications[key as keyof typeof ordinaryQualifications];
       if (artifact.packageName !== "fleur" || observed?.exitCode !== 0 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== true || envelope.error !== null || envelope.truncated !== false
           || !isDeepStrictEqual(Object.keys(envelope).sort(), ["formatVersion", "command", "ok", "data", "error", "truncated"].sort())
           || !["cli", "daemon", "compose", "smoke"].every((name) => components?.[name]?.state === "ready") || components?.smoke?.cleanup !== true
-          || !isDeepStrictEqual(components?.release, { state: "verified", profile, evidence: { readinessSha256: evidence, isolationSha256: evidence } })) throw new Error("Guest final proof lacks exact admitted ordinary doctor rounds");
+          || !admittedOrdinaryRelease(components?.release, key as keyof typeof ordinaryQualifications)) throw new Error("Guest final proof lacks exact admitted ordinary doctor rounds");
       continue;
     }
     if (observed?.exitCode !== 4 || envelope?.formatVersion !== 1 || envelope.command !== "doctor" || envelope.ok !== false || envelope.truncated !== false || envelope.error?.code !== "PREREQUISITE_UNAVAILABLE"

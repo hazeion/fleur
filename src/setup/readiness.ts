@@ -318,7 +318,7 @@ function compareTool(target: Target, tool: ReadinessTool, observation: PartialOb
     const revisionText = observation.bun.revision;
     const described = /^(\d+\.\d+\.\d+)(?:\+[0-9a-f]{1,40})?$/.exec(revisionText);
     if (preReleaseMarker.test(revisionText)) { comparison = "pre-release"; detected = revisionText; }
-    else if (!described || described[1] !== observation.bun.version) { comparison = "unparseable"; detected = revisionText; }
+    else if (!described || described[1] !== observation.bun.version) { comparison = "unparseable"; detected = revisionText || null; }
   }
   // A value measured on some row of the target is verified; a value above the floor that no row measured is admitted.
   const measured = comparison === "equal" || (comparison === "newer" && target.rows.some((row) => toolVersion(row, tool) === detected));

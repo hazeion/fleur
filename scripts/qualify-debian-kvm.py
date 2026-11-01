@@ -91,11 +91,24 @@ def admitted_ordinary_round(observed, command):
             or not isinstance(envelope['data'], dict) or not isinstance(envelope['data'].get('components'), dict)):
         return False
     components = envelope['data']['components']
-    evidence = '6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e'
     return (all(isinstance(components.get(name), dict) and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
             and components['smoke'].get('cleanup') is True
-            and components.get('release') == {'state': 'verified', 'profile': 'debian-13-x64-docker-29.9.1',
-                'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
+            and admitted_debian_release(components.get('release')))
+
+
+def admitted_debian_release(value):
+    """Doctor's floor admission (#138) for the Debian target: its single measured row, every tool admitted, the row's evidence."""
+    evidence = '6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e'
+    if (not isinstance(value, dict) or set(value) != {'state', 'floor', 'admission', 'measuredRows', 'machineTools', 'evidence'}
+            or value['state'] != 'verified' or value['floor'] != 'debian-x64-engine' or value['admission'] not in ('measured', 'above-floor')
+            or value['measuredRows'] != ['debian-13-x64-docker-29.9.1']):
+        return False
+    tools = value['machineTools']
+    if (not isinstance(tools, list) or not tools
+            or any(not isinstance(tool, dict) or set(tool) != {'tool', 'status', 'floor', 'detected', 'comparison'} or tool['status'] not in ('verified', 'admitted') for tool in tools)
+            or [tool['detected'] for tool in tools if tool['tool'] == 'release'] != ['13']):
+        return False
+    return value['evidence'] == {'readinessSha256': evidence, 'isolationSha256': evidence}
 
 
 def _accepted_guest(report, source, scope, preservation):

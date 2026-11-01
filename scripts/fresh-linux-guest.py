@@ -1315,12 +1315,29 @@ def admitted_readiness(observed, command):
             or type(envelope['data']) is not dict or type(envelope['data'].get('components')) is not dict):
         return False
     components = envelope['data']['components']
-    release = ordinary_target_release()
-    evidence = ORDINARY_QUALIFICATIONS[release]['reportSha256']
     return (all(type(components.get(name)) is dict and components[name].get('state') == 'ready' for name in ('cli', 'daemon', 'compose', 'smoke'))
             and components['smoke'].get('cleanup') is True
-            and components.get('release') == {'state': 'verified', 'profile': f"{ORDINARY_QUALIFICATIONS[release]['distribution']}-{release}-x64-docker-29.9.1",
-                                               'evidence': {'readinessSha256': evidence, 'isolationSha256': evidence}})
+            and admitted_ordinary_release(components.get('release'), ordinary_target_release()))
+
+
+def admitted_ordinary_release(value, release):
+    """Doctor's floor admission (#138): the guest's distribution target, its measured row among the rows, every tool admitted, evidence of a measured row."""
+    distribution = ORDINARY_QUALIFICATIONS[release]['distribution']
+    rows = {f"{distribution}-{other}-x64-docker-29.9.1": qualification['reportSha256'] for other, qualification in ORDINARY_QUALIFICATIONS.items() if qualification['distribution'] == distribution}
+    if (type(value) is not dict or set(value) != {'state', 'floor', 'admission', 'measuredRows', 'machineTools', 'evidence'}
+            or value['state'] != 'verified' or value['floor'] != f'{distribution}-x64-engine' or value['admission'] not in ('measured', 'above-floor')):
+        return False
+    measured = value['measuredRows']
+    if type(measured) is not list or f'{distribution}-{release}-x64-docker-29.9.1' not in measured or any(type(row) is not str or row not in rows for row in measured):
+        return False
+    tools = value['machineTools']
+    if (type(tools) is not list or not tools
+            or any(type(tool) is not dict or set(tool) != {'tool', 'status', 'floor', 'detected', 'comparison'} or tool['status'] not in ('verified', 'admitted') for tool in tools)
+            or [tool['detected'] for tool in tools if tool['tool'] == 'release'] != [release]):
+        return False
+    evidence = value['evidence']
+    return (type(evidence) is dict and set(evidence) == {'readinessSha256', 'isolationSha256'} and evidence['readinessSha256'] == evidence['isolationSha256']
+            and evidence['readinessSha256'] in {rows[row] for row in measured})
 
 
 def observe_ordinary_daemon(docker):

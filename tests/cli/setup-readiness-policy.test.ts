@@ -1222,3 +1222,83 @@ test("an identity mismatch keeps the generic unverified refusal without floor fi
   expect(fixture.commands.some((args) => args[3] === "version" || args[1] === "--revision")).toBe(false);
   expect(fixture.containers.size).toBe(0);
 });
+
+// Independent review probes (#138): the real revision format, revision failure modes, several blocking tools, and human-text presence.
+test("review: the running Bun executable's --revision output is the X.Y.Z+sha form doctor parses, end to end", async () => {
+  const real = Bun.spawnSync([process.execPath, "--revision"]);
+  const revision = real.stdout.toString().trim();
+  const described = /^(\d+\.\d+\.\d+)(?:\+[0-9a-f]{1,40})?$/.exec(revision);
+  expect(real.exitCode, revision).toBe(0);
+  expect(described?.[1], revision).toBe(Bun.version);
+  const fixture = desktopFixture();
+  const host = withRun(fixture, (args) => args[0] === process.execPath && args[1] === "--revision" ? { status: "completed", exitCode: 0, stdout: real.stdout.toString(), stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
+  expect(releaseOf(outcome).machineTools!.find((row) => row.tool === "bun")).toEqual({ tool: "bun", status: "verified", floor: "1.4.3", detected: "1.4.3", comparison: "equal" });
+});
+
+test("review: a Bun revision for a different version than the running executable refuses as release-less and names the revision", async () => {
+  const fixture = desktopFixture();
+  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "completed", exitCode: 0, stdout: "9.9.9+abcdef0\n", stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool bun has no parseable version.", expected: { tool: "bun", floor: "1.4.3" }, actual: { tool: "bun", detected: "9.9.9+abcdef0" } } });
+  expect(Object.keys(releaseOf(outcome))).toEqual(unverifiedReleaseKeys);
+  expect(releaseOf(outcome).machineTools!.find((row) => row.tool === "bun")).toEqual({ tool: "bun", status: "unverified", floor: "1.4.3", detected: "9.9.9+abcdef0", comparison: "unparseable" });
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("review: a missing Bun revision command refuses as release-less with no detected value and no executable path in the output", async () => {
+  const fixture = desktopFixture();
+  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "missing", stdout: "", stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool bun has no parseable version.", actual: { tool: "bun", detected: null } } });
+  expect(releaseOf(outcome).machineTools!.find((row) => row.tool === "bun")).toEqual({ tool: "bun", status: "unverified", floor: "1.4.3", detected: null, comparison: "unparseable" });
+  expect(JSON.stringify(outcome.result) + outcome.human).not.toContain(process.execPath);
+  // An empty revision has no value to report: JSON carries null and the human column reads "none", as for a release-less host.
+  expect(outcome.human).toMatch(/\n\s+bun\s+unverified\s+none\s+no parseable version \(floor 1\.4\.3\)\n/);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("review: a Bun revision timeout returns READINESS_TIMEOUT with partial components and no human table", async () => {
+  const fixture = desktopFixture();
+  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "timeout", stdout: "", stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "READINESS_TIMEOUT", message: "Bun revision did not finish within the operation deadline." }, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "unverified" } } } });
+  expect(Object.keys(releaseOf(outcome))).toEqual(["state"]);
+  expect(outcome.human).toBeUndefined();
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("review: when several machine tools are below the floor doctor names the first in report order and lists every blocking row", async () => {
+  const fixture = desktopFixture();
+  fixture.server.Components[2]!.Version = "1.5.1";
+  const host = withRun(fixture, (args) => args[3] === "compose" ? { status: "completed", exitCode: 0, stdout: "5.5.9\n", stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { message: "Machine tool compose is 5.5.9, below the floor 5.6.0.", expected: { tool: "compose", floor: "5.6.0" }, actual: { tool: "compose", detected: "5.5.9" } } });
+  expect(releaseOf(outcome).machineTools!.filter((row) => row.status === "unverified").map((row) => [row.tool, row.detected, row.comparison])).toEqual([["compose", "5.5.9", "older"], ["runc", "1.5.1", "older"]]);
+  const lines = outcome.human!.split("\n");
+  expect(lines.findIndex((line) => /^\s+compose\s+unverified/.test(line))).toBeLessThan(lines.findIndex((line) => /^\s+release\s+verified/.test(line)));
+  expect(outcome.human).toMatch(/\n\s+runc\s+unverified\s+1\.5\.1\s+< floor 1\.5\.2\n/);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("review: the generic identity-mismatch refusal and the drifted-daemon refusal carry no human table", async () => {
+  const mismatch = desktopFixture();
+  mismatch.info.CgroupDriver = "systemd";
+  const refused = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(mismatch.host, [], [policy]) });
+  expect(refused.exitCode).toBe(4);
+  expect(refused.human).toBeUndefined();
+  const drift = desktopFixture();
+  let infoCalls = 0;
+  const host = withRun(drift, (args) => args[3] === "info" && ++infoCalls === 2 ? { status: "completed", exitCode: 0, stdout: JSON.stringify({ ...drift.info, KernelVersion: "7.0.15-linuxkit" }), stderr: "" } : undefined);
+  const drifted = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(drifted.exitCode).toBe(4);
+  expect(drifted.result.error?.message).toBe("Observed readiness does not yet establish a verified native release profile.");
+  expect(Object.keys(releaseOf(drifted))).toEqual(["state"]);
+  expect(drifted.human).toBeUndefined();
+});

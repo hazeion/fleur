@@ -171,6 +171,9 @@ async function walk(directory: string): Promise<string[]> {
 test("build emits the published layout with no secret, machine path or external cache", async () => {
   const manifest = JSON.parse(await readFile(join(artifact, "fleur-artifact.json"), "utf8"));
   expect(manifest).toMatchObject({ formatVersion: 1, compiler: "microsoft", platform: { os: "linux" } });
+  // Both records name the Bun that produced the artifact, never the release's Bun floor.
+  expect(manifest.bun).toBe(Bun.version);
+  expect(JSON.parse(await readFile(join(artifact, "manifest/dependencies.json"), "utf8"))).toMatchObject({ fleur: manifest.fleurVersion, bun: Bun.version });
   const files = (await walk(artifact)).map(path => path.slice(artifact.length + 1)).sort();
   expect(files).toContain("supervisor/entry.js");
   expect(files).toContain("manifest/registry.json");

@@ -8,9 +8,9 @@ import { ArtifactRefusal, verifyArtifact } from "./artifact";
 import { startFailures, type SupervisorEvent } from "./protocol";
 
 const option = (args: readonly string[], name: string) => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
-function refused(code: string): CliOutcome {
+function refused(code: string, detail?: ArtifactRefusal["detail"]): CliOutcome {
   const known = startFailures[code] ?? startFailures.INTERNAL_FAILURE!;
-  return failure("start", known.exit, { code: code in startFailures ? code : "INTERNAL_FAILURE", message: known.message, actions: [{ command: known.command, description: known.description }] });
+  return failure("start", known.exit, { code: code in startFailures ? code : "INTERNAL_FAILURE", message: detail?.message ?? known.message, actions: [{ command: known.command, description: known.description }], ...detail && { expected: detail.expected, actual: detail.actual } });
 }
 /** The foreground launcher verifies, then runs only the artifact's own supervisor. */
 export async function runStart(input: CommandInput): Promise<CliOutcome> {
@@ -30,7 +30,7 @@ export async function runStart(input: CommandInput): Promise<CliOutcome> {
   if (!["127.0.0.1", "localhost", "::1"].includes(host)) process.stderr.write("Warning: v1 has no authentication; this application bind exposes it beyond loopback.\n");
   let root: string;
   try { ({ root } = await verifyArtifact(resolve(process.cwd(), option(input.args, "--artifact")!), release.version)); }
-  catch (error) { return finish(refused(error instanceof ArtifactRefusal ? error.code : "ARTIFACT_INVALID")); }
+  catch (error) { return finish(error instanceof ArtifactRefusal ? refused(error.code, error.detail) : refused("ARTIFACT_INVALID")); }
   // Reported before Docker is touched, and again by the supervisor as its own authority check.
   try { selectTarget(true, process.env); } catch { return finish(refused("CONFIGURATION_MISSING")); }
   const deadline = monotonicNanoseconds() + BigInt(Math.ceil(input.timeoutSeconds * 1e9));

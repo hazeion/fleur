@@ -5,7 +5,7 @@ export type SupervisorEvent =
   | { readonly event: "stopped" };
 export const startFailures: Readonly<Record<string, { readonly exit: 1 | 3 | 4 | 5; readonly message: string; readonly command: string; readonly description: string }>> = {
   ARTIFACT_INVALID: { exit: 4, message: "The artifact is missing, corrupt or incomplete; nothing from it ran.", command: "fleur build", description: "Build or copy a complete artifact, then start it." },
-  ARTIFACT_INCOMPATIBLE: { exit: 4, message: "The artifact was built for a different Fleur release, Bun version or architecture.", command: "fleur build", description: "Build an artifact with this release on the target architecture." },
+  ARTIFACT_INCOMPATIBLE: { exit: 4, message: "The artifact was built for a different Fleur release or architecture, or by a Bun newer than this host's.", command: "fleur build", description: "Build an artifact with this release on the target architecture." },
   CONFIGURATION_MISSING: { exit: 4, message: "Required private production configuration or a declared broker secret is missing.", command: "fleur status --production", description: "Supply the private database configuration and declared credentials through the startup environment." },
   DATABASE_UNAVAILABLE: { exit: 4, message: "The configured production database could not be reached.", command: "fleur status --production", description: "Start the PostgreSQL server or correct the private database configuration." },
   DATABASE_PRIVILEGE_INSUFFICIENT: { exit: 4, message: "The configured credential lacks authority this application needs.", command: "fleur status --production", description: "Grant the minimum-privilege profile in the package docs/maintenance.md." },

@@ -39,7 +39,7 @@ async function observingArtifact(name: string) {
   }
   const role = (tag: string) => ({ tag, identities: [`sha256:${"a".repeat(64)}`] });
   const base: Omit<ArtifactManifest, "id"> = {
-    formatVersion: 1, fleurVersion: release.version, bun: release.engines.bun, compiler: "microsoft", project: "b".repeat(64),
+    formatVersion: 1, fleurVersion: release.version, bun: Bun.version, compiler: "microsoft", project: "b".repeat(64),
     platform: { os: "linux", architecture: process.arch === "arm64" ? "arm64" : "amd64" },
     images: { archive: "images/execution.oci.tar", worker: role("fleur-read-build-a-worker:latest"), controller: role("fleur-read-build-a-controller:latest") },
     files: Object.entries(contents).map(([path, body]) => ({ path, sha256: sha256(body), bytes: body.length })).sort((a, b) => a.path < b.path ? -1 : 1),

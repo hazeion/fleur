@@ -7,7 +7,7 @@ import { quote, publishFile } from "./inspection";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { dataIntegrity } from "./integrity";
 import { fileDigest, pgTool, schemaDumpArguments } from "./pg-tools";
-import { privileged, requireApplicationLock, requireAuthority } from "./privilege";
+import { requireAuthority } from "./privilege";
 
 export interface BackupConfiguration extends MaintenanceConfiguration { readonly toolDirectory?: string; readonly timeoutMs?: number; }
 const schemaArgs = schemaDumpArguments;
@@ -26,7 +26,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
   await tool("pg_restore", ["--version"], urlValue);
   const lease = held?.lease ?? await MaintenanceLease.acquire(urlValue, true, config, false, async (control, target) => {
     await requireAuthority(control, target, ["role and database creation", "schema read"]);
-    await requireApplicationLock(target, "session");
+
   }, "backup");
   const source = held?.source ?? new SQL(urlValue, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const token = randomUUID().replaceAll("-", ""), name = `fleur_verify_${token}`;
@@ -63,8 +63,7 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     await requireAuthority(lease.sql, source, ["role and database creation", "schema read"]);
     // The target fence closes the control-socket-loss race. It is supplemental;
     // replacement ownership is always the independent control-database lock.
-    const fenced = await privileged("maintenance locks", () => source.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]));
-    if (fenced[0]?.acquired !== true) throw new Error("MAINTENANCE_BUSY");
+    await lease.fence("exclusive", source);
     const activities = await source.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");
     const prepared = await source.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()");
     if (activities[0]?.active !== "0" || prepared.length) throw new Error("MAINTENANCE_BUSY");

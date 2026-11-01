@@ -27,3 +27,15 @@ test("db query refuses an unbound development database even with private product
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result.error?.code).toBe("DATABASE_UNAVAILABLE");
 });
+
+test("SQL parameters spelling command or global options stay opaque", async () => {
+  const { parseInvocation } = await import("../../src/cli/main");
+  const parsed = parseInvocation(["db", "query", "--sql", "-- a comment\nSELECT $1::text", "--param", "--help", "--param", "--json", "--param", "--sql-file", "--param", "--limit"], context);
+  expect(parsed).toMatchObject({ invocation: { json: false, help: false, commandArgs: ["--sql", "-- a comment\nSELECT $1::text", "--param", "--help", "--param", "--json", "--param", "--sql-file", "--param", "--limit"] } });
+});
+
+test("a parameter named --sql-file cannot select file input", async () => {
+  const { queryCommand } = await import("../../src/runtime/database/query-command");
+  const outcome = await queryCommand.run({ args: ["--sql", "SELECT $1::text", "--param", "--sql-file"], project: root, timeoutSeconds: 5, timeoutExplicit: false, json: true });
+  expect(outcome.result.error?.code).toBe("DATABASE_UNAVAILABLE");
+});

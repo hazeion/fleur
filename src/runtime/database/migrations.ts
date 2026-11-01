@@ -10,7 +10,7 @@ import { backupDatabase, type BackupConfiguration } from "./backup";
 import { authorizeMaintenance, type MaintenanceAuthority } from "./maintenance-authority";
 import { reconcileMaintenance } from "./recovery";
 import { dataIntegrity } from "./integrity";
-import { privileged, requireApplicationLock, requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 
 /** `db migration status`: the full migration report for one verified target, read inside a read-only transaction. */
 export async function migrationStatus(url: string, project: string, config: BackupConfiguration & { readonly kind?: TargetKind } = {}) {
@@ -25,7 +25,7 @@ export async function applyMigrations(url: string, project: string, config: Back
   if (plans.some(plan=>plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
   let lease: MaintenanceLease;
   try {lease=await MaintenanceLease.acquire(url,true,{...config,timeoutMs:remaining()},false,async (control,target)=>{
-    await requireApplicationLock(target,"session");
+
     // No-op apply needs no write authority. Recompute pending work under the lease below.
     const history=await privileged("schema read",()=>migrationHistory(target));
     if(plans.length>history.length)await requireAuthority(control,target,["role and database creation","schema write","schema read"]);
@@ -36,8 +36,7 @@ export async function applyMigrations(url: string, project: string, config: Back
   let transaction = false, commitAttempted = false;
   const timer = setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},remaining());
   try {
-    const fence=await privileged("maintenance locks",()=>sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]));
-    if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
+    await lease.fence("exclusive", sql);
     const history=await assertMigrationState(sql);
     if (history.some((row,index)=>row.checksum!==plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
     const pending=plans.slice(history.length);

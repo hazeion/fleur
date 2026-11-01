@@ -1,3 +1,4 @@
+import { inspectionPageBytes, inspectionRowBytes } from "./inspection";
 import { SQL } from "bun";
 import { join } from "node:path";
 import { binding } from "../development/state";
@@ -9,16 +10,19 @@ import { maintenanceSummary, unavailability, withInspection } from "./target";
 import { PostgresQueryError, QueryWire } from "./query-wire";
 import { PrivilegeInsufficient } from "./privilege";
 
+function redactor(secrets: readonly string[]) {
+  return (value: string) => {
+    let text = value;
+    for (const secret of [...secrets].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.replaceAll(secret, "[redacted]");
+    return text.replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, "[redacted]");
+  };
+}
 export class QueryRejected extends Error {
   readonly diagnostic: { readonly [key: string]: string };
   constructor(error: PostgresQueryError, secrets: readonly string[]) {
-    const redact = (value: string) => {
-      let text = value;
-      for (const secret of [...secrets].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.replaceAll(secret, "[redacted]");
-      return text.replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, "[redacted]").slice(0, 4096);
-    };
+    const redact = redactor(secrets);
     super(redact(error.message));
-    this.diagnostic = Object.fromEntries([["sqlstate", error.fields.C], ["message", error.fields.M], ["position", error.fields.P], ["detail", error.fields.D], ["hint", error.fields.H]].flatMap(([key, value]) => value === undefined ? [] : [[key!, redact(value)]]));
+    this.diagnostic = Object.fromEntries([["sqlstate", error.fields.C], ["message", error.fields.M], ["position", error.fields.P], ["detail", error.fields.D], ["hint", error.fields.H]].flatMap(([key, value]) => value === undefined ? [] : [[key!, redact(value).slice(0,4096)]]));
   }
 }
 export interface QueryOptions { readonly sql: string; readonly params: readonly string[]; readonly limit: number; readonly timeoutMs: number }
@@ -71,17 +75,19 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
     // Newline prevents a trailing line comment from swallowing the wrapper. Extended protocol rejects escape attempts
     // that turn this into multiple statements. No application SQL is ever sent using the administrative credential.
     const wrapped = `SELECT * FROM (\n${options.sql}\n) AS fleur_query LIMIT $${options.params.length + 1}::bigint`;
-    const result = await wire.query(wrapped, [...options.params, String(options.limit + 1)], 983040);
+    const result = await wire.query(wrapped, [...options.params, String(options.limit + 1)], inspectionRowBytes);
+    const endpoint = new URL(url);
+    const redact = redactor([url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, String(lease.target.port)]);
     const columns: { name: string; type: string }[] = [];
     for (const column of result.columns) {
       const type = (await admin.unsafe("SELECT format_type($1::oid,$2::integer) AS name", [column.oid, column.modifier]))[0].name;
-      columns.push({ name: column.name, type: String(type) });
+      columns.push({ name: redact(column.name), type: redact(String(type)) });
     }
-    const rows = result.rows.slice(0, options.limit), truncated = result.truncated || result.rows.length > options.limit;
+    const rows = result.rows.slice(0, options.limit).map(row => row.map(value => value === null ? null : redact(value))), truncated = result.truncated || result.rows.length > options.limit;
     const data = { columns, rows, truncated, migrations: report.summary };
     // Reserve the same result cap as db inspect, including metadata and migration summary.
-    while (rows.length && Buffer.byteLength(JSON.stringify(data)) > 1044480) { rows.pop(); data.truncated = true; }
-    if (Buffer.byteLength(JSON.stringify(data)) > 1044480) throw new Error("RESULT_TOO_LARGE");
+    while (rows.length && Buffer.byteLength(JSON.stringify(data)) > inspectionPageBytes) { rows.pop(); data.truncated = true; }
+    if (Buffer.byteLength(JSON.stringify(data)) > inspectionPageBytes) throw new Error("RESULT_TOO_LARGE");
     return data;
   })();
   try { return await Promise.race([operation, expiry]); }
@@ -89,7 +95,7 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
     if (expired || error instanceof PostgresQueryError && error.fields.C === "57014") { expired = true; throw new Error("QUERY_TIMEOUT"); }
     if (error instanceof PostgresQueryError) {
       const endpoint = new URL(url);
-      throw new QueryRejected(error, [url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port]);
+      throw new QueryRejected(error, [url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, String(lease.target.port)]);
     }
     if (error instanceof PrivilegeInsufficient) throw error;
     if (unavailability(error)) throw new Error("DATABASE_UNAVAILABLE");

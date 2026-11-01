@@ -25,11 +25,12 @@ Fleur uses the configured credential for every operation and never rejects a bro
 | --- | --- | --- |
 | `database connect` | `CONNECT` on the application and control databases | every database operation |
 | `identity inspection` | `EXECUTE` on `pg_control_system()` in the application and control databases | every database operation |
-| `maintenance locks` | `EXECUTE` on PostgreSQL's advisory lock functions in the control and application databases | every database operation |
+| `maintenance locks` | `EXECUTE` on PostgreSQL's advisory lock functions in the control database | every database operation |
 | `schema read` | `USAGE` on `public` and `fleur_internal` and `SELECT` on their tables; backup, apply, seed, restore and reset also read every user schema, table and sequence | every database operation |
 | `role and database creation` | superuser, or `CREATEROLE` and `CREATEDB` with `createrole_self_grant` including `set` and `inherit`, so Fleur can create, verify and remove its disposable backup verification role and database | `db backup`, `db migration apply`, `db restore`, `db reset` |
 | `schema write` | `CREATE` on the application database and on its `public` and `fleur_internal` schemas, and ownership of their tables and functions | `db migration apply`, `db seed`, `db restore`, `db reset` |
 | `database replacement` | ownership of the application database and its schemas | `db restore`, `db reset` |
+| `agent query provisioning` | development cluster superuser authority to provision and verify the restricted diagnostic credential | `db query` |
 
 The first four rows are the profile. A minimal profile grant, run by the database owner or a superuser, looks like this; replace the placeholders with your role and database names. The schema statements need `fleur_internal` to exist, so run them after the first `db migration apply`:
 
@@ -41,13 +42,13 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public, fleur_internal TO <role>;
 ALTER DEFAULT PRIVILEGES FOR ROLE <migrating_role> IN SCHEMA public, fleur_internal GRANT SELECT ON TABLES TO <role>;
 ```
 
-PostgreSQL grants `PUBLIC` `CONNECT` on databases and `EXECUTE` on `pg_control_system()` and the advisory lock functions by default. If those defaults were revoked, grant them to the role explicitly, in each database for the functions. The default privileges keep tables created by later migrations readable.
+PostgreSQL grants `PUBLIC` `CONNECT` on databases and `EXECUTE` on `pg_control_system()` and the advisory lock functions by default. If those defaults were revoked, grant them to the role explicitly. Identity inspection needs its function in both databases; advisory locks need their functions only in the control database. The default privileges keep tables created by later migrations readable.
 
-A command whose credential lacks a capability it needs returns `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4 before it changes anything. Backup, apply, seed, restore and reset check their extra authority through PostgreSQL's privilege functions before any approval prompt, backup, maintenance stage or schema change, so the refusal leaves nothing to recover. Authority preflights run before queuing the control lease or creating private state, so a refused command does not hold off application admissions. Apply checks whether work is pending before requiring write authority, then recomputes pending work under the lease. These preflights are advisory observations, not authority grants: privileges can be revoked between checking and working. Commands repeat their checks under the lease and PostgreSQL still enforces each statement; a later refusal keeps the existing rollback and recovery rules. The error's `expected.capability` names the missing category from the table above, and its action points here. It never names the role, host, port or URL. Under the minimum-privilege profile, `db backup`, `db migration apply`, `db restore` and `db reset` report `role and database creation`, and `db seed` reports `schema write`; `db migration apply` with nothing pending needs no extra authority and reports no applied migrations.
+A command whose credential lacks a capability it needs returns `DATABASE_PRIVILEGE_INSUFFICIENT` with exit 4 before it changes anything, except that `db query` may repair its private diagnostic role before verification refuses; no agent statement executes on refusal. Backup, apply, seed, restore and reset check their extra authority through PostgreSQL's privilege functions before any approval prompt, backup, maintenance stage or schema change, so the refusal leaves nothing to recover. Authority preflights run before queuing the control lease or creating private state, so a refused command does not hold off application admissions. Apply checks whether work is pending before requiring write authority, then recomputes pending work under the lease. These preflights are advisory observations, not authority grants: privileges can be revoked between checking and working. Commands repeat their checks under the lease and PostgreSQL still enforces each statement; a later refusal keeps the existing rollback and recovery rules. The error's `expected.capability` names the missing category from the table above, and its action points here. It never names the role, host, port or URL. Under the minimum-privilege profile, `db backup`, `db migration apply`, `db restore` and `db reset` report `role and database creation`, and `db seed` reports `schema write`; `db migration apply` with nothing pending needs no extra authority and reports no applied migrations.
 
 Restore must also see the state of other roles' sessions on the target. Supply `pg_read_all_stats` or ensure that no other roles have sessions on that database. Without that visibility, PostgreSQL hides session state and Fleur refuses restore with `MAINTENANCE_BUSY`, even when those sessions are idle. This is separate from a missing-capability refusal.
 
-Reconciliation checks schema-read authority before computing catalog and data fingerprints. Refused application-database fences in reconciliation and seed return `DATABASE_PRIVILEGE_INSUFFICIENT` naming `maintenance locks`. Seeding acquires its transaction fence before recording a preparing marker, so a refused fence leaves the existing maintenance evidence unchanged.
+Reconciliation checks schema-read authority before computing catalog and data fingerprints. Refused control-database fences in reconciliation and seed return `DATABASE_PRIVILEGE_INSUFFICIENT` naming `maintenance locks`. Seeding acquires its transaction fence before recording a preparing marker, so a refused fence leaves the existing maintenance evidence unchanged.
 
 ## Schema overview and database health
 
@@ -85,7 +86,7 @@ The complete encoded page is bounded below 1 MiB, including column metadata and 
 
 ## Maintenance ownership and verification
 
-Application admission holds a shared session advisory lock on the independent control database. Maintenance uses the exclusive counterpart. It waits up to four seconds for in-flight application operations to drain; while it waits, new application admissions are refused and active views report maintenance. Competing maintenance, or application work that does not drain in time, returns `MAINTENANCE_BUSY`, exit 5, before changing data. Application transactions also hold a shared transaction fence in their own database. Backup holds the exclusive target fence until its durable completion stage. This supplemental fence prevents a lost control socket from admitting overlapping writes. It is not the replacement/reset ownership lock.
+Application admission holds a shared session advisory lock on the independent control database. Maintenance uses the exclusive counterpart. It waits up to four seconds for in-flight application operations to drain; while it waits, new application admissions are refused and active views report maintenance. Competing maintenance, or application work that does not drain in time, returns `MAINTENANCE_BUSY`, exit 5, before changing data. Application transactions also hold a shared fence on an independent control session. Backup holds the exclusive counterpart until its durable completion stage. This supplemental fence prevents a lost control socket from admitting overlapping writes. It is not the replacement/reset ownership lock.
 
 Startup, server rendering, reads and mutations check the same control authority and external maintenance marker. Backup excludes new operations, verifies active connections and prepared transactions have drained, and captures a repeatable-read snapshot. Idle unrelated SQL sessions are not terminated. As agreed in the [maintenance contract](https://github.com/hazeion/fleur/issues/7#issuecomment-6140996588), coordination covers Fleur operations, not arbitrary external SQL clients. External writers must be stopped separately.
 
@@ -127,7 +128,7 @@ Plans admit only SQL emitted by Fleur's declaration compiler. Altered SQL, reord
 
 `db migration plan` reads the complete artifact chain offline. `db migration status` compares it with actual history and normalized PostgreSQL catalogs and reports differences as data; see [schema overview and database health](#schema-overview-and-database-health). Comparison includes relations, columns, constraints, indexes, functions, enum/domain/range types, defaults, collations, sequence definitions, triggers and policies. The `fleur_internal` schema contains Fleur's migration metadata and is excluded from application catalog fingerprints. History checksums/order are verified separately. The external maintenance record also retains the expected catalog/history, so erasing database metadata does not bypass drift checks. Normal admission rejects drift; there is no push, automatic reset or history rewrite.
 
-Apply holds exclusive control-database ownership and the target fence through draining, backup verification and the schema transaction. SQL and ordered history commit together. The verified backup remains in private state. Applied SQL must match the reviewed artifact chain. A confirmed rollback requires proof that original schema and data remain unchanged. An uncertain commit keeps normal access blocked. Every completed maintenance resumption receives a new external epoch.
+Apply holds exclusive control-database ownership and the independent control fence through draining, backup verification and the schema transaction. SQL and ordered history commit together. The verified backup remains in private state. Applied SQL must match the reviewed artifact chain. A confirmed rollback requires proof that original schema and data remain unchanged. An uncertain commit keeps normal access blocked. Every completed maintenance resumption receives a new external epoch.
 
 ## Approval and restore
 
@@ -288,7 +289,7 @@ Maintenance and recovery return `MAINTENANCE_BUSY`, exit 5. Pending migrations
 and drift appear in the migration summary and do not prevent diagnosis.
 
 Output lists ordered columns, including duplicate names and PostgreSQL type
-names, and arrays of exact text values with JSON null for SQL null. The default
+names, and arrays of exact text values with JSON null for SQL null. Runtime credential and connection identities are redacted even when selected. The default
 limit is 100 rows, with `--limit` at most 500. Output shares the inspection byte
 cap. A result exceeding either bound returns the rows that fit, sets
 `truncated: true` and exits 0. There is no cursor. `--timeout` replaces the
@@ -310,3 +311,10 @@ message and available position, detail and hint. Metadata catalogs remain
 readable. Application advisory locks and CPU/memory consumption are bounded by
 the request deadline and fresh connection. Application handlers still use only
 Fleur's typed query and mutation APIs.
+
+Fleur coordination locks live only in the control database. Application transactions
+and maintenance hold an independent control-session fence in addition to the
+primary lease. Losing the primary session cannot release that fence before owned
+application work retires. Tagged application sessions also block maintenance if
+all control connections disappear before PostgreSQL notices the application
+connection closing. No advisory lock in the application database controls Fleur.

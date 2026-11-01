@@ -22,7 +22,7 @@ test("maintenance session verification rejects an unrelated advisory lock", asyn
 }, 180_000);
 
 const fenceRows = defineTable("review_fence_rows", { columns: { id: column.safeInteger().primaryKey() } });
-for (let repeat = 1; repeat <= 2; repeat++) test(`control backend death preserves the target fence and rolls back admitted writes, repeat ${repeat}`, async () => {
+for (const loss of ["primary", "all"] as const) for (let repeat = 1; repeat <= 2; repeat++) test(`control ${loss} backend death preserves an independent control fence and rolls back admitted writes, repeat ${repeat}`, async () => {
   const fixture = await ownedPostgres();
   const root = await mkdtemp(join(tmpdir(), "fleur-review-fence-"));
   const broker = new ReadBroker({ url: fixture.url, tables: [fenceRows], maintenance: { stateRoot: root } });
@@ -52,13 +52,18 @@ for (let repeat = 1; repeat <= 2; repeat++) test(`control backend death preserve
     const holders = await control.unsafe("SELECT pid FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname='postgres') AND classid=$1::oid AND objid=$2::oid AND objsubid=1 AND mode='ShareLock' AND granted", [(unsigned >> 32n).toString(), (unsigned & 0xffffffffn).toString()]);
     expect(holders).toHaveLength(1);
     expect((await control.unsafe("SELECT pg_terminate_backend($1::int) AS stopped", [holders[0].pid]))[0]?.stopped).toBe(true);
+    if (loss === "all") {
+      const fences = await control.unsafe("SELECT DISTINCT pid FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname='postgres') AND mode='ShareLock' AND granted");
+      expect(fences).toHaveLength(1);
+      expect((await control.unsafe("SELECT pg_terminate_backend($1::int) AS stopped", [fences[0].pid]))[0]?.stopped).toBe(true);
+    }
     maintenance = await MaintenanceLease.acquire(fixture.url, true, { stateRoot: root });
-    expect((await fixture.sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [key]))[0]?.acquired).toBe(false);
+    expect((await fixture.sql.unsafe("SELECT count(*)::text AS count FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database())"))[0].count).toBe("0");
+    await expect(maintenance.fence("exclusive", fixture.sql)).rejects.toThrow("MAINTENANCE_BUSY");
     release();
     expect(await outcome).toBe("RECOVERY_REQUIRED");
     expect(await fixture.sql.unsafe("SELECT * FROM review_fence_rows")).toEqual([]);
-    expect((await fixture.sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [key]))[0]?.acquired).toBe(true);
-    await fixture.sql.unsafe("SELECT pg_advisory_unlock($1::bigint)", [key]);
+    await maintenance.fence("exclusive", fixture.sql);
   } finally {
     release(); await outcome; await maintenance?.close(); await broker.close(); await control.close();
     await fixture.cleanup(); await rm(root, { recursive: true, force: true });

@@ -135,20 +135,25 @@ export class DevelopmentPostgres {
   async query(project: string, options: import("../database/query").QueryOptions, config: import("../database/maintenance").MaintenanceConfiguration) {
     const url = await this.url(), controlUrl = await this.url("postgres");
     if (!this.#record.cluster || !this.#record.queryPassword || !this.#record.applicationOid) throw new Error("DATABASE_UNAVAILABLE");
-    const sql = new SQL(url, { max: 1, connectionTimeout: 2 });
+    const lease = await MaintenanceLease.acquire(url, false, { ...config, controlUrl }, true);
+    let sql: SQL | undefined;
     try {
+      const marker = await lease.marker();
+      if (lease.busy || marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("MAINTENANCE_BUSY");
+      if (lease.target.cluster !== this.#record.cluster || lease.target.database !== "application" || lease.target.oid === "0") throw new Error("DATABASE_UNAVAILABLE");
+      if (lease.target.oid !== this.#record.applicationOid && (marker?.stage !== "committed" || marker.target.oid !== lease.target.oid || marker.target.cluster !== this.#record.cluster)) throw new Error("DATABASE_UNAVAILABLE");
+      sql = new SQL(url, { max: 1, connectionTimeout: 2 });
       const identity = (await sql.unsafe("SELECT system_identifier::text AS cluster,current_database() AS database,d.oid::text AS oid FROM pg_control_system(),pg_database d WHERE datname=current_database()"))[0];
-      if (identity?.cluster !== this.#record.cluster || identity.database !== "application") throw new Error("DATABASE_UNAVAILABLE");
-      const lease = await MaintenanceLease.acquire(url, false, { ...config, controlUrl }, true);
-      try {
-        const marker = await lease.marker();
-        if (lease.busy || marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("MAINTENANCE_BUSY");
-        if (identity.oid !== this.#record.applicationOid && (marker?.stage !== "committed" || marker.target.oid !== identity.oid || marker.target.cluster !== this.#record.cluster)) throw new Error("DATABASE_UNAVAILABLE");
-      } finally { await lease.close(); }
+      if (identity?.cluster !== lease.target.cluster || identity.database !== lease.target.database || identity.oid !== lease.target.oid) throw new Error("DATABASE_UNAVAILABLE");
       const { queryDevelopmentDatabase } = await import("../database/query");
       return await queryDevelopmentDatabase(url, this.#record.queryPassword, project, options, { ...config, controlUrl });
-    } finally { await sql.close({ timeout: 0 }); }
+    } catch (error) {
+      const { unavailability } = await import("../database/target");
+      if (unavailability(error)) throw new Error("DATABASE_UNAVAILABLE");
+      throw error;
+    } finally { await sql?.close({ timeout: 0 }); await lease.close(); }
   }
+
   async tools(): Promise<string> {
     const metadata = await this.#inspect(), directory = join(this.#bound.directory, "pg-tools");
     await privateDirectory(directory);

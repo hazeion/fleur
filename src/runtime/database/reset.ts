@@ -10,7 +10,7 @@ import { readMigrations } from "./migration-plan";
 import { dataIntegrity } from "./integrity";
 import { quote } from "./inspection";
 import { seedDatabase } from "./seeds";
-import { privileged, requireApplicationLock, requireAuthority } from "./privilege";
+import { requireAuthority } from "./privilege";
 
 export interface ResetConfiguration extends BackupConfiguration, MaintenanceAuthority {
   /** Trusted lifecycle binding. Production configuration never supplies this value. */
@@ -24,7 +24,7 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
   if (plans.some(plan => plan.incompatibilities.length || plan.backfills.length)) throw new Error("MIGRATION_INCOMPATIBLE");
   const lease = await MaintenanceLease.acquire(url, true, { ...config, timeoutMs: remaining() }, false, async (control, target) => {
     await requireAuthority(control, target, ["role and database creation", "database replacement", "schema write", "schema read"]);
-    await requireApplicationLock(target, "session");
+
   });
   let sql = new SQL(url, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, remaining());
@@ -32,8 +32,7 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
   try {
     const history = await assertMigrationState(sql);
     if (history.some((row, index) => row.checksum !== plans[index]?.checksum)) throw new Error("MIGRATION_EDITED");
-    const fence = await privileged("maintenance locks", () => sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]));
-    if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
+    await lease.fence("exclusive", sql);
     // Before approval, backup or any marker: reset verifies a backup, then drops, recreates and migrates the database.
     await requireAuthority(lease.sql, sql, ["role and database creation", "database replacement", "schema write", "schema read"]);
     const intent = { operation: "reset" as const, beforeSchema: await catalogFingerprint(sql), beforeData: await dataIntegrity(sql), beforeHistory: history.map(row => row.checksum), afterSchema: null as string | null, afterData: null as string | null, afterHistory: plans.map(plan => plan.checksum) };
@@ -59,6 +58,7 @@ export async function resetDatabase(url: string, project: string, seeds: readonl
     await lease.refreshReplacedTarget();
     marker = { ...marker, target: lease.target }; await lease.persist(marker);
     sql = new SQL(url, { max: 1, connectionTimeout: 2, idleTimeout: 0, maxLifetime: 0 });
+    await lease.fence("exclusive", sql);
     await sql.unsafe("BEGIN ISOLATION LEVEL READ COMMITTED");
     await sql.unsafe("SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='3s'");
     await sql.unsafe("CREATE SCHEMA fleur_internal; CREATE TABLE fleur_internal.migrations(position integer PRIMARY KEY,id text NOT NULL UNIQUE,checksum text NOT NULL UNIQUE,parent_checksum text,catalog text NOT NULL,snapshot text NOT NULL)");

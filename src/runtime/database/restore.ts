@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { MaintenanceLease, digest, type MaintenanceMarker } from "./maintenance";
 import { authorizeMaintenance, privateJson, type MaintenanceAuthority } from "./maintenance-authority";
 import { backupDatabase, type BackupConfiguration } from "./backup";
-import { privileged, requireApplicationLock, requireAuthority } from "./privilege";
+import { privileged, requireAuthority } from "./privilege";
 import { backupManifest, verifyRetainedArchive, cleanupInterruptedVerification } from "./restore-verification";
 import { catalogFingerprint, migrationHistory } from "./migration-state";
 import { readMigrations } from "./migration-plan";
@@ -26,7 +26,7 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
     if(present.length){
       await privileged("database connect",()=>target.connect());
       await requireAuthority(control,target,["database replacement","schema write","schema read"]);
-      await requireApplicationLock(target,"session");
+
     }
   });
   const sql=new SQL(url,{max:1,connectionTimeout:2,idleTimeout:0,maxLifetime:0});
@@ -67,8 +67,7 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
       const restored=await restoreMissingReset(url,frozen,archive,manifest,lease,previous!,{...config,timeoutMs:remaining()});
       return {...restored,pending:plans.slice(manifest.history?.length??0).map(plan=>plan.id)};
     }
-    const fence=await privileged("maintenance locks",()=>sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]));
-    if(!fence[0]?.acquired)throw new Error("MAINTENANCE_BUSY");
+    await lease.fence("exclusive", sql);
     const active=await sql.unsafe("SELECT count(*)::text AS active FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state IS DISTINCT FROM 'idle'");
     if(active[0]?.active!=="0"||(await sql.unsafe("SELECT gid FROM pg_prepared_xacts WHERE database=current_database()")).length)throw new Error("MAINTENANCE_BUSY");
     // Before freezing the archive, approval or any marker: restore replaces the schemas and digests all data.
@@ -101,7 +100,7 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
     const schemas=await sql.unsafe("SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' ESCAPE '\\' AND nspname <> 'information_schema' ORDER BY nspname");
     const output=await open(command,"wx",0o600);
     try {
-      await output.writeFile(`SELECT lo_unlink(oid) FROM pg_largeobject_metadata;\n${schemas.map((row:{nspname:string})=>`DROP SCHEMA ${quote(row.nspname)} CASCADE;`).join("\n")}\nCREATE SCHEMA public;\n`);
+      await output.writeFile(`SELECT lo_unlink(oid) FROM pg_largeobject_metadata;\n${schemas.map((row:{nspname:string})=>`DROP SCHEMA ${quote(row.nspname)} CASCADE;`).join("\n")}\nCREATE SCHEMA public AUTHORIZATION pg_database_owner;\n`);
       for await(const chunk of Bun.file(script).stream())await output.writeFile(chunk);
       await output.sync();
     }finally{await output.close();}

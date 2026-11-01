@@ -251,8 +251,8 @@ test("refused maintenance never queues an exclusive control lock or blocks anoth
   } finally { await admitted.close(); await rm(join(root, "migrations", "0002.json")); }
 }, 300_000);
 
-test("missing application lock authority refuses no-op apply before state creation or admission drain", async () => {
-  await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM PUBLIC");
+test("missing control lock authority refuses no-op apply before state creation or admission drain", async () => {
+  await control.unsafe(`REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM ${role}`);
   let admitted: MaintenanceLease | undefined;
   try {
     for (const heldAdmission of [false, true]) {
@@ -263,7 +263,7 @@ test("missing application lock authority refuses no-op apply before state creati
     }
   } finally {
     await admitted?.close();
-    await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO PUBLIC");
+    await control.unsafe(`GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO ${role}`);
   }
 }, 300_000);
 
@@ -314,14 +314,14 @@ test("db recover --inspect under the profile reports DATABASE_PRIVILEGE_INSUFFIC
   expect(await observed()).toEqual(before);
 }, 300_000);
 
-test("a refused advisory lock in the application database returns DATABASE_PRIVILEGE_INSUFFICIENT naming maintenance locks", async () => {
-  // With PostgreSQL's default advisory lock grants in the application database, apply with nothing pending succeeds.
+test("a refused advisory lock in the control database returns DATABASE_PRIVILEGE_INSUFFICIENT naming maintenance locks", async () => {
+  // With PostgreSQL's default advisory lock grants in the control database, apply with nothing pending succeeds.
   const idle = await cli(["db", "migration", "apply"], profile());
   expect(idle.result.error).toBeNull();
   expect(idle.exit).toBe(0);
   expect(idle.result.data).toMatchObject({ applied: [] });
   const functions = "SELECT p.oid::regprocedure AS f FROM pg_proc p WHERE p.pronamespace='pg_catalog'::regnamespace AND p.proname ~ '^pg_(try_)?advisory_'";
-  await admin.unsafe(`DO $$ DECLARE f regprocedure; BEGIN FOR f IN ${functions} LOOP EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f); END LOOP; END $$`);
+  await control.unsafe(`DO $$ DECLARE f regprocedure; BEGIN FOR f IN ${functions} LOOP EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM ${role}', f); END LOOP; END $$`);
   try {
     const before = await observed();
     const apply = await cli(["db", "migration", "apply"], profile());
@@ -329,7 +329,7 @@ test("a refused advisory lock in the application database returns DATABASE_PRIVI
     expect(await observed()).toEqual(before);
     expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
   } finally {
-    await admin.unsafe(`DO $$ DECLARE f regprocedure; BEGIN FOR f IN ${functions} LOOP EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC', f); END LOOP; END $$`);
+    await control.unsafe(`DO $$ DECLARE f regprocedure; BEGIN FOR f IN ${functions} LOOP EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO ${role}', f); END LOOP; END $$`);
   }
 }, 300_000);
 
@@ -394,7 +394,7 @@ test("each missing privilege of the profile fails read-only inspection and statu
 }, 300_000);
 
 // #108: exercise the reconciliation path through the public command, with a proven interrupted outcome.
-test("reconciliation reports refused application locks and missing schema-read authority without changing evidence", async () => {
+test("reconciliation reports refused control locks and missing schema-read authority without changing evidence", async () => {
   const lease = await MaintenanceLease.acquire(superuserUrl, true, { stateRoot: root });
   const original = (await lease.marker())!;
   try { await lease.persist({ ...original, stage: "recovery required" }); }
@@ -403,18 +403,18 @@ test("reconciliation reports refused application locks and missing schema-read a
   const markerPath = join(root, directory, "maintenance.json");
   try {
     const before = await observed();
-    await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM PUBLIC");
+    await control.unsafe(`REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM ${role}`);
     try {
       expectShortfall(await cli(["db", "migration", "apply"], profile()), "maintenance locks");
       expect(await observed()).toEqual(before);
-    } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO PUBLIC"); }
+    } finally { await control.unsafe(`GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO ${role}`); }
     // The profile can read tables, but cannot digest identity sequences. This must be a named preflight failure.
     expectShortfall(await cli(["db", "migration", "apply"], profile()), "schema read");
     expect(await observed()).toEqual(before);
   } finally { await writeFile(markerPath, JSON.stringify(original), { mode: 0o600 }); }
 }, 300_000);
 
-test("db seed reports a refused transaction fence as maintenance locks without changing evidence", async () => {
+test("db seed reports a refused control fence as maintenance locks without changing evidence", async () => {
   const owner = decodeURIComponent(new URL(superuserUrl).username);
   // Give the non-superuser ownership of only the application objects. Owning the system function would bypass REVOKE.
   await admin.unsafe(`GRANT CREATE ON DATABASE privilege_app TO ${role}`);
@@ -423,7 +423,7 @@ test("db seed reports a refused transaction fence as maintenance locks without c
     await admin.unsafe(`ALTER TABLE ${table} OWNER TO ${role}`);
   try {
     const before = await observed();
-    await admin.unsafe("REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) FROM PUBLIC");
+    await control.unsafe(`REVOKE EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) FROM ${role}`);
     try {
       const stateRoot = join(root, `missing-seed-lock-${randomUUID()}`);
       const admitted = await MaintenanceLease.acquire(superuserUrl, false, { stateRoot: root });
@@ -433,7 +433,7 @@ test("db seed reports a refused transaction fence as maintenance locks without c
       } finally { await admitted.close(); }
       expect(await observed()).toEqual(before);
       expect((await stateMarkers()).map(marker => marker.stage)).toEqual(["committed"]);
-    } finally { await admin.unsafe("GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_xact_lock(bigint) TO PUBLIC"); }
+    } finally { await control.unsafe(`GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(bigint) TO ${role}`); }
     // The failed seed left a usable target. No failed transaction or held application fence survives it.
     const retried = await cli(["db", "seed"], profile());
     expect(retried.exit).toBe(0);

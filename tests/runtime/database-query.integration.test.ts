@@ -93,3 +93,30 @@ test("active maintenance and recovery both refuse query before changing privileg
     try { await repair.persist({ ...(await repair.marker())!, stage: "committed" }); } finally { await repair.close(); }
   }
 }, 10000);
+
+test("legal pg-prefixed schemas and owner-rights views cannot expose internal data", async () => {
+  await admin.unsafe("INSERT INTO fleur_internal.query_secret VALUES('private sentinel'); CREATE SCHEMA pgprivate; GRANT USAGE ON SCHEMA pgprivate TO PUBLIC; CREATE FUNCTION pgprivate.read_private() RETURNS text LANGUAGE sql SECURITY DEFINER AS $$SELECT value FROM fleur_internal.query_secret LIMIT 1$$");
+  try { await expect(query("SELECT pgprivate.read_private()")).rejects.toThrow("DATABASE_PRIVILEGE_INSUFFICIENT"); }
+  finally { await admin.unsafe("DROP SCHEMA pgprivate CASCADE"); }
+  await admin.unsafe("CREATE VIEW public.private_view AS SELECT * FROM fleur_internal.query_secret");
+  try { await expect(query("TABLE public.private_view")).rejects.toMatchObject({ diagnostic: { sqlstate: "42501" } }); }
+  finally { await admin.unsafe("DROP VIEW public.private_view"); }
+}, 10000);
+
+test("automatic identity details remain private even when selected by SQL", async () => {
+  const result = await query("SELECT current_user,inet_server_addr()::text,inet_server_port()::text");
+  expect(result.rows).toEqual([["[redacted]", "[redacted]", "[redacted]"]]);
+});
+
+test("application advisory locks give the diagnostic role no authority over Fleur's control fences", async () => {
+  await query("SELECT 1");
+  const { MaintenanceLease } = await import("../../src/runtime/database/maintenance");
+  const lease = await MaintenanceLease.acquire(pg.url, true, { stateRoot: root }, true);
+  const login = new URL(pg.url); login.username = "fleur_agent_query_v1"; login.password = password;
+  const diagnostic = new SQL(login.toString(), { max: 1 });
+  try {
+    await diagnostic.unsafe("SELECT pg_advisory_lock($1::bigint)", [lease.key]);
+    await lease.fence("exclusive", admin);
+    await lease.assertSession();
+  } finally { await diagnostic.close(); await lease.close(); }
+});

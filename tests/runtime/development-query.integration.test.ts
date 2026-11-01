@@ -45,7 +45,7 @@ test("public db query uses owned development storage after initialization, resta
       for (const secret of ["fleur_agent_query_v1", new URL(url).password, "127.0.0.1", new URL(url).port, url]) expect(outcome.out).not.toContain(secret);
     };
     await read();
-    const values = ["--json", "-7", "", "x'); DELETE FROM diagnostic_rows; --", "emoji 🌱\nline"];
+    const values = ["--sql-file", "--limit", "", "x'); DELETE FROM diagnostic_rows; --", "emoji 🌱\nline"];
     await writeFile(join(root, "read.sql"), "SELECT $1::text AS a,$2::text AS b,$3::text AS c,$4::text AS d,$5::text AS e");
     const boundValues = await cli(root, ["--sql-file", "read.sql", ...values.flatMap(value => ["--param", value])]);
     expect(boundValues.exit).toBe(0); expect(boundValues.result.data.rows).toEqual([values]);

@@ -3,13 +3,14 @@ import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success } from "../../cli/result";
+import { privilegeShortfall } from "./privilege";
 import { databaseFailure } from "./commands";
 
 const invalid = () => failure("db query", 2, { code: "ARGUMENT_INVALID", message: "Supply one --sql or --sql-file, optional text --param values, --limit from 1 to 500 and --timeout up to 30 seconds.", actions: [] });
 export const queryCommand: CommandDefinition = {
   name: "db query", summary: "Run one bounded read-only SQL statement against owned development data.",
   usage: "db query (--sql <text> | --sql-file <path>) [--param <text>]... [--limit 100]",
-  options: ["--sql", "--sql-file", "--param", "--limit"].map(name => ({ name, value: true, ...(name === "--param" ? { repeatable: true, text: true } : {}) })),
+  options: ["--sql", "--sql-file", "--param", "--limit"].map(name => ({ name, value: true, ...(name === "--param" ? { repeatable: true } : {}), ...(["--param", "--sql"].includes(name) ? { text: true } : {}) })),
   validateArgs(args) {
     let sources = 0;
     for (let index = 0; index < args.length; index += 2) {
@@ -23,9 +24,10 @@ export const queryCommand: CommandDefinition = {
   },
   async run({ args, project, timeoutSeconds, timeoutExplicit }) {
     if (timeoutExplicit && timeoutSeconds > 30) return invalid();
-    const value = (flag: string) => args[args.indexOf(flag) + 1]!;
-    let text = args.includes("--sql") ? value("--sql") : "";
-    if (args.includes("--sql-file")) {
+    const values = new Map(args.flatMap((arg, index) => index % 2 === 0 ? [[arg, args[index + 1]!] as const] : []));
+    const value = (flag: string) => values.get(flag)!;
+    let text = values.has("--sql") ? value("--sql") : "";
+    if (values.has("--sql-file")) {
       let file;
       try {
         file = await open(resolve(project, value("--sql-file")), constants.O_RDONLY | constants.O_NONBLOCK);
@@ -41,12 +43,14 @@ export const queryCommand: CommandDefinition = {
     }
     try {
       const { developmentQuery } = await import("./query");
-      const result = await developmentQuery(project, { sql: text, params: args.flatMap((arg, index) => index % 2 === 0 && arg === "--param" ? [args[index + 1]!] : []), limit: args.includes("--limit") ? Number(value("--limit")) : 100, timeoutMs: timeoutExplicit ? timeoutSeconds * 1000 : 5000 });
+      const result = await developmentQuery(project, { sql: text, params: args.flatMap((arg, index) => index % 2 === 0 && arg === "--param" ? [args[index + 1]!] : []), limit: values.has("--limit") ? Number(value("--limit")) : 100, timeoutMs: timeoutExplicit ? timeoutSeconds * 1000 : 5000 });
       const outcome = success("db query", result);
       return { ...outcome, result: { ...outcome.result, truncated: result.truncated } };
     } catch (error) {
       const { QueryRejected } = await import("./query");
       if (error instanceof QueryRejected) return failure("db query", 1, { code: "DATABASE_QUERY_REJECTED", message: error.message, actual: error.diagnostic, actions: [{ command: "fleur db query --help", description: "Use one SELECT, WITH without data-modifying parts, VALUES or TABLE statement with bound text parameters." }] });
+      const shortfall = privilegeShortfall(error);
+      if (shortfall) return failure("db query", 4, { code: "DATABASE_PRIVILEGE_INSUFFICIENT", message: "The restricted development diagnostic credential could not be verified. No diagnostic statement ran.", expected: { capability: shortfall.capability }, actions: [{ command: "fleur db query --help", description: "Review the diagnostic credential requirements under Development SQL diagnosis in package docs/maintenance.md." }] });
       return databaseFailure("db query", error, ["DATABASE_UNAVAILABLE", "MAINTENANCE_BUSY", "QUERY_TIMEOUT"], { command: "fleur db query --help", description: "Check the read-only statement and development database state before retrying." });
     }
   },

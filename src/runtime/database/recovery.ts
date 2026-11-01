@@ -6,7 +6,7 @@ import { readMigrations } from "./migration-plan";
 import { authorizeMaintenance, type MaintenanceAuthority } from "./maintenance-authority";
 import { cleanupInterruptedVerification } from "./restore-verification";
 import type { BackupConfiguration } from "./backup";
-import { PrivilegeInsufficient, privileged, requireAuthority } from "./privilege";
+import { PrivilegeInsufficient, requireAuthority } from "./privilege";
 
 async function actualState(sql:SQL) {
   await sql.unsafe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -50,8 +50,7 @@ export async function reconcileMaintenance(url:string,project:string,config:Back
     if(lease.busy)throw new Error("MAINTENANCE_BUSY");
     const marker=await lease.marker();
     if(!marker?.intent||JSON.stringify(marker.target)!==JSON.stringify(lease.target))throw new Error("RECOVERY_REQUIRED");
-    const fence=await privileged("maintenance locks",()=>sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired",[lease.key]));
-    if(!fence[0]?.acquired)throw new Error("MAINTENANCE_BUSY");
+    await lease.fence("exclusive", sql);
     await requireAuthority(lease.sql,sql,["schema read"]);
     const plans=await readMigrations(project),actual=await actualState(sql);
     if(actual.history.some((checksum,index)=>checksum!==plans[index]?.checksum))throw new Error("MIGRATION_EDITED");

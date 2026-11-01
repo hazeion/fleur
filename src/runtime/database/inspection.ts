@@ -50,7 +50,8 @@ export async function publishFile(pathValue: string, data: string | Uint8Array):
     return { destination: path, bytes: Buffer.byteLength(data), sha256: digest(data), complete: true };
   } finally { await file.close(); await unlink(temp); }
 }
-const pageBytes = 1044480;
+export const inspectionPageBytes = 1044480;
+export const inspectionRowBytes = 983040;
 /** Overview of one catalog table, with Fleur column kinds, versioning and managed columns from the applied declarations. */
 export function describeTable(table: CatalogTable, declarations: readonly Table[]): Json {
   const declared = declarations.map(item => tableDefinitions.get(item)!).find(spec => spec.name === table.name);
@@ -121,7 +122,7 @@ export async function inspectDatabase(url: string, options: InspectionOptions & 
       for (let index = 0; index < Math.min(names.length, limit) && !full; index += 25) {
         for (const described of await catalogTables(sql, names.slice(index, Math.min(index+25, limit)))) {
           const entry = describeTable(described, report.declarations), bytes = Buffer.byteLength(JSON.stringify(entry)) + 1;
-          if (size + bytes > pageBytes) { if (!tables.length) throw new Error("RESULT_TOO_LARGE"); full = true; break; }
+          if (size + bytes > inspectionPageBytes) { if (!tables.length) throw new Error("RESULT_TOO_LARGE"); full = true; break; }
           tables.push(entry); size += bytes;
         }
       }
@@ -134,7 +135,7 @@ export async function inspectDatabase(url: string, options: InspectionOptions & 
       const selection = pieces.join(" || ");
       const where = after ? `WHERE (${primary.map(name => `source.${quote(name)}`).join(",")}) > (${primary.map((_, index) => `$${index+1}`).join(",")})` : "";
       const values = after ?? [];
-      const query = `WITH encoded AS (SELECT row_number() OVER (ORDER BY ${primary.map(name => `source.${quote(name)}`).join(",")}) AS position, (${selection})::text AS payload FROM public.${quote(table)} AS source ${where} ORDER BY ${primary.map(name => `source.${quote(name)}`).join(",")} LIMIT $${values.length+1}), sized AS (SELECT *, sum(octet_length(payload)) OVER (ORDER BY position) AS total FROM encoded) SELECT CASE WHEN total<=983040 THEN payload ELSE NULL END AS payload FROM sized ORDER BY position`;
+      const query = `WITH encoded AS (SELECT row_number() OVER (ORDER BY ${primary.map(name => `source.${quote(name)}`).join(",")}) AS position, (${selection})::text AS payload FROM public.${quote(table)} AS source ${where} ORDER BY ${primary.map(name => `source.${quote(name)}`).join(",")} LIMIT $${values.length+1}), sized AS (SELECT *, sum(octet_length(payload)) OVER (ORDER BY position) AS total FROM encoded) SELECT CASE WHEN total<=${inspectionRowBytes} THEN payload ELSE NULL END AS payload FROM sized ORDER BY position`;
       const page = await sql.unsafe(query, [...values, limit+1]);
       const rows: Json[] = [];
       for (const row of page.slice(0, limit)) {
@@ -147,7 +148,7 @@ export async function inspectDatabase(url: string, options: InspectionOptions & 
       const structure = describeTable((await catalogTables(sql, [table]))[0]!, report.declarations);
       result = { view: "table", target, migrations: report.summary, table, structure, columns, rows, cursor, truncated };
     }
-    if (Buffer.byteLength(JSON.stringify(result)) > pageBytes) throw new Error("RESULT_TOO_LARGE");
+    if (Buffer.byteLength(JSON.stringify(result)) > inspectionPageBytes) throw new Error("RESULT_TOO_LARGE");
     return { result, truncated };
   });
   // Publish only after the inspection succeeded, so a reported failure never leaves an export behind.

@@ -127,7 +127,7 @@ esac
   });
 }
 
-async function completeNativeVerification(change: "none" | "daemon" | "server" | "capability" | "final-setup" | "grant" | "transport" | "action" | "unsafe-grant", qualified = false) {
+async function completeNativeVerification(change: "none" | "newer-tuple" | "daemon" | "server" | "capability" | "final-setup" | "grant" | "transport" | "action" | "unsafe-grant", qualified = false) {
   const scratch = await mkdtemp(join(tmpdir(), "fleur-native-rounds-"));
   try {
     const report = join(scratch, "report.json");
@@ -144,16 +144,21 @@ const command = args[0];
 const id = "a".repeat(64);
 const image = process.arch === "arm64" ? "oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023" : "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e";
 const imageId = "sha256:" + "c".repeat(64);
+// Version floors (#137): the newer-tuple fixture reports every machine tool above the trusted row with the same identity facts.
+const newer = ${JSON.stringify(change === "newer-tuple")};
+const tuple = newer
+  ? { docker: "28.0.5", build: "c0ffee1", kernel: "6.17.0-1030-azure", compose: "2.40.0", containerd: "v2.4.2", runc: "1.5.3" }
+  : { docker: "28.0.4", build: "6430e49", kernel: "6.17.0-1022-azure", compose: "2.38.2", containerd: "v2.4.1", runc: "1.5.2" };
 let output;
-if (command === "--version") output = "Docker version 28.0.4, build b8034c0";
+if (command === "--version") output = "Docker version " + tuple.docker + ", build b8034c0";
 else if (command === "context") output = args[1] === "show" ? "local" : JSON.stringify({ Host: "unix:///tmp/fleur-native-fixture.sock" });
-else if (command === "compose") output = "2.38.2";
+else if (command === "compose") output = tuple.compose;
 else if (command === "info") {
   state.infoReads++;
-  output = JSON.stringify({ ID: (${JSON.stringify(change)} === "daemon" || (${JSON.stringify(change)} === "final-setup" && state.smokeStarts === 4)) && state.infoReads >= 3 ? "replacement-engine" : "original-engine", ServerVersion: "28.0.4", KernelVersion: "fixture-kernel", OSType: "linux", Architecture: process.arch === "arm64" ? "aarch64" : "x86_64", CgroupDriver: ${JSON.stringify(change)} === "capability" && state.infoReads >= 3 ? "cgroupfs" : "systemd", CgroupVersion: "2", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] });
+  output = JSON.stringify({ ID: (${JSON.stringify(change)} === "daemon" || (${JSON.stringify(change)} === "final-setup" && state.smokeStarts === 4)) && state.infoReads >= 3 ? "replacement-engine" : "original-engine", ServerVersion: tuple.docker, KernelVersion: tuple.kernel, OSType: "linux", Architecture: process.arch === "arm64" ? "aarch64" : "x86_64", CgroupDriver: ${JSON.stringify(change)} === "capability" && state.infoReads >= 3 ? "cgroupfs" : "systemd", CgroupVersion: "2", MemoryLimit: true, PidsLimit: true, CpuCfsPeriod: true, CpuCfsQuota: true, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"] });
 } else if (command === "version") {
   state.versionReads++;
-  const server = { Version: "28.0.4", KernelVersion: "fixture-kernel", Os: "linux", Arch: process.arch === "arm64" ? "arm64" : "amd64", GitCommit: ${JSON.stringify(change)} === "server" && state.versionReads >= 2 ? "changed-build" : "6430e49", Platform: { Name: "Docker Engine - Community" }, Components: [{ Name: "Engine", Version: "28.0.4", Details: { GitCommit: "6430e49" } }, { Name: "containerd", Version: "v2.4.1", Details: { GitCommit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" } }, { Name: "runc", Version: "1.5.2", Details: { GitCommit: "v1.5.2-0-g29dd3dc2" } }] };
+  const server = { Version: tuple.docker, KernelVersion: tuple.kernel, Os: "linux", Arch: process.arch === "arm64" ? "arm64" : "amd64", GitCommit: ${JSON.stringify(change)} === "server" && state.versionReads >= 2 ? "changed-build" : tuple.build, Platform: { Name: "Docker Engine - Community" }, Components: [{ Name: "Engine", Version: tuple.docker, Details: { GitCommit: tuple.build } }, { Name: "containerd", Version: tuple.containerd, Details: { GitCommit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" } }, { Name: "runc", Version: tuple.runc, Details: { GitCommit: "v1.5.2-0-g29dd3dc2" } }] };
   output = JSON.stringify(args.at(-1) === "{{json .Server}}" ? server : { Server: server });
 } else if (command === "image") output = JSON.stringify(args.includes("--format") ? { Id: imageId, RepoDigests: [image], Os: "linux", Architecture: process.arch === "arm64" ? "arm64" : "amd64" } : [{ Id: imageId }]);
 else if (command === "ps") output = Object.keys(state.containers).join("\\n");
@@ -196,7 +201,7 @@ process.stdout.write(output + (command === "start" ? "" : "\\n"));
       await copyFile(join(repository, "scripts/verify-native-setup.ts"), verifier);
       const native = await (await import("../../src/setup/host.ts")).productionHost().host();
       // A trusted test-build catalog, never a public profile override or native evidence.
-      const profile = { id: "fixture-native-verified", host: { system: native.system, distribution: native.distribution ?? null, release: native.release, architecture: native.architecture }, bun: "1.4.3", cli: { version: "28.0.4", commit: "b8034c0" }, engine: { version: "28.0.4", commit: "6430e49", kernel: "fixture-kernel", platform: "Docker Engine - Community", cgroupDriver: "systemd", cgroupVersion: "2", operatingMode: "rootful", securityOptions: ["name=cgroupns", "name=seccomp,profile=builtin"] }, containerd: { version: "v2.4.1", commit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" }, runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" }, compose: "2.38.2", image: process.arch === "arm64" ? "oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023" : "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e", evidence: { readinessSha256: "1".repeat(64), isolationSha256: "2".repeat(64) } };
+      const profile = { id: "fixture-native-verified", host: { system: native.system, distribution: native.distribution ?? null, release: native.release, architecture: native.architecture }, bun: "1.4.3", cli: { version: "28.0.4", commit: "b8034c0" }, engine: { version: "28.0.4", commit: "6430e49", kernel: "6.17.0-1022-azure", platform: "Docker Engine - Community", cgroupDriver: "systemd", cgroupVersion: "2", operatingMode: "rootful", securityOptions: ["name=cgroupns", "name=seccomp,profile=builtin"] }, containerd: { version: "v2.4.1", commit: "f2551031d7276a770f65f98c9b52e57e7dad07e8" }, runc: { version: "1.5.2", commit: "v1.5.2-0-g29dd3dc2" }, compose: "2.38.2", image: process.arch === "arm64" ? "oven/bun@sha256:bf9d5b1f01be2de7cec5aa6e3977e8848f7ab9a307c6c3a8af7a50a27e609023" : "oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e", evidence: { readinessSha256: "1".repeat(64), isolationSha256: "2".repeat(64) } };
       await writeFile(join(source, "src/setup/verified-readiness-profiles.ts"), `export const verifiedReadinessProfiles = ${JSON.stringify([profile])} as const;\n`);
       if (change === "action") {
         const setupPath = join(source, "src/setup/setup.ts");
@@ -231,7 +236,7 @@ process.stdout.write(output + (command === "start" ? "" : "\\n"));
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
-test("native verifier accepts two ready rounds only when its trusted build already admits the exact tuple", async () => {
+test("native verifier accepts two ready rounds only when its trusted build already admits the measured tuple", async () => {
   const result = await completeNativeVerification("none", true);
   expect(result.exit, result.report.error).toBe(0);
   expect(result.report).toMatchObject({ ok: true, verifiedReleaseProfile: true, installationVerified: false, sentinelCleanup: true });
@@ -240,6 +245,16 @@ test("native verifier accepts two ready rounds only when its trusted build alrea
   expect(result.grantStore).toBeNull();
   expect(result.state.smokeStarts).toBe(4);
   expect(result.state.operations.some((args: string[]) => args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
+  for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", profile: "fixture-native-verified" }, smoke: { state: "ready", cleanup: true } } } });
+  expect(result.state.containers).toEqual({});
+}, 30000);
+
+// Version floors (#137): the trusted row is a floor, so a newer Docker tuple on the same kernel flavour and isolation facts is admitted.
+test("native verifier admits a tuple above its trusted row's floor through the packed CLI", async () => {
+  const result = await completeNativeVerification("newer-tuple", true);
+  expect(result.exit, result.report.error).toBe(0);
+  expect(result.report).toMatchObject({ ok: true, verifiedReleaseProfile: true, completedRounds: 2, releaseProfile: { id: "fixture-native-verified" } });
+  expect(result.report.docker.Server.Version).toBe("28.0.5");
   for (const round of result.report.runs) expect(round).toMatchObject({ ok: true, error: null, data: { components: { release: { state: "verified", profile: "fixture-native-verified" }, smoke: { state: "ready", cleanup: true } } } });
   expect(result.state.containers).toEqual({});
 }, 30000);

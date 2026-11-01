@@ -753,7 +753,8 @@ test("the first blocking tool is reported in tool order when several tools are b
 });
 
 // Interim Ubuntu (#134), Debian point releases and newer macOS are admitted; a host without VERSION_ID has nothing to compare.
-test.each([["ubuntu", "24.10"], ["ubuntu", "25.04"], ["ubuntu", "26.04"], ["debian", "13.1"], ["darwin", "26.1"], ["darwin", "26.0"]])("%s release %s is admitted above its floor", async (family, release) => {
+// 26.04 is a measured release of the Ubuntu target and is covered by its own test below; these releases were not measured on any row.
+test.each([["ubuntu", "24.10"], ["ubuntu", "25.04"], ["ubuntu", "25.10"], ["debian", "13.1"], ["debian", "14"], ["darwin", "26.1"], ["darwin", "26.0"]])("%s release %s is admitted above its floor", async (family, release) => {
   const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
   const base = await observe(family === "ubuntu" ? ubuntuFixture() : family === "debian" ? debianFixture() : desktopFixture());
   const result = compareReadiness(nativeReadinessProfiles, withTool(base, "release", release));
@@ -813,7 +814,11 @@ test.each(kernelCases)("kernel floor %s compared with %s is %s", async (floor, d
 test("a kernel flavour change refuses as an identity mismatch and a pre-release kernel refuses as pre-release", async () => {
   const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
   const base = await observe(azureRunnerFixture("x64"));
-  expect(compareReadiness(nativeReadinessProfiles, withTool(base, "kernel", "6.17.0-1022-generic"))).toMatchObject({ state: "unverified", floor: null, measuredRows: [], machineTools: [], blocking: null, identity: { matched: false, mismatches: ["kernel"] } });
+  // The generic kernel matches the required Ubuntu target, whose rows differ from this runner tuple in their security options; the
+  // CI-only azure row (kernel mismatch) is equally close but a required target is reported first.
+  expect(compareReadiness(nativeReadinessProfiles, withTool(base, "kernel", "6.17.0-1022-generic"))).toMatchObject({ state: "unverified", floor: null, measuredRows: [], machineTools: [], blocking: null, identity: { matched: false, mismatches: ["securityOptions"] } });
+  const generic = await observe(ubuntuFixture());
+  expect(compareReadiness(nativeReadinessProfiles, withTool(generic, "kernel", "6.8.0-147-azure"))).toMatchObject({ state: "unverified", floor: null, identity: { matched: false, mismatches: ["kernel"] } });
   expect(compareReadiness(nativeReadinessProfiles, withTool(base, "kernel", "6.17.0-1030-azure"))).toMatchObject({ state: "verified", admission: "above-floor", floor: "ubuntu-x64-engine-azure" });
   const ubuntu = await observe(ubuntuFixture());
   expect(compareReadiness(nativeReadinessProfiles, withTool(ubuntu, "kernel", "6.8.0-rc3-generic"))).toMatchObject({ state: "unverified", floor: "ubuntu-x64-engine", blocking: { tool: "kernel", floor: "6.8.0-147-generic", detected: "6.8.0-rc3-generic", comparison: "pre-release" } });
@@ -926,8 +931,10 @@ test("the measured Ubuntu 26.04 row is reported exactly while its floor stays th
   const { compareReadiness, nativeReadinessProfiles, readinessCandidates, matchReadinessServer } = await import("../../src/setup/readiness.ts");
   const observation = await observe(ubuntuFixture("26.04"));
   const result = compareReadiness(nativeReadinessProfiles, observation);
-  expect(result).toMatchObject({ state: "verified", admission: "above-floor", floor: "ubuntu-x64-engine", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"] });
-  expect(result.machineTools.filter((row) => row.status === "admitted").map((row) => [row.tool, row.floor, row.detected])).toEqual([["release", "24.04", "26.04"], ["kernel", "6.8.0-147-generic", "7.0.0-38-generic"]]);
+  // Every value was measured on the 26.04 row, so the tuple is measured even though release and kernel sit above the floor.
+  expect(result).toMatchObject({ state: "verified", admission: "measured", floor: "ubuntu-x64-engine", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"] });
+  expect(result.machineTools.filter((row) => row.comparison === "newer").map((row) => [row.tool, row.status, row.floor, row.detected])).toEqual([["release", "verified", "24.04", "26.04"], ["kernel", "verified", "6.8.0-147-generic", "7.0.0-38-generic"]]);
+  expect(result.machineTools.every((row) => row.status === "verified")).toBe(true);
   const candidates = readinessCandidates(nativeReadinessProfiles, observation.identity, "1.4.3", observation.cli, observation.compose, observation.image, observation.info);
   expect(candidates.map((row) => row.id)).toEqual(["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"]);
   expect(matchReadinessServer(candidates, observation.identity, observation.server)?.id).toBe("ubuntu-26.04-x64-docker-29.9.1");
@@ -987,10 +994,70 @@ test.each([
   expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
 });
 
-test("two measured rows whose targets would share a floor id invalidate the catalog instead of merging kernel flavours", async () => {
-  const { snapshotReadinessProfiles, deriveReadinessFloors } = await import("../../src/setup/readiness.ts");
+// Review finding: a newly measured kernel flavour for a required target must not invalidate the catalog; each flavour is its own floor.
+test("a second measured kernel flavour for a required target publishes flavour-qualified floor ids", async () => {
+  const { snapshotReadinessProfiles, deriveReadinessFloors, compareReadiness } = await import("../../src/setup/readiness.ts");
   const lowlatency = { ...policy, id: "synthetic-lowlatency", engine: { ...policy.engine, kernel: "7.0.14-lowlatency" }, evidence: { readinessSha256: "3".repeat(64), isolationSha256: "4".repeat(64) } };
-  expect(snapshotReadinessProfiles([policy, lowlatency])).toEqual([]);
-  expect(deriveReadinessFloors([policy, lowlatency])).toEqual([]);
-  expect(snapshotReadinessProfiles([policy])).toHaveLength(1);
+  expect(snapshotReadinessProfiles([policy, lowlatency])).toHaveLength(2);
+  expect(deriveReadinessFloors([policy, lowlatency]).map((floor) => [floor.id, floor.ciOnly, floor.rows])).toEqual([["darwin-x64-desktop-linuxkit", false, [policy.id]], ["darwin-x64-desktop-lowlatency", false, ["synthetic-lowlatency"]]]);
+  expect(deriveReadinessFloors([policy]).map((floor) => floor.id)).toEqual(["darwin-x64-desktop"]);
+  expect(compareReadiness([policy, lowlatency], await observe(desktopFixture()))).toMatchObject({ state: "verified", floor: "darwin-x64-desktop-linuxkit", measuredRows: [policy.id] });
+});
+
+// Review finding: rows of one target must agree on every non-kernel identity tail; a distro build without containerd's `v` is another identity.
+test("rows of one target disagreeing on the containerd version prefix invalidate the catalog instead of hiding the lower row", async () => {
+  const { snapshotReadinessProfiles, deriveReadinessFloors } = await import("../../src/setup/readiness.ts");
+  const distro = { ...policy, id: "synthetic-distro-containerd", containerd: { version: "2.3.0", commit: "0".repeat(40) }, evidence: { readinessSha256: "5".repeat(64), isolationSha256: "6".repeat(64) } };
+  expect(snapshotReadinessProfiles([policy, distro])).toEqual([]);
+  expect(deriveReadinessFloors([policy, distro])).toEqual([]);
+});
+
+// Review finding: the reported measured row must agree with the host release, not only with the server build.
+test("an Ubuntu 24.04 host on the kernel measured by the 26.04 row is attributed to the 24.04 row with the kernel marked measured", async () => {
+  const { compareReadiness, nativeReadinessProfiles, readinessCandidates, matchReadinessServer } = await import("../../src/setup/readiness.ts");
+  const observation = withTool(await observe(ubuntuFixture()), "kernel", "7.0.0-38-generic");
+  const candidates = readinessCandidates(nativeReadinessProfiles, observation.identity, "1.4.3", observation.cli, observation.compose, observation.image, observation.info);
+  expect(matchReadinessServer(candidates, observation.identity, observation.server)?.id).toBe("ubuntu-24.04-x64-docker-29.9.1");
+  const result = compareReadiness(nativeReadinessProfiles, observation);
+  // The kernel equals a measured row's value, so it is verified rather than admitted; the tuple as a whole matches no single row.
+  expect(result).toMatchObject({ state: "verified", admission: "above-floor", floor: "ubuntu-x64-engine" });
+  expect(result.machineTools.find((row) => row.tool === "kernel")).toEqual({ tool: "kernel", status: "verified", floor: "6.8.0-147-generic", detected: "7.0.0-38-generic", comparison: "newer" });
+  expect(result.machineTools.filter((row) => row.status !== "verified")).toEqual([]);
+});
+
+// Review finding: an identity report must prefer the required target over a CI-only runner row when they are equally close.
+test("an Ubuntu host with the legacy AppArmor descriptor is reported against the required target's security options", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const observation = await observe(ubuntuFixture());
+  (observation.info.SecurityOptions as string[])[0] = "name=apparmor";
+  expect(compareReadiness(nativeReadinessProfiles, observation)).toMatchObject({ state: "unverified", floor: null, identity: { matched: false, mismatches: ["securityOptions"] } });
+});
+
+// Review finding: when a tool is observed in several places, detected must be the value that produced the reported comparison.
+test("the detected engine version is the observed value that produced the blocking comparison", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const base = await observe(ubuntuFixture());
+  const serverOlder = structuredClone(base); serverOlder.server.Version = "29.9.0";
+  expect(compareReadiness(nativeReadinessProfiles, serverOlder).blocking).toEqual({ tool: "engine", status: "unverified", floor: "29.9.1", detected: "29.9.0", comparison: "older" });
+  const daemonOlder = structuredClone(base); daemonOlder.info.ServerVersion = "29.9.0";
+  expect(compareReadiness(nativeReadinessProfiles, daemonOlder).blocking).toEqual({ tool: "engine", status: "unverified", floor: "29.9.1", detected: "29.9.0", comparison: "older" });
+  const componentNewer = structuredClone(base); (componentNewer.server.Components as { Name: string; Version: string }[]).find((row) => row.Name === "Engine")!.Version = "29.9.2";
+  expect(compareReadiness(nativeReadinessProfiles, componentNewer).machineTools.find((row) => row.tool === "engine")).toEqual({ tool: "engine", status: "admitted", floor: "29.9.1", detected: "29.9.2", comparison: "newer" });
+});
+
+// Review finding: a pre-release Docker Desktop product version is a desktop pre-release refusal, not a product identity mismatch.
+test("a pre-release Docker Desktop product version refuses as pre-release with the product identity intact", async () => {
+  const { compareReadiness, nativeReadinessProfiles, snapshotReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const observation = await observe(desktopFixture());
+  observation.server.Platform = { Name: "Docker Desktop 4.97.0-beta.1 (244700)" };
+  expect(compareReadiness(nativeReadinessProfiles, observation)).toMatchObject({ state: "unverified", floor: "darwin-x64-desktop", identity: { matched: true }, blocking: { tool: "desktop", floor: "4.96.1", detected: "4.97.0-beta.1", comparison: "pre-release" } });
+  expect(snapshotReadinessProfiles([{ ...policy, engine: { ...policy.engine, platform: "Docker Desktop 4.97.0-beta.1 (1)" } }])).toEqual([]);
+});
+
+// Review finding: only a git-describe tail of seven or more hex digits is an SCM marker; a short hex-like flavour is a flavour.
+test("a kernel flavour made of hex letters is an identity difference, not an unreleased build", async () => {
+  const { compareMachineTool } = await import("../../src/setup/readiness.ts");
+  expect(compareMachineTool("kernel", "6.8.0-147-generic", "6.8.0-148-gface")).toBe("identity");
+  expect(compareMachineTool("kernel", "6.8.0-147-generic", "6.8.0-148-gface1234")).toBe("unparseable");
+  expect(compareMachineTool("kernel", "6.8.0-147-generic", "6.8.0-147-generic-14595-g292a089d78d3")).toBe("unparseable");
 });

@@ -61,8 +61,8 @@ const toolOrder: readonly ReadinessTool[] = ["release", "kernel", "bun", "deskto
 const ciRunnerKernelFlavours: ReadonlySet<string> = new Set(["azure"]);
 /** Pre-release tags follow the numeric core directly; checked before any grammar so a grammar cannot swallow them. */
 const preReleaseMarker = /^v?\d+(?:\.\d+){0,3}-(?:rc|beta|alpha|canary|debug)(?:[.\d+-]|$)/i;
-/** Kernel SCM decorations from scripts/setlocalversion: a bare `+`, `-dirty`, or `-N-g<sha>` identify an unreleased build. */
-const unreleasedMarker = /\+$|-dirty(?:$|[-+.])|-\d+-g[0-9a-f]+$/;
+/** Kernel SCM decorations from scripts/setlocalversion: a bare `+`, `-dirty`, or `-N-g<sha>` (seven or more hex digits) identify an unreleased build. */
+const unreleasedMarker = /\+$|-dirty(?:$|[-+.])|-\d+-g[0-9a-f]{7,40}$/;
 
 function object(value: unknown): value is RecordValue { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function shape(value: unknown, keys: readonly string[]): value is RecordValue { return object(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
@@ -133,7 +133,7 @@ function kernelFlavour(kernel: string): string | undefined { return stableVersio
 /** Platform names such as `Docker Desktop 4.96.1 (244132)` carry a product prefix (identity), a version (floor) and a free build number. */
 function platform(value: unknown): { readonly prefix: string; readonly version: string | null; readonly product: DockerProduct } | undefined {
   if (typeof value !== "string") return undefined;
-  const match = /^(.*?) (\d+\.\d+\.\d+)(?: \(\d+\))?$/.exec(value);
+  const match = /^(.*?) (\d+\.\d+\.\d+[A-Za-z0-9.+-]*)(?: \(\d+\))?$/.exec(value);
   const prefix = match ? match[1]! : value;
   return { prefix, version: match ? match[2]! : null, product: prefix.startsWith("Docker Desktop") ? "desktop" : "engine" };
 }
@@ -150,7 +150,7 @@ function validProfile(value: unknown): value is VerifiedReadinessProfile {
   if (!shape(engine, ["version", "commit", "kernel", "platform", "cgroupDriver", "cgroupVersion", "operatingMode", "securityOptions"]) || !version(engine.version) || typeof engine.commit !== "string" || !/^[a-f0-9]{7,40}$/.test(engine.commit) || !revision(engine.kernel) || !stableVersion("kernel", engine.kernel) || typeof engine.platform !== "string" || !/^[\x20-\x7e]{1,256}$/.test(engine.platform)) return false;
   const product = platform(engine.platform);
   // A Desktop row without a product version cannot define the Desktop floor.
-  if (!product || (product.product === "desktop" && product.version === null)) return false;
+  if (!product || (product.product === "desktop" && !stableVersion("desktop", product.version))) return false;
   const security = securityOptions(engine.securityOptions);
   if (!security || security.operatingMode !== engine.operatingMode || (engine.cgroupDriver !== "systemd" && engine.cgroupDriver !== "cgroupfs") || engine.cgroupVersion !== "2") return false;
   return build(value.containerd) && build(value.runc) && typeof value.image === "string" && /^oven\/bun@sha256:[a-f0-9]{64}$/.test(value.image) && value.image === smokeImages[host.architecture] && shape(value.evidence, ["readinessSha256", "isolationSha256"]) && hash(value.evidence.readinessSha256) && hash(value.evidence.isolationSha256);
@@ -195,18 +195,26 @@ function groupTargets(rows: readonly VerifiedReadinessProfile[]): readonly Targe
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   const targets: Target[] = [];
-  for (const [key, members] of groups) {
+  const bases = [...groups.values()].map((members) => { const first = members[0]!; const flavour = kernelFlavour(first.engine.kernel)!; return { base: `${first.host.distribution ?? first.host.system}-${first.host.architecture}-${platform(first.engine.platform)!.product}`, flavour, ciOnly: ciRunnerKernelFlavours.has(flavour) }; });
+  for (const [index, [key, members]] of [...groups].entries()) {
     const first = members[0]!;
     const product = platform(first.engine.platform)!.product;
-    const flavour = kernelFlavour(first.engine.kernel)!;
-    const ciOnly = ciRunnerKernelFlavours.has(flavour);
-    const id = `${first.host.distribution ?? first.host.system}-${first.host.architecture}-${product}${ciOnly ? `-${flavour}` : ""}`;
+    const { base, flavour, ciOnly } = bases[index]!;
+    // A required target with one measured flavour keeps the plain id; several flavours, or a CI-only runner kernel, qualify it by flavour.
+    const qualified = ciOnly || bases.some((other, position) => position !== index && !other.ciOnly && other.base === base);
+    const id = qualified ? `${base}-${flavour}` : base;
     if (targets.some((target) => target.floor.id === id)) return undefined;
     const versions: Partial<Record<ReadinessTool, string>> = {};
     for (const tool of toolOrder) {
       if (tool === "desktop" && product !== "desktop") continue;
       let lowest = toolVersion(first, tool)!;
-      for (const row of members) { const value = toolVersion(row, tool)!; if (compareMachineTool(tool, lowest, value) === "older") lowest = value; }
+      for (const row of members) {
+        const value = toolVersion(row, tool)!;
+        const comparison = compareMachineTool(tool, lowest, value);
+        // Rows of one target must share every identity tail (such as containerd's `v`); a conflict is a catalog error, not a hidden row.
+        if (comparison !== "older" && comparison !== "equal" && comparison !== "newer") return undefined;
+        if (comparison === "older") lowest = value;
+      }
       versions[tool] = lowest;
     }
     const floor: ReadinessFloor = Object.freeze({ id, ciOnly, target: Object.freeze({ system: first.host.system, distribution: first.host.distribution, architecture: first.host.architecture, product, kernel: flavour }), rows: Object.freeze(members.map((row) => row.id)), versions: Object.freeze(versions) });
@@ -263,10 +271,12 @@ function identityMismatches(row: VerifiedReadinessProfile, observation: PartialO
   return identityFacts.filter((fact) => mismatches.has(fact));
 }
 
-function worst(comparisons: readonly FloorComparison[]): VersionComparison {
-  const blocking = comparisons.find((comparison) => comparison !== "equal" && comparison !== "newer");
-  if (blocking) return blocking === "identity" ? "unparseable" : blocking;
-  return comparisons.includes("newer") ? "newer" : "equal";
+/** The decisive observation: the first refusal, else the first value above the floor, else the first value. */
+function decisive(comparisons: readonly FloorComparison[]): number {
+  const blocking = comparisons.findIndex((comparison) => comparison !== "equal" && comparison !== "newer");
+  if (blocking >= 0) return blocking;
+  const newer = comparisons.indexOf("newer");
+  return newer >= 0 ? newer : 0;
 }
 function component(server: RecordValue, name: string): { readonly version: unknown; readonly commit: unknown } | undefined {
   if (!Array.isArray(server.Components)) return undefined;
@@ -298,9 +308,11 @@ function compareTool(target: Target, tool: ReadinessTool, observation: PartialOb
   const floor = target.floor.versions[tool];
   const observed = detections(target, tool, observation);
   if (floor === undefined || observed === undefined) return undefined;
-  const first = observed[0];
-  let detected = typeof first === "string" ? first : null;
-  let comparison = worst(observed.map((value) => compareMachineTool(tool, floor, value)));
+  const comparisons = observed.map((value) => compareMachineTool(tool, floor, value));
+  const index = decisive(comparisons);
+  const value = observed[index];
+  let detected = typeof value === "string" ? value : null;
+  let comparison: VersionComparison = comparisons[index] === "identity" ? "unparseable" : comparisons[index] as VersionComparison;
   if (tool === "bun" && typeof observation.bun === "object" && observation.bun.revision !== undefined) {
     // Bun.version hides canary and debug tags; bun --revision prints X.Y.Z[-tag]+sha for the same executable.
     const revisionText = observation.bun.revision;
@@ -308,25 +320,29 @@ function compareTool(target: Target, tool: ReadinessTool, observation: PartialOb
     if (preReleaseMarker.test(revisionText)) { comparison = "pre-release"; detected = revisionText; }
     else if (!described || described[1] !== observation.bun.version) { comparison = "unparseable"; detected = revisionText; }
   }
-  return { tool, status: comparison === "equal" ? "verified" : comparison === "newer" ? "admitted" : "unverified", floor, detected, comparison };
+  // A value measured on some row of the target is verified; a value above the floor that no row measured is admitted.
+  const measured = comparison === "equal" || (comparison === "newer" && target.rows.some((row) => toolVersion(row, tool) === detected));
+  return { tool, status: measured ? "verified" : comparison === "newer" ? "admitted" : "unverified", floor, detected, comparison };
 }
 interface Evaluation { readonly target: Target; readonly matchedRows: readonly VerifiedReadinessProfile[]; readonly machineTools: readonly MachineToolComparison[]; readonly admitted: boolean }
 function evaluate(profiles: readonly VerifiedReadinessProfile[], observation: PartialObservation): { readonly evaluations: readonly Evaluation[]; readonly mismatches: readonly IdentityFact[] } {
-  const rows = profiles.every(validProfile) ? profiles : [];
-  const targets = groupTargets(rows) ?? [];
+  // Normalise the catalog (sorted security options, frozen copies) so callers may pass raw or snapshotted rows.
+  const targets = groupTargets(snapshotReadinessProfiles(profiles)) ?? [];
   const evaluations: Evaluation[] = [];
-  let closest: readonly IdentityFact[] | undefined;
+  let closest: { readonly mismatches: readonly IdentityFact[]; readonly ciOnly: boolean } | undefined;
   for (const target of targets) {
     const matchedRows = target.rows.filter((row) => {
       const mismatches = identityMismatches(row, observation);
-      if (closest === undefined || mismatches.length < closest.length || (mismatches.length === closest.length && identityFacts.indexOf(mismatches[0]!) > identityFacts.indexOf(closest[0]!))) closest = mismatches;
+      // Closer: fewer mismatches, then a required target over a CI-only runner row, then a later (more specific) first fact.
+      const nearer = closest === undefined || mismatches.length < closest.mismatches.length || (mismatches.length === closest.mismatches.length && (closest.ciOnly && !target.floor.ciOnly || (closest.ciOnly === target.floor.ciOnly && identityFacts.indexOf(mismatches[0]!) > identityFacts.indexOf(closest.mismatches[0]!))));
+      if (nearer) closest = { mismatches, ciOnly: target.floor.ciOnly };
       return mismatches.length === 0;
     });
     if (matchedRows.length === 0) continue;
     const machineTools = toolOrder.map((tool) => compareTool(target, tool, observation)).filter((row): row is MachineToolComparison => row !== undefined);
     evaluations.push({ target, matchedRows, machineTools, admitted: machineTools.every((row) => row.status !== "unverified") });
   }
-  return { evaluations, mismatches: evaluations.length ? [] : closest ?? [] };
+  return { evaluations, mismatches: evaluations.length ? [] : closest?.mismatches ?? [] };
 }
 
 /** Structured floor admission for one complete observation; doctor renders it (#138). */
@@ -337,9 +353,10 @@ export function compareReadiness(profiles: readonly VerifiedReadinessProfile[], 
   const expected = toolOrder.filter((tool) => chosen.target.floor.versions[tool] !== undefined);
   const machineTools = expected.map((tool) => chosen.machineTools.find((row) => row.tool === tool) ?? { tool, status: "unverified" as const, floor: chosen.target.floor.versions[tool]!, detected: null, comparison: "unparseable" as const });
   const blocking = machineTools.find((row) => row.status === "unverified") ?? null;
+  const measured = chosen.target.rows.some((row) => machineTools.every((tool) => toolVersion(row, tool.tool) === tool.detected));
   return {
     state: blocking ? "unverified" : "verified",
-    admission: blocking ? null : machineTools.every((row) => row.status === "verified") ? "measured" : "above-floor",
+    admission: blocking ? null : measured ? "measured" : "above-floor",
     floor: chosen.target.floor.id, measuredRows: chosen.target.floor.rows, machineTools, blocking, identity: { matched: true, mismatches: [] },
   };
 }
@@ -352,7 +369,7 @@ export function matchReadinessServer(profiles: readonly VerifiedReadinessProfile
   const admitted = evaluate(profiles, { identity, server }).evaluations.filter((evaluation) => evaluation.admitted);
   if (admitted.length !== 1 || !serverIdentity(server)) return undefined;
   const { target } = admitted[0]!;
-  const exact = target.rows.find((row) => row.engine.kernel === server.KernelVersion && row.engine.version === server.Version && row.engine.platform === (server.Platform as RecordValue).Name && row.containerd.version === component(server, "containerd")?.version && row.runc.version === component(server, "runc")?.version);
+  const exact = target.rows.find((row) => row.host.release === identity.release && row.engine.kernel === server.KernelVersion && row.engine.version === server.Version && row.engine.platform === (server.Platform as RecordValue).Name && row.containerd.version === component(server, "containerd")?.version && row.runc.version === component(server, "runc")?.version);
   return exact ?? target.rows[0];
 }
 export function sameReadinessDaemon(before: unknown, after: unknown): boolean {

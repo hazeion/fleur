@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import release from "../../package.json" with { type: "json" };
+import { monotonicNanoseconds } from "../../src/runtime/development/state";
 import { artifactIdentity, type ArtifactManifest } from "../../src/runtime/production/artifact";
 
 const executable = resolve(import.meta.dir, "../../bin/fleur.ts");
@@ -113,6 +114,19 @@ test("a manifest whose Bun is not a plain version is invalid before any comparis
     const outcome = await cli("start", "--artifact", await artifact(`malformed-bun-${index}`, value => ({ ...value, bun })));
     expect(outcome.exit, bun).toBe(4);
     expect(refusal(outcome), bun).toBe("ARTIFACT_INVALID");
+  }
+});
+test("the supervisor's own verification reports the same compatibility codes as the launcher", async () => {
+  // The supervisor re-verifies the artifact as its own authority, so its failure codes must agree with start's.
+  const supervisorEntry = resolve(import.meta.dir, "../../src/runtime/production/entry.ts");
+  const cases = [["supervisor-release", (value: Omit<ArtifactManifest, "id">) => ({ ...value, fleurVersion: "0.0.1" })], ["supervisor-newer-bun", (value: Omit<ArtifactManifest, "id">) => ({ ...value, bun: "99.0.0" })]] as const;
+  for (const [name, change] of cases) {
+    const root = await artifact(name, change);
+    const child = Bun.spawn([process.execPath, supervisorEntry, root, "127.0.0.1", "3000", (monotonicNanoseconds() + 60_000_000_000n).toString()], { cwd: root, env: { PATH: noDocker, HOME: scratch }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const [stdout, exit] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const events = stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { event: string; code?: string });
+    expect(events.at(-1), name).toEqual({ event: "failed", code: "ARTIFACT_INCOMPATIBLE" });
+    expect(exit, name).toBe(4);
   }
 });
 test("a valid artifact without database configuration names only the missing configuration", async () => {

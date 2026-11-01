@@ -24,12 +24,13 @@ const manifestSchema = z.strictObject({
   files: z.array(z.strictObject({ path: relativePath, sha256: hash, bytes: z.number().int().nonnegative() })).min(1).max(100000),
 });
 export type ArtifactManifest = z.infer<typeof manifestSchema>;
+/** The message stays the code: the supervisor maps refusals by it. A specific sentence travels in `detail`. */
 export class ArtifactRefusal extends Error {
-  constructor(readonly code: "ARTIFACT_INVALID" | "ARTIFACT_INCOMPATIBLE", readonly detail?: { readonly message: string; readonly expected: string; readonly actual: string }) { super(detail?.message ?? code); }
+  constructor(readonly code: "ARTIFACT_INVALID" | "ARTIFACT_INCOMPATIBLE", readonly detail?: { readonly message: string; readonly expected: string; readonly actual: string }) { super(code); }
 }
 const invalid = () => new ArtifactRefusal("ARTIFACT_INVALID");
 const parseVersion = (value: string): readonly [number, number, number] | undefined =>
-  plainVersion.test(value) ? value.split(".").map(Number) as unknown as [number, number, number] : undefined;
+  plainVersion.test(value) ? value.split(".").map(Number) as [number, number, number] : undefined;
 /** The build Bun is the artifact's floor: the host admits it when at or above, compared numerically by major, minor and patch. */
 function hostBelowBuildBun(build: string, host: string): boolean {
   const required = parseVersion(build), detected = parseVersion(host);

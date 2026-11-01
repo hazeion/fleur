@@ -13,7 +13,7 @@ import { save, type Binding } from "./state";
 export const developmentPostgresImage = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336";
 const image = developmentPostgresImage;
 export const databaseLabel = "dev.fleur.development-binding";
-const schema = z.strictObject({ formatVersion: z.literal(1), binding: z.string(), endpoint: z.string(), container: z.string().regex(/^[a-f0-9]{64}$/).nullable(), password: z.string().uuid(), volume: z.string(), stage: z.enum(["creating", "owned"]), cluster: z.string().nullable() });
+const schema = z.strictObject({ formatVersion: z.literal(1), binding: z.string(), endpoint: z.string(), container: z.string().regex(/^[a-f0-9]{64}$/).nullable(), password: z.string().uuid(), volume: z.string(), stage: z.enum(["creating", "owned"]), cluster: z.string().nullable(), queryPassword: z.string().uuid().optional(), applicationOid: z.string().regex(/^\d+$/).optional() });
 type PostgresRecord = z.infer<typeof schema>;
 /** Private handoffs and generated tools never follow or overwrite foreign files. */
 async function verifyPrivateFile(path: string, contents: string, mode: number) {
@@ -80,7 +80,12 @@ export class DevelopmentPostgres {
       try {
         const row = (await sql.unsafe("SELECT system_identifier::text AS cluster FROM pg_control_system()"))[0];
         if (!row || resource.#record.cluster !== null && resource.#record.cluster !== row.cluster) throw new Error("RECOVERY_REQUIRED");
-        resource.#record.cluster = row.cluster; await resource.#persist(); return resource;
+        resource.#record.cluster = row.cluster;
+        const queryPassword = crypto.randomUUID();
+        const { provisionAgentQueryRole } = await import("../database/agent-query-role");
+        await provisionAgentQueryRole(sql, queryPassword);
+        resource.#record.queryPassword = queryPassword;
+        await resource.#persist(); return resource;
       } catch (error) {
         if (error instanceof Error && error.message === "RECOVERY_REQUIRED") throw error;
         if (performance.now() >= deadline) throw new Error("READINESS_TIMEOUT");
@@ -114,6 +119,35 @@ export class DevelopmentPostgres {
     const metadata = await this.#inspect(), ports = metadata.NetworkSettings.Ports["5432/tcp"];
     if (!metadata.State.Running || ports?.length !== 1 || ports[0]?.HostIp !== "127.0.0.1" || !/^\d+$/.test(ports[0].HostPort)) throw new Error("DATABASE_UNAVAILABLE");
     return `postgres://fleur:${this.#record.password}@127.0.0.1:${ports[0].HostPort}/${database}`;
+  }
+  /** Startup records application identity after creation or approved replacement, without claiming readiness. */
+  async bindApplication(config: import("../database/maintenance").MaintenanceConfiguration): Promise<void> {
+    const url = await this.url(), lease = await MaintenanceLease.acquire(url, false, config, true);
+    try {
+      if (lease.target.cluster !== this.#record.cluster || lease.target.database !== "application" || lease.target.oid === "0") throw new Error("DATABASE_UNAVAILABLE");
+      const marker = await lease.marker();
+      if (this.#record.applicationOid && this.#record.applicationOid !== lease.target.oid && (marker?.stage !== "committed" || marker.target.oid !== lease.target.oid || marker.target.cluster !== lease.target.cluster)) throw new Error("DATABASE_UNAVAILABLE");
+      this.#record.applicationOid = lease.target.oid;
+      await this.#persist();
+    } finally { await lease.close(); }
+  }
+  /** No configuration URL can select this operation's target. Verify the stored cluster and database OID first. */
+  async query(project: string, options: import("../database/query").QueryOptions, config: import("../database/maintenance").MaintenanceConfiguration) {
+    const url = await this.url(), controlUrl = await this.url("postgres");
+    if (!this.#record.cluster || !this.#record.queryPassword || !this.#record.applicationOid) throw new Error("DATABASE_UNAVAILABLE");
+    const sql = new SQL(url, { max: 1, connectionTimeout: 2 });
+    try {
+      const identity = (await sql.unsafe("SELECT system_identifier::text AS cluster,current_database() AS database,d.oid::text AS oid FROM pg_control_system(),pg_database d WHERE datname=current_database()"))[0];
+      if (identity?.cluster !== this.#record.cluster || identity.database !== "application") throw new Error("DATABASE_UNAVAILABLE");
+      const lease = await MaintenanceLease.acquire(url, false, { ...config, controlUrl }, true);
+      try {
+        const marker = await lease.marker();
+        if (lease.busy || marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("MAINTENANCE_BUSY");
+        if (identity.oid !== this.#record.applicationOid && (marker?.stage !== "committed" || marker.target.oid !== identity.oid || marker.target.cluster !== this.#record.cluster)) throw new Error("DATABASE_UNAVAILABLE");
+      } finally { await lease.close(); }
+      const { queryDevelopmentDatabase } = await import("../database/query");
+      return await queryDevelopmentDatabase(url, this.#record.queryPassword, project, options, { ...config, controlUrl });
+    } finally { await sql.close({ timeout: 0 }); }
   }
   async tools(): Promise<string> {
     const metadata = await this.#inspect(), directory = join(this.#bound.directory, "pg-tools");

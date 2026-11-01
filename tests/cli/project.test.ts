@@ -392,12 +392,9 @@ test("the database section names only operations in the pinned release and marks
   expect(named.length).toBeGreaterThan(0);
   for (const command of named) expect({ command, released: resolves(command) }).toEqual({ command, released: true });
   for (const command of released.filter((name) => name.startsWith("db "))) expect({ command, named: named.includes(command) }).toEqual({ command, named: true });
-  for (const later of ["db query"]) {
-    expect(resolves(later)).toBe(false);
-    expect(named).not.toContain(later);
-    expect(namedCommands(unavailable)).toContain(later);
-  }
-  expect(unavailable).toContain("`db query`");
+  expect(resolves("db query")).toBe(true);
+  expect(named).toContain("db query");
+  expect(namedCommands(unavailable)).not.toContain("db query");
   expect(named).toContain("dev");
   expect(namedCommands(unavailable)).not.toContain("dev");
   // The schema overview and status database health are in this release (#72).

@@ -93,11 +93,13 @@ export async function backupDatabase(urlValue: string, destination: string, conf
     const role = await lease.sql.unsafe("SELECT oid::text AS oid FROM pg_roles WHERE rolname=$1", [name]);
     roleOid = String(role[0]?.oid);
     await lease.sql.unsafe(`COMMENT ON ROLE ${quote(name)} IS ${literal(tag)}`);
-    await lease.sql.unsafe(`CREATE DATABASE ${quote(name)} OWNER ${quote(name)} TEMPLATE template0`);
+    await lease.sql.unsafe(`CREATE DATABASE ${quote(name)} OWNER ${quote(name)} TEMPLATE template0 ALLOW_CONNECTIONS false`);
     const database = await lease.sql.unsafe("SELECT oid::text AS oid FROM pg_database WHERE datname=$1", [name]);
     databaseOid = String(database[0]?.oid);
     await lease.sql.unsafe(`COMMENT ON DATABASE ${quote(name)} IS ${literal(tag)}`);
-    await lease.sql.unsafe(`REVOKE CONNECT ON DATABASE ${quote(name)} FROM PUBLIC`);
+    await lease.sql.unsafe(`REVOKE CONNECT,TEMP ON DATABASE ${quote(name)} FROM PUBLIC`);
+    await lease.sql.unsafe(`GRANT CONNECT,TEMP ON DATABASE ${quote(name)} TO ${quote(name)}`);
+    await lease.sql.unsafe(`ALTER DATABASE ${quote(name)} ALLOW_CONNECTIONS true`);
     const verifyUrl = databaseUrl(urlValue); verifyUrl.pathname = `/${name}`; verifyUrl.username = name; verifyUrl.password = password;
     if (verifyUrl.pathname === databaseUrl(urlValue).pathname || !/^fleur_verify_[a-f0-9]{32}$/.test(name)) throw new Error("REQUEST_DENIED");
     verification = new SQL(verifyUrl.toString(), { max: 1, connectionTimeout: 2 });

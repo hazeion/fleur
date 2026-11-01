@@ -6,6 +6,7 @@ import type { SQL } from "bun";
  * apply, seed, restore and reset need. Descriptions never name a role, host, port or URL.
  */
 export const capabilities = {
+  "agent query provisioning": "development cluster superuser authority to provision and verify the restricted diagnostic credential",
   "database connect": "CONNECT on the application and control databases",
   "identity inspection": "EXECUTE on pg_control_system() in the application and control databases",
   "maintenance locks": "EXECUTE on the advisory lock functions in the control and application databases",

@@ -269,3 +269,44 @@ and JSON.
   waits, finds it initialized and changes nothing. Startup also waits, within
   its deadline, for active maintenance to end before it reports readiness, and
   reports `maintenance` if it does not.
+
+## Development SQL diagnosis
+
+`fleur db query --sql 'SELECT label FROM diagnostic_rows WHERE id=$1::bigint' --param 1`
+runs one read-only statement against the Docker-owned development storage binding.
+Use `--sql-file <path>` instead of `--sql` for a UTF-8 file. Input is limited to
+64 KiB. Repeat `--param <text>` to bind text values in order, including empty
+strings or text that spells an option. Cast parameters in the statement.
+
+The command admits one `SELECT`, `WITH` without data-modifying parts, `VALUES`
+or `TABLE` statement. It wraps the statement as a subquery and binds a row limit
+through PostgreSQL's extended protocol. Omit a trailing semicolon. It never
+accepts a database URL, uses production configuration, starts PostgreSQL or
+changes application data. `--production` returns `ARGUMENT_INVALID`, exit 2.
+Stopped or unbound development storage returns `DATABASE_UNAVAILABLE`, exit 4.
+Maintenance and recovery return `MAINTENANCE_BUSY`, exit 5. Pending migrations
+and drift appear in the migration summary and do not prevent diagnosis.
+
+Output lists ordered columns, including duplicate names and PostgreSQL type
+names, and arrays of exact text values with JSON null for SQL null. The default
+limit is 100 rows, with `--limit` at most 500. Output shares the inspection byte
+cap. A result exceeding either bound returns the rows that fit, sets
+`truncated: true` and exits 0. There is no cursor. `--timeout` replaces the
+5-second default deadline and cannot exceed 30 seconds. The host terminates the
+session on expiry and returns `QUERY_TIMEOUT`.
+
+Each request verifies the restricted development credential and opens a fresh
+read-only transaction. The credential has no write, sequence, temporary-object,
+internal-schema or control-database authority. Its password rotates at each
+development PostgreSQL start and remains in trusted private host state. Role
+provisioning requires the development cluster's superuser authority. Unexpected
+PUBLIC grants that make the role unsafe, including callable security-definer
+functions, refuse with `DATABASE_PRIVILEGE_INSUFFICIENT`. Resolve those grants
+through trusted maintenance before retrying. Never broaden the diagnostic role.
+
+PostgreSQL rejects forbidden statements, casts and permissions with
+`DATABASE_QUERY_REJECTED`, exit 1. The error includes a redacted SQLSTATE,
+message and available position, detail and hint. Metadata catalogs remain
+readable. Application advisory locks and CPU/memory consumption are bounded by
+the request deadline and fresh connection. Application handlers still use only
+Fleur's typed query and mutation APIs.

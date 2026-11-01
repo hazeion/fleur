@@ -105,3 +105,10 @@ superseded compilation; it cannot replace a later admitted snapshot.
 `SOURCE_REJECTED` remains exit 1 and never replaces the last valid generation.
 Status reports failure findings as exit-0 data. The lifecycle uses the same
 shared database operations and private maintenance owner as database commands.
+
+`db query (--sql <text> | --sql-file <path>) [--param <text>]... [--limit 100]`
+is available for bounded development-only SQL diagnosis. `--timeout` defaults to
+5 seconds and accepts at most 30 seconds. It refuses production selection,
+stopped development PostgreSQL and active maintenance. See
+[development SQL diagnosis](maintenance.md#development-sql-diagnosis) for statement
+forms, exact text results, credential restrictions and failure codes.

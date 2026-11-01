@@ -1,6 +1,6 @@
 import type { VerifiedReadinessProfile } from "./readiness.ts";
 
-/** Exact measured native readiness tuples; installation qualification is separate. */
+/** Measured native readiness rows with their evidence. Each target's floor is derived from its lowest rows (readiness.ts); installation qualification is separate. */
 export const verifiedReadinessProfiles = [{
   id: "ubuntu-24.04-x64-docker-29.9.1",
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64" },
@@ -40,8 +40,7 @@ export const verifiedReadinessProfiles = [{
   },
 }, {
   id: "ubuntu-24.04-arm64-docker-28.0.4-azure",
-  // GitHub-hosted runner images update Docker continuously; per #118 the measured tuple is a floor here too.
-  admission: "minimum",
+  // GitHub-hosted runner row: a CI-only target with its own floor (decisions #118, #127).
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "arm64" },
   bun: "1.4.3",
   cli: { version: "28.0.4", commit: "b8034c0" },
@@ -60,8 +59,7 @@ export const verifiedReadinessProfiles = [{
   },
 }, {
   id: "ubuntu-24.04-x64-docker-28.0.4-azure",
-  // GitHub-hosted runner images update Docker continuously; per #118 the measured tuple is a floor here too.
-  admission: "minimum",
+  // GitHub-hosted runner row: a CI-only target with its own floor (decisions #118, #127).
   host: { system: "linux", distribution: "ubuntu", release: "24.04", architecture: "x64" },
   bun: "1.4.3",
   cli: { version: "28.0.4", commit: "b8034c0" },
@@ -99,9 +97,8 @@ export const verifiedReadinessProfiles = [{
   },
 }, {
   id: "darwin-15.7.7-x64-desktop-4.96.1",
-  // Human decision 2026-10-30 (hazeion/fleur#118): the measured 4.96.1 tuple is a floor. Newer Docker Desktop, Engine/CLI, Compose,
-  // containerd, runc and linuxkit kernel releases with the same isolation options are admitted without re-qualification.
-  admission: "minimum",
+  // Human decision 2026-10-30 (hazeion/fleur#118), generalised by the version floors amendment (#124): newer Docker Desktop, Engine/CLI,
+  // Compose, containerd, runc, linuxkit kernel and macOS releases with the same isolation options are admitted without re-qualification.
   host: { system: "darwin", distribution: null, release: "15.7.7", architecture: "x64" },
   bun: "1.4.3",
   cli: { version: "29.9.2", commit: "a82e528" },

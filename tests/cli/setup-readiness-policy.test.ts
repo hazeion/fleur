@@ -113,13 +113,12 @@ test("qualified versions never turn unconfirmed smoke cleanup into success", asy
   expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
 });
 
-test("mutating the caller catalog after command construction cannot authorize a different build", async () => {
+test("mutating the caller catalog after command construction cannot authorize a different Docker product", async () => {
   const fixture = desktopFixture();
-  const mutable = { ...policy, engine: { ...policy.engine, commit: String(policy.engine.commit) } };
+  const mutable = { ...policy, engine: { ...policy.engine, platform: String(policy.engine.platform) } };
   const handlers = setupCommands(fixture.host, [], [mutable]);
-  mutable.engine.commit = "f00beef";
-  fixture.server.GitCommit = "f00beef";
-  fixture.server.Components[0]!.Details.GitCommit = "f00beef";
+  mutable.engine.platform = "Docker Engine - Community";
+  fixture.server.Platform = { Name: "Docker Engine - Community" };
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers });
   expect(outcome.exitCode).toBe(4);
   expect(outcome.result).toMatchObject({ ok: false, data: { components: { release: { state: "unverified" } } } });
@@ -298,21 +297,34 @@ test.each(["x64", "arm64"])("ordinary Debian %s setup keeps exact dependency sco
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test.each(["kernel", "architecture", "release", "translated", "engine-build", "containerd-build", "cgroup-driver", "cgroup-version", "rootless", "security-profile"])("Debian admission refuses unmeasured %s drift", async (kind) => {
+// Version floors (#137): a kernel, release, Engine or containerd below the Debian floor refuses as older; identity drift still refuses.
+test.each(["kernel", "kernel-flavour", "architecture", "release", "release-unparseable", "translated", "engine-version", "containerd-version", "cgroup-driver", "cgroup-version", "rootless", "security-profile"])("Debian admission refuses %s drift below or outside the measured floor", async (kind) => {
   const fixture = debianFixture();
   const identity = { ...await fixture.host.host() };
-  if (kind === "kernel") { fixture.info.KernelVersion = "6.12.114+deb13-cloud-amd64"; fixture.server.KernelVersion = fixture.info.KernelVersion; }
+  if (kind === "kernel") { fixture.info.KernelVersion = "6.12.112+deb13-cloud-amd64"; fixture.server.KernelVersion = fixture.info.KernelVersion; }
+  if (kind === "kernel-flavour") { fixture.info.KernelVersion = "6.12.113+deb13-amd64"; fixture.server.KernelVersion = fixture.info.KernelVersion; }
   if (kind === "architecture") identity.architecture = "arm64";
-  if (kind === "release") identity.release = "14";
+  if (kind === "release") identity.release = "12";
+  if (kind === "release-unparseable") identity.release = "rolling";
   if (kind === "translated") identity.translated = true;
-  if (kind === "engine-build") { fixture.server.GitCommit = "f00beef"; fixture.server.Components[0]!.Details.GitCommit = "f00beef"; }
-  if (kind === "containerd-build") fixture.server.Components[1]!.Details.GitCommit = "f00beef";
+  if (kind === "engine-version") { fixture.info.ServerVersion = fixture.server.Version = "29.9.0"; fixture.server.Components[0]!.Version = "29.9.0"; }
+  if (kind === "containerd-version") fixture.server.Components[1]!.Version = "v2.4.1";
   if (kind === "cgroup-driver") fixture.info.CgroupDriver = "cgroupfs";
   if (kind === "cgroup-version") fixture.info.CgroupVersion = "1";
   if (kind === "rootless") fixture.info.SecurityOptions.push("name=rootless");
   if (kind === "security-profile") fixture.info.SecurityOptions[0] = "name=apparmor";
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...fixture.host, host: async () => identity }) });
   expect(outcome.exitCode).toBe(4);
+  expect(fixture.containers.size).toBe(0);
+});
+
+// Debian point releases keep VERSION_ID 13; a newer kernel ABI serial is admitted above the measured row.
+test("ordinary Debian Doctor admits a newer kernel ABI serial above the Debian 13 floor", async () => {
+  const fixture = debianFixture();
+  fixture.info.KernelVersion = fixture.server.KernelVersion = "6.12.120+deb13.1-cloud-amd64";
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "debian-13-x64-docker-29.9.1" } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -388,10 +400,11 @@ test("ordinary Doctor admits the measured Ubuntu 26 x64 tuple only after smoke c
   expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "ubuntu-26.04-x64-docker-29.9.1", evidence: { readinessSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07", isolationSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" } } } } });
   expect(fixture.containers.size).toBe(0);
 });
-test.each(["kernel", "engine-build", "rootless", "cgroup-driver"])("Ubuntu 26 qualification refuses unmeasured %s drift", async (kind) => {
+test.each(["kernel", "engine-version", "rootless", "cgroup-driver"])("Ubuntu 26 qualification refuses %s drift below or outside the measured floor", async (kind) => {
   const fixture = ubuntuFixture("26.04");
-  if (kind === "kernel") { fixture.info.KernelVersion = "7.0.0-39-generic"; fixture.server.KernelVersion = "7.0.0-39-generic"; }
-  if (kind === "engine-build") { fixture.server.GitCommit = "f00beef"; fixture.server.Components[0]!.Details.GitCommit = "f00beef"; }
+  // The target floor is the 24.04 row's 6.8.0-147-generic; a 26.04 host with an older 7.0.0 ABI is still above it (#127).
+  if (kind === "kernel") { fixture.info.KernelVersion = "6.8.0-146-generic"; fixture.server.KernelVersion = "6.8.0-146-generic"; }
+  if (kind === "engine-version") { fixture.info.ServerVersion = fixture.server.Version = "29.9.0"; fixture.server.Components[0]!.Version = "29.9.0"; }
   if (kind === "rootless") fixture.info.SecurityOptions.push("name=rootless");
   if (kind === "cgroup-driver") fixture.info.CgroupDriver = "cgroupfs";
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
@@ -567,10 +580,10 @@ for (const command of ["doctor", "setup"] as const) test(`ordinary ${command} ad
 
 // The Intel Desktop profile is a version floor (human decision 2026-10-30): Docker components below the measured
 // baseline, a different kernel flavor, host drift and isolation drift still refuse; newer Docker versions are covered above.
-for (const field of ["release", "translation", "architecture", "cli", "compose", "engine", "kernel", "kernel-flavor", "containerd", "runc", "security", "cgroup"] as const) test(`compiled Intel Desktop admission refuses ${field} drift without acquisition`, async () => {
+for (const field of ["release", "translation", "architecture", "cli", "compose", "engine", "kernel", "kernel-flavor", "containerd", "runc", "security", "cgroup"] as const) test(`compiled Intel Desktop admission refuses ${field} drift below or outside the floor without acquisition`, async () => {
   const fixture = desktopFixture();
   let host: SetupHost = fixture.host;
-  if (field === "release") host = { ...host, host: async () => ({ ...await fixture.host.host(), release: "15.7.8" }) };
+  if (field === "release") host = { ...host, host: async () => ({ ...await fixture.host.host(), release: "15.7.6" }) };
   if (field === "translation") host = { ...host, host: async () => ({ ...await fixture.host.host(), translated: true }) };
   if (field === "architecture") host = { ...host, host: async () => ({ ...await fixture.host.host(), architecture: "arm64" }) };
   if (field === "kernel") fixture.info.KernelVersion = fixture.server.KernelVersion = "7.0.13-linuxkit";
@@ -592,13 +605,16 @@ for (const field of ["release", "translation", "architecture", "cli", "compose",
   expect(fixture.commands.some((args) => args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
 });
 
-test("compiled Intel Desktop policy retains exact Bun version admission", async () => {
-  const { nativeReadinessProfiles, readinessCandidates } = await import("../../src/setup/readiness.ts");
+test("compiled Intel Desktop policy admits Bun at or above the floor and refuses an older Bun as older", async () => {
+  const { nativeReadinessProfiles, readinessCandidates, compareReadiness } = await import("../../src/setup/readiness.ts");
   const fixture = desktopFixture();
   const identity = await fixture.host.host();
   const candidates = (bun: string) => readinessCandidates(nativeReadinessProfiles, identity, bun, "Docker version 29.9.2, build a82e528", "5.6.0", image, fixture.info);
   expect(candidates("1.4.3").map((candidate) => candidate.id)).toEqual(["darwin-15.7.7-x64-desktop-4.96.1"]);
-  expect(candidates("1.4.4")).toEqual([]);
+  expect(candidates("1.4.4").map((candidate) => candidate.id)).toEqual(["darwin-15.7.7-x64-desktop-4.96.1"]);
+  expect(candidates("1.4.2")).toEqual([]);
+  const refused = compareReadiness(nativeReadinessProfiles, { ...await observe(fixture), bun: "1.4.2" });
+  expect(refused).toMatchObject({ state: "unverified", admission: null, floor: "darwin-x64-desktop", blocking: { tool: "bun", floor: "1.4.3", detected: "1.4.2", comparison: "older" } });
 });
 
 // Human decision 2026-10-30: Intel macOS admits Docker Desktop at or above the measured 4.96.1 baseline rather than one exact build.
@@ -668,4 +684,313 @@ for (const architecture of ["x64", "arm64"] as const) test(`the ${architecture} 
   expect(outcome.exitCode).toBe(0);
   expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: `ubuntu-24.04-${architecture}-docker-28.0.4-azure` } } } });
   expect(fixture.containers.size).toBe(0);
+});
+
+// Version floors (#137): one floor per target, derived from the lowest measured row; versions compare per tool grammar, identity stays exact.
+import type { HostIdentity } from "../../src/setup/commands.ts";
+import { smokeImages } from "../../src/setup/profiles.ts";
+import type { FloorComparison, ReadinessTool as FloorTool } from "../../src/setup/readiness.ts";
+type Fixture = ReturnType<typeof desktopFixture>;
+interface Observation { identity: HostIdentity; bun: string | { version: string; revision?: string }; cli: string; compose: string; image: string; info: Record<string, unknown>; server: Record<string, unknown> }
+async function observe(fixture: Fixture): Promise<Observation> {
+  const identity = await fixture.host.host();
+  const endpoint = "unix:///tmp/fleur-qualified-desktop.sock";
+  const cli = (await fixture.host.run(["docker", "--version"], 1000)).stdout;
+  const compose = (await fixture.host.run(["docker", "--host", endpoint, "compose", "version", "--short"], 1000)).stdout;
+  return { identity, bun: "1.4.3", cli, compose, image: smokeImages[identity.architecture]!, info: structuredClone(fixture.info), server: structuredClone(fixture.server) };
+}
+function withTool(observation: Observation, tool: FloorTool, value: string): Observation {
+  const next: Observation = { ...observation, identity: { ...observation.identity }, info: structuredClone(observation.info), server: structuredClone(observation.server) };
+  const components = next.server.Components as { Name: string; Version: string }[];
+  if (tool === "release") next.identity = { ...next.identity, release: value };
+  if (tool === "kernel") { next.info.KernelVersion = value; next.server.KernelVersion = value; }
+  if (tool === "bun") next.bun = value;
+  if (tool === "desktop") next.server.Platform = { Name: `Docker Desktop ${value} (999999)` };
+  if (tool === "cli") next.cli = `Docker version ${value}, build abcdef0\n`;
+  if (tool === "engine") { next.info.ServerVersion = value; next.server.Version = value; components.find((row) => row.Name === "Engine")!.Version = value; }
+  if (tool === "compose") next.compose = `${value}\n`;
+  if (tool === "containerd" || tool === "runc") components.find((row) => row.Name === tool)!.Version = value;
+  return next;
+}
+const floorTargets: { readonly floor: string; readonly rows: readonly string[]; readonly fixture: () => Fixture; readonly tools: Readonly<Partial<Record<FloorTool, readonly [floor: string, newer: string, older: string]>>> }[] = [
+  { floor: "darwin-x64-desktop", rows: ["darwin-15.7.7-x64-desktop-4.96.1"], fixture: () => desktopFixture(), tools: { release: ["15.7.7", "15.7.8", "15.7.6"], kernel: ["7.0.14-linuxkit", "7.0.15-linuxkit", "7.0.13-linuxkit"], bun: ["1.4.3", "1.4.4", "1.4.2"], desktop: ["4.96.1", "4.97.0", "4.95.9"], cli: ["29.9.2", "29.9.3", "29.9.1"], engine: ["29.9.2", "29.9.3", "29.9.1"], compose: ["5.6.0", "5.6.1", "5.5.9"], containerd: ["v2.4.2", "v2.4.3", "v2.4.1"], runc: ["1.5.2", "1.5.3", "1.5.1"] } },
+  { floor: "ubuntu-x64-engine", rows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"], fixture: () => ubuntuFixture(), tools: { release: ["24.04", "24.10", "22.04"], kernel: ["6.8.0-147-generic", "6.8.0-150-generic", "6.8.0-146-generic"], bun: ["1.4.3", "1.4.4", "1.4.2"], cli: ["29.9.1", "29.9.2", "29.9.0"], engine: ["29.9.1", "29.9.2", "29.9.0"], compose: ["5.6.0", "5.6.1", "5.5.9"], containerd: ["v2.4.2", "v2.4.3", "v2.4.1"], runc: ["1.5.2", "1.5.3", "1.5.1"] } },
+  { floor: "debian-x64-engine", rows: ["debian-13-x64-docker-29.9.1"], fixture: () => debianFixture(), tools: { release: ["13", "13.1", "12"], kernel: ["6.12.113+deb13-cloud-amd64", "6.12.120+deb13.1-cloud-amd64", "6.12.112+deb13-cloud-amd64"], bun: ["1.4.3", "1.4.4", "1.4.2"], cli: ["29.9.1", "29.9.2", "29.9.0"], engine: ["29.9.1", "29.9.2", "29.9.0"], compose: ["5.6.0", "5.6.1", "5.5.9"], containerd: ["v2.4.2", "v2.4.3", "v2.4.1"], runc: ["1.5.2", "1.5.3", "1.5.1"] } },
+  { floor: "ubuntu-x64-engine-azure", rows: ["ubuntu-24.04-x64-docker-28.0.4-azure"], fixture: () => azureRunnerFixture("x64"), tools: { release: ["24.04", "24.10", "22.04"], kernel: ["6.17.0-1022-azure", "6.17.0-1030-azure", "6.17.0-1021-azure"], bun: ["1.4.3", "1.4.4", "1.4.2"], cli: ["28.0.4", "28.0.5", "28.0.3"], engine: ["28.0.4", "28.0.5", "28.0.3"], compose: ["2.38.2", "2.40.0", "2.38.1"], containerd: ["v2.4.1", "v2.4.2", "v2.4.0"], runc: ["1.5.2", "1.5.3", "1.5.1"] } },
+  { floor: "ubuntu-arm64-engine-azure", rows: ["ubuntu-24.04-arm64-docker-28.0.4-azure"], fixture: () => azureRunnerFixture("arm64"), tools: { release: ["24.04", "24.10", "22.04"], kernel: ["6.17.0-1022-azure", "6.17.0-1030-azure", "6.17.0-1021-azure"], bun: ["1.4.3", "1.4.4", "1.4.2"], cli: ["28.0.4", "28.0.5", "28.0.3"], engine: ["28.0.4", "28.0.5", "28.0.3"], compose: ["2.38.2", "2.40.0", "2.38.1"], containerd: ["v2.4.1", "v2.4.2", "v2.4.0"], runc: ["1.5.2", "1.5.3", "1.5.1"] } },
+];
+
+for (const target of floorTargets) for (const [tool, [floor, newer, older]] of Object.entries(target.tools) as [FloorTool, readonly [string, string, string]][]) {
+  test(`${target.floor} admits ${tool} ${newer} above the ${floor} floor and refuses ${older} as older`, async () => {
+    const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+    const base = await observe(target.fixture());
+    const measured = compareReadiness(nativeReadinessProfiles, base);
+    expect(measured).toMatchObject({ state: "verified", admission: "measured", floor: target.floor, measuredRows: target.rows, blocking: null, identity: { matched: true, mismatches: [] } });
+    expect(measured.machineTools.find((row) => row.tool === tool)).toEqual({ tool, status: "verified", floor, detected: floor, comparison: "equal" });
+    const admitted = compareReadiness(nativeReadinessProfiles, withTool(base, tool, newer));
+    expect(admitted).toMatchObject({ state: "verified", admission: "above-floor", floor: target.floor, blocking: null });
+    expect(admitted.machineTools.find((row) => row.tool === tool)).toEqual({ tool, status: "admitted", floor, detected: newer, comparison: "newer" });
+    const refused = compareReadiness(nativeReadinessProfiles, withTool(base, tool, older));
+    expect(refused).toMatchObject({ state: "unverified", admission: null, floor: target.floor, blocking: { tool, floor, detected: older, comparison: "older" } });
+    expect(refused.machineTools.find((row) => row.tool === tool)).toEqual({ tool, status: "unverified", floor, detected: older, comparison: "older" });
+  });
+}
+
+test("engine targets publish no Docker Desktop product row and the Desktop target lists every tool once", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const engine = compareReadiness(nativeReadinessProfiles, await observe(ubuntuFixture()));
+  expect(engine.machineTools.map((row) => row.tool)).toEqual(["release", "kernel", "bun", "cli", "engine", "compose", "containerd", "runc"]);
+  const desktop = compareReadiness(nativeReadinessProfiles, await observe(desktopFixture()));
+  expect(desktop.machineTools.map((row) => row.tool)).toEqual(["release", "kernel", "bun", "desktop", "cli", "engine", "compose", "containerd", "runc"]);
+});
+
+test("the first blocking tool is reported in tool order when several tools are below the floor", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const base = await observe(ubuntuFixture());
+  const result = compareReadiness(nativeReadinessProfiles, withTool(withTool(base, "runc", "1.5.1"), "compose", "5.5.9"));
+  expect(result.blocking).toEqual({ tool: "compose", status: "unverified", floor: "5.6.0", detected: "5.5.9", comparison: "older" });
+  expect(result.machineTools.filter((row) => row.status === "unverified").map((row) => row.tool)).toEqual(["compose", "runc"]);
+});
+
+// Interim Ubuntu (#134), Debian point releases and newer macOS are admitted; a host without VERSION_ID has nothing to compare.
+test.each([["ubuntu", "24.10"], ["ubuntu", "25.04"], ["ubuntu", "26.04"], ["debian", "13.1"], ["darwin", "26.1"], ["darwin", "26.0"]])("%s release %s is admitted above its floor", async (family, release) => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const base = await observe(family === "ubuntu" ? ubuntuFixture() : family === "debian" ? debianFixture() : desktopFixture());
+  const result = compareReadiness(nativeReadinessProfiles, withTool(base, "release", release));
+  expect(result).toMatchObject({ state: "verified", admission: "above-floor", blocking: null });
+  expect(result.machineTools[0]).toMatchObject({ tool: "release", status: "admitted", detected: release, comparison: "newer" });
+});
+
+test("a Linux host without VERSION_ID refuses as unparseable, distinct from older", async () => {
+  const { compareReadiness, compareMachineTool, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const result = compareReadiness(nativeReadinessProfiles, withTool(await observe(debianFixture()), "release", "rolling"));
+  expect(result).toMatchObject({ state: "unverified", floor: "debian-x64-engine", blocking: { tool: "release", floor: "13", detected: "rolling", comparison: "unparseable" } });
+  expect(compareMachineTool("release", "24.04", "rolling")).toBe("unparseable");
+  expect(compareMachineTool("release", "24.04", "")).toBe("unparseable");
+  expect(compareMachineTool("release", "24.04", "24.04.1")).toBe("newer");
+  expect(compareMachineTool("release", "15.7.7", "26.0")).toBe("newer");
+  expect(compareMachineTool("release", "15.7.7", "15.7")).toBe("older");
+  expect(compareMachineTool("release", "13", "13.0.0")).toBe("equal");
+});
+
+// Kernel grammars: Ubuntu X.Y.Z-ABI-flavour, Debian X.Y.Z+debN[.serial]-flavour, localversion X.Y[.Z]-name; flavour tails are exact identity.
+const kernelCases: readonly (readonly [floor: string, detected: string, expected: FloorComparison])[] = [
+  ["6.8.0-147-generic", "6.8.0-150-generic", "newer"],
+  ["6.8.0-147-generic", "6.8.0-147-generic", "equal"],
+  ["6.8.0-147-generic", "6.8.0-146-generic", "older"],
+  ["6.8.0-147-generic", "6.17.0-14-generic", "newer"],
+  ["6.8.0-147-generic", "7.0.0-38-generic", "newer"],
+  ["6.6.13-linuxkit", "7.0-linuxkit", "newer"],
+  ["7.0.14-linuxkit", "7.0-linuxkit", "older"],
+  ["7.0.14-linuxkit", "7.0.15-linuxkit", "newer"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.120+deb13.1-cloud-amd64", "newer"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb13.1-cloud-amd64", "newer"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb13-cloud-amd64", "equal"],
+  ["6.12.113+deb13-cloud-amd64", "7.2.11+deb13-cloud-amd64", "newer"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb14-cloud-amd64", "identity"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb13-amd64", "identity"],
+  ["6.17.0-1022-azure", "6.17.0-1030-azure", "newer"],
+  ["6.17.0-1022-azure", "6.17.0-1022-generic", "identity"],
+  ["6.8.0-147-generic", "6.17.0-1022-azure", "identity"],
+  ["7.0.14-linuxkit", "7.0.14-generic", "identity"],
+  ["6.8.0-147-generic", "6.8.0-147-linuxkit", "identity"],
+  ["6.8.0-147-generic", "6.8.0-rc3-generic", "pre-release"],
+  ["7.0.14-linuxkit", "6.18-rc3", "pre-release"],
+  ["7.0.14-linuxkit", "7.1-rc1-linuxkit", "pre-release"],
+  ["6.8.0-147-generic", "6.1.0-14595-g292a089d78d3", "unparseable"],
+  ["6.8.0-147-generic", "6.8.0-147-generic+", "unparseable"],
+  ["6.8.0-147-generic", "6.8.0-147-generic-dirty", "unparseable"],
+  ["7.0.14-linuxkit", "7.0.14-linuxkit-dirty", "unparseable"],
+  ["7.0.14-linuxkit", "7.0.14", "unparseable"],
+  ["6.8.0-147-generic", "fixture-kernel", "unparseable"],
+  ["6.8.0-147-generic", "", "unparseable"],
+];
+test.each(kernelCases)("kernel floor %s compared with %s is %s", async (floor, detected, expected) => {
+  const { compareMachineTool } = await import("../../src/setup/readiness.ts");
+  expect(compareMachineTool("kernel", floor, detected)).toBe(expected);
+});
+
+test("a kernel flavour change refuses as an identity mismatch and a pre-release kernel refuses as pre-release", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const base = await observe(azureRunnerFixture("x64"));
+  expect(compareReadiness(nativeReadinessProfiles, withTool(base, "kernel", "6.17.0-1022-generic"))).toMatchObject({ state: "unverified", floor: null, measuredRows: [], machineTools: [], blocking: null, identity: { matched: false, mismatches: ["kernel"] } });
+  expect(compareReadiness(nativeReadinessProfiles, withTool(base, "kernel", "6.17.0-1030-azure"))).toMatchObject({ state: "verified", admission: "above-floor", floor: "ubuntu-x64-engine-azure" });
+  const ubuntu = await observe(ubuntuFixture());
+  expect(compareReadiness(nativeReadinessProfiles, withTool(ubuntu, "kernel", "6.8.0-rc3-generic"))).toMatchObject({ state: "unverified", floor: "ubuntu-x64-engine", blocking: { tool: "kernel", floor: "6.8.0-147-generic", detected: "6.8.0-rc3-generic", comparison: "pre-release" } });
+  expect(compareReadiness(nativeReadinessProfiles, withTool(ubuntu, "kernel", "6.8.0-147-generic+"))).toMatchObject({ state: "unverified", floor: "ubuntu-x64-engine", blocking: { tool: "kernel", comparison: "unparseable" } });
+});
+
+// Docker components: X.Y.Z with the matched-v rule; pre-release suffixes refuse distinctly; distro repack suffixes and dev builds are unparseable.
+const toolCases: readonly (readonly [tool: FloorTool, floor: string, detected: string, expected: FloorComparison])[] = [
+  ["containerd", "v2.4.2", "v2.4.3", "newer"],
+  ["containerd", "v2.4.2", "2.4.3", "unparseable"],
+  ["containerd", "v2.4.2", "v2.4.0-rc.0", "pre-release"],
+  ["containerd", "v2.4.2", "v2.4.0-beta.0", "pre-release"],
+  ["containerd", "v2.4.2", "2.4.0+unknown", "unparseable"],
+  ["containerd", "v2.4.2", "v2.4.2.m", "unparseable"],
+  ["engine", "29.9.1", "29.10.0-rc.1", "pre-release"],
+  ["engine", "29.9.1", "29.10.0", "newer"],
+  ["engine", "29.9.1", "30.0.0", "newer"],
+  ["engine", "29.9.1", "26.1.5+dfsg1", "unparseable"],
+  ["engine", "29.9.1", "v29.9.1", "unparseable"],
+  ["engine", "29.9.1", "dev", "unparseable"],
+  ["engine", "29.9.1", "pr-1234", "unparseable"],
+  ["cli", "29.9.2", "29.9.1", "older"],
+  ["cli", "29.9.2", "20.10.0-beta1", "pre-release"],
+  ["runc", "1.5.2", "1.6.0-rc.1", "pre-release"],
+  ["runc", "1.5.2", "1.6.0-rc.1+dev", "pre-release"],
+  ["runc", "1.5.2", "1.0.0-rc93", "pre-release"],
+  ["runc", "1.5.2", "1.3.6+ds1", "unparseable"],
+  ["runc", "1.5.2", "1.5.2-dirty", "unparseable"],
+  ["compose", "5.6.0", "5.6.1", "newer"],
+  ["compose", "5.6.0", "v5.6.1", "unparseable"],
+  ["compose", "5.6.0", "5.0.0-alpha.1", "pre-release"],
+  ["compose", "2.38.2", "2.40.0", "newer"],
+  ["desktop", "4.96.1", "4.97.0", "newer"],
+  ["desktop", "4.96.1", "4.96.1", "equal"],
+  ["desktop", "4.96.1", "4.95.9", "older"],
+  ["bun", "1.4.3", "1.4.4", "newer"],
+  ["bun", "1.4.3", "2.0.0", "newer"],
+  ["bun", "1.4.3", "1.4.3-canary.1", "pre-release"],
+  ["bun", "1.4.3", "1.4.3-debug", "pre-release"],
+  ["bun", "1.4.3", "1.4", "unparseable"],
+  ["bun", "1.4.3", "1.4.4.1", "unparseable"],
+  ["bun", "1.4.3", "v1.4.3", "unparseable"],
+];
+test.each(toolCases)("%s floor %s compared with %s is %s", async (tool, floor, detected, expected) => {
+  const { compareMachineTool } = await import("../../src/setup/readiness.ts");
+  expect(compareMachineTool(tool, floor, detected)).toBe(expected);
+});
+
+test("a Docker Engine reporting a distro repack version with an empty platform name refuses", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const base = withTool(await observe(debianFixture()), "engine", "26.1.5+dfsg1");
+  base.info.ServerVersion = "26.1.5+dfsg1";
+  base.server.Platform = { Name: "" };
+  const result = compareReadiness(nativeReadinessProfiles, base);
+  expect(result).toMatchObject({ state: "unverified", admission: null, identity: { matched: false } });
+  expect(result.identity.mismatches).toContain("product");
+  const versioned = compareReadiness(nativeReadinessProfiles, withTool(await observe(debianFixture()), "engine", "26.1.5+dfsg1"));
+  expect(versioned).toMatchObject({ state: "unverified", floor: "debian-x64-engine", blocking: { tool: "engine", floor: "29.9.1", detected: "26.1.5+dfsg1", comparison: "unparseable" } });
+});
+
+test("a Docker Desktop daemon on Linux refuses until a row is measured for it, and an Engine daemon cannot use the Desktop floor", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const linuxDesktop = await observe(ubuntuFixture());
+  linuxDesktop.server.Platform = { Name: "Docker Desktop 4.96.1 (244132)" };
+  const refused = compareReadiness(nativeReadinessProfiles, linuxDesktop);
+  expect(refused).toMatchObject({ state: "unverified", floor: null, identity: { matched: false, mismatches: ["product"] } });
+  const macEngine = await observe(desktopFixture());
+  macEngine.server.Platform = { Name: "Docker Engine - Community" };
+  expect(compareReadiness(nativeReadinessProfiles, macEngine)).toMatchObject({ state: "unverified", floor: null, identity: { matched: false, mismatches: ["product"] } });
+  const unversioned = await observe(desktopFixture());
+  unversioned.server.Platform = { Name: "Docker Desktop" };
+  expect(compareReadiness(nativeReadinessProfiles, unversioned)).toMatchObject({ state: "unverified", floor: "darwin-x64-desktop", blocking: { tool: "desktop", floor: "4.96.1", detected: null, comparison: "unparseable" } });
+});
+
+// Bun.version hides the canary tag; bun --revision carries it. Doctor can pass the revision without changing its output yet.
+test("a canary Bun revision refuses as pre-release while the same plain version is admitted", async () => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const base = await observe(desktopFixture());
+  expect(compareReadiness(nativeReadinessProfiles, { ...base, bun: "1.4.8" })).toMatchObject({ state: "verified", admission: "above-floor" });
+  expect(compareReadiness(nativeReadinessProfiles, { ...base, bun: { version: "1.4.8", revision: "1.4.8+38afee6c8" } })).toMatchObject({ state: "verified", admission: "above-floor" });
+  const canary = compareReadiness(nativeReadinessProfiles, { ...base, bun: { version: "1.4.8", revision: "1.4.8-canary.3+38afee6c8" } });
+  expect(canary).toMatchObject({ state: "unverified", floor: "darwin-x64-desktop", blocking: { tool: "bun", floor: "1.4.3", detected: "1.4.8-canary.3+38afee6c8", comparison: "pre-release" } });
+  expect(compareReadiness(nativeReadinessProfiles, { ...base, bun: { version: "1.4.3", revision: "1.4.3-canary.12+0123456ab" } }).blocking).toMatchObject({ tool: "bun", comparison: "pre-release" });
+  expect(compareReadiness(nativeReadinessProfiles, { ...base, bun: { version: "1.4.3", revision: "1.4.3-debug+0123456ab" } }).blocking).toMatchObject({ tool: "bun", comparison: "pre-release" });
+  // A revision that does not describe the reported version cannot vouch for it.
+  expect(compareReadiness(nativeReadinessProfiles, { ...base, bun: { version: "1.4.3", revision: "1.4.4+0123456ab" } }).blocking).toMatchObject({ tool: "bun", detected: "1.4.4+0123456ab", comparison: "unparseable" });
+});
+
+// Identity facts never use floor comparison.
+test.each([
+  ["cgroupDriver", (observation: Observation) => { observation.info.CgroupDriver = "systemd"; }, ["cgroupDriver"]],
+  ["cgroupVersion", (observation: Observation) => { observation.info.CgroupVersion = "1"; }, ["daemon"]],
+  ["operatingMode", (observation: Observation) => { (observation.info.SecurityOptions as string[]).push("name=rootless"); }, ["operatingMode", "securityOptions"]],
+  ["securityOptions", (observation: Observation) => { (observation.info.SecurityOptions as string[]).push("name=userns"); }, ["securityOptions"]],
+  ["image", (observation: Observation) => { observation.image = smokeImages.arm64!; }, ["image"]],
+  ["architecture", (observation: Observation) => { observation.info.Architecture = "aarch64"; observation.server.Arch = "arm64"; }, ["architecture"]],
+  ["translated", (observation: Observation) => { observation.identity = { ...observation.identity, translated: true }; }, ["translated"]],
+  ["system", (observation: Observation) => { observation.identity = { ...observation.identity, system: "linux", distribution: "ubuntu", release: "24.04" }; }, ["system", "distribution"]],
+  ["daemon limits", (observation: Observation) => { observation.info.MemoryLimit = false; }, ["daemon"]],
+] as const)("Intel Desktop identity drift in %s refuses regardless of versions", async (_fact, drift, mismatches) => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const observation = await observe(desktopFixture());
+  drift(observation);
+  const result = compareReadiness(nativeReadinessProfiles, observation);
+  expect(result).toMatchObject({ state: "unverified", admission: null, floor: null, measuredRows: [], machineTools: [], blocking: null, identity: { matched: false } });
+  for (const fact of mismatches) expect(result.identity.mismatches).toContain(fact);
+});
+
+test("the measured Ubuntu 26.04 row is reported exactly while its floor stays the 24.04 row", async () => {
+  const { compareReadiness, nativeReadinessProfiles, readinessCandidates, matchReadinessServer } = await import("../../src/setup/readiness.ts");
+  const observation = await observe(ubuntuFixture("26.04"));
+  const result = compareReadiness(nativeReadinessProfiles, observation);
+  expect(result).toMatchObject({ state: "verified", admission: "above-floor", floor: "ubuntu-x64-engine", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"] });
+  expect(result.machineTools.filter((row) => row.status === "admitted").map((row) => [row.tool, row.floor, row.detected])).toEqual([["release", "24.04", "26.04"], ["kernel", "6.8.0-147-generic", "7.0.0-38-generic"]]);
+  const candidates = readinessCandidates(nativeReadinessProfiles, observation.identity, "1.4.3", observation.cli, observation.compose, observation.image, observation.info);
+  expect(candidates.map((row) => row.id)).toEqual(["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"]);
+  expect(matchReadinessServer(candidates, observation.identity, observation.server)?.id).toBe("ubuntu-26.04-x64-docker-29.9.1");
+  const interim = withTool(withTool(observation, "release", "24.10"), "kernel", "6.11.0-9-generic");
+  expect(matchReadinessServer(readinessCandidates(nativeReadinessProfiles, interim.identity, "1.4.3", interim.cli, interim.compose, interim.image, interim.info), interim.identity, interim.server)?.id).toBe("ubuntu-24.04-x64-docker-29.9.1");
+});
+
+// Floor derivation: one floor per target from the lowest measured row; every measured row stays as evidence.
+test("the compiled catalog derives one floor per target from its lowest measured rows", async () => {
+  const { deriveReadinessFloors, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const floors = deriveReadinessFloors(nativeReadinessProfiles);
+  expect(floors.map((floor) => floor.id)).toEqual(["ubuntu-x64-engine", "ubuntu-arm64-engine-azure", "ubuntu-x64-engine-azure", "debian-x64-engine", "darwin-x64-desktop"]);
+  expect(floors.find((floor) => floor.id === "ubuntu-x64-engine")).toEqual({
+    id: "ubuntu-x64-engine", ciOnly: false, target: { system: "linux", distribution: "ubuntu", architecture: "x64", product: "engine", kernel: "generic" },
+    rows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"],
+    versions: { release: "24.04", kernel: "6.8.0-147-generic", bun: "1.4.3", cli: "29.9.1", engine: "29.9.1", compose: "5.6.0", containerd: "v2.4.2", runc: "1.5.2" },
+  });
+  expect(floors.find((floor) => floor.id === "darwin-x64-desktop")).toEqual({
+    id: "darwin-x64-desktop", ciOnly: false, target: { system: "darwin", distribution: null, architecture: "x64", product: "desktop", kernel: "linuxkit" },
+    rows: ["darwin-15.7.7-x64-desktop-4.96.1"],
+    versions: { release: "15.7.7", kernel: "7.0.14-linuxkit", bun: "1.4.3", desktop: "4.96.1", cli: "29.9.2", engine: "29.9.2", compose: "5.6.0", containerd: "v2.4.2", runc: "1.5.2" },
+  });
+  expect(floors.find((floor) => floor.id === "debian-x64-engine")).toMatchObject({ ciOnly: false, target: { kernel: "deb13-cloud-amd64" }, versions: { release: "13", kernel: "6.12.113+deb13-cloud-amd64" } });
+  expect(floors.find((floor) => floor.id === "ubuntu-x64-engine-azure")).toMatchObject({ ciOnly: true, target: { architecture: "x64", kernel: "azure" }, rows: ["ubuntu-24.04-x64-docker-28.0.4-azure"], versions: { cli: "28.0.4", compose: "2.38.2", containerd: "v2.4.1" } });
+  expect(floors.find((floor) => floor.id === "ubuntu-arm64-engine-azure")).toMatchObject({ ciOnly: true, target: { architecture: "arm64", kernel: "azure" }, rows: ["ubuntu-24.04-arm64-docker-28.0.4-azure"] });
+});
+
+test("adding a newer measured row does not raise the published floor; the lowest value of each tool defines it", async () => {
+  const { deriveReadinessFloors, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const ubuntu = nativeReadinessProfiles.find((row) => row.id === "ubuntu-24.04-x64-docker-29.9.1")!;
+  const before = deriveReadinessFloors(nativeReadinessProfiles).find((floor) => floor.id === "ubuntu-x64-engine")!;
+  const newer = { ...ubuntu, id: "ubuntu-26.10-x64-docker-30.0.0", host: { ...ubuntu.host, release: "26.10" }, bun: "1.5.0", cli: { version: "30.0.0", commit: "1234567" }, engine: { ...ubuntu.engine, version: "30.0.0", commit: "89abcde", kernel: "7.2.0-12-generic" }, containerd: { version: "v2.5.0", commit: "0".repeat(40) }, runc: { version: "1.6.0", commit: "v1.6.0-0-g0000000" }, compose: "6.0.0", evidence: { readinessSha256: "a".repeat(64), isolationSha256: "b".repeat(64) } };
+  const withNewer = deriveReadinessFloors([...nativeReadinessProfiles, newer]).find((floor) => floor.id === "ubuntu-x64-engine")!;
+  expect(withNewer.versions).toEqual(before.versions);
+  expect(withNewer.rows).toEqual([...before.rows, "ubuntu-26.10-x64-docker-30.0.0"]);
+  // A lower row lowers the floor per tool: the floor is the componentwise minimum, not one row's whole tuple.
+  const mixed = { ...newer, id: "ubuntu-22.04-x64-docker-30.0.0", host: { ...ubuntu.host, release: "22.04" }, engine: { ...newer.engine, kernel: "6.5.0-10-generic" }, evidence: { readinessSha256: "c".repeat(64), isolationSha256: "d".repeat(64) } };
+  const withMixed = deriveReadinessFloors([...nativeReadinessProfiles, mixed]).find((floor) => floor.id === "ubuntu-x64-engine")!;
+  expect(withMixed.versions).toEqual({ ...before.versions, release: "22.04", kernel: "6.5.0-10-generic" });
+});
+
+// Catalog integrity: floors are the only policy, so rows carry no admission field and every row must parse under its grammars.
+test.each([
+  ["an admission field", { ...policy, admission: "minimum" }],
+  ["an exact admission field", { ...policy, admission: "exact" }],
+  ["an unparseable kernel", { ...policy, engine: { ...policy.engine, kernel: "fixture-kernel" } }],
+  ["a pre-release kernel", { ...policy, engine: { ...policy.engine, kernel: "7.1.0-rc2-linuxkit" } }],
+  ["a release-less host", { ...policy, host: { ...policy.host, release: "rolling" } }],
+  ["a pre-release Bun", { ...policy, bun: "1.4.3-canary.1" }],
+  ["a versionless Desktop platform", { ...policy, engine: { ...policy.engine, platform: "Docker Desktop" } }],
+])("a compiled catalog row with %s invalidates the catalog", async (_shape, row) => {
+  const { snapshotReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  expect(snapshotReadinessProfiles([row as never])).toEqual([]);
+  const fixture = desktopFixture();
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [row as never]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(fixture.commands.some((args) => args[3] === "version")).toBe(false);
+});
+
+test("two measured rows whose targets would share a floor id invalidate the catalog instead of merging kernel flavours", async () => {
+  const { snapshotReadinessProfiles, deriveReadinessFloors } = await import("../../src/setup/readiness.ts");
+  const lowlatency = { ...policy, id: "synthetic-lowlatency", engine: { ...policy.engine, kernel: "7.0.14-lowlatency" }, evidence: { readinessSha256: "3".repeat(64), isolationSha256: "4".repeat(64) } };
+  expect(snapshotReadinessProfiles([policy, lowlatency])).toEqual([]);
+  expect(deriveReadinessFloors([policy, lowlatency])).toEqual([]);
+  expect(snapshotReadinessProfiles([policy])).toHaveLength(1);
 });

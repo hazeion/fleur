@@ -190,7 +190,7 @@ def accepted_recovery_guest(report, source):
 
 
 ARCH_SOURCES = ('scripts/observe-arch-boot.ts','scripts/arch-boot-observation.py','scripts/inspect-arch-image.py',
-    'scripts/arch-boot-image.json','scripts/qualify-debian-kvm.py','scripts/native-kvm-host-tools.json',
+    'scripts/arch-boot-image.json','scripts/qualify-debian-kvm.py','scripts/bun-floor.json','scripts/native-kvm-host-tools.json',
     'scripts/verify-fresh-linux.ts','scripts/verify-debian-recovery.ts','scripts/owned-guest-seed.ts',
     'scripts/observe-owned-guest-custody.ts','scripts/observe-fresh-linux-boot.ts','scripts/retained-ssh.ts',
     'scripts/retained-ssh.py','experiments/compatibility/runtime-probe/owned_guest.py')

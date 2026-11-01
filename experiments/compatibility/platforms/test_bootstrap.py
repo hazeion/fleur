@@ -4,6 +4,7 @@ import ctypes
 import errno
 import io
 import json
+from pathlib import Path
 import subprocess
 import sys
 import unittest
@@ -64,6 +65,25 @@ class NativeIdentityTests(unittest.TestCase):
                 self.assertEqual(report.get('native_identity_verified', False), native)
                 self.assertEqual(report['failure_stage'], 'runtime archive' if native else 'host identity')
                 self.assertEqual(download.call_count, 1 if native else 0)
+                if native:
+                    # The archive comes from the release the floor record names, never a repeated literal.
+                    self.assertEqual(download.call_args[0][0], 'https://github.com/oven-sh/bun/releases/download/bun-v'
+                                     + FLOOR['version'] + '/bun-darwin-x64.zip')
+
+
+REPOSITORY = Path(__file__).resolve().parents[3]
+FLOOR = json.loads((REPOSITORY / 'scripts/bun-floor.json').read_text())
+
+
+class FloorRecordTests(unittest.TestCase):
+    def test_bootstrap_reads_the_release_floor_record_that_matches_engines(self):
+        record = bootstrap.floor_record()
+        self.assertEqual(record, FLOOR)
+        engines = json.loads((REPOSITORY / 'package.json').read_text())['engines']['bun']
+        self.assertEqual('>=' + record['version'], engines)
+        self.assertEqual(set(record['archives']), {'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64'})
+        for archive in record['archives'].values():
+            self.assertRegex(archive['sha256'], r'^[a-f0-9]{64}$')
 
 
 if __name__ == '__main__':

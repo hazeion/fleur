@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { bunFloor } from "../../src/project/release.ts";
 
 interface Job { needs?: string | string[]; if?: string; steps?: { run?: string }[] }
 interface Workflow { on: Record<string, unknown>; jobs: Record<string, Job> }
@@ -87,4 +88,76 @@ test("the read-runtime job pulls the pinned development images before the runtim
   expect(script).toContain("smokeImages");
   expect(script).toContain("developmentPostgresImage");
   expect(script).not.toMatch(/sha256:[a-f0-9]{64}/);
+});
+
+// The Bun floor (CONTEXT.md "Version floor") is declared once in package.json `engines.bun`. CI and the
+// fresh-Linux verifiers install exactly that release, so its version and official archive digests live in one
+// record that Python and TypeScript read without a build step. Raising the floor is a record update, not a hunt.
+const repository = new URL("../../", import.meta.url);
+const read = (path: string) => readFileSync(new URL(path, repository), "utf8");
+interface FloorRecord { formatVersion: 1; version: string; archives: Record<string, { name: string; sha256: string }> }
+const floorRecord = (): FloorRecord => JSON.parse(read("scripts/bun-floor.json")) as FloorRecord;
+
+test("the Bun floor record equals engines.bun and names one official archive digest per supported platform", () => {
+  const record = floorRecord();
+  expect(record.formatVersion).toBe(1);
+  expect(record.version).toMatch(/^\d+\.\d+\.\d+$/);
+  expect(`>=${record.version}`).toBe(bunFloor);
+  expect(Object.keys(record.archives).sort()).toEqual(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]);
+  for (const [platform, archive] of Object.entries(record.archives)) {
+    const [os, arch] = platform.split("-");
+    expect(archive.name, platform).toBe(`bun-${os}-${arch === "arm64" ? "aarch64" : arch}`);
+    expect(archive.sha256, platform).toMatch(/^[a-f0-9]{64}$/);
+  }
+});
+
+test("every Bun installer, verifier and fixture reads the floor record instead of repeating its version or digests", () => {
+  const record = floorRecord();
+  const readers = [
+    "experiments/compatibility/platforms/bootstrap.py", "scripts/qualify-debian-kvm.py", "scripts/verify-fresh-linux.ts", "scripts/verify-debian-recovery.ts",
+    "scripts/observe-fresh-linux-preparation.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py",
+    "tests/cli/guest-preparation.test.ts", "tests/cli/fresh-linux-preparation.test.ts", "tests/cli/fixtures/fresh-linux-enrollment-main.py",
+  ];
+  for (const path of readers) {
+    const source = read(path);
+    expect(source, path).toContain("bun-floor.json");
+    expect(source, path).not.toMatch(/bun-v\d/);
+    expect(source, path).not.toMatch(new RegExp(`["']${record.version.replaceAll(".", "\\.")}["']`));
+    for (const archive of Object.values(record.archives)) expect(source, path).not.toContain(archive.sha256);
+  }
+  // Installers install a machine tool at the floor; they do not express the admission rule, so the message names the floor.
+  expect(read("experiments/compatibility/platforms/bootstrap.py")).toContain("installed Bun differs from the release floor");
+  expect(read("experiments/compatibility/platforms/bootstrap.py")).not.toContain("exact pin");
+});
+
+test("every CI job that runs Bun installs exactly the floor release first and no workflow installs a different Bun", () => {
+  const record = floorRecord();
+  for (const name of ["cli", "native-setup", "compatibility"]) {
+    const text = read(`.github/workflows/${name}.yml`);
+    expect(text, name).not.toMatch(/bun-v\d/);
+    expect(text, name).not.toMatch(/setup-bun|bun-version|bun\.sh\/install/);
+    for (const archive of Object.values(record.archives)) expect(text, name).not.toContain(archive.sha256);
+    expect(text, name).not.toContain(`= ${record.version}`);
+    const workflow = Bun.YAML.parse(text) as { jobs: Record<string, { steps?: { uses?: string; run?: string }[] }> };
+    for (const [job, definition] of Object.entries(workflow.jobs)) {
+      const steps = definition.steps ?? [];
+      const provides = (run = "") => run.includes("experiments/compatibility/platforms/bootstrap.py") || run.includes("releases/download/bun-");
+      const provider = steps.findIndex((step) => provides(step.run));
+      for (const [index, step] of steps.entries()) {
+        const run = step.run ?? "";
+        if (run.includes("releases/download/bun-")) {
+          // A direct download derives the release and its digest from the record at run time, then checks the exact version.
+          expect(run, `${name}/${job}`).toContain("scripts/bun-floor.json");
+          expect(run, `${name}/${job}`).toContain("/bun-v$floor/");
+          expect(run, `${name}/${job}`).toContain('--version)" = "$floor"');
+          expect(run, `${name}/${job}`).toContain('"$sha256  ');
+        }
+        // Any step invoking Bun from PATH or an owned path runs after this job's floor installation.
+        if (/(^|[\s(;&|"])bun\s/m.test(run) || run.includes("FLEUR_EXPERIMENT_BUN") || run.includes("fleur-bun/")) {
+          expect(provider, `${name}/${job} step ${index}`).toBeGreaterThanOrEqual(0);
+          expect(index, `${name}/${job} step ${index}`).toBeGreaterThanOrEqual(provider);
+        }
+      }
+    }
+  }
 });

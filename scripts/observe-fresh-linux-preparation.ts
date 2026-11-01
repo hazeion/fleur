@@ -1,4 +1,5 @@
 import { startRetainedSsh } from "./retained-ssh.ts";
+import bunFloor from "./bun-floor.json";
 import type { Readable } from "node:stream";
 import type { BootTarget } from "./observe-fresh-linux-boot.ts";
 interface Stage { stage: string; state: "started" | "completed"; hostElapsedMs: number; guestElapsedMs?: number }
@@ -12,7 +13,7 @@ export interface PreparationObservation {
 }
 const bunStages = ["archive-authentication", "zip-entry-validation", "executable-extraction", "retained-output-authentication", "archive-reauthentication", "output-custody", "cleanup"];
 const artifactStages = ["bun-preparation", "candidate-extraction", "restriction-extraction", "complete"];
-const archiveSha256 = "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18";
+const archiveSha256 = bunFloor.archives["linux-x64"].sha256;
 const event = (stage: string, state: string) => `printf '${JSON.stringify({ formatVersion: 1, scope: "guest-artifact-preparation-event", stage, state })}\\n'`;
 /** The original ten-second preparation boundary, with allowlisted partial evidence. */
 export async function observePreparation(target: BootTarget, remainingBudgetMs = 10000): Promise<PreparationObservation> {

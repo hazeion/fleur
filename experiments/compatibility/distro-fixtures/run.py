@@ -101,6 +101,11 @@ def main():
                                        if path.is_file() and ('node_modules' not in path.parts)
                                        and (path.name == 'bun.lock' or path.suffix == '.patch'
                                             or path.name in ('bootstrap.py', 'arch-download.sh'))}
+            # The container bootstrap climbs to the nearest `scripts/bun-floor.json`; copy the one release floor record.
+            floor_record = source.parent.parent / 'scripts' / 'bun-floor.json'
+            report['fixture_inputs']['scripts/bun-floor.json'] = hashlib.sha256(floor_record.read_bytes()).hexdigest()
+            (context / 'scripts').mkdir()
+            shutil.copyfile(floor_record, context / 'scripts' / 'bun-floor.json')
             for fixture in ('platforms', 'tooling', 'rendering', 'distro-fixtures'):
                 shutil.copytree(source / fixture, context / fixture,
                                 ignore=shutil.ignore_patterns('node_modules', '__pycache__', 'dist', 'test-results', 'playwright-report'))

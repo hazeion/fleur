@@ -2,16 +2,18 @@
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import sys
 import time
 import zipfile
 
-ARCHIVE_SHA256 = "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"
 MAX_ARCHIVE = 160 * 1024 * 1024
 MAX_EXECUTABLE = 256 * 1024 * 1024
-ENTRY = "bun-linux-x64/bun"
+MAX_RECORD = 4096
+ARCHIVE = "bun-linux-x64"
+ENTRY = ARCHIVE + "/bun"
 report = {"formatVersion": 1, "scope": "guest-bun-preparation", "ok": False}
 parent = None
 created = None
@@ -39,6 +41,24 @@ def identity(value):
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
+def release_floor(parent):
+    """Read the official x64 archive digest of the release floor Bun from the record the host staged beside the archive.
+
+    The host authenticates `bun.zip` against the same tracked record before staging both files, then checks the
+    reported digest against it again; arguments still cannot override the pin.
+    """
+    descriptor = os.open("bun-floor.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(descriptor, "rb") as record_file:
+        info = os.fstat(record_file.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or not 0 < info.st_size <= MAX_RECORD:
+            raise RuntimeError("Release floor record is not an owned bounded regular file")
+        record = json.loads(record_file.read(MAX_RECORD))
+    archive = record["archives"]["linux-x64"]
+    if record.get("formatVersion") != 1 or archive.get("name") != ARCHIVE or not re.fullmatch(r"[a-f0-9]{64}", archive.get("sha256", "")):
+        raise RuntimeError("Release floor record malformed")
+    return archive["sha256"]
+
+
 def authenticate(archive):
     archive.seek(0)
     digest = hashlib.sha256()
@@ -61,6 +81,7 @@ try:
     directory = os.fstat(parent)
     if directory.st_uid != os.getuid() or directory.st_mode & 0o077:
         raise RuntimeError("Guest preparation requires a private owned directory")
+    ARCHIVE_SHA256 = release_floor(parent)
     descriptor = os.open("bun.zip", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     with os.fdopen(descriptor, "rb") as archive:
         original = os.fstat(archive.fileno())
@@ -84,7 +105,7 @@ try:
                 if item.filename == ENTRY:
                     if item.is_dir() or kind != stat.S_IFREG or item.file_size <= 0 or item.file_size > MAX_EXECUTABLE:
                         raise RuntimeError("Bun entry is not a bounded regular file")
-                elif item.filename != "bun-linux-x64/" or not item.is_dir() or kind != stat.S_IFDIR or item.file_size != 0:
+                elif item.filename != ARCHIVE + "/" or not item.is_dir() or kind != stat.S_IFDIR or item.file_size != 0:
                     raise RuntimeError("Unadmitted archive entry")
                 if item.compress_size < 0 or item.compress_size > MAX_ARCHIVE:
                     raise RuntimeError("Compressed entry bound exceeded")

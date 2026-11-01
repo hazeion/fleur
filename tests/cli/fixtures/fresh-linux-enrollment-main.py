@@ -185,7 +185,7 @@ def envelope(command,data,code,error):
  print(json.dumps({'formatVersion':1,'command':command,'ok':False,'truncated':False,'data':data,'error':{'code':error}}));save();sys.exit(code)
 UBUNTU_ROWS=['ubuntu-24.04-x64-docker-29.9.1','ubuntu-26.04-x64-docker-29.9.1']
 def ordinary_release(distribution,version,kernel,evidence,rows):
- floors={'release':'24.04' if distribution=='ubuntu' else '13','kernel':'6.8.0-147-generic' if distribution=='ubuntu' else '6.12.113+deb13-cloud-amd64','bun':'1.4.3','cli':'29.9.1','engine':'29.9.1','compose':'5.6.0','containerd':'v2.4.2','runc':'1.5.2'}
+ floors={'release':'24.04' if distribution=='ubuntu' else '13','kernel':'6.8.0-147-generic' if distribution=='ubuntu' else '6.12.113+deb13-cloud-amd64','bun':json.loads((root/'lab/bun-floor.json').read_text())['version'],'cli':'29.9.1','engine':'29.9.1','compose':'5.6.0','containerd':'v2.4.2','runc':'1.5.2'}
  detected={**floors,'release':version,'kernel':kernel}
  return {'state':'verified','floor':f'{distribution}-x64-engine','admission':'measured','measuredRows':rows,'machineTools':[{'tool':tool,'status':'verified','floor':floor,'detected':detected[tool],'comparison':'equal' if floor==detected[tool] else 'newer'} for tool,floor in floors.items()],'evidence':{'readinessSha256':evidence,'isolationSha256':evidence}}
 def admitted(command):

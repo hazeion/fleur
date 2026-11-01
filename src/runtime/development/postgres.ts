@@ -157,11 +157,11 @@ export class DevelopmentPostgres {
   }
 
   async tools(): Promise<string> {
-    const metadata = await this.#inspect(), directory = join(this.#bound.directory, "pg-tools");
+    const metadata = await this.#inspect(), directory = join(this.#bound.directory, "pg-tools-v2");
     await privateDirectory(directory);
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
     for (const tool of ["pg_dump", "pg_restore", "psql"]) {
-      const script = `#!/bin/sh\nexec docker --host ${quote(this.#record.endpoint)} exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGHOST=127.0.0.1 --env PGPORT=5432 ${quote(metadata.Id)} ${tool} "$@"\n`;
+      const script = `#!/bin/sh\nexec docker --host ${quote(this.#record.endpoint)} exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGAPPNAME --env PGOPTIONS --env PGCONNECT_TIMEOUT --env PGHOST=127.0.0.1 --env PGPORT=5432 ${quote(metadata.Id)} ${tool} "$@"\n`;
       await publishPrivateFile(join(directory, tool), script, 0o700);
     }
     return directory;

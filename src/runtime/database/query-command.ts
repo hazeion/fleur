@@ -20,7 +20,7 @@ export const queryCommand: CommandDefinition = {
       if (flag === "--sql" && (!value.trim() || Buffer.byteLength(value) > 65536)) return invalid();
       if (flag === "--limit" && (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 500)) return invalid();
     }
-    return sources === 1 ? undefined : invalid();
+    return sources === 1 && args.filter((arg, index) => index % 2 === 0 && arg === "--param").length <= 65534 ? undefined : invalid();
   },
   async run({ args, project, timeoutSeconds, timeoutExplicit }) {
     if (timeoutExplicit && timeoutSeconds > 30) return invalid();
@@ -51,7 +51,7 @@ export const queryCommand: CommandDefinition = {
       if (error instanceof QueryRejected) return failure("db query", 1, { code: "DATABASE_QUERY_REJECTED", message: error.message, actual: error.diagnostic, actions: [{ command: "fleur db query --help", description: "Use one SELECT, WITH without data-modifying parts, VALUES or TABLE statement with bound text parameters." }] });
       const shortfall = privilegeShortfall(error);
       if (shortfall) return failure("db query", 4, { code: "DATABASE_PRIVILEGE_INSUFFICIENT", message: "The restricted development diagnostic credential could not be verified. No diagnostic statement ran.", expected: { capability: shortfall.capability }, actions: [{ command: "fleur db query --help", description: "Review the diagnostic credential requirements under Development SQL diagnosis in package docs/maintenance.md." }] });
-      return databaseFailure("db query", error, ["DATABASE_UNAVAILABLE", "MAINTENANCE_BUSY", "QUERY_TIMEOUT"], { command: "fleur db query --help", description: "Check the read-only statement and development database state before retrying." });
+      return databaseFailure("db query", error, ["ARGUMENT_INVALID", "DATABASE_UNAVAILABLE", "MAINTENANCE_BUSY", "QUERY_TIMEOUT", "RESULT_TOO_LARGE"], { command: "fleur db query --help", description: "Check the read-only statement and development database state before retrying." });
     }
   },
 };

@@ -21,7 +21,7 @@ export class QueryRejected extends Error {
   readonly diagnostic: { readonly [key: string]: string };
   constructor(error: PostgresQueryError, secrets: readonly string[]) {
     const redact = redactor(secrets);
-    super(redact(error.message));
+    super(redact(error.message).slice(0, 4096));
     this.diagnostic = Object.fromEntries([["sqlstate", error.fields.C], ["message", error.fields.M], ["position", error.fields.P], ["detail", error.fields.D], ["hint", error.fields.H]].flatMap(([key, value]) => value === undefined ? [] : [[key!, redact(value).slice(0,4096)]]));
   }
 }
@@ -39,7 +39,7 @@ export async function developmentQuery(project: string, options: QueryOptions) {
 
 /** Trusted core, called only after the resource verified Docker, cluster and application identity. */
 export async function queryDevelopmentDatabase(url: string, password: string, project: string, options: QueryOptions, config: MaintenanceConfiguration) {
-  if (Buffer.byteLength(options.sql) > 65536 || !options.sql.trim() || options.sql.includes("\0") || options.params.length > 1000 || options.params.some(value => value.includes("\0")) || !Number.isInteger(options.limit) || options.limit < 1 || options.limit > 500 || options.timeoutMs <= 0 || options.timeoutMs > 30000) throw new Error("ARGUMENT_INVALID");
+  if (Buffer.byteLength(options.sql) > 65536 || !options.sql.trim() || options.sql.includes("\0") || options.params.length > 65534 || options.params.some(value => value.includes("\0")) || !Number.isInteger(options.limit) || options.limit < 1 || options.limit > 500 || options.timeoutMs <= 0 || options.timeoutMs > 30000) throw new Error("ARGUMENT_INVALID");
   const started = performance.now(), remaining = () => Math.max(1, options.timeoutMs - (performance.now() - started));
   const lease = await MaintenanceLease.acquire(url, false, { ...config, timeoutMs: remaining() }, true);
   let wire: QueryWire | undefined, admin: SQL | undefined;
@@ -49,7 +49,7 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
   const closeQuery = async (terminate: boolean) => {
     // Destroying a socket alone does not interrupt pg_sleep or a CPU-bound statement.
     const session = wire;
-    if (terminate && session?.backend !== undefined) await lease.sql.unsafe("SELECT pg_terminate_backend($1::integer,1000)", [session.backend]);
+    if (terminate && session?.backend !== undefined) await lease.sql.unsafe("SELECT pg_terminate_backend(pid,1000) FROM pg_stat_activity WHERE pid=$1::integer AND usename=$2 AND datname=$3", [session.backend, agentQueryRole, lease.target.database]);
     if (!terminate) await session?.query("ROLLBACK").catch(() => {});
     session?.close();
   };
@@ -77,7 +77,7 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
     const wrapped = `SELECT * FROM (\n${options.sql}\n) AS fleur_query LIMIT $${options.params.length + 1}::bigint`;
     const result = await wire.query(wrapped, [...options.params, String(options.limit + 1)], inspectionRowBytes);
     const endpoint = new URL(url);
-    const redact = redactor([url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, String(lease.target.port)]);
+    const redact = redactor([url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, lease.target.address.split("/")[0]!, String(lease.target.port)]);
     const columns: { name: string; type: string }[] = [];
     for (const column of result.columns) {
       const type = (await admin.unsafe("SELECT format_type($1::oid,$2::integer) AS name", [column.oid, column.modifier]))[0].name;
@@ -95,7 +95,7 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
     if (expired || error instanceof PostgresQueryError && error.fields.C === "57014" || error instanceof SQL.PostgresError && error.errno === "57014") { expired = true; throw new Error("QUERY_TIMEOUT"); }
     if (error instanceof PostgresQueryError) {
       const endpoint = new URL(url);
-      throw new QueryRejected(error, [url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, String(lease.target.port)]);
+      throw new QueryRejected(error, [url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, lease.target.address.split("/")[0]!, String(lease.target.port)]);
     }
     if (error instanceof PrivilegeInsufficient) throw error;
     if (unavailability(error)) throw new Error("DATABASE_UNAVAILABLE");

@@ -56,10 +56,20 @@ test("diagnostics truncate at row and byte bounds, expose empty result columns a
 
 test("a host deadline terminates the agent backend even if SQL disables its statement timeout", async () => {
   const started = performance.now();
-  await expect(query("SELECT set_config('statement_timeout','0',true), pg_sleep(10)", [], 100, 700)).rejects.toThrow("QUERY_TIMEOUT");
-  expect(performance.now() - started).toBeLessThan(3000);
-  expect((await admin.unsafe("SELECT count(*)::text AS count FROM pg_stat_activity WHERE usename='fleur_agent_query_v1'"))[0].count).toBe("0");
-  expect((await query("VALUES ('after timeout')")).rows).toEqual([["after timeout"]]);
+  const pending = query("SELECT set_config('statement_timeout','0',true), pg_sleep(20)", [], 100, 4000);
+  pending.catch(() => {});
+  let running = false;
+  try {
+    while (!running && performance.now() - started < 3500) {
+      running = (await admin.unsafe("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='fleur_agent_query_v1' AND state='active' AND query LIKE '%pg_sleep(20)%') AS running"))[0].running;
+      if (!running) await Bun.sleep(10);
+    }
+    expect(running).toBe(true);
+    await expect(pending).rejects.toThrow("QUERY_TIMEOUT");
+    expect(performance.now() - started).toBeLessThan(5500);
+    expect((await admin.unsafe("SELECT count(*)::text AS count FROM pg_stat_activity WHERE usename='fleur_agent_query_v1'"))[0].count).toBe("0");
+    expect((await query("VALUES ('after timeout')")).rows).toEqual([["after timeout"]]);
+  } finally { await pending.catch(() => {}); }
 }, 10000);
 
 test("agent authority cannot connect to control or temporary targets and repairs grants before another request", async () => {
@@ -104,8 +114,8 @@ test("legal pg-prefixed schemas and owner-rights views cannot expose internal da
 }, 10000);
 
 test("automatic identity details remain private even when selected by SQL", async () => {
-  const result = await query("SELECT current_user,inet_server_addr()::text,inet_server_port()::text");
-  expect(result.rows).toEqual([["[redacted]", "[redacted]", "[redacted]"]]);
+  const result = await query("SELECT current_user,inet_server_addr()::text,inet_server_port()::text,host(inet_server_addr())");
+  expect(result.rows).toEqual([["[redacted]", "[redacted]", "[redacted]", "[redacted]"]]);
 });
 
 test("application advisory locks give the diagnostic role no authority over Fleur's control fences", async () => {
@@ -132,11 +142,30 @@ test("inheritance roots and PUBLIC column grants cannot bypass private-schema au
 
 test("administrative role verification obeys the host deadline while a table lock blocks grants", async () => {
   const blocker = new SQL(pg.url, { max: 1 });
+  let pending: ReturnType<typeof query> | undefined;
   try {
     await blocker.unsafe("BEGIN; LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
     const started = performance.now();
-    await expect(query("SELECT 1", [], 100, 700)).rejects.toThrow("QUERY_TIMEOUT");
-    expect(performance.now() - started).toBeLessThan(2500);
+    pending = query("SELECT 1", [], 100, 2000); pending.catch(() => {});
+    let blocked = false;
+    while (!blocked && performance.now() - started < 1700) {
+      blocked = (await admin.unsafe("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE 'GRANT%' AND wait_event_type='Lock') AS blocked"))[0].blocked;
+      if (!blocked) await Bun.sleep(10);
+    }
+    expect(blocked).toBe(true);
+    await expect(pending).rejects.toThrow("QUERY_TIMEOUT");
+    expect(performance.now() - started).toBeLessThan(3500);
     expect((await admin.unsafe("SELECT count(*)::text AS count FROM pg_stat_activity WHERE query LIKE 'GRANT%' AND state='active'"))[0].count).toBe("0");
-  } finally { await blocker.unsafe("ROLLBACK"); await blocker.close(); }
+  } finally { await blocker.unsafe("ROLLBACK"); await blocker.close(); await pending?.catch(() => {}); }
+});
+
+test("an indexed partition tree entirely in public remains readable", async () => {
+  await admin.unsafe("CREATE TABLE public.partition_root(id integer PRIMARY KEY) PARTITION BY RANGE(id); CREATE TABLE public.partition_child PARTITION OF public.partition_root FOR VALUES FROM(0) TO(10); INSERT INTO public.partition_root VALUES(1)");
+  try { expect((await query("TABLE public.partition_root")).rows).toEqual([["1"]]); }
+  finally { await admin.unsafe("DROP TABLE public.partition_root CASCADE"); }
+});
+
+test("more than one thousand bound text parameters retain their declared positions", async () => {
+  const params = Array.from({ length: 1001 }, (_, index) => `text-${index + 1}`);
+  expect((await query("SELECT $1::text,$1001::text", params)).rows).toEqual([["text-1", "text-1001"]]);
 });

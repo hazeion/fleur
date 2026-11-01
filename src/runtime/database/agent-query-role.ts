@@ -34,13 +34,13 @@ export async function provisionAgentQueryRole(control: SQL, password: string, ap
     // PUBLIC cannot carry CONNECT/TEMP into current or future verification targets.
     const appName = application ? String((await run(application, "SELECT current_database() AS name"))[0].name) : undefined;
     await sql.begin(async policy => {
-    const owner = String((await run(policy, "SELECT current_user AS name"))[0].name);
-    for (const row of await run(policy, "SELECT datname,pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname <> 'template0'")) {
-      const database = quote(String(row.datname));
-      await run(policy, `REVOKE CONNECT,TEMP ON DATABASE ${database} FROM PUBLIC,${name}`);
-      await run(policy, `GRANT CONNECT,TEMP ON DATABASE ${database} TO ${quote(String(row.owner))},${quote(owner)}`);
-    }
-    if (appName) await run(policy, `GRANT CONNECT ON DATABASE ${quote(appName)} TO ${name}`);
+      const owner = String((await run(policy, "SELECT current_user AS name"))[0].name);
+      for (const row of await run(policy, "SELECT datname,pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname <> 'template0'")) {
+        const database = quote(String(row.datname));
+        await run(policy, `REVOKE CONNECT,TEMP ON DATABASE ${database} FROM PUBLIC,${name}`);
+        await run(policy, `GRANT CONNECT,TEMP ON DATABASE ${database} TO ${quote(String(row.owner))},${quote(owner)}`);
+      }
+      if (appName) await run(policy, `GRANT CONNECT ON DATABASE ${quote(appName)} TO ${name}`);
     });
     if (application) {
       // An unexpected owned object is not safe to repair by granting privileges.
@@ -59,7 +59,7 @@ export async function provisionAgentQueryRole(control: SQL, password: string, ap
         SELECT inhparent,inhrelid FROM pg_inherits UNION ALL SELECT tree.root,i.inhrelid FROM tree JOIN pg_inherits i ON i.inhparent=tree.node)
         SELECT EXISTS(SELECT 1 FROM tree JOIN pg_class root ON root.oid=tree.root JOIN pg_namespace rn ON rn.oid=root.relnamespace
           JOIN pg_class child ON child.oid=tree.node JOIN pg_namespace cn ON cn.oid=child.relnamespace
-          WHERE rn.nspname='public' AND (cn.nspname<>'public' OR child.relkind NOT IN ('r','p') OR child.relrowsecurity)) AS unsafe`);
+          WHERE rn.nspname='public' AND root.relkind IN ('r','p') AND (cn.nspname<>'public' OR child.relkind NOT IN ('r','p') OR child.relrowsecurity)) AS unsafe`);
       if (descendants[0]?.unsafe !== false) throw denied();
       // PUBLIC grants can otherwise bypass an explicit REVOKE from the query role.
       const safe = await run(application, `SELECT NOT has_database_privilege($1,current_database(),'TEMP,CREATE')

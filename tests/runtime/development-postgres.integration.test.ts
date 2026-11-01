@@ -99,7 +99,7 @@ const child=Bun.spawn([${JSON.stringify(realDocker)},...args],{stdin:"inherit",s
     const observations = (await readFile(requests, "utf8")).trim().split("\n").map(value => JSON.parse(value) as {passwordArgument:boolean;privateHandoff:boolean});
     expect(observations).toEqual([{ passwordArgument: false, privateHandoff: true }]);
     expect((await readdir(bound.directory)).includes("postgres.env")).toBe(false);
-    const sentinel = join(root, "foreign.txt"), tools = join(bound.directory, "pg-tools");
+    const sentinel = join(root, "foreign.txt"), tools = join(bound.directory, "pg-tools-v2");
     await writeFile(sentinel, "foreign content"); await mkdir(tools, { mode: 0o700 });
     await symlink(sentinel, join(tools, "pg_dump"));
     await expect(resource!.tools()).rejects.toThrow("RECOVERY_REQUIRED");
@@ -110,6 +110,13 @@ const child=Bun.spawn([${JSON.stringify(realDocker)},...args],{stdin:"inherit",s
     expect((await stat(join(tools, "pg_dump"))).mode & 0o7777).toBe(0o700);
     expect(await resource!.tools()).toBe(tools);
     expect(await readFile(join(tools, "pg_dump"), "utf8")).toBe(generated);
+    const privateRecord = JSON.parse(await readFile(join(bound.directory, "postgres.json"), "utf8"));
+    const tag = `fleur-managed:${crypto.randomUUID()}`;
+    const probe = Bun.spawn([join(tools, "psql"), "--no-psqlrc", "-Atc", "SELECT current_setting('application_name'),current_setting('statement_timeout')"], { env: { ...process.env, PGUSER: "fleur", PGDATABASE: "postgres", PGPASSWORD: privateRecord.password, PGAPPNAME: tag, PGOPTIONS: "-c statement_timeout=1234", PGCONNECT_TIMEOUT: "1" }, stdout: "pipe", stderr: "pipe" });
+    const [out, , code] = await Promise.all([new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited]);
+    expect(code).toBe(0);
+    expect(out.trim()).toBe(`${tag}|1234ms`);
+
     await writeFile(join(tools, "pg_dump"), "foreign replacement");
     await expect(resource!.tools()).rejects.toThrow("RECOVERY_REQUIRED");
     expect(await readFile(join(tools, "pg_dump"), "utf8")).toBe("foreign replacement");

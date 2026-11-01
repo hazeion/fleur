@@ -39,3 +39,11 @@ test("a parameter named --sql-file cannot select file input", async () => {
   const outcome = await queryCommand.run({ args: ["--sql", "SELECT $1::text", "--param", "--sql-file"], project: root, timeoutSeconds: 5, timeoutExplicit: false, json: true });
   expect(outcome.result.error?.code).toBe("DATABASE_UNAVAILABLE");
 });
+
+test("SQLSTATE and source position stay intact when their digits match connection identities", async () => {
+  const { QueryRejected } = await import("../../src/runtime/database/query");
+  const { PostgresQueryError } = await import("../../src/runtime/database/query-wire");
+  const postgres = new PostgresQueryError(Buffer.from("C42501\0P42501\0Mpermission denied at 42501\0Dconnection 42501\0\0"));
+  const error = new QueryRejected(postgres, ["42501"]);
+  expect(error.diagnostic).toEqual({ sqlstate: "42501", position: "42501", message: "permission denied at [redacted]", detail: "connection [redacted]" });
+});

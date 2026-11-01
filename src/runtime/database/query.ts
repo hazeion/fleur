@@ -22,7 +22,7 @@ export class QueryRejected extends Error {
   constructor(error: PostgresQueryError, secrets: readonly string[]) {
     const redact = redactor(secrets);
     super(redact(error.message).slice(0, 4096));
-    this.diagnostic = Object.fromEntries([["sqlstate", error.fields.C], ["message", error.fields.M], ["position", error.fields.P], ["detail", error.fields.D], ["hint", error.fields.H]].flatMap(([key, value]) => value === undefined ? [] : [[key!, redact(value).slice(0,4096)]]));
+    this.diagnostic = Object.fromEntries([["sqlstate", error.fields.C], ["message", error.fields.M], ["position", error.fields.P], ["detail", error.fields.D], ["hint", error.fields.H]].flatMap(([key, value]) => value === undefined ? [] : [[key!, key === "sqlstate" || key === "position" ? value : redact(value).slice(0,4096)]]));
   }
 }
 export interface QueryOptions { readonly sql: string; readonly params: readonly string[]; readonly limit: number; readonly timeoutMs: number }

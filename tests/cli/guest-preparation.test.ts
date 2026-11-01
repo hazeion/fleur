@@ -2,8 +2,11 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { copyFile, lstat, mkdir, mkdtemp, open, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import bunFloor from "../../scripts/bun-floor.json";
 
-const archiveSha256 = "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18";
+// The one release floor record names the exact official archive the guest prepares.
+const archiveSha256 = bunFloor.archives["linux-x64"].sha256;
+const floorRecord = resolve(import.meta.dir, "../../scripts/bun-floor.json");
 const preparation = resolve(import.meta.dir, "../../scripts/prepare-fresh-linux-guest.py");
 let scratch: string;
 let archive: string;
@@ -13,7 +16,7 @@ beforeAll(async () => {
   if (!python) throw new Error("Existing Python is required for the guest preparation protocol fixture");
   scratch = await mkdtemp(join(tmpdir(), "fleur-guest-bun-"));
   archive = join(scratch, "official.zip");
-  const response = await fetch("https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip", { signal: AbortSignal.timeout(60000) });
+  const response = await fetch(`https://github.com/oven-sh/bun/releases/download/bun-v${bunFloor.version}/${bunFloor.archives["linux-x64"].name}.zip`, { signal: AbortSignal.timeout(60000) });
   if (!response.ok || !response.body) throw new Error("Official pinned Bun fixture acquisition failed");
   const file = await open(archive, "wx", 0o600);
   const hash = new Bun.CryptoHasher("sha256");
@@ -31,6 +34,7 @@ afterAll(async () => { if (scratch) await rm(scratch, { recursive: true, force: 
 async function guest() {
   const directory = await mkdtemp(join(scratch, "lab-"));
   await copyFile(archive, join(directory, "bun.zip"));
+  await copyFile(floorRecord, join(directory, "bun-floor.json"));
   const path = join(directory, "empty-path"); await mkdir(path);
   return { directory, path };
 }

@@ -44,6 +44,8 @@ def boundary(command, **kwargs):
     if command[1] == "build":
         with open(os.path.join(command[-1], "Dockerfile")) as source:
             owner = source.read().split('owner="')[1].split('"')[0]
+        # The container bootstrap reads the same release floor record as the host checkout.
+        Path(sys.argv[-1], "context-floor-record").write_text(str(os.path.isfile(os.path.join(command[-1], "scripts", "bun-floor.json"))))
         return subprocess.CompletedProcess(command, 0, "built", "")
     if action == ["image", "inspect"]:
         metadata = {"Architecture":"amd64", "Config":{"Labels":{"dev.fleur.compatibility.owner":owner}}}
@@ -68,6 +70,8 @@ runpy.run_path(sys.argv[0], run_name="__main__")
             self.assertEqual(result.returncode, 2, result.stderr)
             report = json.loads(result.stdout)
             self.assertEqual(report, json.loads((Path(out) / 'driver.json').read_text()))
+            self.assertEqual((Path(out) / 'context-floor-record').read_text(), 'True')
+            self.assertIn('scripts/bun-floor.json', report['fixture_inputs'])
             self.assertFalse(report['passed'])
             self.assertFalse(report['v1_gate_passed'])
             rows = {row['name']: row for row in report['commands']}

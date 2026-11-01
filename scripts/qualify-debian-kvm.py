@@ -19,11 +19,13 @@ REPO = Path(__file__).resolve().parent.parent
 SERVICE_FIELDS = ('LoadState', 'ActiveState', 'SubState', 'InvocationID', 'ControlGroup', 'MainPID',
                   'User', 'Group', 'KillMode', 'Delegate', 'RuntimeMaxUSec', 'TimeoutStopUSec',
                   'Result', 'ExecMainCode', 'ExecMainStatus')
+# The Bun floor and its official archive digest come from the one release floor record; see tests/ci.
+BUN_FLOOR = json.loads((REPO / 'scripts' / 'bun-floor.json').read_text())
 PINS = {
     'debian.qcow2': ('https://cloud.debian.org/images/cloud/trixie/20261017-2634/debian-13-genericcloud-amd64-20261017-2634.qcow2',
                      342818816, '87211f082e2983a1c2209a2626f9f6762073a92c6a63a8ce321608ca496c3b02'),
-    'bun.zip': ('https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip',
-                160 * 1024 * 1024, '3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18'),
+    'bun.zip': ('https://github.com/oven-sh/bun/releases/download/bun-v' + BUN_FLOOR['version'] + '/' + BUN_FLOOR['archives']['linux-x64']['name'] + '.zip',
+                160 * 1024 * 1024, BUN_FLOOR['archives']['linux-x64']['sha256']),
 }
 
 
@@ -754,8 +756,8 @@ def main():
                 output.write(data)
             (helper_dir / name).chmod(0o600)
         bun = Path(os.environ['FLEUR_PINNED_BUN']).resolve(strict=True)
-        if not bun.is_file() or run([str(bun), '--version']).stdout != b'1.4.3\n':
-            raise ValueError('Pinned Bun unavailable')
+        if not bun.is_file() or run([str(bun), '--version']).stdout != (BUN_FLOOR['version'] + '\n').encode():
+            raise ValueError('Pinned Bun unavailable; installed Bun differs from the release floor')
         env = {'PATH': str(bun.parent) + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                'HOME': str(root), 'TMPDIR': str(root), 'FLEUR_OWNED_DISPOSABLE_HOST': 'yes', 'FLEUR_GUEST_ACCELERATOR': 'kvm'}
         report['containment'] = []

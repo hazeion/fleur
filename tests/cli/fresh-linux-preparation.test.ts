@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import bunFloor from "../../scripts/bun-floor.json";
 const script = resolve(import.meta.dir, "../../scripts/observe-fresh-linux-preparation.ts");
 const nonce = "12345678-1234-4234-9234-123456789abc";
-const archiveSha256 = "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18";
+const archiveSha256 = bunFloor.archives["linux-x64"].sha256;
 async function fixture(scenario: string) {
   const root = await mkdtemp(join(tmpdir(), "fleur-preparation-protocol-"));
   const tools = join(root, "tools"); await mkdir(tools); await mkdir(join(root, "lab"));
@@ -143,6 +144,8 @@ test("real Bun preparation keeps its default result and emits only opt-in authen
   try {
     const python = Bun.which("python3"); if (!python) throw new Error("Existing host Python is required");
     await writeFile(join(root, "bun.zip"), "corrupted archive fixture");
+    // The host stages the release floor record beside the archive; the corrupted bytes then fail authentication.
+    await copyFile(resolve(import.meta.dir, "../../scripts/bun-floor.json"), join(root, "bun-floor.json"));
     for (const enabled of [false, true]) {
       const child = Bun.spawn([python, "-I", resolve(import.meta.dir, "../../scripts/prepare-fresh-linux-guest.py")], { cwd: root, env: { HOME: root, PATH: process.env.PATH, ...(enabled ? { FLEUR_GUEST_PREPARATION_EVENTS: "yes" } : {}) }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000 });
       const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

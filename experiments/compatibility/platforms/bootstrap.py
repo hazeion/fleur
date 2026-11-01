@@ -12,12 +12,26 @@ import subprocess
 import urllib.request
 import zipfile
 
-PINS = {
-    ("Darwin", "x86_64"): ("bun-darwin-x64", "62660e6438eb872278877acca77e1152d5d031324df368d4a81b428211489d2d"),
-    ("Darwin", "arm64"): ("bun-darwin-aarch64", "80afd4c069b46a6fa8f3ec520bebc750a7843e4a8d5b9583d29ad436c00a3403"),
-    ("Linux", "x86_64"): ("bun-linux-x64", "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"),
-    ("Linux", "arm64"): ("bun-linux-aarch64", "efa9813da5ed72423bf847f916e8d2c47c0d776add972354026a75e10da9aa21"),
-}
+PLATFORMS = {("Darwin", "x86_64"): "darwin-x64", ("Darwin", "arm64"): "darwin-arm64",
+             ("Linux", "x86_64"): "linux-x64", ("Linux", "arm64"): "linux-arm64"}
+
+
+def floor_record():
+    """Read the release floor record, `scripts/bun-floor.json`, from the nearest enclosing checkout or fixture context.
+
+    The record declares the one Bun version CI installs and the official archive digests for that release;
+    `package.json` `engines.bun` must equal `>=` that version (checked by `tests/ci`). The distribution fixtures copy
+    it beside the experiment directories, so the search climbs from this file rather than assuming the repository layout.
+    """
+    for root in Path(__file__).resolve().parents:
+        candidate = root / "scripts" / "bun-floor.json"
+        if candidate.is_file():
+            record = json.loads(candidate.read_text())
+            if (type(record) is not dict or record.get("formatVersion") != 1 or type(record.get("version")) is not str
+                    or set(record.get("archives", {})) != set(PLATFORMS.values())):
+                raise ValueError("Bun floor record malformed")
+            return record
+    raise ValueError("Bun floor record unavailable")
 
 
 def read_command(args):
@@ -79,8 +93,10 @@ def main():
                 raise ValueError("Ubuntu release differs from requested target")
         report["native_identity_verified"] = True
         stage = "runtime archive"
-        archive, digest = PINS[(system, architecture)]
-        url = f"https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/{archive}.zip"
+        floor = floor_record()
+        version = floor["version"]
+        archive, digest = (floor["archives"][PLATFORMS[(system, architecture)]][key] for key in ("name", "sha256"))
+        url = f"https://github.com/oven-sh/bun/releases/download/bun-v{version}/{archive}.zip"
         with urllib.request.urlopen(url, timeout=60) as response:
             payload = response.read(256 * 1024 * 1024 + 1)
         if len(payload) > 256 * 1024 * 1024 or hashlib.sha256(payload).hexdigest() != digest:
@@ -94,9 +110,9 @@ def main():
         executable.write_bytes(binary)
         executable.chmod(0o755)
         stage = "runtime execution"
-        if read_command([str(executable), "--version"]) != "1.4.3":
-            raise ValueError("runtime version differs from exact pin")
-        report["runtime"] = {"version": "1.4.3", "revision": read_command([str(executable), "--revision"]),
+        if read_command([str(executable), "--version"]) != version:
+            raise ValueError("installed Bun differs from the release floor")
+        report["runtime"] = {"version": version, "revision": read_command([str(executable), "--revision"]),
                              "archive_sha256": digest, "binary_sha256": hashlib.sha256(binary).hexdigest()}
         report["ok"] = True
         print(json.dumps(report, indent=2))

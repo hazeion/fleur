@@ -64,6 +64,15 @@ GitHub-hosted runners supply that action runtime. Fleur and its verification
 commands continue to use the pinned Bun runtime. Keep checkout credentials
 unpersisted and routine artifact retention at seven days when updating actions.
 
+Every job installs exactly the release floor Bun, the version `package.json`
+`engines.bun` declares; no job installs a newer Bun. That version and the
+official archive digests for each platform live once in `scripts/bun-floor.json`,
+read by the compatibility bootstrap, the two direct-download compatibility
+steps, the fresh-Linux and Debian qualification scripts and their fixtures.
+Raising the floor means updating `engines.bun`, that record and its digests
+together; `bun test tests/ci` fails when they disagree or when a workflow or
+installer repeats the version or a digest.
+
 ## Cost controls and rollout
 
 Superseded PR runs are cancelled only within the same workflow and PR. Every main

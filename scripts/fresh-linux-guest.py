@@ -32,6 +32,15 @@ GUEST_DEADLINE = None
 RECORDED_HELPERS = False
 _RECORDED_MODULE = None
 
+def release_floor():
+    """The Bun version the host staged in `bun-floor.json` beside the archive; the guest runs exactly that release."""
+    record = json.loads((ROOT / "bun-floor.json").read_text())
+    version = record.get("version") if type(record) is dict else None
+    if type(version) is not str or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise RuntimeError("Release floor record malformed")
+    return version
+
+
 def budget_seconds(limit):
     remaining = limit if GUEST_DEADLINE is None else min(limit, GUEST_DEADLINE - time.monotonic())
     if remaining < 1:
@@ -1172,7 +1181,7 @@ def main():
     os_release, os_evidence = verify_guest_candidate_target(owned_binding)
     REPORT["guest"] = {"osRelease": os_release, "osReleaseEvidence": os_evidence, "kernel": run(["uname", "-srmo"])[1],
                        "virtualization": run(["systemd-detect-virt"])[1].strip(), "bun": run([BUN, "--version"])[1].strip()}
-    if REPORT["guest"]["virtualization"] not in ("qemu", "kvm") or REPORT["guest"]["bun"] != "1.4.3":
+    if REPORT["guest"]["virtualization"] not in ("qemu", "kvm") or REPORT["guest"]["bun"] != release_floor():
         raise RuntimeError("Guest virtualization/runtime identity differs")
     baseline = snapshot()
     REPORT["baseline"] = baseline

@@ -202,10 +202,12 @@ jobs:
         run: |
           test "$(uname -m)" = x86_64
           mkdir -p "$RUNNER_TEMP/fleur-bun" "$RUNNER_TEMP/fleur-evidence"
-          curl --fail --location --silent --show-error https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip --output "$RUNNER_TEMP/fleur-bun/bun.zip"
-          echo "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
+          floor="$(python3 -c 'import json; print(json.load(open("scripts/bun-floor.json"))["version"])')"
+          sha256="$(python3 -c 'import json; print(json.load(open("scripts/bun-floor.json"))["archives"]["linux-x64"]["sha256"])')"
+          curl --fail --location --silent --show-error "https://github.com/oven-sh/bun/releases/download/bun-v$floor/bun-linux-x64.zip" --output "$RUNNER_TEMP/fleur-bun/bun.zip"
+          echo "$sha256  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/fleur-bun/bun.zip" -d "$RUNNER_TEMP/fleur-bun"
-          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
+          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = "$floor"
           echo "FLEUR_EXPERIMENT_BUN=$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" >> "$GITHUB_ENV"
           { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
       - name: Runner diagnostic requirements
@@ -240,10 +242,12 @@ jobs:
         run: |
           test "$(uname -m)" = x86_64
           mkdir -p "$RUNNER_TEMP/fleur-bun" "$RUNNER_TEMP/fleur-evidence"
-          curl --fail --location --silent --show-error https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-linux-x64.zip --output "$RUNNER_TEMP/fleur-bun/bun.zip"
-          echo "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
+          floor="$(python3 -c 'import json; print(json.load(open("scripts/bun-floor.json"))["version"])')"
+          sha256="$(python3 -c 'import json; print(json.load(open("scripts/bun-floor.json"))["archives"]["linux-x64"]["sha256"])')"
+          curl --fail --location --silent --show-error "https://github.com/oven-sh/bun/releases/download/bun-v$floor/bun-linux-x64.zip" --output "$RUNNER_TEMP/fleur-bun/bun.zip"
+          echo "$sha256  $RUNNER_TEMP/fleur-bun/bun.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/fleur-bun/bun.zip" -d "$RUNNER_TEMP/fleur-bun"
-          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = 1.4.3
+          test "$("$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --version)" = "$floor"
           echo "$RUNNER_TEMP/fleur-bun/bun-linux-x64" >> "$GITHUB_PATH"
           { uname -srm; python3 --version; "$RUNNER_TEMP/fleur-bun/bun-linux-x64/bun" --revision; } > "$RUNNER_TEMP/fleur-evidence/platform.txt"
       - name: Install both frozen experiment graphs

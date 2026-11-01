@@ -167,6 +167,8 @@ if scenario.startswith("ordinary-"):
             target.write_text(target.read_text().replace('"verified": true','"verified": false, "verified": true'))
 for name in ["fleur-internal-native-candidate.tgz", "runtime-probe.tar", "bun.zip"]:
     (lab / name).write_bytes(("owned fixture " + name).encode())
+# The host stages the one release floor record beside the archive; the fake runtime reports exactly that version.
+shutil.copyfile(source.parent / "bun-floor.json", lab / "bun-floor.json")
 
 # Consume the real preparation command's package without recreating its modes
 # or synthesizing its catalog metadata. Native account/services remain adapters.
@@ -212,7 +214,7 @@ if name=='python3' and args[:3]==['-I','/usr/local/lib/fleur-owned-guest.py','--
  if len(args)<4 or args[3]!=frame['nonce']:raise RuntimeError('Root policy frame nonce differs')
  print(json.dumps(frame));sys.exit(0)
 if name=='bun':
- if args==['--version']:print('1.4.3');sys.exit(0)
+ if args==['--version']:print(json.loads((root/'lab/bun-floor.json').read_text())['version']);sys.exit(0)
  if args and args[0]=='-e' and ready_protocol():sys.stdout.write('oven/bun@sha256:c017a211c49a21adc0e49dda7b60ac8112887c3d9465e01427f434ed107c830e');sys.exit(0)
  command=args[1]
  if ready_protocol() and s['installed'] and command in ('doctor','setup'):admitted(command)

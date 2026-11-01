@@ -9,6 +9,7 @@ import { startRetainedSsh } from "./retained-ssh.ts";
 import { waitForGuestBoot } from "./observe-fresh-linux-boot.ts";
 import { observePreparation } from "./observe-fresh-linux-preparation.ts";
 import compilerManifest from "./guest-compiler-ubuntu24-amd64.json";
+import bunFloor from "./bun-floor.json";
 import { observeOwnedGuestCustody } from "./observe-owned-guest-custody.ts";
 import { ownedGuestSeed, attestOwnedGuestBoot, copyOwnedGuestBinding, copyOwnedGuestOsRelease } from "./owned-guest-seed.ts";
 
@@ -20,7 +21,8 @@ const fixtures = {
 } as const;
 let selectedFixture: typeof fixtures[keyof typeof fixtures] = fixtures["ubuntu24-amd64"];
 let imagePin: { readonly sha256: string; readonly size: number } = selectedFixture.image;
-const bunPin = { sha256: "3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18", entry: "bun-linux-x64/bun", maxBytes: 160 * 1024 * 1024 };
+// The guest runs exactly the release floor Bun; the one record supplies its official x64 archive digest.
+const bunPin = { sha256: bunFloor.archives["linux-x64"].sha256, entry: `${bunFloor.archives["linux-x64"].name}/bun`, maxBytes: 160 * 1024 * 1024 };
 const repository = resolve(import.meta.dir, "..");
 const report: Record<string, unknown> = { formatVersion: 1, ok: false, scope: "debian-interrupted-full-system-guest", runtimeSupport: "unverified", installationEvidence: "pending", executed: false, humanConsentProof: false, nativeCpuPerformanceProof: false };
 let scratch: string | undefined;
@@ -399,7 +401,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const built = JSON.parse((await command([process.execPath, join(repository, "scripts/build-native-candidate.ts"), "--out", candidate, "--fixture", selectedFixture.id], 120000)).stdout);
   if (built.internalArtifact !== true || built.installationEvidence !== "pending" || built.runtimeSupport !== "unverified" || built.catalogId !== selectedFixture.catalogId || built.catalogSha256 !== selectedFixture.catalogSha256) fail("ARTIFACT_MISMATCH", "Candidate does not retain pending/unverified provenance.");
   report.candidate = built;
-  report.verificationSources = await Promise.all(["scripts/build-native-candidate.ts", "scripts/native-candidate-ubuntu24-amd64.json", "scripts/native-candidate-ubuntu26-amd64.json", "scripts/native-candidate-debian13-amd64.json", "scripts/verify-debian-recovery.ts", "scripts/debian-interruption-guest.py", "scripts/observe-debian-interruption-initial.ts", "scripts/observe-debian-interruption-resume.ts", "scripts/debian-recovery-preservation.py", "scripts/debian_recovery_contract.py", "scripts/transition-debian-owned-reboot.py", "scripts/debian-inspector-conformance.ts", "scripts/interruption-supervisor-conformance.py", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py", "experiments/compatibility/runtime-probe/helper_artifacts.py", "experiments/compatibility/runtime-probe/recorded-helper-origin.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
+  report.verificationSources = await Promise.all(["scripts/build-native-candidate.ts", "scripts/native-candidate-ubuntu24-amd64.json", "scripts/native-candidate-ubuntu26-amd64.json", "scripts/native-candidate-debian13-amd64.json", "scripts/verify-debian-recovery.ts", "scripts/debian-interruption-guest.py", "scripts/observe-debian-interruption-initial.ts", "scripts/observe-debian-interruption-resume.ts", "scripts/debian-recovery-preservation.py", "scripts/debian_recovery_contract.py", "scripts/transition-debian-owned-reboot.py", "scripts/debian-inspector-conformance.ts", "scripts/interruption-supervisor-conformance.py", "scripts/candidate-command-observer.ts", "scripts/observe-fresh-linux-boot.ts", "scripts/observe-fresh-linux-preparation.ts", "scripts/retained-ssh.ts", "scripts/retained-ssh.py", "scripts/observe-fresh-linux-session.ts", "scripts/archive-fresh-linux-probe.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py", "scripts/bun-floor.json", "scripts/prepare-nocloud-seed.py", "scripts/prepare-guest-compiler.py", "scripts/guest-compiler-ubuntu24-amd64.json", "scripts/owned-guest-seed.ts", "scripts/observe-owned-guest-custody.ts", "experiments/compatibility/runtime-probe/owned_guest.py", "experiments/compatibility/runtime-probe/host_control.py", "experiments/compatibility/runtime-probe/privileged_control.py", "experiments/compatibility/runtime-probe/helper_artifacts.py", "experiments/compatibility/runtime-probe/recorded-helper-origin.json"].map(async (path) => ({ path, sha256: Bun.CryptoHasher.hash("sha256", await readFile(join(repository, path)), "hex") })));
   const selectedArtifact = await selectVerificationArtifact(candidate, built, selection, scratch);
   const archive = selectedArtifact.path;
   report.executionArtifact = { kind: selectedArtifact.kind, sha256: selectedArtifact.sha256,
@@ -465,7 +467,7 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   const restrictionSha256 = Bun.CryptoHasher.hash("sha256", await readFile(restrictionArchive), "hex");
   if (restriction.formatVersion !== 1 || restriction.scope !== "fresh-linux-restriction-archive" || restriction.ok !== true || restriction.commit !== sourceCommit || restriction.sha256 !== restrictionSha256) fail("ARTIFACT_MISMATCH", "Restriction archive did not establish its exact tracked source identity.");
   report.restrictionSource = restriction;
-  const guestFiles = [archive, runtime, restrictionArchive, join(repository, "scripts/fresh-linux-guest.py"), join(repository, "scripts/prepare-fresh-linux-guest.py")];
+  const guestFiles = [archive, runtime, restrictionArchive, join(repository, "scripts/fresh-linux-guest.py"), join(repository, "scripts/prepare-fresh-linux-guest.py"), join(repository, "scripts/bun-floor.json")];
   if (compilerBundle) guestFiles.push(join(repository, "scripts/prepare-guest-compiler.py"), join(repository, "scripts/guest-compiler-ubuntu24-amd64.json"));
   await command(["scp", ...sshOptions, "-P", String(port), ...guestFiles, "fleur@127.0.0.1:lab/"], 120000);
   if (compilerBundle) await command(["scp", ...sshOptions, "-r", "-P", String(port), compilerBundle, "fleur@127.0.0.1:lab/"], 120000);

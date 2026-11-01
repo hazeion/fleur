@@ -38,6 +38,7 @@ function desktopFixture() {
     run: async (args) => {
       commands.push([...args]);
       const command = args.join(" ");
+      if (args[0] === process.execPath && args[1] === "--revision") return completed(`${Bun.version}+38afee6c8\n`);
       if (command === "docker --version") return completed("Docker version 29.9.2, build a82e528\n");
       if (command === "docker context show") return completed("desktop-linux\n");
       if (command === "docker context inspect desktop-linux --format {{json .Endpoints.docker}}") return completed('{"Host":"unix:///tmp/fleur-qualified-desktop.sock"}');
@@ -64,7 +65,7 @@ test("doctor succeeds for an exactly qualified runtime only after owned smoke cl
   const fixture = desktopFixture();
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ command: "doctor", ok: true, error: null, data: { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "darwin-15.7.7-x64-desktop-4.96.1" } } } });
+  expect(outcome.result).toMatchObject({ command: "doctor", ok: true, error: null, data: { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "darwin-x64-desktop", admission: "measured", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"] } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -130,7 +131,7 @@ test("setup reuses a qualified existing installation without confirmation or acq
   const host: SetupHost = { ...fixture.host, interactive: true, confirmHuman: async () => { throw new Error("Ready tools require no new grant"); } };
   const outcome = await runCli(["setup"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ command: "setup", ok: true, error: null, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "darwin-15.7.7-x64-desktop-4.96.1" } } } });
+  expect(outcome.result).toMatchObject({ command: "setup", ok: true, error: null, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "darwin-x64-desktop", admission: "measured", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"] } } } });
   expect(fixture.commands.some((args) => args.includes("pull") || args.includes("install"))).toBe(false);
   expect(fixture.containers.size).toBe(0);
 });
@@ -196,7 +197,7 @@ test("a separately qualified rootless runtime can match its own exact policy", a
   const rootless = { ...policy, id: "synthetic-qualified-rootless", engine: { ...policy.engine, operatingMode: "rootless" as const, securityOptions: [...policy.engine.securityOptions, "name=rootless"] } };
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [rootless]) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "synthetic-qualified-rootless" } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", floor: "darwin-x64-desktop", admission: "measured", measuredRows: ["synthetic-qualified-rootless"] } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -246,7 +247,7 @@ test("ordinary Debian Doctor uses the exact measured compiled tuple after owned 
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
   expect(outcome.exitCode).toBe(0);
   const evidence = "6b4066ed5c199006695d769d07ec5d813fa8cddff1d396a089e1749d6c27231e";
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "debian-13-x64-docker-29.9.1", evidence: { readinessSha256: evidence, isolationSha256: evidence } } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "debian-x64-engine", admission: "measured", measuredRows: ["debian-13-x64-docker-29.9.1"], evidence: { readinessSha256: evidence, isolationSha256: evidence } } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -259,7 +260,7 @@ test("ordinary ready Debian setup reuses the measured tuple without new authorit
       confirmHuman: async () => { throw new Error("Ready installation requires no new grant"); } };
     const outcome = await runCli(["setup", "--json"], { cwd: directory, handlers: setupCommands(host) });
     expect(outcome.exitCode).toBe(0);
-    expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "debian-13-x64-docker-29.9.1" } } } });
+    expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", floor: "debian-x64-engine", measuredRows: ["debian-13-x64-docker-29.9.1"] } } } });
     expect(fixture.commands.some((args) => ["sudo", "apt-get", "dpkg", "systemctl"].includes(args[0]!) || args.includes("pull"))).toBe(false);
     expect(fixture.containers.size).toBe(0);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -324,7 +325,7 @@ test("ordinary Debian Doctor admits a newer kernel ABI serial above the Debian 1
   fixture.info.KernelVersion = fixture.server.KernelVersion = "6.12.120+deb13.1-cloud-amd64";
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
   expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "debian-13-x64-docker-29.9.1" } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "debian-x64-engine", admission: "above-floor", measuredRows: ["debian-13-x64-docker-29.9.1"] } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -332,7 +333,7 @@ test("ordinary doctor recognizes only the source-mapped Ubuntu qualification wit
   const fixture = ubuntuFixture();
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1", evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2", isolationSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", floor: "ubuntu-x64-engine", admission: "measured", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"], evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2", isolationSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -366,7 +367,7 @@ test("ordinary doctor recognizes the exact default AppArmor descriptor emitted b
   fixture.info.SecurityOptions = ["name=apparmor,profile=default", "name=seccomp,profile=builtin", "name=cgroupns"];
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", profile: "ubuntu-24.04-x64-docker-29.9.1" } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { release: { state: "verified", floor: "ubuntu-x64-engine", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"] } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -397,7 +398,7 @@ test("ordinary Doctor admits the measured Ubuntu 26 x64 tuple only after smoke c
   const fixture = ubuntuFixture("26.04");
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "ubuntu-26.04-x64-docker-29.9.1", evidence: { readinessSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07", isolationSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" } } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "ubuntu-x64-engine", admission: "measured", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"], evidence: { readinessSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07", isolationSha256: "5874bec578a422cdc49177d2d69e75a69c3aa859a0c42f351c7d6c972eaf8d07" } } } } });
   expect(fixture.containers.size).toBe(0);
 });
 test.each(["kernel", "engine-version", "rootless", "cgroup-driver"])("Ubuntu 26 qualification refuses %s drift below or outside the measured floor", async (kind) => {
@@ -534,7 +535,7 @@ for (const architecture of ["x64", "arm64"] as const) {
       const fixture = azureRunnerFixture(architecture);
       const outcome = await runCli([command, "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
       expect(outcome.exitCode).toBe(0);
-      expect(outcome.result).toMatchObject({ command, ok: true, data: { components: { release: { state: "verified", profile: `ubuntu-24.04-${architecture}-docker-28.0.4-azure`, evidence: architecture === "arm64" ? { readinessSha256: "15db2e603e2cdfccd8549aa78bcc7a1bf53a22f962012449297460608d0332e9", isolationSha256: "17e7c7a80b9bff706368f2d19ac52538a20bee6725abaf902ab97220d33c7c48" } : { readinessSha256: "2c29e92c1eba819c44f33361b8ac5ba319ae9343dc9cba4e64973b304774c7fd", isolationSha256: "a3f687541d7438b370b8c2dcbf74d2cf8c2b7a248f385257b68d31c72eba9402" } }, smoke: { state: "ready", cleanup: true } } } });
+      expect(outcome.result).toMatchObject({ command, ok: true, data: { components: { release: { state: "verified", floor: `ubuntu-${architecture}-engine-azure`, admission: "measured", measuredRows: [`ubuntu-24.04-${architecture}-docker-28.0.4-azure`], evidence: architecture === "arm64" ? { readinessSha256: "15db2e603e2cdfccd8549aa78bcc7a1bf53a22f962012449297460608d0332e9", isolationSha256: "17e7c7a80b9bff706368f2d19ac52538a20bee6725abaf902ab97220d33c7c48" } : { readinessSha256: "2c29e92c1eba819c44f33361b8ac5ba319ae9343dc9cba4e64973b304774c7fd", isolationSha256: "a3f687541d7438b370b8c2dcbf74d2cf8c2b7a248f385257b68d31c72eba9402" } }, smoke: { state: "ready", cleanup: true } } } });
       expect(fixture.containers.size).toBe(0);
       expect(fixture.commands.some((args) => ["apt-get", "sudo"].includes(args[0]!))).toBe(false);
     });
@@ -571,7 +572,7 @@ for (const command of ["doctor", "setup"] as const) test(`ordinary ${command} ad
     const host: SetupHost = { ...fixture.host, stateDirectory: directory, interactive: true, confirmHuman: async () => { throw new Error("Ready Desktop requires no new authority"); } };
     const outcome = await runCli([command, "--json"], { cwd: directory, handlers: setupCommands(host) });
     expect(outcome.exitCode).toBe(0);
-    expect(outcome.result).toMatchObject({ command, ok: true, error: null, data: { components: { release: { state: "verified", profile: "darwin-15.7.7-x64-desktop-4.96.1", evidence: { readinessSha256: "b2b1565746e8a1a56785db75594f38dc1f942dc28609a1e151a1c8bb10c63571", isolationSha256: "17b2fe0503493c0273806e482ed7c008c595861c646850b458880344e49b2787" } }, smoke: { state: "ready", cleanup: true } } } });
+    expect(outcome.result).toMatchObject({ command, ok: true, error: null, data: { components: { release: { state: "verified", floor: "darwin-x64-desktop", admission: "measured", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"], evidence: { readinessSha256: "b2b1565746e8a1a56785db75594f38dc1f942dc28609a1e151a1c8bb10c63571", isolationSha256: "17b2fe0503493c0273806e482ed7c008c595861c646850b458880344e49b2787" } }, smoke: { state: "ready", cleanup: true } } } });
     expect(fixture.containers.size).toBe(0);
     expect(await readGrants(host)).toEqual([]);
     expect(fixture.commands.some((args) => ["sudo", "installer", "hdiutil", "codesign", "spctl", "launchctl"].includes(args[0]!) || args.includes("pull") || args.includes("install") || args.includes("use"))).toBe(false);
@@ -644,7 +645,7 @@ test("compiled Intel Desktop policy admits a newer Docker Desktop, Engine, Compo
   const fixture = newerDesktopFixture();
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, []) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ command: "doctor", ok: true, error: null, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: "darwin-15.7.7-x64-desktop-4.96.1" } } } });
+  expect(outcome.result).toMatchObject({ command: "doctor", ok: true, error: null, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "darwin-x64-desktop", admission: "above-floor", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"] } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -682,7 +683,7 @@ for (const architecture of ["x64", "arm64"] as const) test(`the ${architecture} 
   } };
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
   expect(outcome.exitCode).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", profile: `ubuntu-24.04-${architecture}-docker-28.0.4-azure` } } } });
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: `ubuntu-${architecture}-engine-azure`, admission: "above-floor", measuredRows: [`ubuntu-24.04-${architecture}-docker-28.0.4-azure`] } } } });
   expect(fixture.containers.size).toBe(0);
 });
 
@@ -1060,4 +1061,164 @@ test("a kernel flavour made of hex letters is an identity difference, not an unr
   expect(compareMachineTool("kernel", "6.8.0-147-generic", "6.8.0-148-gface")).toBe("identity");
   expect(compareMachineTool("kernel", "6.8.0-147-generic", "6.8.0-148-gface1234")).toBe("unparseable");
   expect(compareMachineTool("kernel", "6.8.0-147-generic", "6.8.0-147-generic-14595-g292a089d78d3")).toBe("unparseable");
+});
+
+// Doctor floor output (#138, decision #131 Variant A): release names the floor and admission, lists one status row per machine tool,
+// and a floor refusal names the blocking tool with both numbers. Identity mismatches keep the generic refusal.
+const verifiedReleaseKeys = ["state", "floor", "admission", "measuredRows", "machineTools", "evidence"];
+const unverifiedReleaseKeys = ["state", "floor", "machineTools"];
+const toolRowKeys = ["tool", "status", "floor", "detected", "comparison"];
+type ToolRow = { tool: string; status: string; floor: string; detected: string | null; comparison: string };
+function releaseOf(outcome: Awaited<ReturnType<typeof runCli>>): Record<string, unknown> & { machineTools?: ToolRow[] } {
+  return (outcome.result.data as { components: { release: Record<string, unknown> & { machineTools?: ToolRow[] } } }).components.release;
+}
+function withRun(fixture: Fixture, override: (args: readonly string[]) => HostCommandResult | undefined): SetupHost {
+  return { ...fixture.host, run: async (args, timeout, context) => override(args) ?? fixture.host.run(args, timeout, context) };
+}
+
+test("doctor reports an exact Intel Desktop match as measured with every machine tool verified", async () => {
+  const fixture = desktopFixture();
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
+  const release = releaseOf(outcome);
+  expect(Object.keys(release)).toEqual(verifiedReleaseKeys);
+  expect(release).toMatchObject({ state: "verified", floor: "darwin-x64-desktop", admission: "measured", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"], evidence: { readinessSha256: "1".repeat(64), isolationSha256: "2".repeat(64) } });
+  expect(release.machineTools!.map((row) => Object.keys(row))).toEqual(release.machineTools!.map(() => toolRowKeys));
+  expect(release.machineTools).toEqual([
+    { tool: "release", status: "verified", floor: "15.7.7", detected: "15.7.7", comparison: "equal" },
+    { tool: "kernel", status: "verified", floor: "7.0.14-linuxkit", detected: "7.0.14-linuxkit", comparison: "equal" },
+    { tool: "bun", status: "verified", floor: "1.4.3", detected: "1.4.3", comparison: "equal" },
+    { tool: "desktop", status: "verified", floor: "4.96.1", detected: "4.96.1", comparison: "equal" },
+    { tool: "cli", status: "verified", floor: "29.9.2", detected: "29.9.2", comparison: "equal" },
+    { tool: "engine", status: "verified", floor: "29.9.2", detected: "29.9.2", comparison: "equal" },
+    { tool: "compose", status: "verified", floor: "5.6.0", detected: "5.6.0", comparison: "equal" },
+    { tool: "containerd", status: "verified", floor: "v2.4.2", detected: "v2.4.2", comparison: "equal" },
+    { tool: "runc", status: "verified", floor: "1.5.2", detected: "1.5.2", comparison: "equal" },
+  ]);
+  expect(fixture.commands).toContainEqual([process.execPath, "--revision"]);
+  expect(outcome.human).toContain("release   verified  floor darwin-x64-desktop (measured on darwin-15.7.7-x64-desktop-4.96.1)");
+  expect(outcome.human).toMatch(/\n\s+bun\s+verified\s+1\.4\.3\s+= floor\n/);
+  expect(outcome.human).toMatch(/\n\s+smoke\s+ready, cleanup confirmed\n/);
+  expect(outcome.human).not.toContain("admitted above the measured baseline");
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("doctor reports a tuple above the Intel Desktop floor as above-floor with admitted rows and a trailing note", async () => {
+  const fixture = newerDesktopFixture();
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, []) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
+  const release = releaseOf(outcome);
+  expect(Object.keys(release)).toEqual(verifiedReleaseKeys);
+  expect(release).toMatchObject({ state: "verified", floor: "darwin-x64-desktop", admission: "above-floor", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"] });
+  expect(release.machineTools!.map((row) => [row.tool, row.status, row.floor, row.detected, row.comparison])).toEqual([
+    ["release", "verified", "15.7.7", "15.7.7", "equal"], ["kernel", "admitted", "7.0.14-linuxkit", "7.0.15-linuxkit", "newer"], ["bun", "verified", "1.4.3", "1.4.3", "equal"],
+    ["desktop", "admitted", "4.96.1", "4.97.0", "newer"], ["cli", "admitted", "29.9.2", "29.9.3", "newer"], ["engine", "admitted", "29.9.2", "29.9.3", "newer"],
+    ["compose", "admitted", "5.6.0", "5.6.1", "newer"], ["containerd", "admitted", "v2.4.2", "v2.4.3", "newer"], ["runc", "admitted", "1.5.2", "1.5.3", "newer"],
+  ]);
+  expect(outcome.human).toMatch(/\n\s+desktop\s+admitted\s+4\.97\.0\s+> floor 4\.96\.1\n/);
+  expect(outcome.human).toMatch(/\n\s+release\s+verified\s+15\.7\.7\s+= floor\n/);
+  expect(outcome.human).toContain("7 tools admitted above the measured baseline; measured evidence is for the baseline tuple.");
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("doctor refuses a machine tool below the floor naming the tool and both numbers", async () => {
+  const fixture = desktopFixture();
+  const host = withRun(fixture, (args) => args[3] === "compose" ? { status: "completed", exitCode: 0, stdout: "5.5.9\n", stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool compose is 5.5.9, below the floor 5.6.0.", expected: { tool: "compose", floor: "5.6.0" }, actual: { tool: "compose", detected: "5.5.9" }, actions: [{ command: "fleur setup", description: "Inspect the missing actions without replacing existing software." }] }, data: { components: { smoke: { state: "ready", cleanup: true } } } });
+  const release = releaseOf(outcome);
+  expect(Object.keys(release)).toEqual(unverifiedReleaseKeys);
+  expect(release).toMatchObject({ state: "unverified", floor: "darwin-x64-desktop" });
+  expect(release.machineTools!.map((row) => Object.keys(row))).toEqual(release.machineTools!.map(() => toolRowKeys));
+  expect(release.machineTools!.find((row) => row.tool === "compose")).toEqual({ tool: "compose", status: "unverified", floor: "5.6.0", detected: "5.5.9", comparison: "older" });
+  expect(release.machineTools!.filter((row) => row.status !== "verified").map((row) => row.tool)).toEqual(["compose"]);
+  expect(outcome.human).toContain("release   unverified  floor darwin-x64-desktop");
+  expect(outcome.human).toMatch(/\n\s+compose\s+unverified\s+5\.5\.9\s+< floor 5\.6\.0\n/);
+  expect(outcome.human).toContain("PREREQUISITE_UNAVAILABLE: Machine tool compose is 5.5.9, below the floor 5.6.0.");
+  expect(outcome.human).toContain("fleur setup   Inspect the missing actions without replacing existing software.");
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("doctor reads the Bun revision through the host runner and refuses a canary build as pre-release", async () => {
+  const fixture = desktopFixture();
+  const revision = `${Bun.version}-canary.3+38afee6c8`;
+  const host = withRun(fixture, (args) => args[0] === process.execPath && args[1] === "--revision" ? { status: "completed", exitCode: 0, stdout: `${revision}\n`, stderr: "" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: `Machine tool bun is a pre-release build (${revision}); release floors admit stable versions only.`, expected: { tool: "bun", floor: "1.4.3" }, actual: { tool: "bun", detected: revision } } });
+  expect(releaseOf(outcome)).toMatchObject({ state: "unverified", floor: "darwin-x64-desktop" });
+  expect(releaseOf(outcome).machineTools!.find((row) => row.tool === "bun")).toEqual({ tool: "bun", status: "unverified", floor: "1.4.3", detected: revision, comparison: "pre-release" });
+  expect(outcome.human).toMatch(/\n\s+bun\s+unverified\s+1\.4\.3-canary\.3\+38afee6c8\s+pre-release, not admitted\n/);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("an unreadable Bun revision refuses as release-less rather than admitting the executable", async () => {
+  const fixture = desktopFixture();
+  const host = withRun(fixture, (args) => args[1] === "--revision" ? { status: "completed", exitCode: 1, stdout: "", stderr: "unavailable" } : undefined);
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool bun has no parseable version.", expected: { tool: "bun", floor: "1.4.3" }, actual: { tool: "bun" } } });
+  expect(releaseOf(outcome).machineTools!.find((row) => row.tool === "bun")).toMatchObject({ tool: "bun", status: "unverified", comparison: "unparseable" });
+  expect(JSON.stringify(outcome.result)).not.toContain("unavailable");
+});
+
+test("a Debian host without VERSION_ID reaches readiness and refuses as release-less, not as outside the setup matrix", async () => {
+  const fixture = debianFixture();
+  const identity = { ...await fixture.host.host(), release: "rolling" };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...fixture.host, host: async () => identity }) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Machine tool release has no parseable version.", expected: { tool: "release", floor: "13" }, actual: { tool: "release", detected: "rolling" } }, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "unverified", floor: "debian-x64-engine" } } } });
+  expect(releaseOf(outcome).machineTools![0]).toEqual({ tool: "release", status: "unverified", floor: "13", detected: "rolling", comparison: "unparseable" });
+  expect(outcome.human).toMatch(/\n\s+release\s+unverified\s+rolling\s+no parseable version/);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("an interim Ubuntu release reaches readiness, is admitted above the Ubuntu floor and ready setup installs nothing", async () => {
+  const fixture = ubuntuFixture();
+  fixture.info.KernelVersion = fixture.server.KernelVersion = "6.11.0-9-generic";
+  const identity = { ...await fixture.host.host(), release: "24.10" };
+  const host: SetupHost = { ...fixture.host, host: async () => identity };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
+  const release = releaseOf(outcome);
+  expect(release).toMatchObject({ state: "verified", floor: "ubuntu-x64-engine", admission: "above-floor", measuredRows: ["ubuntu-24.04-x64-docker-29.9.1", "ubuntu-26.04-x64-docker-29.9.1"], evidence: { readinessSha256: "75bf58a1f8b510eb1e90dcf48a93814b7e8b86d18cd977926784535429e775a2" } });
+  expect(release.machineTools!.slice(0, 2)).toEqual([{ tool: "release", status: "admitted", floor: "24.04", detected: "24.10", comparison: "newer" }, { tool: "kernel", status: "admitted", floor: "6.8.0-147-generic", detected: "6.11.0-9-generic", comparison: "newer" }]);
+  expect(release.machineTools!.map((row) => row.tool)).toEqual(["release", "kernel", "bun", "cli", "engine", "compose", "containerd", "runc"]);
+  expect(outcome.human).toContain("release   verified  floor ubuntu-x64-engine (measured on ubuntu-24.04-x64-docker-29.9.1, ubuntu-26.04-x64-docker-29.9.1)");
+  expect(outcome.human).toContain("2 tools admitted above the measured baseline");
+  // No credential, machine identity, socket path or executable path is part of the new output.
+  const text = JSON.stringify(outcome.result) + outcome.human;
+  for (const leak of ["c".repeat(64), "11111111-1111-4111-8111-111111111111", "/tmp/fleur-qualified-desktop.sock", process.execPath]) expect(text).not.toContain(leak);
+  const ready = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+  expect(ready.exitCode, JSON.stringify(ready.result)).toBe(0);
+  expect(ready.result).toMatchObject({ command: "setup", ok: true, data: { components: { release: { state: "verified", admission: "above-floor" } } } });
+  expect(fixture.commands.some((args) => ["apt-get", "sudo", "dpkg"].includes(args[0]!) || args.includes("pull") || args.includes("install"))).toBe(false);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test("setup on an interim Ubuntu release without Docker reports manual setup instead of installing from an exact apt row", async () => {
+  const fixture = ubuntuFixture();
+  const identity = { ...await fixture.host.host(), release: "24.10" };
+  const host: SetupHost = { ...fixture.host, host: async () => identity, run: async (args, timeout, context) => args.join(" ") === "docker --version" ? { status: "missing", stdout: "", stderr: "" } : fixture.host.run(args, timeout, context) };
+  const outcome = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(3);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "HUMAN_ACTION_REQUIRED", actions: [{ command: "fleur doctor" }] }, data: { plan: { method: "docker-official-apt", verified: false }, grantsCreated: false } });
+  expect(fixture.commands.some((args) => ["apt-get", "sudo", "dpkg"].includes(args[0]!) || args.includes("install"))).toBe(false);
+  // The exact 24.04 row still drives assisted installation on its own release.
+  const exact = await runCli(["setup", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...host, host: async () => ({ ...identity, release: "24.04" }) }) });
+  expect(exact.result.error?.code).not.toBe("HUMAN_ACTION_REQUIRED");
+  expect(fixture.commands.some((args) => args.includes("install"))).toBe(false);
+});
+
+test("an identity mismatch keeps the generic unverified refusal without floor fields or further RPC", async () => {
+  const fixture = desktopFixture();
+  fixture.info.CgroupDriver = "systemd";
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host, [], [policy]) });
+  expect(outcome.exitCode).toBe(4);
+  expect(outcome.result).toMatchObject({ ok: false, error: { code: "PREREQUISITE_UNAVAILABLE", message: "Observed readiness does not yet establish a verified native release profile." }, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "unverified" } } } });
+  expect(Object.keys(releaseOf(outcome))).toEqual(["state"]);
+  expect(outcome.result.error).not.toHaveProperty("expected");
+  expect(fixture.commands.some((args) => args[3] === "version" || args[1] === "--revision")).toBe(false);
+  expect(fixture.containers.size).toBe(0);
 });

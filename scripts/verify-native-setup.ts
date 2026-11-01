@@ -138,7 +138,7 @@ try {
       observations.runs = runs;
       const release = result.data?.components?.release;
       const releaseMatches = admitted
-        ? result.ok === true && result.error === null && release?.state === "verified" && release.profile === admitted.id && release.evidence?.readinessSha256 === admitted.evidence.readinessSha256 && release.evidence?.isolationSha256 === admitted.evidence.isolationSha256
+        ? result.ok === true && result.error === null && release?.state === "verified" && typeof release.floor === "string" && Array.isArray(release.measuredRows) && release.measuredRows.includes(admitted.id) && ["measured", "above-floor"].includes(release.admission) && Array.isArray(release.machineTools) && release.evidence?.readinessSha256 === admitted.evidence.readinessSha256 && release.evidence?.isolationSha256 === admitted.evidence.isolationSha256
         : result.ok === false && result.error?.code === "PREREQUISITE_UNAVAILABLE" && release?.state === "unverified";
       if (result.formatVersion !== 1 || result.command !== command || !releaseMatches || result.truncated !== false || result.data?.components?.smoke?.state !== "ready" || result.data?.components?.smoke?.cleanup !== true || result.data?.components?.daemon?.state !== "ready" || result.data?.components?.compose?.state !== "ready") throw new Error("Packed readiness did not prove native smoke cleanup with the expected source-owned release status.");
       if (command === "setup" && (result.data === null || typeof result.data !== "object" || Array.isArray(result.data) || JSON.stringify(Object.keys(result.data)) !== '["components"]')) throw new Error("Ready setup returned an unexpected action or recovery result.");

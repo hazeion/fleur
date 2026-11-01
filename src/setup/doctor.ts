@@ -1,14 +1,47 @@
-import { nativeReadinessProfiles, snapshotReadinessProfiles, readinessCandidates, matchReadinessServer, sameReadinessDaemon, type VerifiedReadinessProfile } from "./readiness.ts";
+import { nativeReadinessProfiles, snapshotReadinessProfiles, compareReadiness, matchReadinessServer, sameReadinessDaemon, type MachineToolComparison, type ReadinessComparison, type VerifiedReadinessProfile } from "./readiness.ts";
 import { hasPendingLinuxAccess } from "./access-pending.ts";
 import { hasPendingPackageTransaction } from "./package-pending.ts";
 import { hasPendingArchService, hasPendingAptService } from "./service-pending.ts";
 import { observeEndpointActivation } from "./activation-observer.ts";
 import { validateSetupArguments } from "./syntax.ts";
-import { failure, success, type CliOutcome } from "../cli/result.ts";
+import { failure, success, type CliOutcome, type CommandError, type Json } from "../cli/result.ts";
 import type { CommandInput } from "../cli/catalog.ts";
 import type { SetupHost, HostCommandResult } from "./commands.ts";
 import { smokeContainer } from "./smoke.ts";
 import { smokeImages, installationMethod } from "./profiles.ts";
+
+type Components = Readonly<Record<string, { readonly state: string; readonly cleanup?: boolean }>>;
+const floorAction = { command: "fleur setup", description: "Inspect the missing actions without replacing existing software." };
+/** Refusal wording decided in #131: the tool and both numbers for an older version, the build for a pre-release, nothing more for a release-less tool. */
+function floorRefusal({ tool, floor, detected, comparison }: MachineToolComparison): CommandError {
+  const message = comparison === "older" ? `Machine tool ${tool} is ${detected}, below the floor ${floor}.`
+    : comparison === "pre-release" ? `Machine tool ${tool} is a pre-release build (${detected}); release floors admit stable versions only.`
+    : `Machine tool ${tool} has no parseable version.`;
+  return { code: "PREREQUISITE_UNAVAILABLE", message, expected: { tool, floor }, actual: { tool, detected }, actions: [floorAction] };
+}
+function toolRows(rows: readonly MachineToolComparison[]): Json[] { return rows.map(({ tool, status, floor, detected, comparison }) => ({ tool, status, floor, detected, comparison })); }
+function toolLine({ tool, status, floor, detected, comparison }: MachineToolComparison): string {
+  const relation = comparison === "equal" ? "= floor" : comparison === "newer" ? `> floor ${floor}` : comparison === "older" ? `< floor ${floor}` : comparison === "pre-release" ? "pre-release, not admitted" : `no parseable version (floor ${floor})`;
+  return `            ${tool.padEnd(11)} ${status.padEnd(10)}  ${(detected ?? "none").padEnd(24)} ${relation}`;
+}
+/** Human text with the status word beside every machine tool (#131 Variant A); a refusal ends with its message and action. */
+function renderReadiness(components: Components, comparison: ReadinessComparison, error?: CommandError): string {
+  const lines = ["cli", "daemon", "compose"].map((name) => `  ${name.padEnd(10)}${components[name]?.state ?? "unknown"}`);
+  lines.push(`  ${"smoke".padEnd(10)}${components.smoke?.state ?? "unknown"}${components.smoke?.cleanup ? ", cleanup confirmed" : ""}`);
+  const admitted = comparison.machineTools.filter((row) => row.status === "admitted").length;
+  if (error) {
+    lines.push(`  ${"release".padEnd(10)}unverified  floor ${comparison.floor}`);
+    for (const row of comparison.machineTools.filter((row) => row.status === "unverified")) lines.push(toolLine(row));
+    for (const row of comparison.machineTools.filter((row) => row.status !== "unverified")) lines.push(toolLine(row));
+    lines.push("", `${error.code}: ${error.message}`, ...error.actions.map((action) => `  ${action.command}   ${action.description}`));
+  } else {
+    lines.push(`  ${"release".padEnd(10)}verified  floor ${comparison.floor} (measured on ${comparison.measuredRows.join(", ")})`);
+    for (const row of comparison.machineTools) lines.push(toolLine(row));
+    if (comparison.admission === "above-floor") lines.push(admitted ? `            ${admitted} tool${admitted === 1 ? "" : "s"} admitted above the measured baseline; measured evidence is for the baseline tuple.` : "            No single measured row matches this tuple; measured evidence is for the baseline tuple.");
+  }
+  return lines.join("\n") + "\n";
+}
+
 /** Endpoint callback stays within trusted prerequisite orchestration, never CLI JSON. */
 export async function doctor({ args, timeoutSeconds }: CommandInput, host: SetupHost, localEndpoint?: (endpoint: string) => void, readinessProfiles: readonly VerifiedReadinessProfile[] = nativeReadinessProfiles, artifactImage?: (endpoint: string) => Promise<string>): Promise<CliOutcome> {
     const invalid = validateSetupArguments("doctor", args);
@@ -63,22 +96,35 @@ export async function doctor({ args, timeoutSeconds }: CommandInput, host: Setup
           const work = (args: readonly string[]) => remaining() > reserve ? host.run(args, remaining() - reserve) : Promise.resolve<HostCommandResult>({ status: "timeout", stdout: "", stderr: "" });
           const smoke = await smokeContainer(work, endpoint, probe, imageState.stdout, identity.architecture, run, artifactImage !== undefined);
           const components = { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: compose.status === "completed" && compose.exitCode === 0 ? "ready" : "missing" }, smoke: { ...smoke }, release: { state: "unverified" } };
-          if (smoke.state === "ready" && smoke.cleanup && compose.status === "completed" && compose.exitCode === 0) {
-            const candidates = readinessCandidates(policy, identity, Bun.version, cli.stdout, compose.stdout, image, daemonIdentity);
-            if (candidates.length) {
-              const version = await run(["docker", "--host", endpoint, "version", "--format", "{{json .Server}}"]);
-              if (version.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Runtime qualification exceeded the operation deadline.", actions: [] }, { components });
-              let server: unknown;
-              try { server = version.status === "completed" && version.exitCode === 0 ? JSON.parse(version.stdout) : undefined; } catch { server = undefined; }
-              const profile = matchReadinessServer(candidates, identity, server);
-              if (profile) {
+          const observation = { identity, cli: cli.stdout, compose: compose.stdout, image, info: daemonIdentity };
+          // Identity facts gate the remaining RPC: a host matching no measured row keeps the generic refusal without a version query.
+          if (smoke.state === "ready" && smoke.cleanup && compose.status === "completed" && compose.exitCode === 0 && policy.length && compareReadiness(policy, { ...observation, bun: Bun.version, server: undefined }).identity.matched) {
+            // Bun.version hides a canary or debug tag; only the executable's own --revision shows it.
+            const revision = await run([process.execPath, "--revision"]);
+            if (revision.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Bun revision did not finish within the operation deadline.", actions: [] }, { components });
+            const bun = { version: Bun.version, revision: revision.status === "completed" && revision.exitCode === 0 ? revision.stdout.trim() : "" };
+            const version = await run(["docker", "--host", endpoint, "version", "--format", "{{json .Server}}"]);
+            if (version.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Runtime qualification exceeded the operation deadline.", actions: [] }, { components });
+            let server: unknown;
+            try { server = version.status === "completed" && version.exitCode === 0 ? JSON.parse(version.stdout) : undefined; } catch { server = undefined; }
+            if (server !== undefined) {
+              const comparison = compareReadiness(policy, { ...observation, bun, server });
+              if (comparison.state === "verified") {
+                // Evidence comes from the measured row of this target that the server build matches exactly, else the target's first row.
+                const profile = matchReadinessServer(policy.filter((row) => comparison.measuredRows.includes(row.id)), identity, server);
                 const final = await run(["docker", "--host", endpoint, "info", "--format", "{{json .}}"]);
                 if (final.status === "timeout" || remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Final daemon identity exceeded the operation deadline.", actions: [] }, { components });
                 let observed: unknown;
                 try { observed = final.status === "completed" && final.exitCode === 0 ? JSON.parse(final.stdout) : undefined; } catch { observed = undefined; }
                 const unchanged = sameReadinessDaemon(daemonIdentity, observed);
                 if (remaining() <= 0) return failure("doctor", 4, { code: "READINESS_TIMEOUT", message: "Final daemon metadata validation exceeded the operation deadline.", actions: [] }, { components });
-                if (unchanged) return success("doctor", { components: { ...components, release: { state: "verified", profile: profile.id, evidence: { ...profile.evidence } } } });
+                if (profile && unchanged) {
+                  const release = { state: "verified", floor: comparison.floor, admission: comparison.admission, measuredRows: [...comparison.measuredRows], machineTools: toolRows(comparison.machineTools), evidence: { ...profile.evidence } };
+                  return { ...success("doctor", { components: { ...components, release } }), human: renderReadiness(components, comparison) };
+                }
+              } else if (comparison.blocking) {
+                const error = floorRefusal(comparison.blocking);
+                return { ...failure("doctor", 4, error, { components: { ...components, release: { state: "unverified", floor: comparison.floor, machineTools: toolRows(comparison.machineTools) } } }), human: renderReadiness(components, comparison, error) };
               }
             }
           }

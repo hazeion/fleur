@@ -61,6 +61,7 @@ export class MaintenanceLease {
   readonly #exclusive: boolean;
   readonly #controlUrl: string;
   readonly #fences = new Map<string, ControlFence>();
+  #closed = false;
   readonly busy: boolean;
   private constructor(sql: SQL, target: DatabaseIdentity, key: string, directory: string, pid: number, exclusive: boolean, nonce: string, busy = false, controlUrl = "") {
     this.sql = sql; this.#target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy; this.#controlUrl = controlUrl;
@@ -204,16 +205,21 @@ export class MaintenanceLease {
     if (rows.length !== 1 || rows[0].owner !== expectedOwner) throw new Error("RECOVERY_REQUIRED");
     this.#target = identitySchema.parse({ ...this.target, oid: rows[0].oid, owner: expectedOwner });
   }
-  async fence(mode: "shared" | "exclusive" | "revision", target: Pick<SQL, "unsafe">): Promise<void> {
+  async fence(mode: "shared" | "exclusive" | "revision", target: Pick<SQL, "unsafe">, signal?: AbortSignal, timeoutMs = 5000): Promise<void> {
+    const check = () => { signal?.throwIfAborted(); if (this.#closed) throw new Error("RECOVERY_REQUIRED"); };
+    check();
     let fence = this.#fences.get(mode);
     if (!fence) {
-      fence = await ControlFence.acquire(this.#controlUrl, this.target.cluster, this.target.database, mode, this.#nonce);
+      fence = await ControlFence.acquire(this.#controlUrl, this.target.cluster, this.target.database, mode, this.#nonce, signal, timeoutMs);
+      if (this.#closed || signal?.aborted) { await fence.close(); check(); }
       this.#fences.set(mode, fence);
     }
-    await fence.attach(target, this.target.database, mode === "exclusive");
+    await fence.attach(target, this.target.database, mode === "exclusive", check);
     await this.assertSession();
   }
+  get applicationTag(): string { return `fleur-managed:${this.#nonce}`; }
   async close(): Promise<void> {
+    this.#closed = true;
     for (const fence of this.#fences.values()) await fence.close();
     await this.sql.close({ timeout: 0 });
   }

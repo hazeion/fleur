@@ -133,7 +133,9 @@ export class DevelopmentPostgres {
   }
   /** No configuration URL can select this operation's target. Verify the stored cluster and database OID first. */
   async query(project: string, options: import("../database/query").QueryOptions, config: import("../database/maintenance").MaintenanceConfiguration) {
-    const url = await this.url(), controlUrl = await this.url("postgres");
+    let url: string, controlUrl: string;
+    try { url = await this.url(); controlUrl = await this.url("postgres"); }
+    catch { throw new Error("DATABASE_UNAVAILABLE"); }
     if (!this.#record.cluster || !this.#record.queryPassword || !this.#record.applicationOid) throw new Error("DATABASE_UNAVAILABLE");
     const lease = await MaintenanceLease.acquire(url, false, { ...config, controlUrl }, true);
     let sql: SQL | undefined;

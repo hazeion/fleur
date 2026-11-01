@@ -33,7 +33,7 @@ export async function restoreDatabase(url:string,project:string,from:string,conf
   const frozen=join(lease.directory,`restore-${crypto.randomUUID()}.dump`),script=frozen+".sql",command=script+".psql";
   let marker:MaintenanceMarker|undefined;
   const timer=setTimeout(()=>{void sql.close({timeout:0}).catch(()=>{});void lease.close().catch(()=>{});},remaining());
-  const io=()=>({timeoutMs:remaining(),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
+  const io=()=>({applicationName:lease.applicationTag,timeoutMs:remaining(),...(config.toolDirectory?{directory:config.toolDirectory}:{})});
   try {
     if(lease.busy)throw new Error("MAINTENANCE_BUSY");
     // Every restore path verifies the archive in a disposable database first; the target may be missing here.

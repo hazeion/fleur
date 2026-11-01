@@ -120,3 +120,23 @@ test("application advisory locks give the diagnostic role no authority over Fleu
     await lease.assertSession();
   } finally { await diagnostic.close(); await lease.close(); }
 });
+
+test("inheritance roots and PUBLIC column grants cannot bypass private-schema authority", async () => {
+  await admin.unsafe("CREATE SCHEMA IF NOT EXISTS fleur_internal; CREATE TABLE public.inheritance_root(value text); CREATE TABLE fleur_internal.inheritance_child() INHERITS(public.inheritance_root); INSERT INTO fleur_internal.inheritance_child VALUES('private inheritance sentinel')");
+  try { await expect(query("TABLE public.inheritance_root")).rejects.toThrow("DATABASE_PRIVILEGE_INSUFFICIENT"); }
+  finally { await admin.unsafe("DROP TABLE public.inheritance_root CASCADE"); }
+  await admin.unsafe("CREATE TABLE fleur_internal.column_private(value text); INSERT INTO fleur_internal.column_private VALUES('private column sentinel'); CREATE VIEW public.column_view AS SELECT value FROM fleur_internal.column_private; GRANT SELECT(value) ON public.column_view TO PUBLIC");
+  try { await expect(query("SELECT value FROM public.column_view")).rejects.toThrow("DATABASE_PRIVILEGE_INSUFFICIENT"); }
+  finally { await admin.unsafe("DROP VIEW public.column_view; DROP TABLE fleur_internal.column_private"); }
+});
+
+test("administrative role verification obeys the host deadline while a table lock blocks grants", async () => {
+  const blocker = new SQL(pg.url, { max: 1 });
+  try {
+    await blocker.unsafe("BEGIN; LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
+    const started = performance.now();
+    await expect(query("SELECT 1", [], 100, 700)).rejects.toThrow("QUERY_TIMEOUT");
+    expect(performance.now() - started).toBeLessThan(2500);
+    expect((await admin.unsafe("SELECT count(*)::text AS count FROM pg_stat_activity WHERE query LIKE 'GRANT%' AND state='active'"))[0].count).toBe("0");
+  } finally { await blocker.unsafe("ROLLBACK"); await blocker.close(); }
+});

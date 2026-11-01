@@ -69,3 +69,27 @@ for (const loss of ["primary", "all"] as const) for (let repeat = 1; repeat <= 2
     await fixture.cleanup(); await rm(root, { recursive: true, force: true });
   }
 }, 180_000);
+
+test("revision fence contention consumes the operation's remaining budget and rolls back", async () => {
+  const { digest } = await import("../../src/runtime/database/maintenance");
+  const fixture = await ownedPostgres(), root = await mkdtemp(join(tmpdir(), "fleur-control-fence-deadline-"));
+  const broker = new ReadBroker({ url: fixture.url, tables: [fenceRows], maintenance: { stateRoot: root } });
+  const url = new URL(fixture.url); url.pathname = "/postgres";
+  const control = new SQL(url.toString());
+  let key: string | undefined;
+  try {
+    await fixture.sql.unsafe("CREATE TABLE review_fence_rows(id bigint PRIMARY KEY,version bigint NOT NULL DEFAULT 1)");
+    await fixture.reviewSchema([fenceRows]);
+    const observed = await MaintenanceLease.acquire(fixture.url, false, { stateRoot: root });
+    key = BigInt.asIntN(64, BigInt(`0x${digest(`fleur:revision:v1:${observed.target.cluster}:${observed.target.database}`).slice(0,16)}`)).toString();
+    await observed.close();
+    await control.unsafe("SELECT pg_advisory_lock($1::bigint)", [key]);
+    const started = performance.now();
+    await expect(broker.mutate(async db => { await db.insert(fenceRows, { values: { id: 1 }, returning: ["id"] }); return []; }, { operation: "deadline", input: {} }, started - 4200)).rejects.toThrow("QUERY_TIMEOUT");
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(await fixture.sql.unsafe("SELECT * FROM review_fence_rows")).toEqual([]);
+  } finally {
+    if (key) await control.unsafe("SELECT pg_advisory_unlock($1::bigint)", [key]);
+    await control.close(); await broker.close(); await fixture.cleanup(); await rm(root, { recursive: true, force: true });
+  }
+}, 15000);

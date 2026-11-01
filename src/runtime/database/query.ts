@@ -59,7 +59,7 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
     if (maintenanceSummary(lease.busy, marker).state !== "idle") throw new Error("MAINTENANCE_BUSY");
     await lease.assertSession();
     admin = new SQL(url, { max: 1, connectionTimeout: 2 });
-    await provisionAgentQueryRole(lease.sql, password, admin);
+    await provisionAgentQueryRole(lease.sql, password, admin, started + options.timeoutMs);
     if (expired) throw new Error("QUERY_TIMEOUT");
     const report = await withInspection(url, "development", { ...config, timeoutMs: remaining() }, session => readMigrationStatus(session, project));
     const login = new URL(url); login.username = agentQueryRole; login.password = password;
@@ -92,7 +92,7 @@ export async function queryDevelopmentDatabase(url: string, password: string, pr
   })();
   try { return await Promise.race([operation, expiry]); }
   catch (error) {
-    if (expired || error instanceof PostgresQueryError && error.fields.C === "57014") { expired = true; throw new Error("QUERY_TIMEOUT"); }
+    if (expired || error instanceof PostgresQueryError && error.fields.C === "57014" || error instanceof SQL.PostgresError && error.errno === "57014") { expired = true; throw new Error("QUERY_TIMEOUT"); }
     if (error instanceof PostgresQueryError) {
       const endpoint = new URL(url);
       throw new QueryRejected(error, [url, password, decodeURIComponent(endpoint.password), decodeURIComponent(endpoint.username), agentQueryRole, endpoint.hostname, endpoint.port, lease.target.address, String(lease.target.port)]);

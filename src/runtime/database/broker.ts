@@ -126,7 +126,7 @@ export class ReadBroker {
       const backendIdentity = await execute("SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid=pg_backend_pid()");
       if (!Array.isArray(backendIdentity) || backendIdentity.length !== 1 || !Number.isSafeInteger(backendIdentity[0]?.pid) || typeof backendIdentity[0]?.started !== "string") throw new Error("INTERNAL_FAILURE");
       backend = { pid: backendIdentity[0].pid as number, started: backendIdentity[0].started as string };
-      await admission.fence("shared", connection);
+      await Promise.race([admission.fence("shared", connection, abort.signal, Math.max(1, 5000 - (performance.now() - started))), expired]);
       await execute(writable ? "BEGIN ISOLATION LEVEL READ COMMITTED" : "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY");
       await Promise.race([admission.assertSession(), expired]);
       await execute("SELECT set_config('statement_timeout', $1, true)", [String(Math.max(1, Math.floor(5000 - (performance.now() - started))))]);
@@ -189,7 +189,7 @@ export class ReadBroker {
         if (outstanding || active) throw new Error("REQUEST_DENIED");
         check();
         await Promise.race([admission.assertSession(), expired]);
-        await admission.fence("revision", connection);
+        await Promise.race([admission.fence("revision", connection, abort.signal, Math.max(1, 5000 - (performance.now() - started))), expired]);
         await ensureRevision(execute);
         await execute("UPDATE fleur_internal.revision SET revision=revision+1 WHERE singleton");
         await execute("SELECT pg_notify('fleur_revision','')");

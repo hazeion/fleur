@@ -1,6 +1,6 @@
 # Prerequisite diagnosis and setup
 
-Fleur requires Bun 1.4.3 before invocation. Doctor and setup run through Bun and never invoke Node or npm. `doctor --json` returns one version 1 result; failures identify a stable code, exit category and recovery actions. The default operation deadline is 60 seconds. Help and argument validation do not probe Docker, load native libraries, read grants or create setup state.
+Fleur requires Bun at or above its release floor, currently 1.4.3, before invocation. Newer stable Bun versions are admitted; Fleur never upgrades or replaces Bun. Doctor and setup run through Bun and never invoke Node or npm. `doctor --json` returns one version 1 result; failures identify a stable code, exit category and recovery actions. The default operation deadline is 60 seconds. Help and argument validation do not probe Docker, load native libraries, read grants or create setup state.
 
 Doctor distinguishes native architecture and Rosetta, unsupported targets, missing Docker CLI, an effective remote endpoint, daemon access denial, Compose availability and a digest-pinned owned smoke container. It resolves Docker environment/context overrides and freezes the local Unix endpoint for subsequent requests; it never changes global Docker context. Raw Docker stderr, credentials and private machine identity are not returned. Image acquisition is explicit: doctor never pulls a missing image.
 

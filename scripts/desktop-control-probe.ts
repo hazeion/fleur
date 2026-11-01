@@ -3,8 +3,21 @@ import { readFileSync, readlinkSync } from "node:fs";
 import { machine, release } from "node:os";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
+// The container runs this source through `bun -e` with no checkout, so the release floor arrives as
+// FLEUR_CONTROL_BUN_FLOOR and is validated here; it mirrors src/project/release.ts without importing it.
+function bunAdmitted(floor: string, version: string): boolean {
+  const required = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(floor);
+  const actual = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!required || !actual) return false;
+  for (let index = 1; index <= 3; index++) {
+    const difference = Number(actual[index]) - Number(required[index]);
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
+
 function probe() {
-  if (process.platform !== "linux" || process.arch !== "x64" || machine() !== "x86_64" || process.getuid?.() !== 0 || Bun.version !== "1.4.3") throw new Error("NATIVE_LINUX_MANAGER_REQUIRED");
+  if (process.platform !== "linux" || process.arch !== "x64" || machine() !== "x86_64" || process.getuid?.() !== 0 || !bunAdmitted(process.env.FLEUR_CONTROL_BUN_FLOOR ?? "", Bun.version)) throw new Error("NATIVE_LINUX_MANAGER_REQUIRED");
   const pidText = process.env.FLEUR_CONTROL_PID ?? "";
   const workerId = process.env.FLEUR_CONTROL_WORKER ?? "";
   const nonce = process.env.FLEUR_CONTROL_NONCE ?? "";

@@ -1,5 +1,6 @@
 /** Conservative Desktop control preflight. Never release or runtime admission. */
 import { readFile } from "node:fs/promises";
+import { bunAdmission, bunFloor } from "../src/project/release.ts";
 import { resolve } from "node:path";
 import type { HostCommandResult, SetupHost } from "../src/setup/commands.ts";
 import { productionHost } from "../src/setup/host.ts";
@@ -146,7 +147,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
   };
   try {
     const native = await host.host();
-    if (native.system !== "darwin" || native.architecture !== "x64" || native.translated !== false || Bun.version !== "1.4.3") throw new Error("NATIVE_INTEL_MAC_REQUIRED");
+    if (native.system !== "darwin" || native.architecture !== "x64" || native.translated !== false || !bunAdmission(Bun.version).admitted) throw new Error("NATIVE_INTEL_MAC_REQUIRED");
     report.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
     const commit = (await command(["git", "rev-parse", "HEAD"])).trim();
     if (!/^[a-f0-9]{40}$/.test(commit) || await command(["git", "diff", "--exit-code", "HEAD"])) throw new Error("CLEAN_COMMITTED_SOURCE_REQUIRED");
@@ -184,7 +185,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
     if (!acceptDesktopControlContainer(before, worker) || !object(before?.State) || before.State.Running !== true || !Number.isSafeInteger(before.State.Pid) || (before.State.Pid as number) <= 1) throw new Error("LIVE_OWNED_WORKER_REQUIRED");
     const workerPid = before.State.Pid as number;
     if (managerSource === undefined) throw new Error("VALIDATED_MANAGER_SOURCE_REQUIRED");
-    const manager = await create("manager", image.Id, nonce, managerSource, [`FLEUR_CONTROL_PID=${workerPid}`, `FLEUR_CONTROL_WORKER=${worker.id}`, `FLEUR_CONTROL_NONCE=${nonce}`]);
+    const manager = await create("manager", image.Id, nonce, managerSource, [`FLEUR_CONTROL_PID=${workerPid}`, `FLEUR_CONTROL_WORKER=${worker.id}`, `FLEUR_CONTROL_NONCE=${nonce}`, `FLEUR_CONTROL_BUN_FLOOR=${bunFloor}`]);
     const managerBefore = await inspect(manager.id!);
     if (!acceptDesktopControlContainer(managerBefore, manager) || !object(managerBefore?.State) || managerBefore.State.Running !== true || (managerBefore.State.Pid as number) <= 1) throw new Error("LIVE_OWNED_MANAGER_REQUIRED");
     const binding = { nonce, workerId: worker.id!, workerPid, managerPid: managerBefore.State.Pid as number, kernel: version.KernelVersion as string };

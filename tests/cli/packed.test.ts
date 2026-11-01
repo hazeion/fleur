@@ -57,6 +57,10 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "logs", summary: "Read bounded development logs.", usage: "logs [--limit 200] [--cursor <token>] [--follow]", options: [{ name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--follow", value: false }] },
     { name: "build", usage: "build", summary: "Build an immutable, self-contained production artifact.", options: [] },
     { name: "start", usage: "start --artifact <dir> [--host <address>] [--port <number>]", summary: "Serve a verified production artifact against configured PostgreSQL.", options: [{ name: "--artifact", value: true }, { name: "--host", value: true }, { name: "--port", value: true }] },
+    { name: "docs", usage: "docs [core|catalog|upgrades]", summary: "Read pinned offline documentation or machine schemas." },
+    { name: "docs refresh", usage: "docs refresh [--preview | --replace <token> | --recover]", summary: "Refresh generated guidance while preserving user instructions.", options: [{ name: "--preview", value: false }, { name: "--replace", value: true, pattern: "^[a-f0-9]{64}$" }, { name: "--recover", value: false }] },
+    { name: "upgrade", usage: "upgrade --to <exact-version> [--preview | --accept <token>]", summary: "Preview or apply a documented exact-version upgrade.", options: [{ name: "--to", value: true, pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" }, { name: "--preview", value: false }, { name: "--accept", value: true, pattern: "^[a-f0-9]{64}$" }] },
+    { name: "verify", usage: "verify", summary: "Check pinned guidance, tests, types, full lint and production build." },
   ]);
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });

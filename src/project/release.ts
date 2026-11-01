@@ -21,3 +21,5 @@ export function bunAdmission(version: string, floor: string = bunFloor): BunAdmi
   }
   return { admitted: true };
 }
+
+export const exactStableVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;

@@ -1,0 +1,22 @@
+/** Authored independently of command definitions; tests submit every argv to the shipped grammar. */
+export const recoveryExamples = [
+  { name: "Interrupted prerequisite setup", symptom: "A repository refresh or privileged setup step stopped before readiness was established.",
+    diagnostics: [["doctor"], ["setup", "grants", "list"]], authority: "The human inspects the exact outstanding setup action and grants fresh authority where the previous one-time grant was consumed. Resolve OS login/restart actions outside Fleur.",
+    recovery: [["setup"], ["doctor"]], proof: "Doctor must establish measured prerequisite readiness, including owned smoke cleanup. Reprobe existing state; never blindly repeat a completed install. The synthetic host proof checks resulting exact repository bytes, package inventory, consumed authority and that completed copies are not repeated. It does not claim native installation qualification.",
+    tests: ["tests/cli/setup-repository-resume.test.ts", "tests/cli/setup-readiness-policy.test.ts"] },
+  { name: "Lifecycle and invalid reload", symptom: "Development is unready, stopped, or retains its last valid generation after a source error.",
+    diagnostics: [["status"], ["logs", "--limit", "200"]], authority: "Correct the reported application source. Stop/restart explicitly if the owner failed. Never delete ownership evidence or reset data to force readiness.",
+    recovery: [["stop"], ["dev", "--background"], ["status"]], proof: "Readiness includes a successful rendered page and database admission. Inspect the browser after correction: the last valid view/draft survives invalid reload; explicit navigation loads an incompatible corrected generation. Stop/dev must preserve rows, history and retained backups.",
+    tests: ["tests/runtime/development-lifecycle.integration.test.ts"] },
+  { name: "Maintenance and restore", symptom: "RECOVERY_REQUIRED or maintenance blocks application access after an interrupted backup, migration or restore.",
+    diagnostics: [["db", "recover", "--inspect"], ["db", "migration", "status"], ["db", "inspect"]], authority: "Inspect the retained marker and verified backup. Human approval for the exact target and backup is required before restore replaces current data. Preserve changes made after the backup until that choice is made.",
+    recovery: [["db", "restore", "--from", "reviewed-backup.dump"], ["db", "migration", "status"], ["db", "inspect"]], proof: "In a uniquely owned disposable PostgreSQL target, verify restored rows, schema/history and clearance of the maintenance fence. An incomplete restore cannot reopen access. Where inspection proves the original unchanged, use the specifically documented reconciliation instead of replacing data.",
+    tests: ["tests/runtime/backup.integration.test.ts", "tests/runtime/backup-recovery.integration.test.ts", "tests/runtime/maintenance-browser.integration.test.ts"] },
+  { name: "Reactive stale/reconnect and unknown writes", symptom: "A view is stale/reconnecting or a submitted mutation lost its acknowledgement and reports OUTCOME_UNKNOWN.",
+    diagnostics: [["status"], ["logs", "--limit", "200"]], authority: "Restore connectivity. Keep the draft and inspect freshly queried persisted state before deciding whether a new user action is appropriate. A query alone cannot prove which particular submission committed.",
+    recovery: [], proof: "After reconnect, the browser receives a complete current snapshot, including commits missed offline, while keyed drafts/focus remain. The commit-loss fixture observes one committed row and one submission with an unknown outcome; it never automatically retries or asserts exactly-once submission knowledge.",
+    tests: ["tests/runtime/reactive-browser.integration.test.ts", "tests/runtime/mutation-commit-loss.integration.test.ts"] },
+] as const;
+export function recoveryReference(): string {
+  return "\n## Recovery examples\n\n" + recoveryExamples.map(example => `### ${example.name}\n\nSymptom: ${example.symptom}\n\nDiagnose: ${example.diagnostics.map(args => "`fleur " + args.join(" ") + "`").join(", ")}.\n\nAuthority: ${example.authority}\n\nRecover: ${example.recovery.length ? example.recovery.map(args => "`fleur " + args.join(" ") + "`").join(", ") : "Reconnect and reconcile through the application's current query view; never replay an unknown mutation."}\n\nResulting-state proof: ${example.proof}\n\nExecutable synthetic proof: ${example.tests.map(test => "`" + test + "`").join(", ")}.\n`).join("\n");
+}

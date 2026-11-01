@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rmdir, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { failure, success } from "../cli/result.ts";
-import { generatedGuidance, tddGuidance, offlineGuidance } from "./guidance.ts";
+import { generatedGuidance, tddGuidance } from "./guidance.ts";
 import { releaseVersion as version } from "./release.ts";
 const directories = ["client", "server", "shared", "assets", "tests", "migrations", "seeds", ".agents", ".agents/skills", ".agents/skills/fleur-tdd", ".fleur", "lint", "docs"];
 async function stat(path: string) {
@@ -13,9 +13,12 @@ export async function createProject(command: string, target: string, git: boolea
   const deadline = performance.now() + timeoutSeconds * 1000;
   const manifest = JSON.parse(await readFile(new URL("./template/package.json.txt", import.meta.url), "utf8"));
   manifest.fleur = { version };
+  const { guidanceFiles, guidanceManifest } = await import("./guidance-state.ts");
+  const guidance = await guidanceFiles();
   const files: Record<string, string> = {
+    ".fleur-guidance.json": guidanceManifest(guidance),
     ".fleur/.gitignore": "*\n",
-    "docs/fleur.md": offlineGuidance,
+    "docs/fleur.md": guidance["docs/fleur.md"],
     "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", types: ["bun"], strict: true, noUncheckedIndexedAccess: true, allowImportingTsExtensions: true, jsx: "react-jsx", jsxImportSource: "preact", noEmit: true, skipLibCheck: false }, include: ["client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "server/**/*.tsx", "shared/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"] }, null, 2) + "\n",
     ".oxlintrc.json": JSON.stringify({ plugins: ["typescript"], categories: { correctness: "error" } }, null, 2) + "\n",
     "lint/package.json": await readFile(new URL("./template/lint-package.json.txt", import.meta.url), "utf8"),

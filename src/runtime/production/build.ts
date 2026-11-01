@@ -97,7 +97,7 @@ export async function writeArtifact(source: AdmittedProject, project: string, ou
     if (snapshotSignature(describeTables(tables)) !== snapshotSignature(plans.at(-1)?.snapshot ?? [])) throw new Error("MIGRATIONS_PENDING");
     await mkdir(join(directory, "manifest"));
     await writeFile(join(directory, "manifest/registry.json"), JSON.stringify(registry));
-    await writeFile(join(directory, "manifest/dependencies.json"), JSON.stringify({ fleur: release.version, bun: release.engines.bun, runtime: release.dependencies }));
+    await writeFile(join(directory, "manifest/dependencies.json"), JSON.stringify({ fleur: release.version, bun: Bun.version, runtime: release.dependencies }));
     await mkdir(join(directory, "schema/migrations"), { recursive: true });
     for (const name of await readdir(join(project, "migrations")).catch(() => [] as string[])) await cp(join(project, "migrations", name), join(directory, "schema/migrations", name));
     await writeClient(directory, browser, source.root);
@@ -117,7 +117,7 @@ export async function writeArtifact(source: AdmittedProject, project: string, ou
     const files = [];
     for (const path of await artifactFiles(directory)) files.push({ path, ...await fileDigest(join(directory, path)) });
     const content: Omit<ArtifactManifest, "id"> = {
-      formatVersion: 1, fleurVersion: release.version, bun: release.engines.bun, compiler: "microsoft", project: projectKey(key, project),
+      formatVersion: 1, fleurVersion: release.version, bun: Bun.version, compiler: "microsoft", project: projectKey(key, project),
       platform: { os: "linux", architecture: ["aarch64", "arm64"].includes(architecture) ? "arm64" : "amd64" },
       images: { archive: archiveName, worker: { tag: tags[0]!, identities: await savedIdentities(join(directory, archiveName), tags[0]!) }, controller: { tag: tags[1]!, identities: await savedIdentities(join(directory, archiveName), tags[1]!) } },
       files,

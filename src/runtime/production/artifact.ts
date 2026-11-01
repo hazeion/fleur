@@ -12,9 +12,11 @@ const imageRole = z.strictObject({
   // classic store and its index entry digest on the containerd store.
   identities: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).min(1).max(2),
 });
+/** A released Bun version, the only form the artifact records and start compares. */
+const plainVersion = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const relativePath = z.string().min(1).max(512).refine(value => !value.startsWith("/") && !value.split("/").some(part => part === "" || part === "." || part === ".."));
 const manifestSchema = z.strictObject({
-  formatVersion: z.literal(1), id: hash, fleurVersion: z.string().min(1).max(128), bun: z.string().min(1).max(64), compiler: z.literal("microsoft"),
+  formatVersion: z.literal(1), id: hash, fleurVersion: z.string().min(1).max(128), bun: z.string().max(64).regex(plainVersion), compiler: z.literal("microsoft"),
   /** Links a running start to its project for read-only status. Never a machine path. */
   project: z.string().regex(/^(?:[a-f0-9]{64}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$/),
   platform: z.strictObject({ os: z.literal("linux"), architecture: z.enum(["amd64", "arm64"]) }),
@@ -22,10 +24,20 @@ const manifestSchema = z.strictObject({
   files: z.array(z.strictObject({ path: relativePath, sha256: hash, bytes: z.number().int().nonnegative() })).min(1).max(100000),
 });
 export type ArtifactManifest = z.infer<typeof manifestSchema>;
+/** The message stays the code: the supervisor maps refusals by it. A specific sentence travels in `detail`. */
 export class ArtifactRefusal extends Error {
-  constructor(readonly code: "ARTIFACT_INVALID" | "ARTIFACT_INCOMPATIBLE") { super(code); }
+  constructor(readonly code: "ARTIFACT_INVALID" | "ARTIFACT_INCOMPATIBLE", readonly detail?: { readonly message: string; readonly expected: string; readonly actual: string }) { super(code); }
 }
 const invalid = () => new ArtifactRefusal("ARTIFACT_INVALID");
+const parseVersion = (value: string): readonly [number, number, number] | undefined =>
+  plainVersion.test(value) ? value.split(".").map(Number) as [number, number, number] : undefined;
+/** The build Bun is the artifact's floor: the host admits it when at or above, compared numerically by major, minor and patch. */
+function hostBelowBuildBun(build: string, host: string): boolean {
+  const required = parseVersion(build), detected = parseVersion(host);
+  if (!required || !detected) return true;
+  for (const index of [0, 1, 2] as const) if (detected[index] !== required[index]) return detected[index] < required[index];
+  return false;
+}
 
 export function artifactIdentity(manifest: Omit<ArtifactManifest, "id">): string {
   return digest(`fleur:artifact:v1:${JSON.stringify(manifest)}`);
@@ -91,7 +103,8 @@ export async function verifyArtifact(directory: string, fleurVersion: string): P
     if (error instanceof ArtifactRefusal) throw error;
     throw invalid();
   }
-  if (manifest.fleurVersion !== fleurVersion || manifest.bun !== Bun.version) throw new ArtifactRefusal("ARTIFACT_INCOMPATIBLE");
+  if (manifest.fleurVersion !== fleurVersion) throw new ArtifactRefusal("ARTIFACT_INCOMPATIBLE");
+  if (hostBelowBuildBun(manifest.bun, Bun.version)) throw new ArtifactRefusal("ARTIFACT_INCOMPATIBLE", { message: `The artifact was built by Bun ${manifest.bun}; this host runs Bun ${Bun.version}. Start needs a host Bun at or above the build Bun.`, expected: manifest.bun, actual: Bun.version });
   const architecture = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : "unsupported";
   if (manifest.platform.architecture !== architecture) throw new ArtifactRefusal("ARTIFACT_INCOMPATIBLE");
   return { root, manifest };

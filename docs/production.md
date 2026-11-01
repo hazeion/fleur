@@ -19,7 +19,7 @@ that acquires images. Each artifact is published atomically under
 
 | Path | Contents |
 | --- | --- |
-| `fleur-artifact.json` | Release, Bun, compiler and platform pins, image identities and a digest of every other file. |
+| `fleur-artifact.json` | The Fleur release, the Bun that built the artifact, the compiler and platform, image identities and a digest of every other file. |
 | `supervisor/` | The bundled Bun supervisor with its dependencies. Serving reads nothing from source or an installed package. |
 | `server/application.js` | The compiled application bundle, also inside the worker image. |
 | `client/` | Immutable browser files and their index. |
@@ -41,8 +41,9 @@ serves every required platform (Intel macOS, Ubuntu 24.04/26.04 and Debian 13).
 Start checks, in order, and refuses with the stable code before serving:
 
 1. The artifact is complete and matches its digests, before any of its code runs
-   or Docker is contacted (`ARTIFACT_INVALID`). It matches this Fleur release, Bun
-   and architecture (`ARTIFACT_INCOMPATIBLE`).
+   or Docker is contacted (`ARTIFACT_INVALID`). It matches this Fleur release and
+   architecture, and the host Bun is at or above the build Bun
+   (`ARTIFACT_INCOMPATIBLE`, reporting both versions).
 2. `FLEUR_PRIVATE_DATABASE_URL` is set (`CONFIGURATION_MISSING`).
 3. The port is free. Production defaults to `127.0.0.1:3000` and never selects
    another port (`PORT_OCCUPIED`). One start per application runs on a machine

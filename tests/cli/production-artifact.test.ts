@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import release from "../../package.json" with { type: "json" };
+import { monotonicNanoseconds } from "../../src/runtime/development/state";
 import { artifactIdentity, type ArtifactManifest } from "../../src/runtime/production/artifact";
 
 const executable = resolve(import.meta.dir, "../../bin/fleur.ts");
@@ -15,10 +16,11 @@ async function cli(...args: string[]) {
   const child = Bun.spawn([process.execPath, executable, ...args, "--json"], { cwd: scratch, env: { PATH: noDocker, HOME: scratch }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   const lines = stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
-  return { exit, stderr, lines, last: lines.at(-1) as { ok?: boolean; error?: { code: string }; event?: string; data?: { result?: { error?: { code: string } }; exitCode?: number } } };
+  return { exit, stderr, lines, last: lines.at(-1) as { ok?: boolean; error?: { code: string }; event?: string; data?: { result?: { error?: { code: string; expected?: unknown; actual?: unknown } }; exitCode?: number } } };
 }
 const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
 const refusal = (outcome: Awaited<ReturnType<typeof cli>>) => outcome.last.data?.result?.error?.code ?? outcome.last.error?.code;
+const [hostMajor, hostMinor, hostPatch] = Bun.version.split(".").map(Number) as [number, number, number];
 
 /** A structurally valid artifact whose contents are small enough to corrupt cheaply. */
 async function artifact(name: string, change: (manifest: Omit<ArtifactManifest, "id">) => Omit<ArtifactManifest, "id"> = value => value) {
@@ -31,7 +33,7 @@ async function artifact(name: string, change: (manifest: Omit<ArtifactManifest, 
   }
   const role = (tag: string) => ({ tag, identities: [`sha256:${"a".repeat(64)}`] });
   const base = change({
-    formatVersion: 1, fleurVersion: release.version, bun: release.engines.bun, compiler: "microsoft", project: "b".repeat(64),
+    formatVersion: 1, fleurVersion: release.version, bun: Bun.version, compiler: "microsoft", project: "b".repeat(64),
     platform: { os: "linux", architecture: process.arch === "arm64" ? "arm64" : "amd64" },
     images: { archive: "images/execution.oci.tar", worker: role("fleur-read-build-a-worker:latest"), controller: role("fleur-read-build-a-controller:latest") },
     files: Object.entries(contents).map(([path, body]) => ({ path, sha256: sha256(body), bytes: body.length })).sort((a, b) => a.path < b.path ? -1 : 1),
@@ -81,16 +83,50 @@ test("a manifest edited after publication fails its identity check", async () =>
   await writeFile(path, JSON.stringify({ ...manifest, project: "c".repeat(64) }));
   expect(refusal(await cli("start", "--artifact", directory))).toBe("ARTIFACT_INVALID");
 });
-test("an artifact for another Fleur release, Bun or architecture is incompatible", async () => {
+test("an artifact for another Fleur release or architecture is incompatible", async () => {
   const changes: ((manifest: Omit<ArtifactManifest, "id">) => Omit<ArtifactManifest, "id">)[] = [
     value => ({ ...value, fleurVersion: "0.0.1" }),
-    value => ({ ...value, bun: "1.0.0" }),
     value => ({ ...value, platform: { os: "linux", architecture: process.arch === "arm64" ? "amd64" : "arm64" } }),
   ];
   for (const [index, change] of changes.entries()) {
     const outcome = await cli("start", "--artifact", await artifact(`incompatible-${index}`, change));
     expect(outcome.exit, String(index)).toBe(4);
     expect(refusal(outcome), String(index)).toBe("ARTIFACT_INCOMPATIBLE");
+  }
+});
+test("an artifact built by an older Bun is admitted when its release and architecture match", async () => {
+  // Verification passed when the next check, database configuration, is the one reported.
+  const outcome = await cli("start", "--artifact", await artifact("older-bun", value => ({ ...value, bun: "1.0.0" })));
+  expect(outcome.exit).toBe(4);
+  expect(refusal(outcome)).toBe("CONFIGURATION_MISSING");
+});
+test("an artifact built by a newer Bun is incompatible and reports both versions", async () => {
+  // Compared numerically: a patch such as 1.4.13 is above 1.4.3 although it sorts below it as text.
+  for (const [index, bun] of ["99.0.0", `${hostMajor}.${hostMinor + 1}.0`, `${hostMajor}.${hostMinor}.1${hostPatch}`].entries()) {
+    const outcome = await cli("start", "--artifact", await artifact(`newer-bun-${index}`, value => ({ ...value, bun })));
+    expect(outcome.exit, bun).toBe(4);
+    expect(refusal(outcome), bun).toBe("ARTIFACT_INCOMPATIBLE");
+    expect(outcome.last.data?.result?.error, bun).toMatchObject({ expected: bun, actual: Bun.version });
+  }
+});
+test("a manifest whose Bun is not a plain version is invalid before any comparison", async () => {
+  for (const [index, bun] of [">=1.4.3", "1.4", "1.4.3-canary.20261101", "v1.4.3", "1.4.3 "].entries()) {
+    const outcome = await cli("start", "--artifact", await artifact(`malformed-bun-${index}`, value => ({ ...value, bun })));
+    expect(outcome.exit, bun).toBe(4);
+    expect(refusal(outcome), bun).toBe("ARTIFACT_INVALID");
+  }
+});
+test("the supervisor's own verification reports the same compatibility codes as the launcher", async () => {
+  // The supervisor re-verifies the artifact as its own authority, so its failure codes must agree with start's.
+  const supervisorEntry = resolve(import.meta.dir, "../../src/runtime/production/entry.ts");
+  const cases = [["supervisor-release", (value: Omit<ArtifactManifest, "id">) => ({ ...value, fleurVersion: "0.0.1" })], ["supervisor-newer-bun", (value: Omit<ArtifactManifest, "id">) => ({ ...value, bun: "99.0.0" })]] as const;
+  for (const [name, change] of cases) {
+    const root = await artifact(name, change);
+    const child = Bun.spawn([process.execPath, supervisorEntry, root, "127.0.0.1", "3000", (monotonicNanoseconds() + 60_000_000_000n).toString()], { cwd: root, env: { PATH: noDocker, HOME: scratch }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const [stdout, exit] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const events = stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { event: string; code?: string });
+    expect(events.at(-1), name).toEqual({ event: "failed", code: "ARTIFACT_INCOMPATIBLE" });
+    expect(exit, name).toBe(4);
   }
 });
 test("a valid artifact without database configuration names only the missing configuration", async () => {

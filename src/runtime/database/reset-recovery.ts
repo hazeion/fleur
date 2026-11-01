@@ -25,8 +25,9 @@ export async function restoreMissingReset(url: string, frozen: string, archive: 
     await lease.sql.unsafe(`CREATE DATABASE ${quote(manifest.target.database)} OWNER ${quote(manifest.target.owner)} TEMPLATE template0`);
     await lease.refreshReplacedTarget(manifest.target.owner);
     marker = { ...marker, target: lease.target, stage: "applying" }; await lease.persist(marker);
-    await pgTool("pg_restore", ["--no-owner", "--no-acl", "--exit-on-error", "--single-transaction", "--no-password", `--dbname=${lease.target.database}`], url, { input: frozen, timeoutMs: remaining(), ...(config.toolDirectory ? { directory: config.toolDirectory } : {}) });
     sql = new SQL(url, { max: 1, connectionTimeout: 2 });
+    await lease.fence("exclusive", sql);
+    await pgTool("pg_restore", ["--no-owner", "--no-acl", "--exit-on-error", "--single-transaction", "--no-password", `--dbname=${lease.target.database}`], url, { input: frozen, applicationName: lease.applicationTag, timeoutMs: remaining(), ...(config.toolDirectory ? { directory: config.toolDirectory } : {}) });
     const catalog = await catalogFingerprint(sql), history = (await migrationHistory(sql)).map(row => row.checksum), data = await dataIntegrity(sql);
     if (catalog !== verified.manifest.catalogSha256 || data !== manifest.dataSha256 || JSON.stringify(history) !== JSON.stringify(verified.manifest.history)) throw new Error("BACKUP_VERIFICATION_FAILED");
     marker = { ...marker, stage: "committed", schemaState: { catalog, history }, epoch: crypto.randomUUID(), intent: { operation: "restore", beforeSchema: previous.intent!.beforeSchema, beforeData: previous.intent!.beforeData, beforeHistory: previous.intent!.beforeHistory, afterSchema: catalog, afterData: data, afterHistory: history, restoreFrom: archive } };

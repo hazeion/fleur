@@ -1,3 +1,4 @@
+import { queryCommand } from "./query-command";
 import type { CommandDefinition } from "../../cli/catalog";
 import { failure, success, type CliOutcome, type RecoveryAction } from "../../cli/result";
 import { capabilities, privilegeShortfall, profileCapabilities, type PrivilegeInsufficient } from "./privilege";
@@ -108,4 +109,4 @@ const databaseOperations: readonly CommandDefinition[] = [
   },
 }));
 /** Catalogued database commands; `status` leads so the release entry point's handler list stays unchanged. */
-export const databaseCommands: readonly CommandDefinition[] = [statusCommand, ...databaseOperations];
+export const databaseCommands: readonly CommandDefinition[] = [statusCommand, ...databaseOperations, queryCommand];

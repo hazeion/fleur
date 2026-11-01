@@ -25,6 +25,9 @@ export function parseInvocation(argv: readonly string[], context: CliContext): {
   let help = false;
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
+    // Command values are opaque, including text that spells a global option.
+    const named = (context.handlers ?? []).flatMap(handler => handler.options ?? []).find(option => option.name === arg);
+    if (named?.value) { args.push(arg); const value = argv[++index]; if (value === undefined || (!named.text && (!value || value.startsWith("-")))) return { error: invalid() }; args.push(value); continue; }
     if (!globalOptions.some(({ name }) => name === arg)) { args.push(arg); continue; }
     if (seen.has(arg)) return { error: invalid() };
     seen.add(arg);
@@ -50,11 +53,11 @@ export function parseInvocation(argv: readonly string[], context: CliContext): {
     const arg = commandArgs[index]!;
     if (!arg.startsWith("-")) continue;
     const option = handler.options?.find(({ name }) => name === arg);
-    if (!option || commandSeen.has(arg)) return { error: invalid() };
+    if (!option || (commandSeen.has(arg) && !option.repeatable)) return { error: invalid() };
     commandSeen.add(arg);
     if (option.value) {
       const value = commandArgs[++index];
-      if (!value || value.startsWith("-")) return { error: invalid() };
+      if (value === undefined || (!option.text && (!value || value.startsWith("-")))) return { error: invalid() };
     }
   }
   return { invocation: { handler, commandArgs, project, timeoutSeconds, timeoutExplicit: seen.has("--timeout"), json, help } };
@@ -70,6 +73,7 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   });
   const invalidArguments = handler.validateArgs?.(commandArgs);
   if (invalidArguments) return invalidArguments;
+  if (handler.name === "db query" && timeoutExplicit && timeoutSeconds > 30) return invalid();
   const { guardProjectPin } = await import("./project-pin.ts");
   const blocked = await guardProjectPin(handler.name, project);
   if (blocked) return blocked;
@@ -87,7 +91,7 @@ export async function runCli(argv: readonly string[], context: CliContext = { cw
   });
   try {
     let environment = process.env;
-    if (handler.name.startsWith("db ") && !["db migration generate", "db migration plan"].includes(handler.name) && !commandArgs.includes("--production")) {
+    if (handler.name !== "db query" && handler.name.startsWith("db ") && !["db migration generate", "db migration plan"].includes(handler.name) && !commandArgs.includes("--production")) {
       try { environment = await (await import("../runtime/development/database-context")).databaseEnvironment(project); }
       catch (error) {
         if (error instanceof Error && error.message === "RECOVERY_REQUIRED") return failure(handler.name, 5, { code: "RECOVERY_REQUIRED", message: "The development storage binding could not be verified.", actions: [{ command: "fleur logs", description: "Inspect private ownership evidence before selecting a database." }] });

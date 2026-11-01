@@ -6,9 +6,10 @@ import type { SQL } from "bun";
  * apply, seed, restore and reset need. Descriptions never name a role, host, port or URL.
  */
 export const capabilities = {
+  "agent query provisioning": "development cluster superuser authority to provision and verify the restricted diagnostic credential",
   "database connect": "CONNECT on the application and control databases",
   "identity inspection": "EXECUTE on pg_control_system() in the application and control databases",
-  "maintenance locks": "EXECUTE on the advisory lock functions in the control and application databases",
+  "maintenance locks": "EXECUTE on the advisory lock functions in the control database",
   "schema read": "USAGE on the schemas and SELECT on the tables and sequences that the command reads",
   "role and database creation": "superuser, or CREATEROLE and CREATEDB with createrole_self_grant including set and inherit, to create, verify and remove the disposable backup verification role and database",
   "schema write": "CREATE on the application database and its public and fleur_internal schemas, and ownership of their tables and functions",
@@ -71,9 +72,10 @@ export async function requireAuthority(control: Connection, target: Connection, 
   }
 }
 
-/** Inspect the exact application fence function without acquiring a lock. PostgreSQL rechecks at execution. */
-export async function requireApplicationLock(target: Connection, kind: "session" | "transaction"): Promise<void> {
-  const name = kind === "session" ? "pg_catalog.pg_try_advisory_lock(bigint)" : "pg_catalog.pg_try_advisory_xact_lock(bigint)";
-  const rows = await target.unsafe("SELECT has_function_privilege($1,'EXECUTE') AS granted", [name]);
-  if (rows[0]?.granted !== true) throw new PrivilegeInsufficient("maintenance locks");
+/** Probe control-fence authority before queuing a lease or creating durable state. */
+export async function requireControlLocks(control: Connection, exclusive: boolean): Promise<void> {
+  const names = exclusive ? ["pg_catalog.pg_try_advisory_lock(bigint)", "pg_catalog.pg_advisory_lock(bigint)"] : ["pg_catalog.pg_try_advisory_lock_shared(bigint)"];
+  for (const name of names) {
+    if ((await control.unsafe("SELECT has_function_privilege($1,'EXECUTE') AS granted", [name]))[0]?.granted !== true) throw new PrivilegeInsufficient("maintenance locks");
+  }
 }

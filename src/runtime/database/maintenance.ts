@@ -1,3 +1,4 @@
+import { ControlFence } from "./control-fence";
 import type { Table } from "../../database";
 import { SQL } from "bun";
 import { createHash } from "node:crypto";
@@ -6,7 +7,7 @@ import { lstat, mkdir, open, realpath, rename, link, unlink } from "node:fs/prom
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { PrivilegeInsufficient, privileged } from "./privilege";
+import { PrivilegeInsufficient, privileged, requireControlLocks } from "./privilege";
 
 export interface MaintenanceConfiguration { readonly controlUrl?: string; readonly stateRoot?: string; readonly timeoutMs?: number; readonly tables?: readonly Table[]; readonly completeRegistry?: boolean; }
 const identitySchema = z.strictObject({ cluster: z.string().regex(/^\d+$/), database: z.string().min(1).max(63), oid: z.string().regex(/^\d+$/), owner: z.string().min(1), address: z.string(), port: z.number().int(), });
@@ -58,9 +59,12 @@ export class MaintenanceLease {
   readonly #pid: number;
   readonly #nonce: string;
   readonly #exclusive: boolean;
+  readonly #controlUrl: string;
+  readonly #fences = new Map<string, ControlFence>();
+  #closed = false;
   readonly busy: boolean;
-  private constructor(sql: SQL, target: DatabaseIdentity, key: string, directory: string, pid: number, exclusive: boolean, nonce: string, busy = false) {
-    this.sql = sql; this.#target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy;
+  private constructor(sql: SQL, target: DatabaseIdentity, key: string, directory: string, pid: number, exclusive: boolean, nonce: string, busy = false, controlUrl = "") {
+    this.sql = sql; this.#target = target; this.key = key; this.directory = directory; this.#pid = pid; this.#nonce = nonce; this.#exclusive = exclusive; this.busy = busy; this.#controlUrl = controlUrl;
   }
   static async acquire(urlValue: string, exclusive: boolean, configuration: MaintenanceConfiguration = {}, inspect = false, preflight?: (control: SQL, target: SQL) => Promise<void>, operation: "application" | "backup" = "application"): Promise<MaintenanceLease> {
     const targetUrl = databaseUrl(urlValue);
@@ -92,6 +96,7 @@ export class MaintenanceLease {
       if (identity.database !== targetUrl.pathname.slice(1) || current.cluster !== identity.cluster || current.address !== identity.address || current.port !== identity.port) throw new Error("CONFIGURATION_MISSING");
       // Refused authority must never queue an exclusive lock or create private state.
       // Callers repeat their authority checks under the lease before doing work.
+      await requireControlLocks(sql, exclusive);
       await preflight?.(sql, target);
       const hash = digest(`fleur:maintenance:v1:${identity.cluster}:${identity.database}`);
       const key = BigInt.asIntN(64, BigInt(`0x${hash.slice(0, 16)}`)).toString();
@@ -118,7 +123,7 @@ export class MaintenanceLease {
       if (lock[0]?.acquired !== true && !inspect) throw new Error("MAINTENANCE_BUSY");
       const directory = join(configuration.stateRoot ?? process.env.FLEUR_PRIVATE_STATE_ROOT ?? join(homedir(), ".local", "state", "fleur", "databases"), hash);
       await privateDirectory(directory);
-      const lease = new MaintenanceLease(sql, identity, key, directory, current.pid as number, exclusive, nonce, lock[0]?.acquired !== true);
+      const lease = new MaintenanceLease(sql, identity, key, directory, current.pid as number, exclusive, nonce, lock[0]?.acquired !== true, controlUrl.toString());
       if (!lease.busy) await lease.assertSession();
       const marker = await lease.marker();
       if (!inspect && marker && !["committed", "rollback verified"].includes(marker.stage)) throw new Error("RECOVERY_REQUIRED");
@@ -200,5 +205,22 @@ export class MaintenanceLease {
     if (rows.length !== 1 || rows[0].owner !== expectedOwner) throw new Error("RECOVERY_REQUIRED");
     this.#target = identitySchema.parse({ ...this.target, oid: rows[0].oid, owner: expectedOwner });
   }
-  async close(): Promise<void> { await this.sql.close({ timeout: 0 }); }
+  async fence(mode: "shared" | "exclusive" | "revision", target: Pick<SQL, "unsafe">, signal?: AbortSignal, timeoutMs = 5000): Promise<void> {
+    const check = () => { signal?.throwIfAborted(); if (this.#closed) throw new Error("RECOVERY_REQUIRED"); };
+    check();
+    let fence = this.#fences.get(mode);
+    if (!fence) {
+      fence = await ControlFence.acquire(this.#controlUrl, this.target.cluster, this.target.database, mode, this.#nonce, signal, timeoutMs);
+      if (this.#closed || signal?.aborted) { await fence.close(); check(); }
+      this.#fences.set(mode, fence);
+    }
+    await fence.attach(target, this.target.database, mode === "exclusive", check);
+    await this.assertSession();
+  }
+  get applicationTag(): string { return `fleur-managed:${this.#nonce}`; }
+  async close(): Promise<void> {
+    this.#closed = true;
+    for (const fence of this.#fences.values()) await fence.close();
+    await this.sql.close({ timeout: 0 });
+  }
 }

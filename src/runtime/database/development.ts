@@ -157,8 +157,7 @@ async function initializeOnce(database: DevelopmentDatabase, project: string, de
   const timer = setTimeout(() => { void sql.close({ timeout: 0 }).catch(() => {}); void lease.close().catch(() => {}); }, remaining());
   let record: CreationRecord | null = null, transaction = false, commitAttempted = false, xid: string | null = null;
   try {
-    const fence = await privileged("maintenance locks", () => sql.unsafe("SELECT pg_try_advisory_lock($1::bigint) AS acquired", [lease.key]));
-    if (!fence[0]?.acquired) throw new Error("MAINTENANCE_BUSY");
+    await lease.fence("exclusive", sql);
     record = await readRecord(lease);
     const target = lease.target;
     if (!record || record.binding !== binding || record.cluster !== target.cluster || record.database !== target.database || record.oid !== target.oid || record.owner !== target.owner || record.stage === "creating" || record.stage === "retired") return existing;

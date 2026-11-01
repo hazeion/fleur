@@ -13,7 +13,7 @@ export interface CommandDefinition {
   readonly name: string;
   readonly summary: string;
   readonly usage?: string;
-  readonly options?: readonly { readonly name: string; readonly value: boolean }[];
+  readonly options?: readonly { readonly name: string; readonly value: boolean; readonly repeatable?: boolean; readonly text?: boolean }[];
   /** Pure syntax validation only; must not probe or change external state. */
   readonly validateArgs?: (args: readonly string[]) => CliOutcome | undefined;
   readonly run: (input: CommandInput) => Promise<CliOutcome>;

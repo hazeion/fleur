@@ -205,6 +205,7 @@ export async function supervise(project: string, host: string, requestedPort: nu
         } finally { await worker.close(); }
         checkOpen();
         const report = await startDevelopmentDatabase({ url, binding: bound.id }, bound.project, registry.seeds, { ...config, timeoutMs: Math.max(1, startupDeadline - performance.now()) });
+        await database!.bindApplication(config);
         state.initialization = report.initialization;
         state.initializationSummary = describeDevelopmentStartup(report).slice(0, 8192);
         if (!report.ready) throw new Error(report.error?.code ?? report.reasons[0]?.code ?? "DATABASE_UNAVAILABLE");

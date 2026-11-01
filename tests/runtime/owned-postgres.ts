@@ -55,7 +55,7 @@ export async function ownedPostgres() {
     async function pgTools(directory: string) {
       const { mkdir, writeFile } = await import("node:fs/promises");
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      for (const tool of ["pg_dump", "pg_restore", "psql"]) await writeFile(`${directory}/${tool}`, `#!/bin/sh\nexec docker exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGHOST=127.0.0.1 --env PGPORT=5432 ${id} ${tool} "$@"\n`, { mode: 0o700 });
+      for (const tool of ["pg_dump", "pg_restore", "psql"]) await writeFile(`${directory}/${tool}`, `#!/bin/sh\nexec docker exec -i --env PGPASSWORD --env PGUSER --env PGDATABASE --env PGAPPNAME --env PGOPTIONS --env PGCONNECT_TIMEOUT --env PGHOST=127.0.0.1 --env PGPORT=5432 ${id} ${tool} "$@"\n`, { mode: 0o700 });
       return directory;
     }
     const declared=new Map<string,import("../../src/database").Table>();

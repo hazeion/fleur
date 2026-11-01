@@ -26,7 +26,7 @@ else {
   } else outcome = launcher.kind === "blocked" ? launcher.outcome : await runCli(argv, context);
 }
 if (outcome && !outcome.streamed) {
-  if (argv.includes("--json")) process.stdout.write(JSON.stringify(outcome.result) + "\n");
+  if ("invocation" in parsed ? parsed.invocation.json : argv.includes("--json")) process.stdout.write(JSON.stringify(outcome.result) + "\n");
   else if (outcome.human) process.stdout.write(outcome.human);
   else if (outcome.result.ok && outcome.result.command === "help") process.stdout.write(renderHelp(handlers));
   else process.stdout.write(outcome.result.error ? `${outcome.result.error.code}: ${outcome.result.error.message}\n` : JSON.stringify(outcome.result.data) + "\n");

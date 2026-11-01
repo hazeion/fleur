@@ -43,9 +43,11 @@ export async function verifyRetainedArchive(url:string,archive:string,manifest:B
     await lease.sql.unsafe("BEGIN");
     await lease.sql.unsafe(`CREATE ROLE ${quote(name)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD ${literal(password)}`);
     await lease.sql.unsafe(`COMMENT ON ROLE ${quote(name)} IS ${literal(tag)}`);await lease.sql.unsafe("COMMIT");
-    await lease.sql.unsafe(`CREATE DATABASE ${quote(name)} OWNER ${quote(name)} TEMPLATE template0`);
+    await lease.sql.unsafe(`CREATE DATABASE ${quote(name)} OWNER ${quote(name)} TEMPLATE template0 ALLOW_CONNECTIONS false`);
     await lease.sql.unsafe(`COMMENT ON DATABASE ${quote(name)} IS ${literal(tag)}`);
-    await lease.sql.unsafe(`REVOKE CONNECT ON DATABASE ${quote(name)} FROM PUBLIC`);
+    await lease.sql.unsafe(`REVOKE CONNECT,TEMP ON DATABASE ${quote(name)} FROM PUBLIC`);
+    await lease.sql.unsafe(`GRANT CONNECT,TEMP ON DATABASE ${quote(name)} TO ${quote(name)}`);
+    await lease.sql.unsafe(`ALTER DATABASE ${quote(name)} ALLOW_CONNECTIONS true`);
     const target=databaseUrl(url);target.pathname=`/${name}`;target.username=name;target.password=password;
     sql=new SQL(target.toString(),{max:1,connectionTimeout:2});
     const identity=await sql.unsafe("SELECT current_database() AS database,current_user AS role,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolreplication,r.rolbypassrls FROM pg_roles r WHERE r.rolname=current_user");

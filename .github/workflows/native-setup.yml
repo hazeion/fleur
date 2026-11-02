@@ -163,8 +163,6 @@ jobs:
     if: ${{ needs.scope.outputs.full == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      TMPDIR: ${{ runner.temp }}/fleur-reference-tmp
     defaults:
       run:
         working-directory: fleur
@@ -175,7 +173,8 @@ jobs:
           REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
         run: |
           if [ "$REQUESTED" = true ]; then
-            mkdir -m 700 "$TMPDIR"
+            mkdir -m 700 "$RUNNER_TEMP/fleur-reference-tmp"
+            printf 'TMPDIR=%s\n' "$RUNNER_TEMP/fleur-reference-tmp" >> "$GITHUB_ENV"
           else
             echo 'Reference proof not requested; this run supplies no performance qualification.'
           fi

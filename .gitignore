@@ -13,3 +13,6 @@ __pycache__/
 
 # Local website project, kept outside the tracked repository.
 /website/
+
+# Local planning research, excluded from the public source tree.
+/research/

@@ -51,7 +51,7 @@ Authentication, hosted deployment and hosting accounts, coding-agent launch/orch
 
 ## Decisions still needed
 
-The [approved specification](V1-SPEC.md) assembles approved behavior, command grammar, API reference families, failure handling, acceptance gates and implementation order. [Rendering research](../../research/server-rendering-capabilities.md) and [verification research](../../research/verification-tooling.md) record the selected direction and candidate pins. Mandatory initial compatibility experiments must establish actual tested versions and isolation before dependent implementation; documentation research is not executed support. Final human specification review is complete; implementation still requires separate authorization.
+The [approved specification](V1-SPEC.md) assembles approved behavior, command grammar, API reference families, failure handling, acceptance gates and implementation order. [Rendering research](https://github.com/hazeion/fleur/issues/19#issuecomment-6142573353) and [verification research](https://github.com/hazeion/fleur/issues/20#issuecomment-6142574451) record the selected direction and candidate pins. Mandatory initial compatibility experiments must establish actual tested versions and isolation before dependent implementation; documentation research is not executed support. Final human specification review is complete; implementation still requires separate authorization.
 
 ## Approved decision references
 

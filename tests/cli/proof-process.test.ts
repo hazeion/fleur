@@ -1,5 +1,17 @@
 import { expect, test } from "bun:test";
-import { stopProofProcess, finishProofOutput } from "../../scripts/proof-process";
+import { stopProofProcess, finishProofOutput, awaitProofReadiness } from "../../scripts/proof-process";
+
+test("a completed startup deadline cannot stop the following workload", async () => {
+  let stopped = 0;
+  expect(await awaitProofReadiness(Promise.resolve("ready"), () => { stopped++; }, 20)).toBe("ready");
+  await Bun.sleep(40);
+  expect(stopped).toBe(0);
+});
+test("a startup that never becomes ready still stops at its deadline", async () => {
+  let stopped = 0;
+  await expect(awaitProofReadiness(new Promise<never>(() => {}), () => { stopped++; }, 20)).rejects.toThrow("readiness deadline expired");
+  expect(stopped).toBe(1);
+});
 
 test("proof shutdown bounds and reaps a process that ignores graceful termination", async () => {
   const child = Bun.spawn([process.execPath, "-e", 'process.on("SIGTERM",()=>{}); console.log("ready"); setInterval(()=>{},1000)'], { detached: true, stdout: "pipe", stderr: "ignore" });

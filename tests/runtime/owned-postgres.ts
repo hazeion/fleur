@@ -135,7 +135,15 @@ export async function ownedPostgres(options: { disk?: boolean } = {}) {
       pausedListeners.add(pid);
       return async () => { if (pausedListeners.has(pid)) { await docker(["exec", id!, "kill", "-CONT", String(pid)]); pausedListeners.delete(pid); } };
     }
-    return { sql, url, image, storage: volume ? "volume" : "tmpfs", cleanup, pgTools, reviewSchema, reviewApplication, restart, pauseNotifications };
+    async function storageDevice() {
+      if (!volume || !id) throw new Error("Reference storage requires the owned disk volume");
+      const metadata = JSON.parse(await docker(["inspect", id])) as { Config: { Labels: Record<string, string> }; Mounts: { Type: string; Name?: string; Destination: string }[] }[];
+      if (metadata[0]?.Config.Labels[label] !== owner || metadata[0].Mounts.length !== 1 || metadata[0].Mounts[0]?.Type !== "volume" || metadata[0].Mounts[0]?.Name !== volume || metadata[0].Mounts[0]?.Destination !== "/var/lib/postgresql") throw new Error("Reference volume ownership changed");
+      const device = await docker(["exec", id, "stat", "--format=%Hd:%Ld", "/var/lib/postgresql"]);
+      if (!/^[0-9]{1,10}:[0-9]{1,10}$/.test(device)) throw new Error("Reference volume device is unavailable");
+      return device;
+    }
+    return { sql, url, image, storage: volume ? "volume" : "tmpfs", cleanup, pgTools, reviewSchema, reviewApplication, restart, pauseNotifications, storageDevice };
   } catch (error) {
     try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Disposable database setup and cleanup failed"); }
     throw error;

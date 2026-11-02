@@ -140,3 +140,18 @@ browser prerequisite plans that change existing distribution packages. Its
 successful executed report must be included in the release evidence; an ordinary
 PR's green checks do not establish that manual matrix row. Intel macOS evidence
 is likewise recorded from the separately executed native proof.
+
+The native workflow also offers an independent manual `reference_proof` case on
+Ubuntu 24.04. It runs the complete packed production workload with three runs of
+100 samples per scenario. Its separate 120-minute outer job budget does not
+change existing job or operation deadlines. The native summary requires the
+selection job; ordinary PR runs only report that reference measurement was not
+requested and supply no performance qualification. Manual reference failures
+fail that run's summary. Raw sample reports expire after seven days.
+
+Reference admission observes at least four CPUs, 16 GiB of online memory and
+nonrotating backing disks for both checkout and the actual owned PostgreSQL
+volume. Kernel online memory capacity and OS usable memory are reported
+separately, without rounding capacity up. Unknown storage or insufficient memory
+fails admission. The private temporary directory stays on the runner's disk;
+the database uses an owned persistent volume with synchronous commits.

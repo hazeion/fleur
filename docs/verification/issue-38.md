@@ -85,7 +85,7 @@ bound to that exact checkout and the immutable workout pin.
 | Intel macOS | Packed workout and production run executed; final candidate pending |
 | Ubuntu 24.04 amd64 | Native packed workout and production proof passed in run 41383964815; final candidate pending |
 | Ubuntu 26.04 amd64 | Native packed workout and production proof passed in run 41383964815; final candidate pending |
-| Debian 13 amd64 | Repeated native workout build failure; qualification incomplete |
+| Debian 13 amd64 | Complete native workout and production proof passed at 51c9fd8 in run 41409233939; final candidate pending |
 
 [Debian run 41383978363](https://github.com/hazeion/fleur/actions/runs/41383978363)
 reproduced the earlier build failure after both functional browser repetitions,
@@ -106,7 +106,21 @@ The next candidate uses a private workspace under the owned guest home and
 passes its private `TMPDIR` to children. Its report records filesystem type,
 capacity and available bytes for both system temporary storage and that
 workspace. VM resources, package rules, deadlines, repeats and disposal gates
-remain unchanged. This storage hypothesis still requires native execution.
+remain unchanged.
+
+[Debian run 41409233939](https://github.com/hazeion/fleur/actions/runs/41409233939)
+passed the complete proof at `51c9fd851c0a90d89f4675d9051a8a1a6afe5a54` with
+the immutable workout pin. The observed system temporary filesystem was `tmpfs`,
+capacity 1,527,996,416 bytes. The owned home workspace was `ext2/ext3`, capacity
+12,468,432,896 bytes. Both functional repetitions, maintenance, persistence,
+full verification and both production starts passed. Daemon/service state,
+nftables canary and baseline images were preserved; no containers remained.
+Workout disposal, outer service-cgroup retirement and scratch removal passed.
+
+The next candidate adds explicit Linux reference admission and a separate
+manual CI workload. It verifies online physical memory capacity without
+rounding and observes both checkout and actual PostgreSQL volume backing disks.
+Ordinary green PR checks do not establish reference performance qualification.
 
 Existing ARM jobs and Arch observations retain their original limited scope.
 A normal green PR does not establish the manual Debian row. No publication,

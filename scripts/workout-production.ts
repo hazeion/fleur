@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { proofSource } from "./proof-source";
-import { stopProofProcess, finishProofOutput } from "./proof-process";
+import { stopProofProcess, finishProofOutput, awaitProofReadiness } from "./proof-process";
 import { proofBrowser, usingProofContext } from "./proof-browser";
 import { workoutReference } from "./workout-reference";
 import { cp, mkdir, readFile, readdir, rename } from "node:fs/promises";
@@ -88,9 +88,8 @@ export async function workoutProduction(options: Options): Promise<{ checks: str
       void received.catch(() => {});
       let runError: unknown;
       const failures: unknown[] = [];
-      const timer = setTimeout(() => { refused(new Error("Production readiness deadline expired")); child.kill("SIGTERM"); }, 250_000);
       try {
-        const url = await readiness;
+        const url = await awaitProofReadiness(readiness, () => child.kill("SIGTERM"));
         coldStartMilliseconds.push(performance.now() - launchStarted);
         await usingProofContext(browser, async context => {
           const page: Page = await context.newPage();
@@ -117,7 +116,6 @@ export async function workoutProduction(options: Options): Promise<{ checks: str
           checks.push(`clean production artifact serves public browser save/read and persistent restart, repeat ${repeat}`);
         });
       } catch (error) { runError = error; } finally {
-        clearTimeout(timer);
         if (runError) failures.push(runError);
         let exit: number | undefined;
         try { exit = await stopProofProcess(child, repeat === 1 ? "SIGTERM" : "SIGINT"); } catch (error) { failures.push(error); }

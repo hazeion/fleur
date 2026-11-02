@@ -53,7 +53,7 @@ test("Arch boot observation is a closed manual x64 diagnostic and retains ordina
   expect(step.run).not.toContain("${{");
   expect(native.strategy?.matrix.include).toContainEqual({ runner: "ubuntu-24.04-arm", architecture: "arm64" });
   expect(native.steps!.find((item) => item.name === "Preserve native observations")?.with?.path).toContain("fleur-arch-kvm-boot.json");
-  expect(workflow.jobs.verification?.needs).toEqual(["scope", "existing-docker"]);
+  expect(workflow.jobs.verification?.needs).toEqual(["scope", "existing-docker", "reference-proof"]);
 });
 
 test("Desktop image preparation uses only explicit manual native x64 work and retains all verification", () => {
@@ -160,6 +160,26 @@ test("every CI job that runs Bun installs exactly the floor release first and no
       }
     }
   }
+});
+
+test("reference qualification is an explicit manual workload with retained raw evidence and required summary", () => {
+  const workflow = Bun.YAML.parse(read(".github/workflows/native-setup.yml")) as {
+    on: { workflow_dispatch: { inputs: Record<string, { type: string; default: boolean }> } };
+    jobs: Record<string, { needs?: string[]; "timeout-minutes"?: number; steps?: { name?: string; if?: string; run?: string; with?: Record<string, unknown> }[] }>;
+  };
+  expect(workflow.on.workflow_dispatch.inputs.reference_proof).toMatchObject({ type: "boolean", default: false });
+  const job = workflow.jobs["reference-proof"]!;
+  expect(job).toBeDefined();
+  expect(job["timeout-minutes"]).toBe(120);
+  const selection = "${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}";
+  const proof = job.steps!.find(step => step.run?.includes("scripts/verify-workout.ts"))!;
+  expect(proof.if).toBe(selection);
+  expect(proof.run).toContain('--reference > "$RUNNER_TEMP/workout-proof.json"');
+  for (const step of job.steps!.filter(step => step.name !== "Reference proof selection")) expect(step.if).toBe(step.name === "Retain sanitized qualification evidence" ? "${{ always() && github.event_name == 'workflow_dispatch' && inputs.reference_proof }}" : selection);
+  expect(workflow.jobs.verification!.needs).toContain("reference-proof");
+  const artifact = job.steps!.find(step => step.name === "Retain sanitized qualification evidence")!;
+  expect(artifact.with?.["retention-days"]).toBe(7);
+  expect(artifact.with?.path).toContain("fleur/test-results/workout-reference.json");
 });
 
 test("required native workout proof uses immutable private source and keeps its read credential in checkout", () => {

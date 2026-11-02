@@ -29,3 +29,16 @@ export async function finishProofOutput(work: Promise<void>, cancel: () => Promi
     }, milliseconds); })]);
   } finally { clearTimeout(timer); }
 }
+
+/** A startup deadline applies until readiness, never to the following workload. */
+export async function awaitProofReadiness<T>(work: Promise<T>, stop: () => void, milliseconds = 250_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        try { stop(); } catch (error) { reject(error); return; }
+        reject(new Error("Production readiness deadline expired"));
+      }, milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}

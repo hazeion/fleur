@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { proofSource } from "./proof-source";
 import { proofBrowser, closeProofContext } from "./proof-browser";
 import { workoutLimits } from "./workout-limits";
-import { readFile, writeFile } from "node:fs/promises";
-import { cpus, totalmem, release, platform, loadavg } from "node:os";
-import { join } from "node:path";
+import { referenceMachine } from "./reference-machine";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cpus, release, platform, loadavg } from "node:os";
+import { dirname, join } from "node:path";
 import { expect, type BrowserContext, type Page } from "@playwright/test";
 import type { ownedPostgres } from "../tests/runtime/owned-postgres";
 import { referenceScenario, type ReferenceSample } from "./reference-results";
@@ -22,6 +23,7 @@ interface Options {
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 /** A separate controlled reference run, never substituted for functional acceptance. */
 export async function workoutReference({ url, source, artifact, database, report, signal, archiveSha256, releaseSource: packedSource }: Options) {
+  await mkdir(dirname(report), { recursive: true, mode: 0o700 });
   await writeFile(report, JSON.stringify({ formatVersion: 1, passed: false, state: "incomplete" }) + "\n", { mode: 0o600 });
   signal.throwIfAborted();
   const sourceIdentity = await proofSource(source);
@@ -30,13 +32,10 @@ export async function workoutReference({ url, source, artifact, database, report
   assert.match(archiveSha256, /^[a-f0-9]{64}$/);
   const tools = JSON.parse(await readFile(join(import.meta.dir, "../package.json"), "utf8")).devDependencies;
   const lintTools = JSON.parse(await readFile(join(import.meta.dir, "../lint/package.json"), "utf8")).dependencies;
-  const disk = Bun.spawnSync(["diskutil", "info", "-plist", "/"], { stdout: "pipe", stderr: "ignore" });
-  const ssd = disk.exitCode === 0 && /<key>SolidState<\/key>\s*<true\s*\/>/.test(disk.stdout.toString());
-  assert.equal(ssd, true, "This reference driver requires observed SSD storage");
-  const osVersion = Bun.spawnSync(["sw_vers", "-productVersion"], { stdout: "pipe", stderr: "ignore" });
-  assert.equal(osVersion.exitCode, 0);
+  const storageDevice = await database.storageDevice();
+  const machine = referenceMachine(source, storageDevice);
   assert.equal(database.storage, "volume", "Reference commits require owned disk storage, never tmpfs");
-  assert.ok(cpus().length >= 4 && totalmem() >= 16 * 1024 ** 3, "Reference machine needs four CPUs and 16 GiB");
+  assert.ok(cpus().length >= 4 && machine.memoryBytes >= 16 * 1024 ** 3, "Reference machine needs four CPUs and 16 GiB");
   // Only this uniquely owned test database is changed. Remove the one functional-proof row.
   const removed = await database.sql`DELETE FROM exercises WHERE name='Production persistent squat' RETURNING id`;
   assert.equal(removed.length, 1);
@@ -164,7 +163,8 @@ export async function workoutReference({ url, source, artifact, database, report
     const manifest = JSON.parse(await readFile(join(artifact, "fleur-artifact.json"), "utf8"));
     assert.deepEqual(await proofSource(source), sourceIdentity, "Workout source changed during reference measurement");
     assert.deepEqual(await proofSource(join(import.meta.dir, "..")), releaseIdentity, "Release source changed during reference measurement");
-    const result = { formatVersion: 1, archiveSha256, source: { workout: sourceIdentity, fleur: releaseIdentity }, tools: { development: tools, independentLint: lintTools }, limits, passed: Object.values(scenarios).every(scenario => scenario.passed), scenarios, diagnostics, fixture: { sha256: Bun.CryptoHasher.hash("sha256", fixture, "hex"), ...counts[0] }, machine: { platform: platform(), version: osVersion.stdout.toString().trim(), ssd, kernel: release(), cpu: cpus()[0]?.model, cores: cpus().length, memoryBytes: totalmem(), docker: { cpu: allocation.NCPU, memoryBytes: allocation.MemTotal, engine: allocation.ServerVersion, kernel: allocation.KernelVersion }, browser: browser.version(), bun: Bun.version, artifact: manifest.id, images: manifest.images, postgres: { image: database.image, storage: database.storage, fsync: settings.fsync, synchronousCommit: settings.synchronous_commit, version: settings.version }, loadBefore, loadAfter: loadavg() }, measurement: { clock: "one driver performance.now clock; test-controlled names correlate committed rows with rendered values", warmup: "all 50 logical queries current, then one forced complete refresh per view; warm PostgreSQL and production runtime", commitObservation: "cross-view, missed and burst latencies are conservative upper bounds starting before submission; no unrelated wall-clock subtraction", maximumCommitUncertaintyMilliseconds: Math.max(...maxCommitUncertainty), notifications: "the one owned listener backend is stopped throughout each missed-publication run; authoritative probes must recover before delivery resumes", samplesPerRun: 100, independentRuns: 3, percentile: "nearest rank", errors: "infinite latency and run failure; never discarded", otherWork: "recorded load before and after; operator runs without unrelated heavy work", querySelection: "each view rotates through all five list and five detail keys; observation includes validated content and two rendering frames" } };
+    assert.equal(await database.storageDevice(), storageDevice, "Reference database backing device changed during measurement");
+    const result = { formatVersion: 1, archiveSha256, source: { workout: sourceIdentity, fleur: releaseIdentity }, tools: { development: tools, independentLint: lintTools }, limits, passed: Object.values(scenarios).every(scenario => scenario.passed), scenarios, diagnostics, fixture: { sha256: Bun.CryptoHasher.hash("sha256", fixture, "hex"), ...counts[0] }, machine: { platform: platform(), ...machine, kernel: release(), cpu: cpus()[0]?.model, cores: cpus().length, docker: { cpu: allocation.NCPU, memoryBytes: allocation.MemTotal, engine: allocation.ServerVersion, kernel: allocation.KernelVersion }, browser: browser.version(), bun: Bun.version, artifact: manifest.id, images: manifest.images, postgres: { image: database.image, storage: database.storage, fsync: settings.fsync, synchronousCommit: settings.synchronous_commit, version: settings.version }, loadBefore, loadAfter: loadavg() }, measurement: { clock: "one driver performance.now clock; test-controlled names correlate committed rows with rendered values", warmup: "all 50 logical queries current, then one forced complete refresh per view; warm PostgreSQL and production runtime", commitObservation: "cross-view, missed and burst latencies are conservative upper bounds starting before submission; no unrelated wall-clock subtraction", maximumCommitUncertaintyMilliseconds: Math.max(...maxCommitUncertainty), notifications: "the one owned listener backend is stopped throughout each missed-publication run; authoritative probes must recover before delivery resumes", samplesPerRun: 100, independentRuns: 3, percentile: "nearest rank", errors: "infinite latency and run failure; never discarded", otherWork: "recorded load before and after; operator runs without unrelated heavy work", querySelection: "each view rotates through all five list and five detail keys; observation includes validated content and two rendering frames" } };
     evidence = result;
     assert.equal(result.passed, true, "Reference budgets failed; retained raw report is failure evidence");
   } catch (error) { originalError = error; }

@@ -3,6 +3,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      reference_proof:
+        description: Run the full three-run production reference workload on an observed native runner
+        required: false
+        default: false
+        type: boolean
       debian_helpers:
         description: Exact recorded amd64 helper pair as compact base64 JSON; empty runs ordinary native checks
         required: false
@@ -152,10 +157,81 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  reference-proof:
+    name: Reference proof selection
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TMPDIR: ${{ runner.temp }}/fleur-reference-tmp
+    defaults:
+      run:
+        working-directory: fleur
+    steps:
+      - name: Reference proof selection
+        working-directory: ${{ runner.temp }}
+        env:
+          REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        run: |
+          if [ "$REQUESTED" = true ]; then
+            mkdir -m 700 "$TMPDIR"
+          else
+            echo 'Reference proof not requested; this run supplies no performance qualification.'
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        with:
+          path: fleur
+          persist-credentials: false
+      - name: Read the reviewed immutable workout source pin
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        id: workout
+        run: |
+          python3 -c 'import json,re; p=json.load(open("scripts/workout-source.json")); assert p["repository"]=="hazeion/fleur-workout" and re.fullmatch("[a-f0-9]{40}",p["commit"]); print("sha="+p["commit"])' >> "$GITHUB_OUTPUT"
+      - name: Read-only private workout checkout
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        with:
+          repository: hazeion/fleur-workout
+          ref: ${{ steps.workout.outputs.sha }}
+          path: workout
+          ssh-key: ${{ secrets.FLEUR_WORKOUT_READ_KEY }}
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-workout-bun" > "$RUNNER_TEMP/workout-platform.json"
+          echo "$RUNNER_TEMP/fleur-workout-bun" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile --ignore-scripts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+      - run: bun install --cwd lint --frozen-lockfile --ignore-scripts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+      - name: Explicit browser prerequisites
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Pinned development images
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        run: bun scripts/pull-pinned-development-images.ts
+      - name: Packed workout, two independent views and clean production restart
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        run: bun scripts/verify-workout.ts "$GITHUB_WORKSPACE/workout" --reference > "$RUNNER_TEMP/workout-proof.json"
+      - name: Retain sanitized qualification evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; Node 24
+        with:
+          name: workout-reference
+          path: |
+            ${{ runner.temp }}/workout-platform.json
+            ${{ runner.temp }}/workout-proof.json
+            fleur/test-results/workout-reference.json
+          retention-days: 7
+
+
   verification:
     name: Native setup verification
     if: ${{ always() }}
-    needs: ["scope", "existing-docker"]
+    needs: ["scope", "existing-docker", "reference-proof"]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

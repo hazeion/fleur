@@ -44,6 +44,20 @@ stay private. The real regression failed before the fix and passed afterward.
 Independent review also passed both guarded execution paths. Full native
 requalification remains required for the resulting image layers.
 
+The subsequent Intel macOS proof at `119c392cf7be176f38abe3c6818c77ddb241590b`
+passed under `umask 077`, including both browser repetitions, maintenance,
+persistence, full verification, two production starts and owned cleanup.
+[Debian run 41425438145](https://github.com/hazeion/fleur/actions/runs/41425438145)
+passed the complete native workout and production proof at
+`75473b450e578cf019a95776bcfb758d22cd8b48` with the same runtime permission fix.
+
+A subsequent archive inspection found generated Python caches in the SDK
+package. A real Bun 1.4.3 packing regression reproduced their inclusion, then
+passed with a nested package exclusion for `__pycache__`, `.pyc` and `.pyo`.
+Independent review packed the repository, confirmed all 202 tracked source and
+CLI files remained, and found no Python cache files in the archive. Types and
+both lint engines passed. Final qualification must use this clean package.
+
 An isolated produced-package run passed two repetitions of workout validation,
 child rollback, expected-version competition, referential conflict, immutable
 history, two-view draft/focus preservation and unknown outcomes without replay.

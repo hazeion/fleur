@@ -1,2 +1,2 @@
 [test]
-preload = ["./tests/runtime/exit-sweep.preload.ts"]
+preload = ["./tests/runtime/run-sweep.preload.ts"]

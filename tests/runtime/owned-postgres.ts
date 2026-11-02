@@ -1,6 +1,6 @@
 import { SQL } from "bun";
 import { randomUUID } from "node:crypto";
-import { sweepLabelAtExit } from "./exit-sweep";
+import { sweepLabelAfterRun } from "./run-sweep";
 
 const image = "postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336";
 const label = "fleur.issue25.database-owner";
@@ -21,7 +21,7 @@ export async function ownedPostgres(options: { disk?: boolean } = {}) {
   let volume: string | undefined;
   let sql: SQL | undefined;
   const pausedListeners = new Set<number>();
-  const releaseSweep = sweepLabelAtExit(`${label}=${owner}`);
+  const releaseSweep = sweepLabelAfterRun(`${label}=${owner}`);
   async function cleanup() {
     const errors: unknown[] = [];
     for (const pid of pausedListeners) try { await docker(["exec", id!, "kill", "-CONT", String(pid)]); } catch (error) { errors.push(error); }

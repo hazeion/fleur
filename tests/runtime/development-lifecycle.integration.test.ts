@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ownedPostgres } from "./owned-postgres";
-import { sweepDevelopmentRootAtExit } from "./exit-sweep";
+import { sweepDevelopmentRootAfterRun } from "./run-sweep";
 import { MaintenanceLease } from "../../src/runtime/database/maintenance";
 import { startIdentity } from "../../src/runtime/development/state";
 import { chromium, expect as browserExpect } from "@playwright/test";
@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 const executable = resolve(import.meta.dir, "../../bin/fleur.ts");
 async function fixture(reactive = false) {
   const root = await mkdtemp(join(await realpath(tmpdir()), "fleur-lifecycle-"));
-  sweepDevelopmentRootAtExit(root);
+  sweepDevelopmentRootAfterRun(root);
   const project = join(root, "app");
   const cliFor = (selectedProject: string, override: Record<string, string | undefined> = {}) => async (...args: string[]) => {
     const child = Bun.spawn([process.execPath, executable, ...args, "--project", selectedProject, "--json"], { env: { ...process.env, HOME: root, DOCKER_CONFIG: process.env.DOCKER_CONFIG ?? join(homedir(), ".docker"), FLEUR_PRIVATE_DATABASE_URL: undefined, FLEUR_PRIVATE_DEVELOPMENT_DATABASE_URL: undefined, FLEUR_PRIVATE_CONTROL_DATABASE_URL: undefined, FLEUR_PRIVATE_STATE_ROOT: undefined, ...override }, stdout: "pipe", stderr: "pipe" });

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DevelopmentPostgres, databaseLabel } from "../../src/runtime/development/postgres";
 import { binding } from "../../src/runtime/development/state";
+import { sweepDevelopmentRootAfterRun, sweepLabelAfterRun } from "./run-sweep";
 import { column, defineTable, defineSeed } from "../../src/database";
 import { generateMigration } from "../../src/runtime/database/migration-plan";
 import { startDevelopmentDatabase } from "../../src/runtime/database/development";
@@ -29,6 +30,7 @@ test("public db query uses owned development storage after initialization, resta
   await writeFile(join(root, "fleur.json"), JSON.stringify({ formatVersion: 1, contractVersion: 1, fleurVersion: "0.1.0", compiler: "microsoft", projectId: crypto.randomUUID() }));
   await writeFile(join(root, "package.json"), JSON.stringify({ dependencies: { fleur: "0.1.0" } }));
   const bound = await binding(root), config = { stateRoot: join(bound.directory, "maintenance") };
+  sweepDevelopmentRootAfterRun(root); sweepLabelAfterRun(`${databaseLabel}=${bound.id}`);
   let resource: DevelopmentPostgres | undefined, sql: SQL | undefined;
   try {
     resource = await DevelopmentPostgres.start(bound, performance.now() + 30000);

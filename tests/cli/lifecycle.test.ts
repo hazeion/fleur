@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { sweepDevelopmentRootAtExit } from "../runtime/exit-sweep";
+import { sweepDevelopmentRootAfterRun } from "../runtime/run-sweep";
 
 let taskHome: string;
 beforeAll(async () => {
@@ -11,7 +11,7 @@ afterAll(async () => { await (await import("node:fs/promises")).rm(taskHome, { r
 const executable = resolve(import.meta.dir, "../../bin/fleur.ts");
 async function cli(...args: string[]) { return cliWithEnvironment({}, ...args); }
 async function cliWithEnvironment(environment: Record<string, string | undefined>, ...args: string[]) {
-  if (args.includes("--project")) sweepDevelopmentRootAtExit(args[args.indexOf("--project") + 1]!);
+  if (args.includes("--project")) sweepDevelopmentRootAfterRun(args[args.indexOf("--project") + 1]!);
   const child = Bun.spawn([process.execPath, executable, ...args], { env: { ...process.env, HOME: taskHome, ...environment }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, exit };
@@ -64,6 +64,17 @@ test("an occupied explicit port is refused before the slower prerequisite gate",
     expect(await (await fetch(occupied.url)).text()).toBe("unrelated owner");
     expect((await cli("stop", "--project", project, "--json")).exit).toBe(0);
   } finally { await occupied.stop(true); await cli("stop", "--project", project, "--json"); await rm(root, { recursive: true, force: true }); }
+});
+test("a bind failure other than an occupied port still reaches the prerequisite gate", async () => {
+  const { mkdtemp, realpath, rm } = await import("node:fs/promises");
+  const root = await mkdtemp(resolve(await realpath((await import("node:os")).tmpdir()), "fleur-unbindable-host-cli-")), project = resolve(root, "app");
+  try {
+    expect((await cli("new", project, "--no-git", "--json")).exit).toBe(0);
+    // 203.0.113.0/24 is reserved for documentation, so no host interface can bind it.
+    const refused = await cliWithEnvironment({ PATH: resolve(root, "missing-tools") }, "dev", "--background", "--host", "203.0.113.1", "--port", "49999", "--project", project, "--json");
+    expect(refused.exit, refused.stdout).toBe(4);
+    expect(JSON.parse(refused.stdout)).toMatchObject({ error: { code: "PREREQUISITE_UNAVAILABLE" }, data: { prerequisites: { command: "doctor" } } });
+  } finally { await cli("stop", "--project", project, "--json"); await rm(root, { recursive: true, force: true }); }
 });
 test("development uses the shared prerequisite gate before creating application resources", async () => {
   const { mkdtemp, realpath, readdir, rm } = await import("node:fs/promises");

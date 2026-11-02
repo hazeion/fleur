@@ -3,12 +3,12 @@ import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import release from "../../package.json" with { type: "json" };
-import { sweepDevelopmentRootAtExit } from "../runtime/exit-sweep";
+import { sweepDevelopmentRootAfterRun } from "../runtime/run-sweep";
 import { artifactIdentity, type ArtifactManifest } from "../../src/runtime/production/artifact";
 
 const executable = resolve(import.meta.dir, "../../bin/fleur.ts");
 const scratch = await realpath(await mkdtemp(join(tmpdir(), "fleur-startup-environment-")));
-sweepDevelopmentRootAtExit(scratch);
+sweepDevelopmentRootAfterRun(scratch);
 afterAll(() => rm(scratch, { recursive: true, force: true }));
 const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
 

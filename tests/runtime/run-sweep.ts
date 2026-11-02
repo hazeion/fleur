@@ -4,13 +4,14 @@ import { join, sep } from "node:path";
 
 // The backstop for resources a test could not release itself. A failed assertion
 // can skip the rest of a finally block and a test timeout can skip all of it, so
-// exit-sweep.preload.ts runs this after the last test file. Each entry names only
+// run-sweep.preload.ts runs this after the last test file. Each entry names only
 // resources the test created: a unique temporary root or a unique ownership label.
 const labels = new Set<string>(), roots = new Set<string>();
+export const developmentBindingLabel = "dev.fleur.development-binding";
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "ignore", timeout: 30_000 });
-  if (!result.success) throw new Error(`${args[0]} ${args[1]} failed during the exit sweep`);
+  if (!result.success) throw new Error(`${args[0]} ${args[1]} failed during the run sweep`);
   return result.stdout.toString();
 }
 function removeLabelled(label: string) {
@@ -27,7 +28,7 @@ function bindings(root: string): string[] {
 }
 function attempt(work: () => void) {
   // The sweep must not change the run's result, but a resource it could not release must be visible.
-  try { work(); } catch (error) { process.stderr.write(`Exit sweep could not release a test resource: ${String(error)}\n`); }
+  try { work(); } catch (error) { process.stderr.write(`Run sweep could not release a test resource: ${String(error)}\n`); }
 }
 export function sweep() {
   if (roots.size) attempt(() => {
@@ -38,18 +39,18 @@ export function sweep() {
     }
   });
   for (const root of roots) {
-    attempt(() => { for (const binding of bindings(root)) removeLabelled(`dev.fleur.development-binding=${binding}`); });
+    attempt(() => { for (const binding of bindings(root)) removeLabelled(`${developmentBindingLabel}=${binding}`); });
     attempt(() => rmSync(root, { recursive: true, force: true }));
   }
   for (const label of labels) attempt(() => removeLabelled(label));
 }
 /** Remove containers and volumes carrying this unique label unless the owner has already released them. */
-export function sweepLabelAtExit(label: string): () => void {
+export function sweepLabelAfterRun(label: string): () => void {
   labels.add(label);
   return () => { labels.delete(label); };
 }
-/** At exit, kill any process naming this unique temporary root, remove its development resources, then remove the root. */
-export function sweepDevelopmentRootAtExit(root: string) {
-  if (!root.startsWith(realpathSync(tmpdir()) + sep)) throw new Error("The exit sweep owns only temporary roots");
+/** After the run, kill any process naming this unique temporary root, remove its development resources, then remove the root. */
+export function sweepDevelopmentRootAfterRun(root: string) {
+  if (!root.startsWith(realpathSync(tmpdir()) + sep)) throw new Error("The run sweep owns only temporary roots");
   roots.add(root);
 }

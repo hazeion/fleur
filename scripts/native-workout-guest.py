@@ -45,6 +45,20 @@ def restore_source(pack, commit, destination):
         raise ValueError('Restored source identity differs')
 
 
+def verify_proof_source(proof, commits):
+    if not isinstance(proof, dict) or proof.get('ok') is not True:
+        raise ValueError('Packed native workout proof failed its source or completion contract')
+    sources = proof.get('source')
+    if not isinstance(sources, dict) or set(sources) != {'fleur', 'workout'}:
+        raise ValueError('Packed native workout proof failed its source or completion contract')
+    for name, commit in commits.items():
+        source = sources[name]
+        if (not isinstance(source, dict) or source.get('commit') != commit or source.get('dirty') is not False
+                or not isinstance(source.get('treeSha256'), str) or not re.fullmatch('[a-f0-9]{64}', source['treeSha256'])
+                or type(source.get('files')) is not int or source['files'] <= 0):
+            raise ValueError('Packed native workout proof failed its source or completion contract')
+
+
 def main():
     import hashlib
     import json
@@ -193,8 +207,7 @@ def main():
         run([bun,'scripts/pull-pinned-development-images.ts'],cwd=fleur,environment=environment,timeout=180)
         _, proof, diagnostic = run([bun,'scripts/verify-workout.ts',str(workout)],cwd=fleur,environment=environment,timeout=900)
         verified = json.loads(proof)
-        if verified.get('ok') is not True or verified.get('source',{}).get('commit') != metadata['workout']['commit']:
-            raise ValueError('Packed native workout proof failed its source or completion contract')
+        verify_proof_source(verified, {name: metadata[name]['commit'] for name in ('fleur', 'workout')})
         unchanged()
         if daemon() != before_daemon or service('docker.service') != before_service or service('nftables.service') != before_nftables or run(iptables + ['-S',chain],environment=environment)[1] != before_canary:
             raise ValueError('Daemon, nftables service or detached canary changed during workout proof')

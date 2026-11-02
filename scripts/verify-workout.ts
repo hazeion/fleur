@@ -57,7 +57,8 @@ async function run(args: string[], cwd = app, expectedExit = 0) {
 }
 async function outcome(args: string[], expectedExit = 0) {
   const timeout = args[0] === "db" && args[1] === "query" ? "5" : "240";
-  const stdout = await run([process.execPath, executable, ...args, "--project", app, "--timeout", timeout, "--json"], app, expectedExit);
+  const diagnostic = args[0] === "verify" || args[0] === "build" ? ["--preload", join(repository, "scripts/proof-build-observer.ts")] : [];
+  const stdout = await run([process.execPath, ...diagnostic, executable, ...args, "--project", app, "--timeout", timeout, "--json"], app, expectedExit);
   const result = JSON.parse(stdout);
   assert.deepEqual(Object.keys(result).sort(), ["command", "data", "error", "formatVersion", "ok", "truncated"].sort());
   assert.equal(result.formatVersion, 1); assert.equal(result.ok, expectedExit === 0);

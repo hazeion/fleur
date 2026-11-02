@@ -24,6 +24,7 @@ used Chromium 156.0.8078.4 on macOS 15.7.7.
 | Failure cleanup | A failed listener resume could prevent resource retirement | Injected resume failure is reported while the owned database container and volume are removed |
 | Proof ownership | Unbounded shutdown/output waits and unsafe unavailable child identity | Real ignored-TERM child is reaped, inherited stdout is bounded, invalid identity never becomes a signal target |
 | Source identity | Reading a directory symlink raised EISDIR | Recorder hashes the link itself, including a broken target, without reading outside the tree |
+| Native proof source contract | The guest rejected the current two-source report and accepted an obsolete flat report | Regression tests bind both clean source commits, tree hashes and positive file counts |
 
 The 500-exercise catalog, 501-row detail and second-page template browser proof
 passed twice with disposable databases. Actual Chromium and its selected test
@@ -64,15 +65,36 @@ observed SSD storage. Docker has eight CPUs and 8,322,727,936 bytes of allocated
 memory. The report freezes source identity, produced archive, artifact/images,
 compiler/lint/browser/runtime pins, database durability, fixture, warmup and
 measurement uncertainty. Warm measurements run without unrelated heavy work.
-The initial recorder failure occurred before timing samples; no performance
-claim follows from that attempt.
+The initial recorder failure and a later limit-preflight failure occurred before
+timing samples; no performance claim follows from those attempts. The independent
+healthy-query service check remains unresolved. The full reference measurement
+is still required before merge.
+
+For PR head `8cc8980454535511cdd512bcea278565f388e139`,
+[CLI run 41383964815](https://github.com/hazeion/fleur/actions/runs/41383964815)
+passed every selected job, including packed CLI tests, both production artifact
+jobs, both read-runtime jobs and both native Ubuntu workout proofs. The stale
+Python test-count assertion was corrected without removing any test. Checkout
+tested GitHub's PR merge commit `6cc6b14e0ceca83ac685e26fbccea7fbe79751c5`,
+whose parents are that head and the main branch revision. The successful
+Ubuntu proof also passes the repaired native source-contract validator when
+bound to that exact checkout and the immutable workout pin.
 
 | Required tuple | Acceptance status |
 | --- | --- |
 | Intel macOS | Packed workout and production run executed; final candidate pending |
-| Ubuntu 24.04 amd64 | Required native workout CI job added; execution pending |
-| Ubuntu 26.04 amd64 | Required native workout CI job added; execution pending |
-| Debian 13 amd64 | Explicit native KVM application/production case added after all existing setup/isolation gates; execution pending |
+| Ubuntu 24.04 amd64 | Native packed workout and production proof passed in run 41383964815; final candidate pending |
+| Ubuntu 26.04 amd64 | Native packed workout and production proof passed in run 41383964815; final candidate pending |
+| Debian 13 amd64 | Repeated native workout build failure; qualification incomplete |
+
+[Debian run 41383978363](https://github.com/hazeion/fleur/actions/runs/41383978363)
+reproduced the earlier build failure after both functional browser repetitions,
+maintenance and restart persistence passed. Full verification passed tests,
+types and both lint engines, then returned `INTERNAL_FAILURE` during artifact
+construction. Owned workout resources, service cgroups and VM scratch retired.
+This is failure evidence. The proof now records bounded fixed build-stage names
+and child exit codes on failure, excluding tool arguments, output and environment,
+to locate the failing operation without exposing credentials.
 
 Existing ARM jobs and Arch observations retain their original limited scope.
 A normal green PR does not establish the manual Debian row. No publication,

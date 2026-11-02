@@ -1,4 +1,5 @@
 import importlib.util
+import copy
 from pathlib import Path
 import subprocess
 import tempfile
@@ -34,4 +35,21 @@ class Source(unittest.TestCase):
             self.assertEqual(subprocess.check_output(['git','-C',str(target),'remote']),b'')
             self.assertEqual((target/'proof.txt').read_text(),'Owned source with history\n')
             self.assertEqual(subprocess.check_output(['git','-C',str(target),'rev-list','--count','HEAD']).strip(),b'1')
+class ProofSource(unittest.TestCase):
+    commits = {'fleur': 'a'*40, 'workout': 'b'*40}
+    def proof(self):
+        return {'ok': True, 'source': {name: {'commit': commit, 'dirty': False, 'treeSha256': 'c'*64, 'files': 1} for name,commit in self.commits.items()}}
+    def test_completed_packed_proof_binds_both_clean_sources(self):
+        guest.verify_proof_source(self.proof(), self.commits)
+    def test_each_wrong_commit_or_dirty_source_is_refused(self):
+        for name in self.commits:
+            for field,value in [('commit','d'*40),('dirty',True),('treeSha256','invalid'),('files',0)]:
+                proof=self.proof(); proof['source'][name][field]=value
+                with self.subTest(name=name,field=field), self.assertRaises(ValueError): guest.verify_proof_source(proof,self.commits)
+    def test_missing_or_legacy_flat_source_is_refused(self):
+        for source in [{}, {'commit':self.commits['workout']}, {'workout':self.proof()['source']['workout']}]:
+            with self.subTest(source=source), self.assertRaises(ValueError): guest.verify_proof_source({'ok':True,'source':source},self.commits)
+    def test_incomplete_proof_cannot_qualify(self):
+        proof=copy.deepcopy(self.proof()); proof['ok']=False
+        with self.assertRaises(ValueError): guest.verify_proof_source(proof,self.commits)
 if __name__=='__main__': unittest.main()

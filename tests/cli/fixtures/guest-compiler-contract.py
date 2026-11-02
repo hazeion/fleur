@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 import tempfile
 import sys
+import time
 import unittest
 from unittest import mock
 from types import SimpleNamespace
@@ -45,7 +46,14 @@ class CompilerContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pidfile=Path(directory)/'child.pid'
             code="import os,time,sys;pid=os.fork();os._exit(0) if pid else None;open(sys.argv[1],'w').write(str(os.getpid()));time.sleep(20)"
-            with self.assertRaises(RuntimeError):compiler.bounded_command([sys.executable,'-c',code,str(pidfile)],timeout=0.3)
+            real=time.monotonic;base=real();ready=[]
+            def deadline_clock():
+                # Python startup takes unbounded time on a busy host, so the deadline counts from the descendant's readiness.
+                now=real()
+                if not ready and (now-base>10 or pidfile.exists() and pidfile.read_text()):ready.append(now)
+                return base+now-ready[0] if ready else base
+            with mock.patch.object(time,'monotonic',deadline_clock):
+                with self.assertRaises(RuntimeError):compiler.bounded_command([sys.executable,'-c',code,str(pidfile)],timeout=0.3)
             pid=int(pidfile.read_text())
             state=subprocess.run(['/bin/ps','-p',str(pid),'-o','stat='],capture_output=True,text=True).stdout.strip()
             try:self.assertTrue(not state or state.startswith('Z'), 'live compiler descendant survived: '+state)

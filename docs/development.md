@@ -43,7 +43,7 @@ Foreign containers and volumes are never silently adopted.
 
 Application binding defaults to `127.0.0.1`. Automatic ports start at 3000; the
 reported URL contains the selected port. `--port <number>` reserves exactly that
-port and fails if occupied. `--host <address>` accepts an IP address or localhost.
+port and fails if occupied, before the Doctor check runs. `--host <address>` accepts an IP address or localhost.
 An explicit broad bind warns that v1 has no authentication. PostgreSQL and the
 authenticated lifecycle control endpoint remain on loopback.
 

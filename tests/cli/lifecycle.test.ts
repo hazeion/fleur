@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { sweepDevelopmentRootAtExit } from "../runtime/exit-sweep";
 
 let taskHome: string;
 beforeAll(async () => {
@@ -10,6 +11,7 @@ afterAll(async () => { await (await import("node:fs/promises")).rm(taskHome, { r
 const executable = resolve(import.meta.dir, "../../bin/fleur.ts");
 async function cli(...args: string[]) { return cliWithEnvironment({}, ...args); }
 async function cliWithEnvironment(environment: Record<string, string | undefined>, ...args: string[]) {
+  if (args.includes("--project")) sweepDevelopmentRootAtExit(args[args.indexOf("--project") + 1]!);
   const child = Bun.spawn([process.execPath, executable, ...args], { env: { ...process.env, HOME: taskHome, ...environment }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, exit };
@@ -49,6 +51,20 @@ test("lifecycle rejects out-of-range ports, hostnames, log limits and malformed 
 });
 
 
+test("an occupied explicit port is refused before the slower prerequisite gate", async () => {
+  const { mkdtemp, realpath, rm } = await import("node:fs/promises");
+  const root = await mkdtemp(resolve(await realpath((await import("node:os")).tmpdir()), "fleur-occupied-port-cli-")), project = resolve(root, "app");
+  const occupied = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("unrelated owner") });
+  try {
+    expect((await cli("new", project, "--no-git", "--json")).exit).toBe(0);
+    // Without Docker tools the gate can only refuse, so this result proves which check ran first.
+    const refused = await cliWithEnvironment({ PATH: resolve(root, "missing-tools") }, "dev", "--background", "--port", String(occupied.port), "--project", project, "--json");
+    expect(refused.exit, refused.stdout).toBe(4);
+    expect(JSON.parse(refused.stdout).error.code).toBe("PORT_OCCUPIED");
+    expect(await (await fetch(occupied.url)).text()).toBe("unrelated owner");
+    expect((await cli("stop", "--project", project, "--json")).exit).toBe(0);
+  } finally { await occupied.stop(true); await cli("stop", "--project", project, "--json"); await rm(root, { recursive: true, force: true }); }
+});
 test("development uses the shared prerequisite gate before creating application resources", async () => {
   const { mkdtemp, realpath, readdir, rm } = await import("node:fs/promises");
   const root = await mkdtemp(resolve(await realpath((await import("node:os")).tmpdir()), "fleur-prerequisite-cli-"));

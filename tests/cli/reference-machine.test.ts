@@ -31,3 +31,16 @@ test("an SSD checkout cannot qualify a database stored on a rotating disk", () =
   const observe = (args: string[]) => JSON.stringify(args[0] === "lsmem" ? memory : args[0] === "findmnt" ? mount : disks);
   expect(() => observeLinuxReferenceHardware("/owned/workspace", observe, "8:17")).toThrow();
 });
+test("provider SSD evidence admits only its bound root disk and retains rotation observations", () => {
+  const virtual = structuredClone(blocks); virtual.blockdevices[0]!.rota = true;
+  expect(linuxReferenceHardware(memory, virtual, mount, { rootDisk: "8:0" })).toEqual({ memoryBytes: 16 * 1024 ** 3, device: "8:0" });
+  expect(() => linuxReferenceHardware(memory, virtual, mount, { rootDisk: "8:16" })).toThrow();
+});
+test("provider root SSD evidence cannot admit a separate database disk or unidentified mount", () => {
+  const disks = structuredClone(blocks);
+  disks.blockdevices[0]!.rota = true;
+  disks.blockdevices.push({ "maj:min": "8:16", type: "disk", rota: false, children: [{ "maj:min": "8:17", type: "part", rota: false }] });
+  const observe = (args: string[]) => JSON.stringify(args[0] === "lsmem" ? memory : args[0] === "findmnt" ? mount : disks);
+  expect(observeLinuxReferenceHardware("/owned/workspace", observe, "8:1", { rootDisk: "8:0" }).databaseDevice).toBe("8:0");
+  for (const database of ["8:17", "0:42"]) expect(() => observeLinuxReferenceHardware("/owned/workspace", observe, database, { rootDisk: "8:0" })).toThrow();
+});

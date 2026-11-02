@@ -33,9 +33,10 @@ export async function workoutReference({ url, source, artifact, database, report
   const tools = JSON.parse(await readFile(join(import.meta.dir, "../package.json"), "utf8")).devDependencies;
   const lintTools = JSON.parse(await readFile(join(import.meta.dir, "../lint/package.json"), "utf8")).dependencies;
   const storageDevice = await database.storageDevice();
-  const machine = referenceMachine(source, storageDevice);
+  const machine = await referenceMachine(source, storageDevice, releaseIdentity.commit, await readFile(join(import.meta.dir, "../.github/workflows/native-setup.yml"), "utf8"));
   assert.equal(database.storage, "volume", "Reference commits require owned disk storage, never tmpfs");
   assert.ok(cpus().length >= 4 && machine.memoryBytes >= 16 * 1024 ** 3, "Reference machine needs four CPUs and 16 GiB");
+  await writeFile(report, JSON.stringify({ formatVersion: 1, passed: false, state: "preflight", archiveSha256, source: { workout: sourceIdentity, fleur: releaseIdentity }, machine }, null, 2) + "\n", { mode: 0o600 });
   // Only this uniquely owned test database is changed. Remove the one functional-proof row.
   const removed = await database.sql`DELETE FROM exercises WHERE name='Production persistent squat' RETURNING id`;
   assert.equal(removed.length, 1);

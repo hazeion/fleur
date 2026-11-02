@@ -74,6 +74,28 @@ inventory. Actual memory, SSD admission, database-volume identity and every
 measurement gate remain unchanged. Changing the reference host does not add a
 native application qualification row or imply passing performance.
 
+The ARM attempt in
+[run 41429178606](https://github.com/hazeion/fleur/actions/runs/41429178606)
+also reported virtual-disk `ROTA=true` and stopped before samples. The local
+Mac reference attempt at `584437f` passed functional/maintenance/build checks
+but failed the under-one-second healthy-query isolation preflight. Its report
+is incomplete, not passing performance evidence.
+
+The next reference candidate distinguishes direct nonrotating-disk evidence
+from GitHub-provisioned SSD evidence. GitHub's
+[standard runner specification](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+documents SSD storage for its public standard ARM runner. This alternate path
+binds live HTTPS run/job metadata to the exact public repository, dispatch,
+workflow, source commit, attempt, active job, provider runner group and label.
+Both the workspace and actual PostgreSQL volume must use the runner root disk.
+The report freezes the specification URL, retrieval time, complete-body hash,
+supported row and control-plane identity, while retaining raw `ROTA` values.
+It reports provider-provisioned SSD rather than observed nonrotating media.
+Missing or mismatched provenance and a separate database disk remain failures.
+Independent review found no remaining blocker after a live-document whitespace
+regression was fixed. Fresh executed qualification remains required; CPU/RAM,
+durability, workload, deadlines, repetitions, samples and budgets are unchanged.
+
 An isolated produced-package run passed two repetitions of workout validation,
 child rollback, expected-version competition, referential conflict, immutable
 history, two-view draft/focus preservation and unknown outcomes without replay.

@@ -273,6 +273,12 @@ export async function supervise(project: string, host: string, requestedPort: nu
   pending = (async () => {
     checkOpen();
     const deadline = startupDeadline;
+    // Refuse an occupied explicit port before the slower prerequisite gate, without serving
+    // anything. Every other bind failure is left to the authoritative bind after the gate.
+    if (requestedPort !== undefined) {
+      try { Bun.listen({ hostname: host, port: requestedPort, socket: { data() {} } }).stop(true); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") throw new Error("PORT_OCCUPIED"); }
+    }
     let endpoint: string | undefined;
     const prerequisite = await doctor({ args: [], project: bound.project, timeoutSeconds: Math.max(0.001, (deadline - performance.now()) / 1000), json: true }, productionHost(), value => { endpoint = value; });
     state.prerequisites = prerequisiteSummary(prerequisite);

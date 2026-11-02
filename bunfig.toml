@@ -1,0 +1,2 @@
+[test]
+preload = ["./tests/runtime/run-sweep.preload.ts"]

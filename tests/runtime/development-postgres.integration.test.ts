@@ -4,6 +4,7 @@ import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DevelopmentPostgres, databaseLabel } from "../../src/runtime/development/postgres";
+import { sweepDevelopmentRootAfterRun, sweepLabelAfterRun } from "./run-sweep";
 
 const executable = resolve(import.meta.dir, "../../src/runtime/development/postgres.ts");
 const quote = (value: string) => "'"+value.replaceAll("'", "'\\''")+"'";
@@ -11,6 +12,7 @@ async function context() {
   const root = await mkdtemp(join(await realpath(tmpdir()), "fleur-pg-resource-")), directory = join(root, "private");
   await mkdir(directory, { mode: 0o700 });
   const bound = { project: root, directory, id: Bun.CryptoHasher.hash("sha256", crypto.randomUUID(), "hex") };
+  sweepDevelopmentRootAfterRun(root); sweepLabelAfterRun(`${databaseLabel}=${bound.id}`);
   return { root, bound };
 }
 async function docker(...args: string[]): Promise<string> {

@@ -10,7 +10,7 @@ uses the shared health probe when no lifecycle binding exists.
 `fleur dev` owns a development supervisor, restricted application execution and
 persistent PostgreSQL for the selected checkout. It does not launch a coding
 agent. Use the project's exact Fleur pin and the supported Bun/Docker runtime.
-Startup first uses the shared Doctor operation and binds further control to its
+An occupied explicit port is refused first. Startup then uses the shared Doctor operation and binds further control to its
 qualified local endpoint. An unverified runtime profile blocks development.
 The pinned PostgreSQL image must already be available locally; missing
 prerequisites are reported rather than silently installed.

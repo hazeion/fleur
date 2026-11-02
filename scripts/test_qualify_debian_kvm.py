@@ -14,6 +14,12 @@ spec.loader.exec_module(module)
 class InputContract(unittest.TestCase):
     def test_workout_proof_is_a_separate_case_with_the_fixed_helper_pair(self):
         self.assertEqual(module.qualification_case({'debian_helpers':'pair','workout_proof':True}), 'workout-production')
+        for reference in (True, False, 'true', 'false'):
+            for inputs, expected in (({'debian_helpers':'pair','workout_proof':True},'workout-production'), ({'debian_helpers':'pair','debian_recovery':True},'interrupted-recovery'), ({'arch_boot_observation':True},'arch-boot-observation'), ({},'fresh-installation')):
+                with self.subTest(reference=reference,expected=expected):
+                    self.assertEqual(module.qualification_case(dict(inputs,reference_proof=reference)),expected)
+        for reference in (None, 0, 'yes', [], {}):
+            with self.subTest(reference=reference), self.assertRaises(ValueError): module.qualification_case({'reference_proof':reference})
         for inputs in ({'workout_proof':True}, {'debian_helpers':'pair','workout_proof':True,'debian_recovery':True}, {'workout_proof':True,'arch_boot_observation':True}):
             with self.subTest(inputs=inputs), self.assertRaises(ValueError): module.qualification_case(inputs)
 

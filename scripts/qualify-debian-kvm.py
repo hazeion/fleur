@@ -347,10 +347,10 @@ def accepted_arch_observation(report, source):
 
 
 def qualification_case(inputs):
-    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation','desktop_runtime_images','workout_proof'}:
+    if type(inputs) is not dict or set(inputs) - {'debian_helpers','debian_recovery','arch_boot_observation','desktop_runtime_images','workout_proof','reference_proof'}:
         raise ValueError('Unexpected manual inputs')
     selectors = {}
-    for name in ('debian_recovery','arch_boot_observation','desktop_runtime_images','workout_proof'):
+    for name in ('debian_recovery','arch_boot_observation','desktop_runtime_images','workout_proof','reference_proof'):
         value = inputs.get(name,False)
         if type(value) is bool:
             selectors[name] = value

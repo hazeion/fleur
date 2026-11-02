@@ -58,6 +58,22 @@ Independent review packed the repository, confirmed all 202 tracked source and
 CLI files remained, and found no Python cache files in the archive. Types and
 both lint engines passed. Final qualification must use this clean package.
 
+The clean package passed the full Intel macOS proof at
+`9af0a319ae4c6e4738710561241ca86afce9686a` under `umask 077`, with source pin
+`2dc26b6f25a040aac87d108643d17b849f5c334f`. Archive SHA-256 was
+`64679ae694452a2ace9121af65b49abd3063e575f7184da516aef61cb37df512`.
+Both browser repetitions, maintenance, restart persistence, full verification,
+both production starts and graceful owned cleanup passed.
+
+The reference job in
+[run 41427759453](https://github.com/hazeion/fleur/actions/runs/41427759453)
+stopped before timing samples because its Linux backing disk reported rotating
+storage. This is not performance evidence. The next reference attempt uses the
+standard Ubuntu 24.04 ARM runner and records read-only memory and block-device
+inventory. Actual memory, SSD admission, database-volume identity and every
+measurement gate remain unchanged. Changing the reference host does not add a
+native application qualification row or imply passing performance.
+
 An isolated produced-package run passed two repetitions of workout validation,
 child rollback, expected-version competition, referential conflict, immutable
 history, two-view draft/focus preservation and unknown outcomes without replay.

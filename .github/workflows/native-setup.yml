@@ -161,7 +161,7 @@ jobs:
     name: Reference proof selection
     needs: scope
     if: ${{ needs.scope.outputs.full == 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     defaults:
       run:
@@ -200,8 +200,16 @@ jobs:
       - name: Native identity and checksum-pinned Bun
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
         run: |
-          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-workout-bun" > "$RUNNER_TEMP/workout-platform.json"
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture arm64 --ubuntu 24.04 --out "$RUNNER_TEMP/fleur-workout-bun" > "$RUNNER_TEMP/workout-platform.json"
           echo "$RUNNER_TEMP/fleur-workout-bun" >> "$GITHUB_PATH"
+      - name: Read-only reference hardware inventory
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
+        run: |
+          lsmem --json --bytes --output SIZE,STATE
+          lsblk --json --tree --output MAJ:MIN,TYPE,ROTA
+          findmnt --json --target "$RUNNER_TEMP" --output MAJ:MIN
+          reference_docker_root="$(docker info --format '{{.DockerRootDir}}')"
+          findmnt --json --target "$reference_docker_root" --output MAJ:MIN
       - run: bun install --frozen-lockfile --ignore-scripts
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_proof }}
       - run: bun install --cwd lint --frozen-lockfile --ignore-scripts

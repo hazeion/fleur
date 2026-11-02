@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('guest', Path(__file__).with_name('native-workout-guest.py'))
 guest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guest)
@@ -52,4 +53,21 @@ class ProofSource(unittest.TestCase):
     def test_incomplete_proof_cannot_qualify(self):
         proof=copy.deepcopy(self.proof()); proof['ok']=False
         with self.assertRaises(ValueError): guest.verify_proof_source(proof,self.commits)
+class Workspace(unittest.TestCase):
+    def test_large_proof_files_use_owned_home_storage_and_override_ambient_tmp(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as ambient:
+            with patch.object(tempfile, 'tempdir', ambient):
+                scratch, environment = guest.proof_workspace(Path(home))
+            try:
+                self.assertEqual(scratch.parent,Path(home))
+                self.assertEqual(scratch.stat().st_mode & 0o777,0o700)
+                temporary=Path(environment['TMPDIR'])
+                self.assertEqual(temporary.parent,scratch)
+                self.assertEqual(temporary.stat().st_mode & 0o777,0o700)
+                self.assertEqual(environment['HOME'],str(scratch))
+                self.assertEqual(environment['BUN_INSTALL_CACHE_DIR'],str(scratch/'cache'))
+                self.assertEqual(environment['PLAYWRIGHT_BROWSERS_PATH'],str(scratch/'browsers'))
+            finally:
+                import shutil
+                shutil.rmtree(scratch)
 if __name__=='__main__': unittest.main()

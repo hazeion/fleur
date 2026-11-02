@@ -59,6 +59,19 @@ def verify_proof_source(proof, commits):
             raise ValueError('Packed native workout proof failed its source or completion contract')
 
 
+def proof_workspace(root):
+    import shutil
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix='fleur-native-workout-', dir=root))
+    temporary = scratch/'tmp'
+    try:
+        temporary.mkdir(mode=0o700)
+    except BaseException:
+        shutil.rmtree(scratch)
+        raise
+    return scratch, {'HOME': str(scratch), 'TMPDIR': str(temporary), 'BUN_INSTALL_CACHE_DIR': str(scratch/'cache'), 'PLAYWRIGHT_BROWSERS_PATH': str(scratch/'browsers')}
+
+
 def main():
     import hashlib
     import json
@@ -142,8 +155,17 @@ def main():
             if len(data) != entry['bytes'] or hashlib.sha256(data).hexdigest() != entry['sha256']:
                 raise ValueError('Source artifact identity differs')
             packs[name] = data
-        scratch = Path(tempfile.mkdtemp(prefix='fleur-native-workout-'))
-        environment = {**os.environ, 'HOME': str(scratch), 'PATH': str(root) + ':/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin', 'BUN_INSTALL_CACHE_DIR': str(scratch/'cache'), 'PLAYWRIGHT_BROWSERS_PATH': str(scratch/'browsers'), 'DOCKER_CONFIG': os.environ.get('DOCKER_CONFIG', str(Path.home()/'.docker')), 'LC_ALL': 'C', 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+        scratch, workspace_environment = proof_workspace(root)
+        environment = {**os.environ, **workspace_environment, 'PATH': str(root) + ':/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin', 'DOCKER_CONFIG': os.environ.get('DOCKER_CONFIG', str(Path.home()/'.docker')), 'LC_ALL': 'C', 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+        def storage(path):
+            observed = os.statvfs(path)
+            filesystem = run(['/usr/bin/stat','--file-system','--format=%T',str(path)],timeout=10)[1].strip()
+            if not re.fullmatch('[a-z0-9/._-]{1,32}', filesystem):
+                raise ValueError('Unexpected filesystem observation')
+            return {'filesystem':filesystem, 'totalBytes':observed.f_blocks*observed.f_frsize, 'availableBytes':observed.f_bavail*observed.f_frsize}
+        result['storage'] = {'systemTemporary':storage(Path(tempfile.gettempdir())), 'ownedWorkspace':storage(scratch)}
+        if result['storage']['ownedWorkspace']['filesystem'] in ('tmpfs','ramfs') or scratch.stat().st_dev != root.stat().st_dev:
+            raise ValueError('Native workout workspace requires the owned guest home filesystem')
         before = packages()
         def daemon():
             return run(['docker','info','--format','{{json .ID}} {{json .ServerVersion}} {{json .KernelVersion}} {{json .CgroupDriver}} {{json .CgroupVersion}}'],environment=environment)[1]

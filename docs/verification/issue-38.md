@@ -96,6 +96,18 @@ This is failure evidence. The proof now records bounded fixed build-stage names
 and child exit codes on failure, excluding tool arguments, output and environment,
 to locate the failing operation without exposing credentials.
 
+[Debian run 41405382011](https://github.com/hazeion/fleur/actions/runs/41405382011)
+at head `1e177d42d41fd7b920734aa84c60cefdde50d9f6` narrowed the failure to
+`docker save`, exit 1. Client/worker/supervisor bundles, both image builds and
+worker registration completed first; archive metadata was never read. Cleanup
+passed. The boot log also records `tmp.mount`. Debian 13 defaults `/tmp` to
+memory-backed storage, and the harness had placed the entire workload there.
+The next candidate uses a private workspace under the owned guest home and
+passes its private `TMPDIR` to children. Its report records filesystem type,
+capacity and available bytes for both system temporary storage and that
+workspace. VM resources, package rules, deadlines, repeats and disposal gates
+remain unchanged. This storage hypothesis still requires native execution.
+
 Existing ARM jobs and Arch observations retain their original limited scope.
 A normal green PR does not establish the manual Debian row. No publication,
 installer admission or experimental compiler support follows from this record.

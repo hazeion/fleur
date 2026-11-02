@@ -57,6 +57,10 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
     { name: "logs", summary: "Read bounded development logs.", usage: "logs [--limit 200] [--cursor <token>] [--follow]", options: [{ name: "--limit", value: true }, { name: "--cursor", value: true }, { name: "--follow", value: false }] },
     { name: "build", usage: "build", summary: "Build an immutable, self-contained production artifact.", options: [] },
     { name: "start", usage: "start --artifact <dir> [--host <address>] [--port <number>]", summary: "Serve a verified production artifact against configured PostgreSQL.", options: [{ name: "--artifact", value: true }, { name: "--host", value: true }, { name: "--port", value: true }] },
+    { name: "explain", usage: "explain", summary: "Explain the pinned application environment and workflow." },
+    { name: "test", usage: "test [--suite unit|database|browser] [--filter <name-or-path>]", summary: "Run the whole application test suite or an explicit subset.", options: [{ name: "--suite", value: true, pattern: "^(unit|database|browser)$" }, { name: "--filter", value: true }] },
+    { name: "types", usage: "types", summary: "Check application types with the pinned compiler." },
+    { name: "lint", usage: "lint", summary: "Run both pinned application lint engines." },
     { name: "docs", usage: "docs [core|catalog|upgrades]", summary: "Read pinned offline documentation or machine schemas." },
     { name: "docs refresh", usage: "docs refresh [--preview | --replace <token> | --recover]", summary: "Refresh generated guidance while preserving user instructions.", options: [{ name: "--preview", value: false }, { name: "--replace", value: true, pattern: "^[a-f0-9]{64}$" }, { name: "--recover", value: false }] },
     { name: "upgrade", usage: "upgrade --to <exact-version> [--preview | --accept <token>]", summary: "Preview or apply a documented exact-version upgrade.", options: [{ name: "--to", value: true, pattern: "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" }, { name: "--preview", value: false }, { name: "--accept", value: true, pattern: "^[a-f0-9]{64}$" }] },
@@ -65,12 +69,13 @@ test("packed help works offline through Bun with Node poisoned and no checkout w
   expect(response.stdout.trim().split("\n")).toHaveLength(1);
 });
 test("invalid invocations return category 2 JSON without interpreting shell arguments", async () => {
-  for (const args of [["--unknown"], ["unknown"], ["help", "sh", "-c", "touch sentinel"], ["--project"], ["--timeout", "0"], ["--timeout", "NaN"], ["--timeout", "Infinity"], ["--json=false"], ["--project", "--help"], ["--json", "--json"]]) {
+  // These invalid requests share no mutable state; keep the existing whole-test deadline.
+  await Promise.all([["--unknown"], ["unknown"], ["help", "sh", "-c", "touch sentinel"], ["--project"], ["--timeout", "0"], ["--timeout", "NaN"], ["--timeout", "Infinity"], ["--json=false"], ["--project", "--help"], ["--json", "--json"]].map(async args => {
     const response = await cli("--json", ...args);
     expect(response.exit).toBe(2);
     expect(response.stderr).toBe("");
     expect(JSON.parse(response.stdout)).toMatchObject({ formatVersion: 1, ok: false, data: null, error: { code: "ARGUMENT_INVALID", actions: [{ command: "fleur --help" }] }, truncated: false });
-  }
+  }));
   expect(await Bun.file(join(scratch, "sentinel")).exists()).toBe(false);
 });
 test("human help is readable, catalog-driven, and lists only implemented operations", async () => {

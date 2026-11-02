@@ -1,3 +1,4 @@
+import { compilerProfile, oxlintProfile, eslintProfile } from "./tooling-profile";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rmdir, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -19,11 +20,11 @@ export async function createProject(command: string, target: string, git: boolea
     ".fleur-guidance.json": guidanceManifest(guidance),
     ".fleur/.gitignore": "*\n",
     "docs/fleur.md": guidance["docs/fleur.md"],
-    "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", types: ["bun"], strict: true, noUncheckedIndexedAccess: true, allowImportingTsExtensions: true, jsx: "react-jsx", jsxImportSource: "preact", noEmit: true, skipLibCheck: false }, include: ["client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "server/**/*.tsx", "shared/**/*.ts", "tests/**/*.ts", "tests/**/*.tsx"] }, null, 2) + "\n",
-    ".oxlintrc.json": JSON.stringify({ plugins: ["typescript"], categories: { correctness: "error" } }, null, 2) + "\n",
+    "tsconfig.json": JSON.stringify(compilerProfile, null, 2) + "\n",
+    ".oxlintrc.json": JSON.stringify(oxlintProfile, null, 2) + "\n",
     "lint/package.json": await readFile(new URL("./template/lint-package.json.txt", import.meta.url), "utf8"),
     "lint/bun.lock": await readFile(new URL("./template/lint-bun.lock.txt", import.meta.url), "utf8"),
-    "lint/eslint.config.mjs": 'import tseslint from "typescript-eslint";\nexport default [...tseslint.configs.recommended];\n',
+    "lint/eslint.config.mjs": eslintProfile,
     "shared/placeholder.ts": "// This source-only placeholder has no application runtime behavior.\nexport {};\n",
     "fleur.json": JSON.stringify({ formatVersion: 1, fleurVersion: version, contractVersion: 1, compiler: "microsoft", projectId: crypto.randomUUID() }, null, 2) + "\n",
     "package.json": JSON.stringify(manifest, null, 2) + "\n",

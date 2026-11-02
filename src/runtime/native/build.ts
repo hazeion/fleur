@@ -73,7 +73,7 @@ ENTRYPOINT ["/usr/bin/python3", "-I", "-u", "/controller/controller.py"]
 FROM oven/bun@sha256:${base} AS worker
 WORKDIR /probe
 COPY --from=controller /controller/filter.so ./
-COPY bootstrap.js application.js ./
+COPY --chmod=0444 bootstrap.js application.js ./
 ENV GLIBC_TUNABLES=glibc.pthread.rseq=0 BUN_JSC_useConcurrentJIT=0 BUN_JSC_useConcurrentGC=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0
 USER 65534:65534
 ${lifecycleLabel}LABEL dev.fleur.read-image-owner=${owner}

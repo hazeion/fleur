@@ -167,10 +167,61 @@ jobs:
       - name: Clean production artifact, browser flow and restricted containers
         run: bun test tests/runtime/production-artifact.integration.test.ts
 
+  workout-proof:
+    needs: scope
+    if: ${{ needs.scope.outputs.full == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: fleur
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        with:
+          path: fleur
+          persist-credentials: false
+      - name: Read the reviewed immutable workout source pin
+        id: workout
+        run: |
+          python3 -c 'import json,re; p=json.load(open("scripts/workout-source.json")); assert p["repository"]=="hazeion/fleur-workout" and re.fullmatch("[a-f0-9]{40}",p["commit"]); print("sha="+p["commit"])' >> "$GITHUB_OUTPUT"
+      - name: Read-only private workout checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; Node 24
+        with:
+          repository: hazeion/fleur-workout
+          ref: ${{ steps.workout.outputs.sha }}
+          path: workout
+          ssh-key: ${{ secrets.FLEUR_WORKOUT_READ_KEY }}
+          persist-credentials: false
+      - name: Native identity and checksum-pinned Bun
+        run: |
+          python3 experiments/compatibility/platforms/bootstrap.py --system Linux --architecture x86_64 --ubuntu '${{ matrix.ubuntu }}' --out "$RUNNER_TEMP/fleur-workout-bun" > "$RUNNER_TEMP/workout-platform.json"
+          echo "$RUNNER_TEMP/fleur-workout-bun" >> "$GITHUB_PATH"
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun install --cwd lint --frozen-lockfile --ignore-scripts
+      - name: Explicit browser prerequisites
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Pinned development images
+        run: bun scripts/pull-pinned-development-images.ts
+      - name: Packed workout, two independent views and clean production restart
+        run: bun scripts/verify-workout.ts "$GITHUB_WORKSPACE/workout" > "$RUNNER_TEMP/workout-proof.json"
+      - name: Retain sanitized qualification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2; Node 24
+        with:
+          name: workout-ubuntu-${{ matrix.ubuntu }}
+          path: |
+            ${{ runner.temp }}/workout-platform.json
+            ${{ runner.temp }}/workout-proof.json
+          retention-days: 7
+
   verification:
     name: CLI verification
     if: ${{ always() }}
-    needs: ["scope", "packed-cli", "desktop-placement-fixtures", "read-runtime", "production-artifact"]
+    needs: ["scope", "packed-cli", "desktop-placement-fixtures", "read-runtime", "production-artifact", "workout-proof"]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

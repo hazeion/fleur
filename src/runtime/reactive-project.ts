@@ -50,7 +50,7 @@ interface Connection {
   rendering?: Promise<void> | undefined; renderError?: string | undefined;
   readonly retrievals: Map<string, CachedRetrieval>; externalEpoch: number;
 }
-const safeError = (error: unknown) => error instanceof RetrievalError ? error.code : error instanceof Error && ["QUERY_TIMEOUT", "RESULT_TOO_LARGE", "QUERY_LIMIT", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "INPUT_INVALID", "NOT_FOUND"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
+const safeError = (error: unknown) => error instanceof RetrievalError ? error.code : error instanceof Error && ["QUERY_TIMEOUT", "RESULT_TOO_LARGE", "QUERY_LIMIT", "MAINTENANCE_BUSY", "RECOVERY_REQUIRED", "INPUT_INVALID", "NOT_FOUND", "REQUEST_DENIED"].includes(error.message) ? error.message : "INTERNAL_FAILURE";
 const stamp = (value: DatabaseRevision) => `${value.epoch}:${value.revision}`;
 
 /** One instance belongs to one running project, including all of its browser connections. */

@@ -1,3 +1,4 @@
+import { nativeWorkout } from "./native-workout";
 import { constants, closeSync, fstatSync, fsyncSync, readSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, rm, writeFile, lstat } from "node:fs/promises";
 import { arch, platform, release, tmpdir } from "node:os";
@@ -399,6 +400,13 @@ async function execute(imagePath: string, bunArchivePath: string, compilerDirect
   if (guest.formatVersion !== 1 || guest.runtimeSupport !== "unverified" || guest.humanConsentProof !== false || guest.phase !== undefined) fail("GUEST_REPORT_INVALID", "Guest proof metadata differs from its declared terminal scope.");
   if (guest.ok !== true) fail(guest.error?.code ?? "NATIVE_SETUP_INCOMPLETE", guest.error?.message ?? "Guest setup proof is incomplete.");
   if (guest.installationEvidence !== "verified-full-system-guest" || guest.runs?.length !== 2 || guest.sentinelCleanup !== true || guest.restrictionProbe?.exitCode !== 0 || guest.restrictionProbe?.result?.bounded_probe_passed !== true || guest.restrictionProbe?.result?.cleanup_complete !== true) fail("GUEST_REPORT_INVALID", "Successful guest report lacks completed repeat, restriction or cleanup evidence.");
+  // This optional proof runs only after every existing installation/isolation gate passed.
+  if (process.env.FLEUR_NATIVE_WORKOUT_SOURCE) {
+    if (selectedFixture.id !== "debian13-amd64" || selectedAccelerator !== "kvm" || selection !== "ordinary-source-owned") fail("ARGUMENT_INVALID", "Workout qualification requires the fixed ordinary native Debian KVM case.");
+    const proof = await nativeWorkout({ repository, source: process.env.FLEUR_NATIVE_WORKOUT_SOURCE, scratch, port, sshOptions, bunSha256: String(preparation.executableSha256), command });
+    report.nativeWorkout = proof;
+    if (proof.ok !== true || proof.exitCode !== 0) fail("NATIVE_WORKOUT_FAILED", "Native workout or production qualification failed; inspect its retained report.");
+  }
   // Admission is always an independently reviewed later source change.
   report.installationEvidence = "verified-full-system-guest";
   report.ok = true;

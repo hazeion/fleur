@@ -25,6 +25,7 @@ used Chromium 156.0.8078.4 on macOS 15.7.7.
 | Proof ownership | Unbounded shutdown/output waits and unsafe unavailable child identity | Real ignored-TERM child is reaped, inherited stdout is bounded, invalid identity never becomes a signal target |
 | Source identity | Reading a directory symlink raised EISDIR | Recorder hashes the link itself, including a broken target, without reading outside the tree |
 | Native proof source contract | The guest rejected the current two-source report and accepted an obsolete flat report | Regression tests bind both clean source commits, tree hashes and positive file counts |
+| Private host build permissions | `umask 077` made copied bootstrap files unreadable to runtime UID 65534 | Real Docker regression preserves the caller's mask, verifies unprivileged read-only source access, then passes both legacy and retained guarded execution |
 
 The 500-exercise catalog, 501-row detail and second-page template browser proof
 passed twice with disposable databases. Actual Chromium and its selected test
@@ -34,6 +35,14 @@ The app's unit suite passed 9 tests with 25 assertions, including bounded
 read-only retries when an aggregate changes. Types and both independent lint
 engines passed. Independent review reran the unit suite and found no remaining
 critical defect in the cursor, version validation or chooser fixes.
+
+A later Intel macOS rerun exposed an image permission assumption: generated
+JavaScript inherited a private host mask, and Docker preserved root-owned mode
+0600. The worker returned `EACCES` before its startup audit. Runtime source files
+now receive explicit mode 0444 inside the image; the host context and caller mask
+stay private. The real regression failed before the fix and passed afterward.
+Independent review also passed both guarded execution paths. Full native
+requalification remains required for the resulting image layers.
 
 An isolated produced-package run passed two repetitions of workout validation,
 child rollback, expected-version competition, referential conflict, immutable

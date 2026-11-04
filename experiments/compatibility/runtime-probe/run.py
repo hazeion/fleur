@@ -42,8 +42,9 @@ def bun_floor():
     raise RuntimeError('Bun floor record unavailable')
 
 
+BUN_FLOOR = bun_floor()
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
-          'expected_bun': bun_floor(), 'expected_gcc': '13.3.0'}
+          'expected_bun': BUN_FLOOR, 'expected_gcc': '13.3.0'}
 
 @dataclass(frozen=True)
 class PreparedRuntimeImage:
@@ -350,7 +351,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
             dockerfile_text = f'''FROM {base} AS prepare
 WORKDIR /probe
 COPY package.json bun.lock ./
-RUN test "$(bun --version)" = "{REPORT['expected_bun']}" && bun install --production --frozen-lockfile
+RUN test "$(bun --version)" = "{BUN_FLOOR}" && bun install --production --frozen-lockfile
 COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./
 RUN bun test heap_probe.test.ts && BUN_JSC_useConcurrentJIT=0 BUN_JSC_useConcurrentGC=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0 bun test heap_probe.test.ts
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js

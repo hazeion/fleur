@@ -84,14 +84,14 @@ function securityOptions(value: unknown): { readonly operatingMode: "rootful" | 
 }
 
 // Version grammars (research/version-floor-strings.md): a zero-padded numeric core plus an exact identity tail.
-/** `release` is a Debian kernel's debN: it tracks the admitted Debian release (#147) and is version, not identity. */
-interface ParsedVersion { readonly numbers: readonly number[]; readonly identity: string; readonly release?: number }
+/** `debianRelease` is a Debian kernel's debN: it tracks the admitted Debian release (#147) and is version, not identity. */
+interface ParsedVersion { readonly numbers: readonly number[]; readonly identity: string; readonly debianRelease?: number }
 const kernelGrammars: readonly { readonly pattern: RegExp; readonly parse: (match: RegExpExecArray) => ParsedVersion }[] = [
   // Ubuntu X.Y.Z-ABI-flavour: the ABI is monotone within a series and the sublevel is always zero.
   { pattern: /^(\d+)\.(\d+)\.(\d+)-(\d+)-([a-z][a-z0-9-]*)$/, parse: (m) => ({ numbers: [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])], identity: `ubuntu:${m[5]}` }) },
   // Debian 13+ X.Y[.Z]+debN[.serial]-flavour: debN tracks the Debian release and is version, the serial is a numeric ABI bump
   // within one debN, and only the flavour is identity.
-  { pattern: /^(\d+)\.(\d+)(?:\.(\d+))?\+deb(\d+)(?:\.(\d+))?-([a-z][a-z0-9-]*)$/, parse: (m) => ({ numbers: [Number(m[1]), Number(m[2]), Number(m[3] ?? 0), Number(m[5] ?? 0)], identity: `debian:${m[6]}`, release: Number(m[4]) }) },
+  { pattern: /^(\d+)\.(\d+)(?:\.(\d+))?\+deb(\d+)(?:\.(\d+))?-([a-z][a-z0-9-]*)$/, parse: (m) => ({ numbers: [Number(m[1]), Number(m[2]), Number(m[3] ?? 0), Number(m[5] ?? 0)], identity: `debian:${m[6]}`, debianRelease: Number(m[4]) }) },
   // Localversion X.Y[.Z]-name (linuxkit): an upstream `.0` release prints two components.
   { pattern: /^(\d+)\.(\d+)(?:\.(\d+))?-([a-z][a-z0-9-]*)$/, parse: (m) => ({ numbers: [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)], identity: `local:${m[4]}` }) },
 ];
@@ -130,8 +130,8 @@ export function compareMachineTool(tool: ReadinessTool, floor: string, detected:
   if (observed.identity !== minimum.identity) return tool === "kernel" ? "identity" : "unparseable";
   // A Debian kernel of a newer release must be at or above the floor on both its debN and its X.Y.Z; the ABI serial is not
   // comparable across releases. A debN below the floor's is older whatever its numeric kernel.
-  if (observed.release !== undefined && minimum.release !== undefined && observed.release !== minimum.release) {
-    return observed.release < minimum.release || order(observed.numbers.slice(0, 3), minimum.numbers.slice(0, 3)) === "older" ? "older" : "newer";
+  if (observed.debianRelease !== undefined && minimum.debianRelease !== undefined && observed.debianRelease !== minimum.debianRelease) {
+    return observed.debianRelease < minimum.debianRelease || order(observed.numbers.slice(0, 3), minimum.numbers.slice(0, 3)) === "older" ? "older" : "newer";
   }
   return order(observed.numbers, minimum.numbers);
 }

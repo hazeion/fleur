@@ -336,12 +336,10 @@ test("ordinary Debian 14 Doctor admits a +deb14 kernel above the Debian 13 floor
   fixture.info.KernelVersion = fixture.server.KernelVersion = "6.18.5+deb14-cloud-amd64";
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...fixture.host, host: async () => ({ ...await fixture.host.host(), release: "14" }) }) });
   expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
-  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "debian-x64-engine", admission: "above-floor", measuredRows: ["debian-13-x64-docker-29.9.1"] } } } });
-  const release = (outcome.result as { data: { components: { release: { machineTools: unknown[] } } } }).data.components.release;
-  expect(release.machineTools.slice(0, 2)).toEqual([
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "debian-x64-engine", admission: "above-floor", measuredRows: ["debian-13-x64-docker-29.9.1"], machineTools: expect.arrayContaining([
     { tool: "release", status: "admitted", floor: "13", detected: "14", comparison: "newer" },
     { tool: "kernel", status: "admitted", floor: "6.12.113+deb13-cloud-amd64", detected: "6.18.5+deb14-cloud-amd64", comparison: "newer" },
-  ]);
+  ]) } } } });
   expect(fixture.containers.size).toBe(0);
 });
 

@@ -2,12 +2,14 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 
+FLOOR = json.loads(Path(__file__).resolve().parents[3].joinpath('scripts', 'bun-floor.json').read_text())['version']
 FAKE_BUN = r'''#!/usr/bin/env python3
 import json
 import os
@@ -16,7 +18,7 @@ import sys
 
 args = sys.argv[1:]
 if args == ['--version']:
-    print('1.4.3')
+    print('@FLOOR@')
 elif args[0] == '-e':
     print('6.0.3')
 elif args[-1] in ('tsconfig.negative.json', 'tsconfig.operations-negative.json'):
@@ -45,10 +47,26 @@ elif 'invalid.ts' in args:
     else:
         print(json.dumps([{'filePath': str(filename), 'messages': messages}]))
     sys.exit(1)
-'''
+'''.replace('@FLOOR@', FLOOR)
 
 
 class RunnerEvidenceTests(unittest.TestCase):
+    def test_runtime_differing_from_the_nearest_record_is_rejected_in_the_fixture_layout(self):
+        with tempfile.TemporaryDirectory(prefix='fleur-floor-test-') as directory:
+            # The distribution fixtures copy `scripts/` and `tooling/` side by side.
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'scripts' / 'bun-floor.json').write_text(json.dumps({'version': '9.9.9'}))
+            (root / 'tooling').mkdir()
+            shutil.copyfile(Path(__file__).with_name('run.py'), root / 'tooling' / 'run.py')
+            bun = root / 'fake-bun'
+            bun.write_text('#!/bin/sh\necho 9.9.8\n')
+            bun.chmod(0o700)
+            result = subprocess.run([sys.executable, str(root / 'tooling' / 'run.py'), '--bun', str(bun)],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn('Runtime must report Bun 9.9.9; no fallback', result.stderr)
+
     def test_positive_operation_source_lint_failure_fails_verification(self):
         runner = Path(__file__).with_name('run.py')
         with tempfile.TemporaryDirectory(prefix='fleur-source-lint-test-') as directory:

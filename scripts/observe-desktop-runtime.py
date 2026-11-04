@@ -394,7 +394,7 @@ def observe(mode,images_directory):
         if source.get('sourceCommit')!=origin['sourceCommit'] or prep.get('sourceCommit')!=origin['sourceCommit'] or prep.get('scope')!='prepared-native-runtime-image' or prep.get('runtimeAdmission') is not False or prep.get('nativeQualification') is not False or prep.get('preparationReport',{}).get('cleanup_complete') is not True:raise RuntimeError('PREPARATION_PROVENANCE_CHANGED')
         phase='payload-source-closure'
         for name,digest in source['sources'].items():
-            relative='experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
+            relative='scripts/bun-floor.json' if name=='bun-floor.json' else 'experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
         report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
         binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}

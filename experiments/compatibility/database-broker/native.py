@@ -78,10 +78,11 @@ def run_native(bun, root, environment, source_root):
             command([compiler, '-shared', '-fPIC', '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread', str(runtime / 'filter.c'), '-o', str(context / 'filter.so')])
             (context / 'profile.json').write_text(json.dumps({'architecture':'amd64','negative_controls':acceptance.CONTROLS['amd64']}))
             row['helper_sha256'] = hashlib.sha256((context / 'filter.so').read_bytes()).hexdigest()
+            floor = json.loads((source_root.parents[1] / 'scripts' / 'bun-floor.json').read_text())['version']
             (context / 'Dockerfile').write_text(f'''FROM {BASE} AS prepare
 WORKDIR /probe
 COPY package.json bun.lock ./
-RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
+RUN test "$(bun --version)" = "{floor}" && bun install --production --frozen-lockfile
 COPY bootstrap.ts heap_probe.ts ./
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js
 FROM {BASE}

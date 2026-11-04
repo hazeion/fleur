@@ -32,6 +32,7 @@ def preparation_names(nonce):
 
 
 def source_name(relative):
+    if relative=='scripts/bun-floor.json':return 'bun-floor.json'
     prefix='experiments/compatibility/'
     if type(relative) is not str or not relative.startswith(prefix):return None
     suffix=relative[len(prefix):]
@@ -52,7 +53,7 @@ def main(output):
     try:
         with tempfile.TemporaryDirectory(prefix='fleur-desktop-export-') as directory:
             context=Path(directory);sources={}
-            paths=command(['git','ls-tree','-r','--name-only',commit,'experiments/compatibility/runtime-probe','experiments/compatibility/rendering/package.json','experiments/compatibility/rendering/bun.lock','experiments/compatibility/desktop-runtime']).decode().splitlines()
+            paths=command(['git','ls-tree','-r','--name-only',commit,'scripts/bun-floor.json','experiments/compatibility/runtime-probe','experiments/compatibility/rendering/package.json','experiments/compatibility/rendering/bun.lock','experiments/compatibility/desktop-runtime']).decode().splitlines()
             for relative in paths:
                 name=source_name(relative)
                 if name is None:continue

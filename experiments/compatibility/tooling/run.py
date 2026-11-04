@@ -10,14 +10,24 @@ import subprocess
 import tempfile
 
 
+def bun_floor():
+    """Read the release floor from the nearest `scripts/bun-floor.json`: the checkout's, or the distribution fixture's copy."""
+    for root in Path(__file__).resolve().parents:
+        candidate = root / 'scripts' / 'bun-floor.json'
+        if candidate.is_file():
+            return json.loads(candidate.read_text())['version']
+    raise ValueError('Bun floor record unavailable')
+
+
 def main():
+    floor = bun_floor()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--bun', required=True, help='Explicit Bun 1.4.3 executable')
+    parser.add_argument('--bun', required=True, help=f'Explicit Bun {floor} executable')
     args = parser.parse_args()
     bun = str(Path(args.bun).resolve())
     version = subprocess.run([bun, '--version'], capture_output=True, text=True, timeout=30)
-    if version.returncode or version.stdout.strip() != '1.4.3':
-        parser.error('Runtime must report Bun 1.4.3; no fallback')
+    if version.returncode or version.stdout.strip() != floor:
+        parser.error(f'Runtime must report Bun {floor}; no fallback')
     checks = []
     with tempfile.TemporaryDirectory(prefix='fleur-tooling-') as destination:
         root = Path(destination)

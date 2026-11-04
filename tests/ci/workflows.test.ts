@@ -117,6 +117,8 @@ test("every Bun installer, verifier and fixture reads the floor record instead o
     "experiments/compatibility/platforms/bootstrap.py", "scripts/qualify-debian-kvm.py", "scripts/verify-fresh-linux.ts", "scripts/verify-debian-recovery.ts",
     "scripts/observe-fresh-linux-preparation.ts", "scripts/fresh-linux-guest.py", "scripts/prepare-fresh-linux-guest.py",
     "tests/cli/guest-preparation.test.ts", "tests/cli/fresh-linux-preparation.test.ts", "tests/cli/fixtures/fresh-linux-enrollment-main.py",
+    "experiments/compatibility/tooling/run.py", "experiments/compatibility/tooling/test_runner.py", "experiments/compatibility/database-broker/run.py",
+    "experiments/compatibility/database-broker/native.py", "experiments/compatibility/runtime-probe/run.py",
   ];
   for (const path of readers) {
     const source = read(path);

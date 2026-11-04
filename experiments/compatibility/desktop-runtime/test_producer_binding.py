@@ -50,7 +50,7 @@ class CompleteProducerSourceContract(unittest.TestCase):
         producer_spec=importlib.util.spec_from_file_location('binding_source_producer',HERE/'export_images.py')
         producer=importlib.util.module_from_spec(producer_spec);producer_spec.loader.exec_module(producer)
         root=HERE.parents[2]
-        paths=subprocess.check_output(['git','ls-files','--','experiments/compatibility/runtime-probe','experiments/compatibility/rendering/package.json','experiments/compatibility/rendering/bun.lock','experiments/compatibility/desktop-runtime'],cwd=root,text=True).splitlines()
+        paths=subprocess.check_output(['git','ls-files','--','scripts/bun-floor.json','experiments/compatibility/runtime-probe','experiments/compatibility/rendering/package.json','experiments/compatibility/rendering/bun.lock','experiments/compatibility/desktop-runtime'],cwd=root,text=True).splitlines()
         sources={}
         for relative in paths:
             name=producer.source_name(relative)
@@ -60,7 +60,7 @@ class CompleteProducerSourceContract(unittest.TestCase):
         self.assertIn('runtime-probe/.gitignore',sources)
         runtime={str(Path(relative).relative_to('experiments/compatibility')) for relative in paths if Path(relative).parent==Path('experiments/compatibility/runtime-probe')}
         self.assertEqual({name for name in sources if name.startswith('runtime-probe/')},runtime)
-        self.assertEqual({name for name in sources if not name.startswith('runtime-probe/')},{'Dockerfile','entry.py','export_worker.py','processes.py','guardian_guard.py','rendering/package.json','rendering/bun.lock'})
+        self.assertEqual({name for name in sources if not name.startswith('runtime-probe/')},{'Dockerfile','entry.py','export_worker.py','processes.py','guardian_guard.py','rendering/package.json','rendering/bun.lock','bun-floor.json'})
         binding=ProducerBindingFormat().binding();binding['sources']=sources
         self.assertTrue(entry.valid_binding(binding))
 

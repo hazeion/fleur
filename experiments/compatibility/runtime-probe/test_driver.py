@@ -292,6 +292,9 @@ class DriverEvidence(unittest.TestCase):
         self.assertIn('heap_probe.ts',self.last_context_files);self.assertIn('heap_probe.test.ts',self.last_context_files)
         self.assertIn('COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./',self.last_dockerfile)
         self.assertIn('bun test heap_probe.test.ts',self.last_dockerfile)
+        floor=json.loads(Path(__file__).resolve().parents[3].joinpath('scripts','bun-floor.json').read_text())['version']
+        self.assertEqual(run.REPORT['expected_bun'],floor)
+        self.assertIn(f'RUN test "$(bun --version)" = "{floor}" && bun install',self.last_dockerfile)
         for setting in ('BUN_JSC_useConcurrentJIT=0','BUN_JSC_useConcurrentGC=0','BUN_JSC_numberOfGCMarkers=1','BUN_JSC_useWarmUpMarkedBlocks=0'):
             self.assertEqual(self.last_dockerfile.count(setting),2)
         self.assertIn('heap_probe.ts',report['source_sha256']);self.assertIn('heap_probe.test.ts',report['source_sha256'])

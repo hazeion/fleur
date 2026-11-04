@@ -30,8 +30,20 @@ from containerd_observer import ObserverUnverified
 from daemon_trace import capture_daemon_trace
 
 HERE = Path(__file__).resolve().parent
+
+
+def bun_floor():
+    """Read the release floor from the nearest record: `scripts/bun-floor.json` in a checkout, or the flat
+    `bun-floor.json` that the fresh-Linux host stages in the guest lab and the Desktop source closure places in the controller."""
+    for root in HERE.parents:
+        for candidate in (root/'scripts'/'bun-floor.json', root/'bun-floor.json'):
+            if candidate.is_file():
+                return json.loads(candidate.read_text())['version']
+    raise RuntimeError('Bun floor record unavailable')
+
+
 REPORT = {'scope': 'bounded-pre-application-tsync-render', 'v1_gate_passed': False,
-          'expected_bun': '1.4.3', 'expected_gcc': '13.3.0'}
+          'expected_bun': bun_floor(), 'expected_gcc': '13.3.0'}
 
 @dataclass(frozen=True)
 class PreparedRuntimeImage:
@@ -338,7 +350,7 @@ def main(architecture=None, trusted_build_network=None, healthy_containerd_exit=
             dockerfile_text = f'''FROM {base} AS prepare
 WORKDIR /probe
 COPY package.json bun.lock ./
-RUN test "$(bun --version)" = "1.4.3" && bun install --production --frozen-lockfile
+RUN test "$(bun --version)" = "{REPORT['expected_bun']}" && bun install --production --frozen-lockfile
 COPY bootstrap.ts heap_probe.ts heap_probe.test.ts ./
 RUN bun test heap_probe.test.ts && BUN_JSC_useConcurrentJIT=0 BUN_JSC_useConcurrentGC=0 BUN_JSC_numberOfGCMarkers=1 BUN_JSC_useWarmUpMarkedBlocks=0 bun test heap_probe.test.ts
 RUN bun build bootstrap.ts --target=bun --outfile=bootstrap.js

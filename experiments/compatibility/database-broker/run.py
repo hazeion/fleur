@@ -42,8 +42,9 @@ def main():
 
     try:
         version = command([bun, '--version'])
-        if version.returncode or version.stdout.strip() != '1.4.3':
-            raise RuntimeError('Bun 1.4.3 required')
+        floor = json.loads(Path(__file__).resolve().parents[3].joinpath('scripts', 'bun-floor.json').read_text())['version']
+        if version.returncode or version.stdout.strip() != floor:
+            raise RuntimeError(f'Bun {floor} required')
         if not shutil.which('docker') or command(['docker', 'version', '--format', '{{.Server.Version}}']).returncode:
             raise RuntimeError('Docker daemon unavailable; no database test executed')
         result = command(['docker', 'pull', IMAGE])

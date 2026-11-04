@@ -329,6 +329,38 @@ test("ordinary Debian Doctor admits a newer kernel ABI serial above the Debian 1
   expect(fixture.containers.size).toBe(0);
 });
 
+// #154: debN tracks the admitted release, so a Debian 14 host with a +deb14 kernel is admitted when the numeric kernel is at or above
+// the floor. The flavour stays identity and a debN below the floor's deb13 refuses.
+test("ordinary Debian 14 Doctor admits a +deb14 kernel above the Debian 13 floor", async () => {
+  const fixture = debianFixture();
+  fixture.info.KernelVersion = fixture.server.KernelVersion = "6.18.5+deb14-cloud-amd64";
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands({ ...fixture.host, host: async () => ({ ...await fixture.host.host(), release: "14" }) }) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(0);
+  expect(outcome.result).toMatchObject({ ok: true, data: { components: { smoke: { state: "ready", cleanup: true }, release: { state: "verified", floor: "debian-x64-engine", admission: "above-floor", measuredRows: ["debian-13-x64-docker-29.9.1"] } } } });
+  const release = (outcome.result as { data: { components: { release: { machineTools: unknown[] } } } }).data.components.release;
+  expect(release.machineTools.slice(0, 2)).toEqual([
+    { tool: "release", status: "admitted", floor: "13", detected: "14", comparison: "newer" },
+    { tool: "kernel", status: "admitted", floor: "6.12.113+deb13-cloud-amd64", detected: "6.18.5+deb14-cloud-amd64", comparison: "newer" },
+  ]);
+  expect(fixture.containers.size).toBe(0);
+});
+
+test.each([
+  ["numeric kernel below the floor", "6.12.112+deb14-cloud-amd64", { blocking: { tool: "kernel", floor: "6.12.113+deb13-cloud-amd64", detected: "6.12.112+deb14-cloud-amd64", comparison: "older" } }],
+  ["debN below the floor's deb13", "7.2.11+deb12-cloud-amd64", { blocking: { tool: "kernel", floor: "6.12.113+deb13-cloud-amd64", detected: "7.2.11+deb12-cloud-amd64", comparison: "older" } }],
+  ["different flavour", "6.18.5+deb14-amd64", { floor: null, identity: { matched: false, mismatches: ["kernel"] } }],
+] as const)("Debian 14 admission refuses a +debN kernel with a %s", async (_case, kernel, expected) => {
+  const { compareReadiness, nativeReadinessProfiles } = await import("../../src/setup/readiness.ts");
+  const fixture = debianFixture();
+  fixture.info.KernelVersion = fixture.server.KernelVersion = kernel;
+  const host: SetupHost = { ...fixture.host, host: async () => ({ ...await fixture.host.host(), release: "14" }) };
+  const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(host) });
+  expect(outcome.exitCode, JSON.stringify(outcome.result)).toBe(4);
+  expect(fixture.containers.size).toBe(0);
+  const observation = withTool(withTool(await observe(debianFixture()), "release", "14"), "kernel", kernel);
+  expect(compareReadiness(nativeReadinessProfiles, observation)).toMatchObject({ state: "unverified", admission: null, ...expected });
+});
+
 test("ordinary doctor recognizes only the source-mapped Ubuntu qualification without a profile override", async () => {
   const fixture = ubuntuFixture();
   const outcome = await runCli(["doctor", "--json"], { cwd: "/tmp", handlers: setupCommands(fixture.host) });
@@ -775,7 +807,7 @@ test("a Linux host without VERSION_ID refuses as unparseable, distinct from olde
   expect(compareMachineTool("release", "13", "13.0.0")).toBe("equal");
 });
 
-// Kernel grammars: Ubuntu X.Y.Z-ABI-flavour, Debian X.Y.Z+debN[.serial]-flavour, localversion X.Y[.Z]-name; flavour tails are exact identity.
+// Kernel grammars: Ubuntu X.Y.Z-ABI-flavour, Debian X.Y.Z+debN[.serial]-flavour (debN is version), localversion X.Y[.Z]-name; flavour tails are exact identity.
 const kernelCases: readonly (readonly [floor: string, detected: string, expected: FloorComparison])[] = [
   ["6.8.0-147-generic", "6.8.0-150-generic", "newer"],
   ["6.8.0-147-generic", "6.8.0-147-generic", "equal"],
@@ -789,8 +821,18 @@ const kernelCases: readonly (readonly [floor: string, detected: string, expected
   ["6.12.113+deb13-cloud-amd64", "6.12.113+deb13.1-cloud-amd64", "newer"],
   ["6.12.113+deb13-cloud-amd64", "6.12.113+deb13-cloud-amd64", "equal"],
   ["6.12.113+deb13-cloud-amd64", "7.2.11+deb13-cloud-amd64", "newer"],
-  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb14-cloud-amd64", "identity"],
+  // The debN tail tracks the admitted Debian release (#147): a newer debN is version, never identity, and both it and the numeric
+  // kernel must be at or above the floor; the ABI serial orders only within one debN.
+  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb14-cloud-amd64", "newer"],
+  ["6.12.113+deb13-cloud-amd64", "6.18.5+deb14-cloud-amd64", "newer"],
+  ["6.12.113+deb13.1-cloud-amd64", "6.12.113+deb14-cloud-amd64", "newer"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.112+deb14-cloud-amd64", "older"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.112+deb14.3-cloud-amd64", "older"],
+  ["6.12.113+deb13-cloud-amd64", "7.2.11+deb12-cloud-amd64", "older"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.113+deb12.9-cloud-amd64", "older"],
   ["6.12.113+deb13-cloud-amd64", "6.12.113+deb13-amd64", "identity"],
+  ["6.12.113+deb13-cloud-amd64", "6.18.5+deb14-amd64", "identity"],
+  ["6.12.113+deb13-cloud-amd64", "6.12.113-1-cloud-amd64", "identity"],
   ["6.17.0-1022-azure", "6.17.0-1030-azure", "newer"],
   ["6.17.0-1022-azure", "6.17.0-1022-generic", "identity"],
   ["6.8.0-147-generic", "6.17.0-1022-azure", "identity"],
@@ -958,7 +1000,7 @@ test("the compiled catalog derives one floor per target from its lowest measured
     rows: ["darwin-15.7.7-x64-desktop-4.96.1"],
     versions: { release: "15.7.7", kernel: "7.0.14-linuxkit", bun: "1.4.3", desktop: "4.96.1", cli: "29.9.2", engine: "29.9.2", compose: "5.6.0", containerd: "v2.4.2", runc: "1.5.2" },
   });
-  expect(floors.find((floor) => floor.id === "debian-x64-engine")).toMatchObject({ ciOnly: false, target: { kernel: "deb13-cloud-amd64" }, versions: { release: "13", kernel: "6.12.113+deb13-cloud-amd64" } });
+  expect(floors.find((floor) => floor.id === "debian-x64-engine")).toMatchObject({ ciOnly: false, target: { kernel: "cloud-amd64" }, versions: { release: "13", kernel: "6.12.113+deb13-cloud-amd64" } });
   expect(floors.find((floor) => floor.id === "ubuntu-x64-engine-azure")).toMatchObject({ ciOnly: true, target: { architecture: "x64", kernel: "azure" }, rows: ["ubuntu-24.04-x64-docker-28.0.4-azure"], versions: { cli: "28.0.4", compose: "2.38.2", containerd: "v2.4.1" } });
   expect(floors.find((floor) => floor.id === "ubuntu-arm64-engine-azure")).toMatchObject({ ciOnly: true, target: { architecture: "arm64", kernel: "azure" }, rows: ["ubuntu-24.04-arm64-docker-28.0.4-azure"] });
 });

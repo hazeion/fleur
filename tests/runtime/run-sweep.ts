@@ -20,8 +20,12 @@ function run(args: string[]): string {
 function removeLabelled(label: string, endpoint?: string) {
   const docker = [Bun.which("docker") ?? "docker", ...(endpoint ? ["--host", endpoint] : [])];
   const lines = (output: string) => output.split("\n").filter(Boolean);
-  const containers = lines(run([...docker, "ps", "--all", "--quiet", "--filter", `label=${label}`]));
-  if (containers.length) run([...docker, "rm", "--force", ...containers]);
+  // A controller sharing its children's label may create one after a listing; a later pass removes it.
+  for (let pass = 0; pass < 3; pass++) {
+    const containers = lines(run([...docker, "ps", "--all", "--quiet", "--filter", `label=${label}`]));
+    if (!containers.length) break;
+    run([...docker, "rm", "--force", ...containers]);
+  }
   const volumes = lines(run([...docker, "volume", "ls", "--quiet", "--filter", `label=${label}`]));
   if (volumes.length) run([...docker, "volume", "rm", ...volumes]);
 }
@@ -56,12 +60,13 @@ type Lease = { readonly owner: string };
 type LeaseClass = { create(owner: string, images: { endpoint: string }): Promise<Lease>; prototype: object };
 /** Register each lease's owner labels when it is created, and release them once one of its retiring methods succeeds. */
 function sweepLeases(lease: LeaseClass, ownerLabels: (owner: string) => string[], retiring: string[]) {
-  const releases = new WeakMap<Lease, () => void>(), create = lease.create;
+  // Keyed by owner, so a lease recovered from its journal releases what its creation registered.
+  const releases = new Map<string, () => void>(), create = lease.create;
   lease.create = async function (owner, images) {
     const created = await create.call(this, owner, images);
-    // The controller label comes first: removing it ends creation authority before its children are listed.
+    // A read controller's label comes first: removing it ends creation authority before its children are listed.
     const registered = ownerLabels(owner).map(label => sweepLabelAfterRun(label, images.endpoint));
-    releases.set(created, () => { for (const release of registered) release(); });
+    releases.set(owner, () => { for (const release of registered) release(); releases.delete(owner); });
     return created;
   };
   const prototype = lease.prototype as Record<string, (...args: unknown[]) => Promise<unknown>>;
@@ -69,7 +74,7 @@ function sweepLeases(lease: LeaseClass, ownerLabels: (owner: string) => string[]
     const method = prototype[name]!;
     prototype[name] = async function (this: Lease, ...args: unknown[]) {
       const result = await method.apply(this, args);
-      releases.get(this)?.();
+      releases.get(this.owner)?.();
       return result;
     };
   }

@@ -7,7 +7,7 @@ import { ownedPostgres } from "../owned-postgres";
 import { prepareNativeImages } from "../../../src/runtime/native/build";
 import { startWorker } from "../../../src/runtime/native/host";
 import { NativeExecution } from "../../../src/runtime/native/execution";
-import { RetainedLease } from "../../../src/runtime/native/retained-lease";
+import { RetainedLease, executionLabel } from "../../../src/runtime/native/retained-lease";
 
 const root = process.env.FLEUR_RUN_SWEEP_ROOT!, report = process.env.FLEUR_RUN_SWEEP_REPORT!, label = process.env.FLEUR_RUN_SWEEP_LABEL!;
 const nativeReport = process.env.FLEUR_RUN_SWEEP_NATIVE_REPORT!;
@@ -24,11 +24,11 @@ test("a failed assertion abandons native execution containers", async () => {
   expect(result.value).toEqual({ kind: "complete", value: "abandoned" });
   const lease = JSON.parse(await Bun.file(join(worker.recoveryDirectory, "lease.json")).text()) as { owner: string };
   const owned = (label: string) => docker("--host", images.endpoint, "ps", "--all", "--quiet", "--filter", `label=${label}`).split("\n").filter(Boolean);
-  const labels = [`dev.fleur.read-controller-owner=${lease.owner}`, `fleur.compatibility.runtime-owner=fleur-read-${lease.owner}`, `dev.fleur.execution-owner=${result.operation!.slot}`];
-  // A lease retired by its owner is no longer the sweep's: a resource carrying its label survives.
-  const retired = await RetainedLease.create(crypto.randomUUID(), images);
+  const labels = [`dev.fleur.read-controller-owner=${lease.owner}`, `fleur.compatibility.runtime-owner=fleur-read-${lease.owner}`, `${executionLabel}=${result.operation!.slot}`];
+  // A lease retired by its owner, here through its recovered journal, is no longer the sweep's: a resource carrying its label survives.
+  const retired = await RetainedLease.recover((await RetainedLease.create(crypto.randomUUID(), images)).recoveryDirectory);
   await retired.abandon();
-  const released = docker("--host", images.endpoint, "volume", "create", "--label", `dev.fleur.execution-owner=${retired.owner}`);
+  const released = docker("--host", images.endpoint, "volume", "create", "--label", `${executionLabel}=${retired.owner}`);
   await writeFile(nativeReport, JSON.stringify({ images: [images.worker, images.controller], endpoint: images.endpoint, labels, containers: labels.map(owned), released }));
   expect("native cleanup skipped").toBe("native cleanup reached");
   await Promise.all([worker.close(), execution.close()]);

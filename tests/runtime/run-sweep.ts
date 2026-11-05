@@ -1,12 +1,15 @@
 import { readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { NativeLease } from "../../src/runtime/native/lease";
+import { RetainedLease, executionLabel } from "../../src/runtime/native/retained-lease";
 
 // The backstop for resources a test could not release itself. A failed assertion
 // can skip the rest of a finally block and a test timeout can skip all of it, so
 // run-sweep.preload.ts runs this after the last test file. Each entry names only
 // resources the test created: a unique temporary root or a unique ownership label.
-const labels = new Set<string>(), roots = new Set<string>();
+// Each label maps to the Docker endpoint that owns it; undefined is the selected default.
+const labels = new Map<string, string | undefined>(), roots = new Set<string>();
 export const developmentBindingLabel = "dev.fleur.development-binding";
 
 function run(args: string[]): string {
@@ -14,13 +17,17 @@ function run(args: string[]): string {
   if (!result.success) throw new Error(`${args[0]} ${args[1]} failed during the run sweep`);
   return result.stdout.toString();
 }
-function removeLabelled(label: string) {
-  const docker = Bun.which("docker") ?? "docker";
+function removeLabelled(label: string, endpoint?: string) {
+  const docker = [Bun.which("docker") ?? "docker", ...(endpoint ? ["--host", endpoint] : [])];
   const lines = (output: string) => output.split("\n").filter(Boolean);
-  const containers = lines(run([docker, "ps", "--all", "--quiet", "--filter", `label=${label}`]));
-  if (containers.length) run([docker, "rm", "--force", ...containers]);
-  const volumes = lines(run([docker, "volume", "ls", "--quiet", "--filter", `label=${label}`]));
-  if (volumes.length) run([docker, "volume", "rm", ...volumes]);
+  // A controller sharing its children's label may create one after a listing; a later pass removes it.
+  for (let pass = 0; pass < 3; pass++) {
+    const containers = lines(run([...docker, "ps", "--all", "--quiet", "--filter", `label=${label}`]));
+    if (!containers.length) break;
+    run([...docker, "rm", "--force", ...containers]);
+  }
+  const volumes = lines(run([...docker, "volume", "ls", "--quiet", "--filter", `label=${label}`]));
+  if (volumes.length) run([...docker, "volume", "rm", ...volumes]);
 }
 function bindings(root: string): string[] {
   try { return readdirSync(join(root, ".local/state/fleur/development")).filter(name => /^[a-f0-9]{64}$/.test(name)); }
@@ -42,12 +49,44 @@ export function sweep() {
     attempt(() => { for (const binding of bindings(root)) removeLabelled(`${developmentBindingLabel}=${binding}`); });
     attempt(() => rmSync(root, { recursive: true, force: true }));
   }
-  for (const label of labels) attempt(() => removeLabelled(label));
+  for (const [label, endpoint] of labels) attempt(() => removeLabelled(label, endpoint));
 }
 /** Remove containers and volumes carrying this unique label unless the owner has already released them. */
-export function sweepLabelAfterRun(label: string): () => void {
-  labels.add(label);
+export function sweepLabelAfterRun(label: string, endpoint?: string): () => void {
+  labels.set(label, endpoint);
   return () => { labels.delete(label); };
+}
+type Lease = { readonly owner: string };
+type LeaseClass = { create(owner: string, images: { endpoint: string }): Promise<Lease>; prototype: object };
+/** Register each lease's owner labels when it is created, and release them once one of its retiring methods succeeds. */
+function sweepLeases(lease: LeaseClass, ownerLabels: (owner: string) => string[], retiring: string[]) {
+  // Keyed by owner, so a lease recovered from its journal releases what its creation registered.
+  const releases = new Map<string, () => void>(), create = lease.create;
+  lease.create = async function (owner, images) {
+    const created = await create.call(this, owner, images);
+    // A read controller's label comes first: removing it ends creation authority before its children are listed.
+    const registered = ownerLabels(owner).map(label => sweepLabelAfterRun(label, images.endpoint));
+    releases.set(owner, () => { for (const release of registered) release(); releases.delete(owner); });
+    return created;
+  };
+  const prototype = lease.prototype as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  for (const name of retiring) {
+    const method = prototype[name]!;
+    prototype[name] = async function (this: Lease, ...args: unknown[]) {
+      const result = await method.apply(this, args);
+      releases.get(this.owner)?.();
+      return result;
+    };
+  }
+}
+/**
+ * Native execution names its containers by owner labels generated inside Fleur, and a failed test leaves them
+ * behind: Bun kills the attach clients, and their controllers exit without being removed. Track every lease this
+ * process creates so the sweep can remove them. Called once, from run-sweep.preload.ts.
+ */
+export function sweepNativeLeasesAfterRun() {
+  sweepLeases(NativeLease, owner => [`dev.fleur.read-controller-owner=${owner}`, `fleur.compatibility.runtime-owner=fleur-read-${owner}`], ["cleanup"]);
+  sweepLeases(RetainedLease, owner => [`${executionLabel}=${owner}`], ["cleanup", "release", "abandon"]);
 }
 /** After the run, kill any process naming this unique temporary root, remove its development resources, then remove the root. */
 export function sweepDevelopmentRootAfterRun(root: string) {

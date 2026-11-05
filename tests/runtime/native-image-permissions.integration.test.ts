@@ -3,6 +3,7 @@ import { prepareNativeImages } from "../../src/runtime/native/build";
 import { nativeCommand } from "../../src/runtime/native/command";
 import { startWorker } from "../../src/runtime/native/host";
 import { NativeExecution } from "../../src/runtime/native/execution";
+import { sweepLabelAfterRun } from "./run-sweep";
 
 test("a private host umask still produces readable immutable runtime sources for the unprivileged worker", async () => {
   const previous = process.umask(0o077);
@@ -14,6 +15,7 @@ test("a private host umask still produces readable immutable runtime sources for
   } finally { process.umask(previous); }
   const owner = crypto.randomUUID(), name = `fleur-image-access-${owner}`;
   const command = (args: string[]) => nativeCommand(["docker", "--host", images.endpoint, ...args]);
+  const releaseSweep = sweepLabelAfterRun(`fleur.issue38.image-access-owner=${owner}`, images.endpoint);
   try {
     expect(buildMask).toBe(0o077);
     const child = Bun.spawn(["docker", "--host", images.endpoint, "run", "--name", name, "--label", `fleur.issue38.image-access-owner=${owner}`, "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pull=never", "--entrypoint=bun", images.worker, "-e",
@@ -37,6 +39,7 @@ test("a private host umask still produces readable immutable runtime sources for
       expect(metadata.Config.Labels["fleur.issue38.image-access-owner"]).toBe(owner);
       await command(["rm", "--force", metadata.Id]);
     }
+    releaseSweep();
     await images.dispose();
   }
 }, 300000);

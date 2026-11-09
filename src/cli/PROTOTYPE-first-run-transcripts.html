@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleur first run</title>
+<style>
+  :root { --bg:#fbfaf7; --fg:#1d1d1b; --muted:#6b6b66; --panel:#ffffff; --line:#e4e1da; --accent:#6a4bd6; --accent-soft:#eee9fb; --term:#15161a; --term-fg:#dfe3ea; --ok:#2a7a46; --warn:#9a5b00; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#141518; --fg:#ecebe7; --muted:#9a9a94; --panel:#1d1e23; --line:#2d2f36; --accent:#a48cff; --accent-soft:#26213a; --term:#0b0c0f; --term-fg:#dfe3ea; } }
+  :root[data-theme="dark"] { --bg:#141518; --fg:#ecebe7; --muted:#9a9a94; --panel:#1d1e23; --line:#2d2f36; --accent:#a48cff; --accent-soft:#26213a; --term:#0b0c0f; --term-fg:#dfe3ea; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 6px; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 10px; }
+  p.lead { margin:0 0 20px; color:var(--muted); max-width:70ch; }
+  .banner { background:var(--accent-soft); border:1px solid var(--line); border-radius:10px; padding:12px 16px; margin-bottom:24px; }
+  .banner strong { color:var(--accent); }
+  .grid { display:grid; grid-template-columns: 1fr; gap:20px; }
+  @media (min-width: 900px) { .grid { grid-template-columns: 340px 1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  dl { display:grid; grid-template-columns: 1fr auto; gap:6px 12px; margin:0; }
+  dt { color:var(--muted); }
+  dd { margin:0; font-weight:600; text-align:right; }
+  dd.changed { color:var(--accent); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:13px; border:1px solid var(--line); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .buttons { display:flex; flex-wrap:wrap; gap:8px; }
+  button { font:inherit; font-size:14px; padding:7px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.step { text-align:left; width:100%; display:flex; gap:10px; align-items:flex-start; }
+  button.step .n { color:var(--muted); min-width:1.6em; }
+  button.step.done { opacity:.55; }
+  button.step.next { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+  .tabs button[aria-selected="true"] { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+  pre.term { background:var(--term); color:var(--term-fg); border-radius:10px; padding:14px 16px; margin:0; font:13.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow:auto; max-height:560px; }
+  pre.term .cmd { color:#9ad1ff; } pre.term .exit { color:#8e95a3; } pre.term .prompt { color:#ffd479; } pre.term .proposed { color:#c7b7ff; }
+  .legend { font-size:13px; color:var(--muted); margin-top:8px; }
+  .toggle { display:flex; gap:10px; align-items:center; margin:0 0 12px; font-size:14px; }
+  .steps { display:grid; gap:6px; margin-top:10px; }
+  .scenario p { margin:0 0 8px; }
+  .small { font-size:13px; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Fleur first run on a fresh Mac</h1>
+  <p class="lead">A throwaway prototype for Wayfinder ticket "Prototype the first-run transcripts for a human and for an agent on a fresh Mac". It mocks the terminal output; nothing here runs Fleur or Docker.</p>
+  <div class="banner"><strong>The question.</strong> Starting from a Mac that already has Bun and Docker Desktop installed, what does a person see when they run <code>bunx @hazeion/fleur</code>, what does a coding agent see when it drives the same journey with <code>--json</code>, and where exactly does authority hand from the agent to the human and back? Everything marked <span class="proposed" style="color:var(--accent)">proposed</span> is new behaviour to decide on; everything else mirrors what the CLI does today.</div>
+
+  <div class="grid">
+    <section>
+      <div class="panel" style="margin-bottom:16px">
+        <h2>Current state</h2>
+        <dl id="state"></dl>
+      </div>
+      <div class="panel">
+        <h2>Free play</h2>
+        <div class="toggle"><label><input type="radio" name="actor" value="human" checked> Human at a terminal</label><label><input type="radio" name="actor" value="agent"> Agent with --json</label></div>
+        <div class="toggle"><label><input type="checkbox" id="proposed" checked> Show proposed behaviour (unchecked = today)</label></div>
+        <div class="buttons" id="freeplay"></div>
+        <p class="small" style="margin:10px 0 0">Machine knobs:</p>
+        <div class="buttons" id="knobs"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel" style="margin-bottom:16px">
+        <h2>Guided walkthroughs</h2>
+        <div class="tabs" id="tabs" role="tablist"></div>
+        <div id="scenario" class="scenario"></div>
+      </div>
+      <div class="panel">
+        <h2>Transcript</h2>
+        <pre class="term" id="term"></pre>
+        <p class="legend">Blue is the command typed. Yellow is an interactive prompt. Purple is proposed output. Grey is the exit code.</p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+// ============================================================================
+// Pure module: the first-run state machine. No DOM in here.
+// State is the machine + the actor; `run(state, action)` returns a new state
+// plus the transcript lines the command would print. Output shapes follow the
+// real CLI: JSON version 1 envelope, exit categories 0/1/2/3/4/5, error codes
+// from docs/cli.md. Lines tagged proposed:true are new behaviour to decide.
+// ============================================================================
+const FleurFirstRun = (() => {
+  const SMOKE = "oven/bun@sha256:c017a211c49a…";
+  const PG = "postgres@sha256:74935e722416…";
+  const PLAN = "3f9c2a7e";
+
+  const initial = () => ({
+    actor: "human",            // "human" | "agent"
+    proposed: true,            // show proposed behaviour
+    bun: "1.4.5",
+    desktop: "running",        // "running" | "installed" (not started)
+    smokeImage: false,         // digest-pinned smoke image present locally
+    postgresImage: false,      // digest-pinned development PostgreSQL image present locally
+    grants: [],                // [{ id, mode, action }]
+    pendingHandoff: null,      // proposed: what the agent is waiting on
+    project: null,             // { dir }
+    depsInstalled: false,
+    dev: "stopped",            // "stopped" | "running"
+    cwdEmpty: true,
+    last: null,                // { command, exit }
+  });
+
+  const envelope = (command, ok, data, error) => ({ formatVersion: 1, command, ok, data, error, truncated: false });
+  const j = (o) => JSON.stringify(o, null, 2);
+  const cmd = (s, text) => ({ kind: "cmd", text: (s.actor === "agent" ? "$ " : "$ ") + text });
+  const out = (text, proposed=false) => ({ kind: proposed ? "proposed" : "out", text });
+  const prompt = (text) => ({ kind: "prompt", text });
+  const exit = (n) => ({ kind: "exit", text: `exit ${n}` });
+  const entry = (s, sub) => (s.project ? "fleur" : "bunx @hazeion/fleur@0.1.0") + (sub ? " " + sub : "") + (s.actor === "agent" ? " --json" : "");
+
+  // Proposed: one structured handoff block whenever a human must act.
+  const handoff = (reason, humanCommand, resume) => ({ reason, humanCommand, resumeCommand: resume, whoCanDoThis: "human" });
+
+  function doctor(s) {
+    const lines = [cmd(s, entry(s, "doctor"))];
+    if (s.desktop !== "running") {
+      const err = { code: "HUMAN_ACTION_REQUIRED", message: "The Docker daemon is not reachable on the local endpoint. Start Docker Desktop and finish its own prompts, then rerun doctor.", actions: [{ command: "open -a Docker", description: "Start Docker Desktop and accept its agreement yourself; Fleur never does this." }] };
+      if (s.actor === "agent") {
+        const data = s.proposed ? { components: { cli: { state: "ready" }, daemon: { state: "unreachable" } }, handoff: handoff("docker-desktop-not-running", "open -a Docker", "fleur doctor --json") } : null;
+        lines.push(out(j(envelope("doctor", false, data, err)), s.proposed));
+      } else {
+        lines.push(out(`cli      ready     29.9.2\ndaemon   missing   not reachable on the local endpoint\n\nHUMAN_ACTION_REQUIRED: Start Docker Desktop and finish its own prompts, then rerun doctor.\n  open -a Docker`));
+      }
+      lines.push(exit(3));
+      return { s: { ...s, last: { command: "doctor", exit: 3 } }, lines };
+    }
+    if (!s.smokeImage) {
+      const err = { code: "AUTHORITY_REQUIRED", message: "The digest-pinned smoke image must be acquired explicitly before readiness can be checked.", actions: [{ command: "fleur setup", description: "Inspect the exact smoke image acquisition plan and required permission." }] };
+      const data = { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "image-required", image: SMOKE } } };
+      if (s.actor === "agent") {
+        const d = s.proposed ? { ...data, handoff: handoff("setup-grant-required", "bunx @hazeion/fleur@0.1.0 setup", "fleur doctor --json") } : data;
+        lines.push(out(j(envelope("doctor", false, d, err)), s.proposed));
+      } else {
+        lines.push(out(`cli      ready     29.9.2\ndaemon   ready     Docker Desktop 4.97.0\ncompose  ready     5.6.1\nsmoke    image-required  ${SMOKE}\n\nAUTHORITY_REQUIRED: The digest-pinned smoke image must be acquired explicitly before readiness can be checked.\n  fleur setup   Inspect the exact smoke image acquisition plan and required permission.`));
+      }
+      lines.push(exit(3));
+      return { s: { ...s, last: { command: "doctor", exit: 3 }, pendingHandoff: s.actor === "agent" ? "setup" : null }, lines };
+    }
+    const tools = [["release","verified","15.7.7","= measured"],["kernel","verified","7.0.14-linuxkit","= measured"],["bun","admitted",s.bun,"> floor 1.4.3"],["desktop","admitted","4.97.0","> floor 4.96.1"],["cli","verified","29.9.2","= measured"],["engine","verified","29.9.2","= measured"],["compose","admitted","5.6.1","> floor 5.6.0"],["containerd","verified","2.4.2","= measured"],["runc","verified","1.5.2","= measured"]];
+    if (s.actor === "agent") {
+      const data = { components: { cli: { state: "ready" }, daemon: { state: "ready" }, compose: { state: "ready" }, smoke: { state: "ready" }, release: { state: "verified", floor: "darwin-x64-desktop", admission: "above-floor", measuredRows: ["darwin-15.7.7-x64-desktop-4.96.1"], machineTools: tools.map(([tool,status,detected,c]) => ({ tool, status, detected, comparison: c.startsWith(">") ? "newer" : "equal" })) } } };
+      if (s.proposed) data.nextStep = { command: s.project ? "fleur dev --background --json" : "bunx @hazeion/fleur@0.1.0 new <dir> --json", description: s.project ? "Prerequisites are ready; start development." : "Prerequisites are ready; create a project." };
+      lines.push(out(j(envelope("doctor", true, data, null)), s.proposed));
+    } else {
+      lines.push(out(`cli      ready     29.9.2\ndaemon   ready     Docker Desktop 4.97.0\ncompose  ready     5.6.1\nsmoke    ready     owned container completed, cleanup confirmed\n\n` + tools.map(([t,st,d,c]) => `${t.padEnd(11)}${st.padEnd(10)}${d.padEnd(18)}${c}`).join("\n") + `\nrelease   verified  floor darwin-x64-desktop (measured on darwin-15.7.7-x64-desktop-4.96.1)\nSome tools are newer than the measured baseline and are admitted above the floor.`));
+      if (s.proposed) lines.push(out(s.project ? `\nNext: fleur dev` : `\nNext: bunx @hazeion/fleur@0.1.0 new <dir>`, true));
+    }
+    lines.push(exit(0));
+    return { s: { ...s, last: { command: "doctor", exit: 0 }, pendingHandoff: null }, lines };
+  }
+
+  function setup(s) {
+    const lines = [cmd(s, entry(s, "setup"))];
+    const needsSmoke = !s.smokeImage, needsPg = !s.postgresImage;
+    const planTarget = s.proposed ? (needsSmoke && needsPg ? `${SMOKE} and ${PG}` : needsSmoke ? SMOKE : PG) : SMOKE;
+    const nothing = s.proposed ? (!needsSmoke && !needsPg) : !needsSmoke;
+    if (s.desktop !== "running") {
+      lines.push(out(s.actor === "agent" ? j(envelope("setup", false, s.proposed ? { handoff: handoff("docker-desktop-not-running", "open -a Docker", "fleur setup --json") } : null, { code: "HUMAN_ACTION_REQUIRED", message: "Start Docker Desktop and finish its own prompts, then rerun setup.", actions: [{ command: "open -a Docker", description: "Start Docker Desktop yourself." }] })) : `HUMAN_ACTION_REQUIRED: Start Docker Desktop and finish its own prompts, then rerun setup.`, s.actor === "agent" && s.proposed), exit(3));
+      return { s: { ...s, last: { command: "setup", exit: 3 } }, lines };
+    }
+    if (nothing) {
+      lines.push(out(s.actor === "agent" ? j(envelope("setup", true, { actions: [], message: "Every prerequisite is present. Nothing to authorize." }, null)) : `Every prerequisite is present. Nothing to authorize.`), exit(0));
+      return { s: { ...s, last: { command: "setup", exit: 0 } }, lines };
+    }
+    const existing = s.grants.find(g => g.action === "acquire-images" && (g.mode === "remembered" || !g.consumed));
+    if (s.actor === "agent") {
+      if (existing) return acquire(s, lines, existing);
+      const err = { code: "AUTHORITY_REQUIRED", message: "Acquiring the digest-pinned image(s) needs a human setup grant. JSON and piped invocations cannot create grants.", actions: [{ command: "fleur setup", description: "A human runs this interactively in a terminal and answers once, remember or deny." }] };
+      const data = { plan: { action: "acquire-images", method: "docker-digest-pull", target: planTarget, checksum: PLAN }, resumable: true, grantsCreated: false };
+      if (s.proposed) data.handoff = handoff("setup-grant-required", "bunx @hazeion/fleur@0.1.0 setup", "fleur setup --json");
+      lines.push(out(j(envelope("setup", false, data, err)), s.proposed), exit(3));
+      return { s: { ...s, last: { command: "setup", exit: 3 }, pendingHandoff: "setup" }, lines };
+    }
+    // human, interactive
+    if (existing) return acquire(s, lines, existing);
+    lines.push(out(`Plan ${PLAN}\n  action   acquire-images\n  method   docker-digest-pull (local Unix endpoint)\n  target   ${planTarget}\n  effect   downloads the exact image(s) by digest; changes no container, volume or setting`));
+    lines.push(prompt(`Authorize acquire-images using docker-digest-pull for ${planTarget}\nPlan ${PLAN}\nType 'once', 'remember', or 'deny': `));
+    return { s: { ...s, awaitingAnswer: true, last: { command: "setup", exit: null } }, lines };
+  }
+
+  function answer(s, reply) {
+    const lines = [prompt(`> ${reply}`)];
+    if (!s.awaitingAnswer) return { s, lines: [out(`(no prompt is waiting)`)] };
+    const base = { ...s, awaitingAnswer: false };
+    if (reply === "deny") { lines.push(out(`Denied. No grant was created and nothing was downloaded.`), exit(3)); return { s: { ...base, last: { command: "setup", exit: 3 } }, lines }; }
+    const grant = { id: "9b1e…", mode: reply === "remember" ? "remembered" : "once", action: "acquire-images", consumed: false };
+    return acquire({ ...base, grants: [...base.grants, grant] }, lines, grant);
+  }
+
+  function acquire(s, lines, grant) {
+    const pulled = s.proposed ? [!s.smokeImage && SMOKE, !s.postgresImage && PG].filter(Boolean) : [!s.smokeImage && SMOKE].filter(Boolean);
+    const next = { ...s, smokeImage: true, postgresImage: s.proposed ? true : s.postgresImage, grants: s.grants.map(g => g.id === grant.id && g.mode === "once" ? { ...g, consumed: true } : g), pendingHandoff: null, last: { command: "setup", exit: 0 } };
+    const human = `Grant ${grant.id} (${grant.mode}) ${grant.mode === "once" ? "consumed" : "recorded"} before acquisition.\n` + pulled.map(p => `Pulled ${p}`).join("\n") + `\nReady. Rerun doctor to confirm readiness.`;
+    if (s.actor === "agent") {
+      const data = { acquired: pulled, grant: { mode: grant.mode }, ...(s.proposed ? { nextStep: { command: "fleur doctor --json", description: "Confirm readiness." } } : {}) };
+      lines.push(out(j(envelope("setup", true, data, null)), s.proposed));
+    } else lines.push(out(human + (s.proposed ? `\nNext: bunx @hazeion/fleur@0.1.0 doctor` : ""), false));
+    lines.push(exit(0));
+    return { s: next, lines };
+  }
+
+  function newProject(s) {
+    const lines = [cmd(s, entry(s, "new my-app"))];
+    if (s.project) { lines.push(out(s.actor === "agent" ? j(envelope("new", false, null, { code: "PROJECT_COLLISION", message: "A Fleur project already exists here.", actions: [] })) : `PROJECT_COLLISION: A Fleur project already exists here.`), exit(5)); return { s: { ...s, last: { command: "new", exit: 5 } }, lines }; }
+    const data = { directory: "my-app", fleurVersion: "0.1.0", compiler: "microsoft", git: "initialized", files: 23, guidance: ["AGENTS.md", "CLAUDE.md", "docs/fleur.md"] };
+    if (s.proposed) data.nextStep = { command: "cd my-app && bun install --frozen-lockfile", description: "Install the frozen dependency graph; Fleur never installs it for you." };
+    lines.push(out(s.actor === "agent" ? j(envelope("new", true, data, null)) : `Created my-app pinned to Fleur 0.1.0 (Microsoft compiler, git initialized).\nGuidance written to AGENTS.md, CLAUDE.md and docs/fleur.md.\nNo dependencies were installed and nothing was started.` + (s.proposed ? `\nNext: cd my-app && bun install --frozen-lockfile, then fleur dev` : ""), s.proposed));
+    lines.push(exit(0));
+    return { s: { ...s, project: { dir: "my-app" }, cwdEmpty: false, last: { command: "new", exit: 0 } }, lines };
+  }
+
+  function bunInstall(s) {
+    const lines = [cmd(s, "cd my-app && bun install --frozen-lockfile")];
+    if (!s.project) { lines.push(out(`error: no package.json here`), exit(1)); return { s, lines }; }
+    lines.push(out(`bun install v${s.bun}\n + @hazeion/fleur@0.1.0 (exact)\n 102 packages installed [4.21s]`), exit(0));
+    return { s: { ...s, depsInstalled: true, last: { command: "bun install", exit: 0 } }, lines };
+  }
+
+  function dev(s) {
+    const lines = [cmd(s, s.actor === "agent" ? "fleur dev --background --json" : "fleur dev")];
+    if (!s.project || !s.depsInstalled) { lines.push(out(s.actor === "agent" ? j(envelope("dev", false, null, { code: "VERSION_MISMATCH", message: "The project needs an exact Fleur pin before this command can run.", actions: [{ command: "fleur doctor", description: "Inspect the project metadata." }] })) : `VERSION_MISMATCH: The project needs an exact Fleur pin before this command can run.`), exit(4)); return { s: { ...s, last: { command: "dev", exit: 4 } }, lines }; }
+    if (!s.smokeImage) { lines.push(out(`AUTHORITY_REQUIRED: readiness is not established. Run fleur doctor.`), exit(3)); return { s: { ...s, last: { command: "dev", exit: 3 } }, lines }; }
+    if (!s.postgresImage) {
+      const err = { code: "PREREQUISITE_UNAVAILABLE", message: `The pinned development PostgreSQL image is not present locally (${PG}). Fleur never pulls it implicitly.`, actions: s.proposed ? [{ command: "fleur setup", description: "Authorize acquisition of the pinned development images." }] : [] };
+      lines.push(out(s.actor === "agent" ? j(envelope("dev", false, s.proposed ? { handoff: handoff("setup-grant-required", "bunx @hazeion/fleur@0.1.0 setup", "fleur dev --background --json") } : null, err)) : `PREREQUISITE_UNAVAILABLE: ${err.message}` + (s.proposed ? `\n  fleur setup   Authorize acquisition of the pinned development images.` : `\n  (today: no Fleur command acquires this image; the user must find the digest and run docker pull themselves)`), s.proposed), exit(4));
+      return { s: { ...s, last: { command: "dev", exit: 4 } }, lines };
+    }
+    if (s.actor === "agent") lines.push(out(j(envelope("dev", true, { mode: "background", url: "http://127.0.0.1:3000", database: "ready", migrations: "none pending", ...(s.proposed ? { nextStep: { command: "fleur status --json", description: "Poll readiness and health." } } : {}) }, null)), s.proposed));
+    else lines.push(out(`doctor      verified  darwin-x64-desktop (admitted above floor)\npostgres    ready     persistent volume for this checkout\napp         ready     http://127.0.0.1:3000\n\nWatching for source changes. Press Ctrl-C to stop; data and backups are preserved.`));
+    lines.push(exit(0));
+    return { s: { ...s, dev: "running", last: { command: "dev", exit: 0 } }, lines };
+  }
+
+  function guided(s) {
+    const lines = [cmd(s, "bunx @hazeion/fleur@0.1.0")];
+    if (s.actor === "agent" || !s.cwdEmpty) {
+      lines.push(out(s.actor === "agent" ? j(envelope("help", true, { commands: ["new", "init", "doctor", "setup", "dev", "…"], hint: s.proposed ? "Start with doctor --json; every result names the next step or the human handoff." : undefined }, null)) : `Usage: fleur <command> [options]\n\nCommands:\n  new <dir>   Create an exactly pinned Fleur project.\n  doctor      Inspect local prerequisites without installing software.\n  setup       Inspect authorized resumable prerequisite setup actions.\n  dev         Run the owned development environment.\n  …`, s.actor === "agent" && s.proposed), exit(0));
+      return { s: { ...s, last: { command: "help", exit: 0 } }, lines };
+    }
+    lines.push(out(`Fleur 0.1.0\n\nThis directory is empty and has no Fleur project. Want a guided first run?\nIt will: check prerequisites, offer setup if anything needs your permission,\ncreate a project, and tell you how to install dependencies and start development.\nEvery step is an ordinary command you can also run yourself.\n\n  guide   Walk me through it\n  help    Show the command list\n  quit    Do nothing`, true));
+    lines.push(prompt(`Type 'guide', 'help' or 'quit': `));
+    return { s: { ...s, awaitingGuide: true, last: { command: "guided", exit: null } }, lines };
+  }
+
+  function guideAnswer(s, reply) {
+    if (!s.awaitingGuide) return { s, lines: [out(`(no prompt is waiting)`)] };
+    const base = { ...s, awaitingGuide: false };
+    if (reply !== "guide") return { s: base, lines: [prompt(`> ${reply}`), out(reply === "help" ? `Usage: fleur <command> [options] …` : `Nothing changed.`, true), exit(0)] };
+    let lines = [prompt(`> guide`), out(`Step 1 of 4: checking prerequisites (this runs fleur doctor)…`, true)];
+    let r = doctor(base); lines = lines.concat(r.lines.slice(1));
+    if (r.s.last.exit !== 0) { lines.push(out(`Guided run paused. Fix the step above, then run bunx @hazeion/fleur@0.1.0 again to resume.`, true)); return { s: r.s, lines }; }
+    lines.push(out(`Step 2 of 4: creating a project (this runs fleur new)…`, true));
+    r = newProject(r.s); lines = lines.concat(r.lines.slice(1));
+    lines.push(out(`Step 3 of 4: install dependencies yourself:  cd my-app && bun install --frozen-lockfile\nStep 4 of 4: then start development:        fleur dev\n\nThe guide stops here. Fleur never installs dependencies or starts anything for you.`, true));
+    return { s: r.s, lines };
+  }
+
+  const knobs = {
+    "docker-desktop-start": (s) => ({ s: { ...s, desktop: "running" }, lines: [out(`(you start Docker Desktop and accept its agreement)`)] }),
+    "docker-desktop-stop": (s) => ({ s: { ...s, desktop: "installed" }, lines: [out(`(Docker Desktop is installed but not running)`)] }),
+    "fresh-mac": (s) => ({ s: { ...initial(), actor: s.actor, proposed: s.proposed }, lines: [out(`(fresh Mac: Bun and Docker Desktop installed, nothing else)`)] }),
+    "switch-actor": (s) => ({ s: { ...s, actor: s.actor === "human" ? "agent" : "human", awaitingAnswer: false, awaitingGuide: false }, lines: [out(`(${s.actor === "human" ? "the agent takes over" : "a human sits down at the terminal"})`)] }),
+  };
+
+  function run(s, action, arg) {
+    switch (action) {
+      case "doctor": return doctor(s);
+      case "setup": return setup(s);
+      case "answer": return answer(s, arg);
+      case "new": return newProject(s);
+      case "bun-install": return bunInstall(s);
+      case "dev": return dev(s);
+      case "guided": return guided(s);
+      case "guide-answer": return guideAnswer(s, arg);
+      default: return knobs[action] ? knobs[action](s) : { s, lines: [out(`unknown action ${action}`)] };
+    }
+  }
+  return { initial, run };
+})();
+
+// ============================================================================
+// Throwaway page shell. Calls into the module; nothing flows back.
+// ============================================================================
+(() => {
+  const M = FleurFirstRun;
+  let state = M.initial();
+  let prev = state;
+  let transcript = [];
+  let scenarioIndex = 0, stepIndex = 0;
+
+  const scenarios = [
+    { title: "Human, happy path", blurb: "A person on a Mac with Bun and Docker Desktop running. Watch where the single permission prompt appears, and that nothing is installed without it.", steps: [["Run doctor", "doctor"], ["Run setup", "setup"], ["Answer once", "answer", "once"], ["Run doctor again", "doctor"], ["Create my-app", "new"], ["Install dependencies", "bun-install"], ["Start development", "dev"]] , setup: (s) => ({ ...s, actor: "human" }) },
+    { title: "Agent with handoff", blurb: "A coding agent drives the journey with --json. It cannot create a grant. Watch the proposed handoff block: the one command the human runs, and the command the agent resumes with. Then the human grants with 'remember' and the agent finishes alone.", steps: [["Agent: doctor --json", "doctor"], ["Agent: setup --json", "setup"], ["Human sits down", "switch-actor"], ["Human: setup", "setup"], ["Human answers remember", "answer", "remember"], ["Agent takes over", "switch-actor"], ["Agent: doctor --json", "doctor"], ["Agent: new --json", "new"], ["Agent: bun install", "bun-install"], ["Agent: dev --background --json", "dev"]], setup: (s) => ({ ...s, actor: "agent" }) },
+    { title: "Docker Desktop not started", blurb: "Docker Desktop is installed but was never opened. Fleur cannot start it or accept its agreement. Watch that both the human and agent get a human-action result, not a confusing daemon error.", steps: [["Docker Desktop is closed", "docker-desktop-stop"], ["Run doctor", "doctor"], ["You start Docker Desktop", "docker-desktop-start"], ["Run doctor again", "doctor"]], setup: (s) => ({ ...s }) },
+    { title: "The PostgreSQL image gap", blurb: "Today, setup acquires only the smoke image. Development also needs the pinned PostgreSQL image, and nothing in Fleur pulls it. Uncheck 'proposed' to see today's dead end; check it to see setup covering both images under one grant.", steps: [["Run setup", "setup"], ["Answer once", "answer", "once"], ["Create my-app", "new"], ["Install dependencies", "bun-install"], ["Start development", "dev"]], setup: (s) => ({ ...s, actor: "human" }) },
+    { title: "Agent tries to self-authorize", blurb: "An agent runs setup --json hoping for a yes flag. There is none, and a 'once' grant is consumed after one acquisition, so a stale grant does not help either. Watch that the agent is told exactly who can act and how.", steps: [["Agent: setup --json", "setup"], ["Agent: setup --json again", "setup"], ["Agent: dev --background --json", "dev"]], setup: (s) => ({ ...s, actor: "agent" }) },
+    { title: "Optional guided first run", blurb: "Running the package with no command in an empty directory offers a guide. It is only orchestration over ordinary commands, it stops before installing or starting anything, and it never appears for --json or inside an existing project.", steps: [["Run with no command", "guided"], ["Answer guide", "guide-answer", "guide"], ["Agent: run with no command", "switch-actor"], ["Agent: no command, --json", "guided"]], setup: (s) => ({ ...s, actor: "human", cwdEmpty: true }) },
+  ];
+
+  const freeplay = [["doctor", "doctor"], ["setup", "setup"], ["answer: once", "answer", "once"], ["answer: remember", "answer", "remember"], ["answer: deny", "answer", "deny"], ["new my-app", "new"], ["bun install", "bun-install"], ["dev", "dev"], ["no command (guide?)", "guided"], ["guide: yes", "guide-answer", "guide"]];
+  const knobs = [["Fresh Mac (reset)", "fresh-mac"], ["Start Docker Desktop", "docker-desktop-start"], ["Quit Docker Desktop", "docker-desktop-stop"]];
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (t) => t.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  function dispatch(action, arg) {
+    prev = state;
+    const r = M.run(state, action, arg);
+    state = r.s; transcript = transcript.concat(r.lines, [{ kind: "gap", text: "" }]);
+    render();
+  }
+
+  function renderState() {
+    const rows = [
+      ["Who is typing", state.actor === "human" ? "a person" : "a coding agent (--json)"],
+      ["Bun", state.bun + " (floor 1.4.3)"],
+      ["Docker Desktop", state.desktop === "running" ? "running" : "installed, not started"],
+      ["Smoke image present", state.smokeImage ? "yes" : "no"],
+      ["PostgreSQL image present", state.postgresImage ? "yes" : "no"],
+      ["Setup grants", state.grants.length ? state.grants.map(g => `${g.mode}${g.consumed ? " (consumed)" : ""}`).join(", ") : "none"],
+      ["Waiting on a human", state.pendingHandoff ? "yes: run setup interactively" : (state.awaitingAnswer || state.awaitingGuide ? "yes: answer the prompt" : "no")],
+      ["Project", state.project ? state.project.dir + " pinned to 0.1.0" : "none"],
+      ["Dependencies installed", state.depsInstalled ? "yes" : "no"],
+      ["Development server", state.dev],
+      ["Last command", state.last ? `${state.last.command} → exit ${state.last.exit ?? "…"}` : "—"],
+    ];
+    const prevRows = {
+      "Who is typing": prev.actor, "Bun": prev.bun, "Docker Desktop": prev.desktop, "Smoke image present": prev.smokeImage, "PostgreSQL image present": prev.postgresImage, "Setup grants": JSON.stringify(prev.grants), "Waiting on a human": `${prev.pendingHandoff}${prev.awaitingAnswer}${prev.awaitingGuide}`, "Project": JSON.stringify(prev.project), "Dependencies installed": prev.depsInstalled, "Development server": prev.dev, "Last command": JSON.stringify(prev.last),
+    };
+    const curRows = {
+      "Who is typing": state.actor, "Bun": state.bun, "Docker Desktop": state.desktop, "Smoke image present": state.smokeImage, "PostgreSQL image present": state.postgresImage, "Setup grants": JSON.stringify(state.grants), "Waiting on a human": `${state.pendingHandoff}${state.awaitingAnswer}${state.awaitingGuide}`, "Project": JSON.stringify(state.project), "Dependencies installed": state.depsInstalled, "Development server": state.dev, "Last command": JSON.stringify(state.last),
+    };
+    $("state").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd class="${prevRows[k] !== curRows[k] ? "changed" : ""}">${esc(String(v))}</dd>`).join("");
+  }
+
+  function renderTerm() {
+    const el = $("term");
+    el.innerHTML = transcript.length ? transcript.map(l => l.kind === "gap" ? "" : `<span class="${l.kind === "out" ? "" : l.kind}">${esc(l.text)}</span>`).join("\n") : `<span class="exit">Press a button to start. The transcript accumulates here.</span>`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function renderScenario() {
+    const sc = scenarios[scenarioIndex];
+    $("tabs").innerHTML = scenarios.map((s, i) => `<button role="tab" aria-selected="${i === scenarioIndex}" data-i="${i}">${s.title}</button>`).join("");
+    $("scenario").innerHTML = `<p>${sc.blurb}</p><button class="primary" id="restart">Start over from a fresh Mac</button><div class="steps">${sc.steps.map((st, i) => `<button class="step ${i < stepIndex ? "done" : i === stepIndex ? "next" : ""}" data-step="${i}"><span class="n">${i + 1}.</span><span>${st[0]}</span></button>`).join("")}</div>`;
+    $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { scenarioIndex = +b.dataset.i; startScenario(); });
+    $("restart").onclick = startScenario;
+    $("scenario").querySelectorAll(".step").forEach(b => b.onclick = () => { const i = +b.dataset.step; const st = sc.steps[i]; dispatch(st[1], st[2]); stepIndex = Math.max(stepIndex, i + 1); renderScenario(); });
+  }
+
+  function startScenario() {
+    const sc = scenarios[scenarioIndex];
+    state = sc.setup({ ...M.initial(), proposed: $("proposed").checked }); prev = state; transcript = []; stepIndex = 0;
+    document.querySelector(`input[name=actor][value=${state.actor}]`).checked = true;
+    render();
+  }
+
+  function render() { renderState(); renderTerm(); renderScenario(); document.querySelector(`input[name=actor][value=${state.actor}]`).checked = true; }
+
+  $("freeplay").innerHTML = freeplay.map(([label, a, arg]) => `<button data-a="${a}" data-arg="${arg ?? ""}">${label}</button>`).join("");
+  $("knobs").innerHTML = knobs.map(([label, a]) => `<button data-a="${a}">${label}</button>`).join("");
+  document.querySelectorAll("#freeplay button, #knobs button").forEach(b => b.onclick = () => dispatch(b.dataset.a, b.dataset.arg || undefined));
+  document.querySelectorAll("input[name=actor]").forEach(r => r.onchange = () => { if ((state.actor === "human") !== (r.value === "human")) dispatch("switch-actor"); });
+  $("proposed").onchange = () => { state = { ...state, proposed: $("proposed").checked }; render(); };
+  startScenario();
+})();
+</script>
+</body>
+</html>

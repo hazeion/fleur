@@ -21,8 +21,7 @@ async function identity(): Promise<HostIdentity> {
       const status = library.symbols.sysctlbyname(ptr(name), ptr(value), ptr(size), null, 0);
       const error = library.symbols.__error();
       const absent = status !== 0 && error !== null && read.i32(error) === 2;
-      // Intel kernels have no sysctl.proc_translated; Apple Silicon kernels always answer it, so absence there is unmeasured, not native.
-      const translated = absent ? (process.arch === "x64" ? false : null) : status === 0 && size[0] === 4n && (value[0] === 0 || value[0] === 1) ? value[0] === 1 : null;
+      const translated = absent ? false : status === 0 && size[0] === 4n && (value[0] === 0 || value[0] === 1) ? value[0] === 1 : null;
       const productName = Buffer.from("kern.osproductversion\0");
       const product = Buffer.alloc(128);
       const productSize = new BigUint64Array([128n]);

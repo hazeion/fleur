@@ -30,8 +30,10 @@ It installs no host software. The image's actual package inventory and immutable
 image identity must be retained. Compiler and runtime pins remain mandatory.
 
 Image preparation runs only through the explicit `desktop_runtime_images` manual
-input on the existing native GitHub amd64 runner. The ARM readiness job and every
-required summary remain intact. Preparation executes the original compiler and
+input, once per native GitHub runner lane (arm64 on `ubuntu-24.04-arm`, amd64 on
+`ubuntu-24.04`); the Dockerfile pins each lane's single-platform Ubuntu digest and
+compiler hash, and each lane records its architecture. Every required summary
+remains intact. Preparation executes the original compiler and
 trusted Bun build/tests inside the exact controller image, exports both immutable
 images and retains package versions, tool hashes, source hashes and retirement
 receipts. Its deliberate stop before worker execution is not a runtime pass.

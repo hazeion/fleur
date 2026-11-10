@@ -4,11 +4,18 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import platform
 import subprocess
 import shutil
 import stat
 import os
 import sys
+
+MACHINES={'aarch64':'arm64','x86_64':'amd64'}  # controller machine -> executed runtime profile, Apple Silicon first
+
+def native_architecture(system,machine):
+    if system!='Linux' or machine not in MACHINES:raise RuntimeError('native Linux arm64 or amd64 controller required')
+    return MACHINES[machine]
 
 def compiler_subprogram(name,runner=subprocess.run,which=shutil.which):
     if name not in ('cc1','as','ld'):raise RuntimeError('fixed compiler program required')
@@ -46,7 +53,7 @@ def main():
         raise RuntimeError('PREPARATION_ONLY_EXPORTED')
 
     capture=io.StringIO()
-    with contextlib.redirect_stdout(capture):code=run.main('amd64',prepared_image_export=export)
+    with contextlib.redirect_stdout(capture):code=run.main(native_architecture(platform.system(),platform.machine()),prepared_image_export=export)
     if code!=1 or run.REPORT.get('failure')!='PREPARATION_ONLY_EXPORTED' or run.REPORT.get('cleanup_complete') is not True or run.REPORT.get('bounded_probe_passed') is not False or not exported:raise RuntimeError('preparation did not retire cleanly')
     exported['preparationReport']=run.REPORT
     (output/'runtime-preparation.json').write_text(json.dumps(exported,sort_keys=True,indent=2)+'\n')

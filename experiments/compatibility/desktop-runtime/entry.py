@@ -17,6 +17,10 @@ ROOT=Path('/controller')
 UUID=r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
 OWNER='dev.fleur.desktop-runtime-owner'
 ROLE='dev.fleur.desktop-runtime-role'
+# Measured Desktop tuples (Platform.Name, Version, GitCommit, Arch) and executed compiler pins, Apple Silicon first.
+DESKTOPS={'arm64':('Docker Desktop 4.99.0 (245822)','29.9.3','70efc0e','arm64'),'amd64':('Docker Desktop 4.96.1 (244132)','29.9.2','0367cbe','amd64')}
+COMPILERS={'arm64':'a20520ee21543f243d40636a9181a142c45ecd989de31ab86b99a8ea5ada870d','amd64':'1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26'}
+MACHINES={'aarch64':'arm64','x86_64':'amd64'}
 
 def valid_binding(value):
     if type(value) is not dict or set(value)!={'nonce','bootId','daemonId','kernel','sourceCommit','sources','guardianId','preparedImage'}:return False
@@ -117,7 +121,8 @@ def main():
         if not valid_binding(binding):raise RuntimeError('BINDING_INVALID')
         guardian=mode=='--guardian'
         if guardian!=(binding['guardianId'] is None) or (guardian and binding['preparedImage'] is not None):raise RuntimeError('ROLE_BINDING_INVALID')
-        if platform.system()!='Linux' or platform.machine()!='x86_64' or os.geteuid()!=0 or platform.release()!=binding['kernel']:raise RuntimeError('NATIVE_LINUX_MANAGER_REQUIRED')
+        architecture=MACHINES.get(platform.machine())
+        if platform.system()!='Linux' or architecture is None or os.geteuid()!=0 or platform.release()!=binding['kernel']:raise RuntimeError('NATIVE_LINUX_MANAGER_REQUIRED')
         def boot():return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if boot()!=binding['bootId'] or os.readlink('/proc/self/ns/pid')!=os.readlink('/proc/1/ns/pid'):raise RuntimeError('VM_IDENTITY_CHANGED')
         manifest=json.loads((ROOT/'source-manifest.json').read_text())
@@ -141,14 +146,14 @@ def main():
             time.sleep(900)
             return 0
         server=json.loads(command(['docker','version','--format','{{json .Server}}']))
-        if (server.get('Platform',{}).get('Name'),server.get('Version'),server.get('GitCommit'),server.get('KernelVersion'),server.get('Arch'))!=('Docker Desktop 4.96.1 (244132)','29.9.2','0367cbe',binding['kernel'],'amd64'):raise RuntimeError('DESKTOP_TUPLE_CHANGED')
+        if (server.get('Platform',{}).get('Name'),server.get('Version'),server.get('GitCommit'),server.get('Arch'))!=DESKTOPS[architecture] or server.get('KernelVersion')!=binding['kernel']:raise RuntimeError('DESKTOP_TUPLE_CHANGED')
         if json.loads(command(['docker','info','--format','{{json .ID}}']))!=binding['daemonId']:raise RuntimeError('DAEMON_IDENTITY_CHANGED')
         guard=json.loads(command(['docker','inspect',binding['guardianId'],'--format','{{json .}}']))
         own=json.loads(command(['docker','inspect',manager_id,'--format','{{json .}}']))
         if (guard.get('Id')!=binding['guardianId'] or guard.get('Image')!=own.get('Image') or guard.get('Mounts')!=[] or guard.get('Config',{}).get('Labels',{}).get(OWNER)!=binding['nonce'] or guard.get('Config',{}).get('Labels',{}).get(ROLE)!='guardian' or guard.get('State',{}).get('Running') is not True):raise RuntimeError('GUARDIAN_BINDING_CHANGED')
         root_proof=root_launch(manager_id,processes.bounded)
         compiler=Path('/usr/local/bin/gcc')
-        if hashlib.sha256(compiler.read_bytes()).hexdigest()!='1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26':raise RuntimeError('COMPILER_PIN_CHANGED')
+        if hashlib.sha256(compiler.read_bytes()).hexdigest()!=COMPILERS[architecture]:raise RuntimeError('COMPILER_PIN_CHANGED')
         outcome.update({key:ready[key] for key in ('nonce','bootId','managerId','managerPid','vmMonotonicNs','sourceCommit','sources')})
         outcome.update(controllerUserspace=Path('/etc/os-release').read_text(),packages=Path('/controller-packages.tsv').read_text(),rootLaunchVerified=True,rootLaunch=root_proof)
         if mode=='--capabilities':outcome['ok']=True
@@ -158,6 +163,7 @@ def main():
             from worker_deadline import HostDeadlineGuard,ROOT_GUARD
             prepared=binding['preparedImage']
             if prepared is None:raise RuntimeError('PREPARED_IMAGE_REQUIRED')
+            if prepared['architecture']!=architecture:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
             image=run.PreparedRuntimeImage(prepared['imageId'],prepared['architecture'],prepared['baseImage'],prepared['helperSha256'],prepared['abuseSha256'],tuple(sorted(prepared['runtimeSources'].items())))
             def register(tag,image_id):
                 ledger={'kind':'ownership','nonce':binding['nonce'],'bootId':binding['bootId'],'daemonId':binding['daemonId'],'imageId':image_id,'workers':worker_ledger(tag,image_id)}
@@ -182,7 +188,7 @@ def main():
                 if absent.returncode!=1 or absent.stdout!=b'\n' or absent.stderr!=('error: no such object: '+value['Id']+'\n').encode():raise RuntimeError('WORKER_REMOVAL_UNCONFIRMED')
                 return 'removed'
             output=io.StringIO()
-            with redirect_stdout(output):code=run.main('amd64',idle_runtime_stress=True,prepared_image=image,owner_registration=register,deadline_factory=deadline,owned_cleanup=cleanup)
+            with redirect_stdout(output):code=run.main(architecture,idle_runtime_stress=True,prepared_image=image,owner_registration=register,deadline_factory=deadline,owned_cleanup=cleanup)
             outcome['runtime']=run.REPORT;outcome['ok']=complete_result(code,run.REPORT)
             if not outcome['ok']:outcome['error']='ORIGINAL_RUNTIME_PROOF_FAILED'
         if boot()!=binding['bootId']:raise RuntimeError('VM_BOOT_CHANGED')

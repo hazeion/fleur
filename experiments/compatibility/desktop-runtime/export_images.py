@@ -30,6 +30,17 @@ def preparation_names(nonce):
     base='fleur-desktop-preparation-'+nonce
     return base,base+':latest'
 
+MACHINES={'aarch64':'arm64','x86_64':'amd64'}  # native Linux runner machine -> Docker platform architecture, Apple Silicon first
+
+def native_architecture(system,machine):
+    if system!='Linux' or machine not in MACHINES:raise RuntimeError('disposable native GitHub arm64 or amd64 preparation only')
+    return MACHINES[machine]
+
+def built_image(tag,architecture,run):
+    value=json.loads(run(['docker','image','inspect',tag,'--format','{{json .}}']))
+    if type(value) is not dict or type(value.get('Id')) is not str or not value['Id'].startswith('sha256:') or value.get('Os')!='linux' or value.get('Architecture')!=architecture:raise RuntimeError('built controller image architecture differs from native runner')
+    return value['Id']
+
 
 def source_name(relative):
     if relative=='scripts/bun-floor.json':return 'bun-floor.json'
@@ -45,7 +56,8 @@ def source_name(relative):
 
 
 def main(output):
-    if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted' or platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('disposable native GitHub amd64 preparation only')
+    if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted':raise RuntimeError('disposable native GitHub preparation only')
+    architecture=native_architecture(platform.system(),platform.machine())
     commit=command(['git','rev-parse','HEAD']).decode().strip()
     if command(['git','diff','--exit-code','HEAD']):raise RuntimeError('committed source required')
     output.mkdir(mode=0o700,parents=False,exist_ok=False)
@@ -64,11 +76,11 @@ def main(output):
             manifest={'sourceCommit':commit,'sources':sources}
             (context/'controller/source-manifest.json').write_text(json.dumps(manifest,separators=(',',':')))
             shutil.copyfile(context/'controller/Dockerfile',context/'Dockerfile')
-            subprocess.run(['docker','build','--platform','linux/amd64','--label','dev.fleur.desktop-preparation-owner='+nonce,'--tag',tag,directory],cwd=ROOT,check=True,timeout=360)
-            image=command(['docker','image','inspect',tag,'--format','{{.Id}}']).decode().strip()
+            subprocess.run(['docker','build','--platform','linux/'+architecture,'--label','dev.fleur.desktop-preparation-owner='+nonce,'--tag',tag,directory],cwd=ROOT,check=True,timeout=360)
+            image=built_image(tag,architecture,command)
             subprocess.run(['docker','run','--name',container,'--label','dev.fleur.desktop-preparation-owner='+nonce,'--network','none','--volume','/var/run/docker.sock:/var/run/docker.sock','--volume',str(output.resolve())+':/output','--entrypoint','/usr/bin/python3',image,'-I','/controller/export_worker.py'],check=True,timeout=420)
             subprocess.run(['docker','image','save','--output',str(output/'controller-image.tar'),image],check=True,timeout=120)
-            (output/'source-manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n')
+            (output/'source-manifest.json').write_text(json.dumps({**manifest,'architecture':architecture},sort_keys=True,indent=2)+'\n')
             artifacts={}
             for path in sorted(output.iterdir()):
                 digest=hashlib.sha256()

@@ -65,5 +65,26 @@ class CompleteProducerSourceContract(unittest.TestCase):
         self.assertTrue(entry.valid_binding(binding))
 
 
+class ControllerImageInputs(unittest.TestCase):
+    """The Dockerfile's per-architecture inputs must match what the controller and runtime consumers execute."""
+    def test_each_lane_pins_its_own_base_digest_compiler_symlink_and_compiler_hash_apple_silicon_first(self):
+        import re
+        profile_spec=importlib.util.spec_from_file_location('binding_runtime_profile',HERE.parent/'runtime-probe/runtime_profile.py')
+        profiles=importlib.util.module_from_spec(profile_spec);profile_spec.loader.exec_module(profiles)
+        dockerfile=(HERE/'Dockerfile').read_text();native=(HERE.parents[2]/'src/runtime/native/build.ts').read_text()
+        bases=re.findall(r'^FROM ubuntu@sha256:([a-f0-9]{64}) AS base-(arm64|amd64)$',dockerfile,re.M)
+        compilers=re.findall(r'^\s*(arm64|amd64)\) triplet=([a-z0-9_-]+); pin=([a-f0-9]{64}) ;;',dockerfile,re.M)
+        self.assertEqual([lane for _,lane in bases],['arm64','amd64']);self.assertEqual([lane for lane,_,_ in compilers],['arm64','amd64'])
+        self.assertEqual(len({digest for digest,_ in bases}),2)
+        shared=re.search(r'controllerBase = arm \? "([a-f0-9]{64})" : "([a-f0-9]{64})"',native)
+        self.assertEqual(dict((lane,digest) for digest,lane in bases),{'arm64':shared.group(1),'amd64':shared.group(2)})
+        for lane,triplet,pin in compilers:
+            self.assertEqual(triplet,profiles.PROFILES[lane]['compiler_target'],lane)
+            self.assertEqual(pin,entry.COMPILERS[lane],lane);self.assertEqual(pin,profiles.PROFILES[lane]['compiler_sha256'],lane)
+        self.assertIn('FROM base-${TARGETARCH}',dockerfile);self.assertRegex(dockerfile,r'(?m)^\s*\*\) .*exit 1 ;;')
+        self.assertEqual(dockerfile.count('gcc-13=13.3.0-6ubuntu2~24.04.1'),1)
+        self.assertIn('echo "$pin  /usr/local/bin/gcc" | sha256sum --check',dockerfile)
+
+
 if __name__ == '__main__':
     unittest.main()

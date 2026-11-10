@@ -17,7 +17,9 @@ function bunAdmitted(floor: string, version: string): boolean {
 }
 
 function probe() {
-  if (process.platform !== "linux" || process.arch !== "x64" || machine() !== "x86_64" || process.getuid?.() !== 0 || !bunAdmitted(process.env.FLEUR_CONTROL_BUN_FLOOR ?? "", Bun.version)) throw new Error("NATIVE_LINUX_MANAGER_REQUIRED");
+  // The Desktop VM runs natively on Apple Silicon (aarch64) or Intel (x86_64); any other pairing is not a native manager.
+  const nativeMachine = (process.arch === "arm64" && machine() === "aarch64") || (process.arch === "x64" && machine() === "x86_64");
+  if (process.platform !== "linux" || !nativeMachine || process.getuid?.() !== 0 || !bunAdmitted(process.env.FLEUR_CONTROL_BUN_FLOOR ?? "", Bun.version)) throw new Error("NATIVE_LINUX_MANAGER_REQUIRED");
   const pidText = process.env.FLEUR_CONTROL_PID ?? "";
   const workerId = process.env.FLEUR_CONTROL_WORKER ?? "";
   const nonce = process.env.FLEUR_CONTROL_NONCE ?? "";

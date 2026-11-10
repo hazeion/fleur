@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Intel Desktop candidate evidence, with independent guardian custody."""
+"""Native Mac (Apple Silicon or Intel) Desktop candidate evidence, with independent guardian custody."""
 import argparse
 import copy
 import hashlib
@@ -25,6 +25,7 @@ OWNER='dev.fleur.desktop-runtime-owner'
 ROLE='dev.fleur.desktop-runtime-role'
 SHA=r'[a-f0-9]{64}'
 UUID=r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
+PLATFORMS={'arm64':'arm64','x64':'amd64'}  # host identity -> Docker platform architecture, Apple Silicon first
 
 
 def module(name,path):
@@ -34,10 +35,23 @@ def module(name,path):
 processes=module('desktop_outer_processes',DIRECTORY/'processes.py')
 entry=module('desktop_outer_entry',DIRECTORY/'entry.py')
 artifacts=module('desktop_outer_artifacts',DIRECTORY/'artifact_inputs.py')
+oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py')
 sys.path.insert(0,str(ROOT/'experiments/compatibility/runtime-probe'))
 
 
-def native_intel_identity(system,machine,cpu):return system=='Darwin' and machine=='x86_64' and cpu=='7\n'
+def native_mac_identity(system,machine,cpu,translated):
+    """Exact measured identities: Apple Silicon first, Intel second; `translated` is the proc_translated text or None when that OID is absent. Apple Silicon always answers the OID, so its absence there is an unmeasured identity."""
+    if system!='Darwin':return None
+    if machine=='arm64' and cpu=='16777228\n' and translated=='0\n':return 'arm64'
+    if machine=='x86_64' and cpu=='7\n' and translated is None:return 'x64'
+    return None
+
+
+def translation_state(result):
+    """proc_translated text when the OID answers, None when macOS reports it unknown (Intel); anything else is not a native Mac identity."""
+    if result.returncode==0 and result.stderr==b'':return result.stdout.decode('utf-8',errors='replace')
+    if result.returncode==1 and result.stdout==b'' and result.stderr==b"sysctl: unknown oid 'sysctl.proc_translated'\n":return None
+    raise RuntimeError('EXPLICIT_NATIVE_MAC_REQUIRED')
 
 
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
@@ -46,6 +60,7 @@ def sha(value):return hashlib.sha256(value.encode() if type(value) is str else v
 def error_category(error):
     known={'inventory deadline':'HOST_INVENTORY_DEADLINE','inventory exit':'HOST_INVENTORY_EXIT','inventory size':'HOST_INVENTORY_OUTPUT_BOUND','inventory schema':'HOST_INVENTORY_SCHEMA','inventory identity':'HOST_INVENTORY_IDENTITY','inventory owned state':'HOST_INVENTORY_OWNED_STATE','leader absent':'HOST_RETAINED_LEADER_ABSENT','leader group':'HOST_RETAINED_LEADER_GROUP','waitid child differs':'HOST_WAITID_CHILD_CHANGED','waitid ABI response':'HOST_WAITID_ABI_RESPONSE'}
     message=str(error)
+    if type(error) is oci.ArchitectureMismatch:return 'PREPARED_IMAGE_ARCHITECTURE_MISMATCH'
     if type(error) is RuntimeError and message in known:return known[message]
     return message if type(error) is RuntimeError and re.fullmatch('[A-Z_]{1,80}',message) else 'DESKTOP_OBSERVATION_FAILED'
 
@@ -63,9 +78,9 @@ def native_config_projection(source):
     return projected
 
 
-def matches_image(value,identity):
+def matches_image(value,identity,architecture):
     try:
-        return (value['Id']==identity.manifest_image_id and value['Architecture']=='amd64' and value['Os']=='linux'
+        return (value['Id']==identity.manifest_image_id and architecture in PLATFORMS.values() and value['Architecture']==architecture and value['Os']=='linux'
             and value['Config']==native_config_projection(identity.configuration['config']) and value['RootFS']=={'Type':'layers','Layers':identity.configuration['rootfs']['diff_ids']}
             and value['Descriptor']=={'digest':identity.manifest_image_id,'mediaType':'application/vnd.oci.image.manifest.v1+json','size':identity.manifest_bytes})
     except (KeyError,TypeError,AttributeError,ValueError):return False
@@ -284,8 +299,8 @@ def ready_frame(value,binding,raw,cid,pid,role):
 
 
 def observe(mode,images_directory):
-    report={'formatVersion':1,'scope':'native-intel-desktop-runtime-qualification','mode':mode,'ok':False,'runtimeAdmission':False,'nativeQualification':False,'installationVerified':False,'cleanup':[]}
-    end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None;phase='native-identity'
+    report={'formatVersion':1,'scope':'native-desktop-runtime-qualification','mode':mode,'architecture':None,'ok':False,'runtimeAdmission':False,'nativeQualification':False,'installationVerified':False,'cleanup':[]}
+    end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None;phase='native-identity';architecture=None
     environment={key:value for key,value in os.environ.items() if key not in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','DOCKER_API_VERSION')}
     def raw(args,cleanup=False,timeout=6,extra_environment=None):
         budget=min(timeout,(end if cleanup else work_end)-time.monotonic())
@@ -338,7 +353,7 @@ def observe(mode,images_directory):
         expected={'cid':None,'name':name,'image':image,'nonce':binding['nonce'],'binding':raw_binding,'mode':selected,'program':program,'control_environment':controls,'base_environment':base_env}
         owned.append(expected);persist(role+'-planned.json',{'name':name,'image':image,'binding':binding,'role':role})
         memory='268435456' if guardian_role else '2147483648';tmp_size='16777216' if guardian_role else '536870912'
-        args=['create','--interactive','--name',name,'--label',OWNER+'='+binding['nonce'],'--label',ROLE+'='+role,'--pull','never','--platform','linux/amd64','--entrypoint','/usr/bin/python3','--init=false','--user','0:0','--network','none','--read-only','--pid','host','--cgroupns','host','--cap-drop','ALL','--cap-add','KILL','--cap-add','SYS_PTRACE']
+        args=['create','--interactive','--name',name,'--label',OWNER+'='+binding['nonce'],'--label',ROLE+'='+role,'--pull','never','--platform','linux/'+architecture,'--entrypoint','/usr/bin/python3','--init=false','--user','0:0','--network','none','--read-only','--pid','host','--cgroupns','host','--cap-drop','ALL','--cap-add','KILL','--cap-add','SYS_PTRACE']
         if not guardian_role:args+=['--cap-add','SETUID','--cap-add','SETGID','--volume',SOCKET+':'+SOCKET+':rw']
         args+=['--security-opt','no-new-privileges:true','--security-opt','seccomp=unconfined','--memory',memory,'--memory-swap',memory,'--cpus','1' if guardian_role else '2','--pids-limit','64' if guardian_role else '256','--tmpfs','/tmp:rw,nosuid,nodev,noexec,size='+tmp_size+',mode=1777','--env','FLEUR_DESKTOP_BINDING='+raw_binding]
         for item in controls:args+=['--env',item]
@@ -360,7 +375,10 @@ def observe(mode,images_directory):
             docker(['rm','--force',adopted['cid']],True)
             if inspect(adopted['cid'],cleanup=True) is not None:raise RuntimeError('ROLE_REMOVAL_UNCONFIRMED')
     try:
-        if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or not native_intel_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype'])):raise RuntimeError('EXPLICIT_NATIVE_INTEL_MAC_REQUIRED')
+        if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or platform.system()!='Darwin':raise RuntimeError('EXPLICIT_NATIVE_MAC_REQUIRED')
+        host_architecture=native_mac_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype']),translation_state(raw(['/usr/sbin/sysctl','-n','sysctl.proc_translated'])))
+        if host_architecture is None:raise RuntimeError('EXPLICIT_NATIVE_MAC_REQUIRED')
+        report['architecture']=host_architecture;architecture=PLATFORMS[host_architecture]
         commit=command(['git','rev-parse','HEAD']).strip()
         if not re.fullmatch('[a-f0-9]{40}',commit) or command(['git','diff','--exit-code','HEAD']):raise RuntimeError('CLEAN_COMMITTED_SOURCE_REQUIRED')
         phase='operator-source'
@@ -371,12 +389,18 @@ def observe(mode,images_directory):
             if sha(command(['git','show',commit+':'+relative],timeout=8))!=sha(body):raise RuntimeError('OPERATOR_SOURCE_BYTES_CHANGED')
             operator_hashes[relative]=sha(body)
         report['operatorSource']={'commit':commit,'files':operator_hashes}
+        phase='prepared-image-selection'
+        # Select the prepared entry for this host before the preflight creates anything; a host without one refuses here.
+        catalog=artifacts.canonical_json((DIRECTORY/'image-origin.json').read_bytes());selected=artifacts.catalog_entry(catalog,architecture)
+        report['catalogArchitectures']=[key for key in artifacts.ARCHITECTURES if key in catalog]
+        if selected is None:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
+        origin=selected['origin']
         phase='fresh-control-preflight'
         preflight=raw([str(Path.home()/'.bun/bin/bun'),'scripts/observe-desktop-control.ts','--run'],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
         # Explicitly pass the preflight flag only to this fixed command.
         if preflight.returncode:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
         proof=artifacts.canonical_json(preflight.stdout)
-        if proof.get('ok') is not True or proof.get('controlCapabilityVerified') is not True or proof.get('originalPreserved') is not True or proof.get('transportUncertain') is not False:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
+        if proof.get('ok') is not True or proof.get('controlCapabilityVerified') is not True or proof.get('originalPreserved') is not True or proof.get('transportUncertain') is not False or proof.get('architecture')!=host_architecture:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
         report['controlPreflight']=proof
         context=command(['docker','context','show']).strip();resolved=artifacts.canonical_json(command(['docker','context','inspect',context,'--format','{{json .Endpoints.docker}}']))
         endpoint=os.environ.get('DOCKER_HOST') if os.environ.get('DOCKER_HOST') and not os.environ.get('DOCKER_CONTEXT') else resolved['Host']
@@ -386,25 +410,24 @@ def observe(mode,images_directory):
         version=artifacts.canonical_json(docker(['version','--format','{{json .Server}}']))
         if version!=proof['server']:raise RuntimeError('EXACT_DESKTOP_TUPLE_CHANGED')
         daemon=artifacts.canonical_json(docker(['info','--format','{{json .ID}}']));boot=proof['probe']['bootId'];nonce=str(uuid.uuid4())
-        catalog=artifacts.canonical_json((DIRECTORY/'image-origin.json').read_bytes())
         phase='source-artifact-custody'
-        held=artifacts.open_artifacts(images_directory,catalog,absolute_deadline=work_end)
+        held=artifacts.open_artifacts(images_directory,selected,absolute_deadline=work_end)
         source=held.read_json('source-manifest.json');prep=held.read_json('runtime-preparation.json')
-        origin=catalog['origin']
+        if prep.get('architecture')!=architecture:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
         if source.get('sourceCommit')!=origin['sourceCommit'] or prep.get('sourceCommit')!=origin['sourceCommit'] or prep.get('scope')!='prepared-native-runtime-image' or prep.get('runtimeAdmission') is not False or prep.get('nativeQualification') is not False or prep.get('preparationReport',{}).get('cleanup_complete') is not True:raise RuntimeError('PREPARATION_PROVENANCE_CHANGED')
         phase='payload-source-closure'
         for name,digest in source['sources'].items():
             relative='scripts/bun-floor.json' if name=='bun-floor.json' else 'experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
-        report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
+        report['preparation']={'producer':selected['producer'],'architecture':architecture,'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
         binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
         if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         phase='archive-validation'
-        oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={};image_identities={}
+        configs={};image_identities={}
         for name,config_image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
             phase='archive-validation'
             fd=held.verify(name)
-            with os.fdopen(os.dup(fd),'rb') as stream:identity=oci.validate_archive(stream,config_image,work_end)
+            with os.fdopen(os.dup(fd),'rb') as stream:identity=oci.validate_archive(stream,config_image,work_end,architecture)
             configs[name]=identity.configuration;image_identities[name]=identity
             image=identity.manifest_image_id
             held.verify(name)
@@ -420,7 +443,8 @@ def observe(mode,images_directory):
                 report.setdefault('imageLoadReceipts',[]).append({'imageId':image,'exitCode':load.child.returncode,'stdout':stdout.decode('utf-8',errors='replace'),'stderr':stderr.decode('utf-8',errors='replace')})
                 if load.child.returncode or stderr or stdout.decode()!='Loaded image ID: '+image+'\n':raise RuntimeError('IMAGE_LOAD_UNCONFIRMED')
             actual=inspect(image,'image')
-            if not matches_image(actual,identity):raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
+            if type(actual) is dict and actual.get('Architecture')!=architecture:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
+            if not matches_image(actual,identity,architecture):raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
         image=image_identities['controller-image.tar'].manifest_image_id;runtime_image=image_identities['runtime-image.tar'].manifest_image_id;base_env=configs['controller-image.tar']['config']['Env']
         phase='guardian-start'
         guardian,guardian_channel,guardian_ready=start_role('guardian',binding,image,base_env)
@@ -444,7 +468,7 @@ def observe(mode,images_directory):
             tag='fleur-runtime-probe-'+str(time.time_ns());row={'name':tag+'-run','owner':tag,'control':True}
             if inspect(row['name']) is not None:raise RuntimeError('FRESH_CONTROL_NAME_UNAVAILABLE')
             workers.append(row);persist('control-worker-planned.json',{'worker':row,'imageId':runtime_image,'nonce':nonce})
-            args=['create','--name',row['name'],'--label','fleur.compatibility.runtime-owner='+tag,'--pull','never','--platform','linux/amd64','--entrypoint','bun','--user','65534:65534','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp=unconfined','--cpus','1','--memory','536870912','--memory-swap','536870912','--pids-limit','64','--ulimit','core=0']
+            args=['create','--name',row['name'],'--label','fleur.compatibility.runtime-owner='+tag,'--pull','never','--platform','linux/'+architecture,'--entrypoint','bun','--user','65534:65534','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp=unconfined','--cpus','1','--memory','536870912','--memory-swap','536870912','--pids-limit','64','--ulimit','core=0']
             for key,value in SAFE_ENVIRONMENT.items():args+=['--env',key+'='+value]
             cid=docker(args+[runtime_image,'-e',CONTROL_PROGRAM]).strip()
             current=inspect(cid)
@@ -554,7 +578,7 @@ def observe(mode,images_directory):
                 actual=inspect(image,'image',True)
                 if actual is not None:
                     mapped=next(value for value in image_identities.values() if value.manifest_image_id==image)
-                    if not matches_image(actual,mapped) or actual.get('RepoTags') not in (None,[]) or actual.get('RepoDigests') not in (None,[]):raise RuntimeError('IMPORTED_IMAGE_CUSTODY_CHANGED')
+                    if not matches_image(actual,mapped,architecture) or actual.get('RepoTags') not in (None,[]) or actual.get('RepoDigests') not in (None,[]):raise RuntimeError('IMPORTED_IMAGE_CUSTODY_CHANGED')
                     docker(['image','rm',image],True,timeout=15)
                     if inspect(image,'image',True) is not None:raise RuntimeError('IMPORTED_IMAGE_REMOVAL_UNCONFIRMED')
                 receipt['absent']=True
@@ -578,7 +602,7 @@ if __name__=='__main__':
     args=parser.parse_args()
     if args.mode=='--qualify':
         control=observe('--guardian-loss',args.images_directory)
-        result=observe(args.mode,args.images_directory) if control['ok'] is True else {'ok':False,'scope':'native-intel-desktop-runtime-qualification','runtimeAdmission':False,'nativeQualification':False,'error':'FRESH_MANAGER_LOSS_CONTROL_REQUIRED'}
+        result=observe(args.mode,args.images_directory) if control['ok'] is True else {'ok':False,'scope':'native-desktop-runtime-qualification','architecture':control.get('architecture'),'runtimeAdmission':False,'nativeQualification':False,'error':'FRESH_MANAGER_LOSS_CONTROL_REQUIRED'}
         result['managerLossControl']=control
     else:result=observe(args.mode,args.images_directory)
     print(json.dumps(result,separators=(',',':')));raise SystemExit(0 if result['ok'] else 4)

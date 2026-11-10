@@ -1,12 +1,12 @@
-# Native Intel Desktop runtime qualification
+# Native Desktop runtime qualification
 
 This internal qualification driver must run the unchanged Linux runtime probe in
-Docker Desktop's native x86_64 Linux VM. Ubuntu is only the trusted controller's
+Docker Desktop's native Linux VM on Apple Silicon (arm64) or Intel (amd64). Ubuntu is only the trusted controller's
 userspace. It is not an Ubuntu host qualification or an owned full-system guest.
 
 Required behavior before runtime admission:
 
-- Bind native untranslated Intel macOS and the exact Desktop/Engine/kernel tuple,
+- Bind native untranslated macOS (Apple Silicon or Intel), the exact per-architecture Desktop/Engine/kernel tuple,
   source commit and all controller/probe files, immutable controller image, local
   Unix endpoint, daemon identity, VM boot identity, manager PID and namespaces.
 - Run the original compiler with its executed binary hash pin. Run every original
@@ -30,8 +30,10 @@ It installs no host software. The image's actual package inventory and immutable
 image identity must be retained. Compiler and runtime pins remain mandatory.
 
 Image preparation runs only through the explicit `desktop_runtime_images` manual
-input on the existing native GitHub amd64 runner. The ARM readiness job and every
-required summary remain intact. Preparation executes the original compiler and
+input, once per native GitHub runner lane (arm64 on `ubuntu-24.04-arm`, amd64 on
+`ubuntu-24.04`); the Dockerfile pins each lane's single-platform Ubuntu digest and
+compiler hash, and each lane records its architecture. Every required summary
+remains intact. Preparation executes the original compiler and
 trusted Bun build/tests inside the exact controller image, exports both immutable
 images and retains package versions, tool hashes, source hashes and retirement
 receipts. Its deliberate stop before worker execution is not a runtime pass.
@@ -55,7 +57,7 @@ images/controllers are absent and original inventories preserved.
 
 The source-owned `image-origin.json` catalog authenticates the producer run, ZIP,
 origin and every artifact. The native observer retains private descriptors,
-validates one untagged amd64 OCI image per archive, loads through those same
+validates one untagged OCI image for the host architecture per archive, loads through those same
 descriptors, and rechecks the bytes after the load clients retire. The immutable
 identity chain retains the producer config digest separately from the native OCI
 manifest execution digest and verifies the native descriptor, config and layer

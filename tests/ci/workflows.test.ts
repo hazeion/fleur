@@ -34,7 +34,7 @@ test("fresh Debian qualification is explicit manual x64 work and cannot bypass t
   expect(qualification.run).toBe('python3 -I scripts/qualify-debian-kvm.py --run > "$RUNNER_TEMP/fleur-debian13-kvm.json"');
   expect(qualification.run).not.toContain("${{");
   expect(qualification.env).toEqual({ FLEUR_RUNNER_ENVIRONMENT: "${{ runner.environment }}", FLEUR_PINNED_BUN: "${{ runner.temp }}/fleur-native-bun/bun" });
-  expect(native["timeout-minutes"]).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images || inputs.workout_proof) && matrix.architecture == 'x86_64' && 40 || 10 }}");
+  expect(native["timeout-minutes"]).toBe("${{ github.event_name == 'workflow_dispatch' && (inputs.debian_helpers != '' || inputs.debian_recovery || inputs.arch_boot_observation || inputs.desktop_runtime_images || inputs.workout_proof) && matrix.architecture == 'x86_64' && 40 || github.event_name == 'workflow_dispatch' && inputs.desktop_runtime_images && 30 || 10 }}");
   expect(native.steps!.some((step) => step.run === "bun scripts/verify-native-setup.ts")).toBe(true);
   expect(workflow.jobs.verification).toBeDefined();
 });
@@ -56,20 +56,31 @@ test("Arch boot observation is a closed manual x64 diagnostic and retains ordina
   expect(workflow.jobs.verification?.needs).toEqual(["scope", "existing-docker", "reference-proof"]);
 });
 
-test("Desktop image preparation uses only explicit manual native x64 work and retains all verification", () => {
+test("Desktop image preparation runs both native lanes, Apple Silicon first, only on explicit manual dispatch", () => {
   const workflow = Bun.YAML.parse(readFileSync(new URL("../../.github/workflows/native-setup.yml", import.meta.url), "utf8")) as {
     on: { workflow_dispatch: { inputs: Record<string, { type: string; default: boolean; required: boolean }> } };
-    jobs: Record<string, { "timeout-minutes"?: string; steps?: { name?: string; if?: string; run?: string; with?: { path?: string; "retention-days"?: number } }[] }>;
+    jobs: Record<string, { "timeout-minutes"?: string; "runs-on"?: string; strategy?: { matrix: { include: { runner: string; architecture: string }[] } }; steps?: { name?: string; if?: string; "timeout-minutes"?: number; run?: string; with?: { name?: string; path?: string; "retention-days"?: number } }[] }>;
   };
   expect(workflow.on.workflow_dispatch.inputs.desktop_runtime_images).toMatchObject({ type: "boolean", default: false, required: false });
   const native = workflow.jobs["existing-docker"]!;
+  // The arm64 lane is a GitHub-hosted arm64 runner selected through the same matrix as the amd64 lane.
+  expect(native.strategy?.matrix.include.map((lane) => lane.architecture).sort()).toEqual(["arm64", "x86_64"]);
+  expect(native.strategy?.matrix.include).toContainEqual({ runner: "ubuntu-24.04-arm", architecture: "arm64" });
+  expect(native["runs-on"]).toBe("${{ matrix.runner }}");
   const step = native.steps!.find((item) => item.name === "Prepare native Desktop runtime image inputs")!;
-  expect(step.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runtime_images && matrix.architecture == 'x86_64' }}");
+  // No architecture clause: the single dispatch input prepares every matrix lane; pull requests and pushes never run it.
+  expect(step.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.desktop_runtime_images }}");
   expect(step.run).toBe('python3 experiments/compatibility/desktop-runtime/export_images.py --output "$RUNNER_TEMP/fleur-desktop-images"');
   expect(step.run).not.toContain("${{");
+  // The arm64 job budget on that dispatch (30) must hold the step budget plus the ordinary lane (10).
+  expect(step["timeout-minutes"]).toBe(20);
+  expect(native["timeout-minutes"]).toContain("github.event_name == 'workflow_dispatch' && inputs.desktop_runtime_images && 30 || 10");
   expect(native.steps!.some((item) => item.run === "bun scripts/verify-native-setup.ts")).toBe(true);
-  expect(native.steps!.find((item) => item.name === "Preserve native observations")?.with?.path).toContain("fleur-desktop-images/");
-  expect(native.steps!.find((item) => item.name === "Preserve native observations")?.with?.["retention-days"]).toBe(7);
+  const upload = native.steps!.find((item) => item.name === "Preserve native observations")!;
+  expect(upload.if).toBe("always()");
+  expect(upload.with?.name).toBe("native-setup-${{ matrix.architecture }}");
+  expect(upload.with?.path).toContain("fleur-desktop-images/");
+  expect(upload.with?.["retention-days"]).toBe(7);
 });
 
 test("the read-runtime job pulls the pinned development images before the runtime tests", async () => {

@@ -31,6 +31,19 @@ class BindingTests(unittest.TestCase):
         self.assertFalse(entry.complete_result(False, {}))
 
 
+class ArchitectureBindingTests(unittest.TestCase):
+    def test_apple_silicon_and_intel_desktop_tuples_are_bound_per_architecture_apple_silicon_first(self):
+        self.assertEqual(list(entry.DESKTOPS),['arm64','amd64'])
+        self.assertEqual(entry.DESKTOPS['arm64'],('Docker Desktop 4.99.0 (245822)','29.9.3','70efc0e','arm64'))
+        self.assertEqual(entry.DESKTOPS['amd64'],('Docker Desktop 4.96.1 (244132)','29.9.2','0367cbe','amd64'))
+    def test_executed_compiler_pins_match_the_runtime_probe_profiles(self):
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'runtime-probe'))
+        try:
+            import runtime_profile
+            self.assertEqual({key:runtime_profile.PROFILES[key]['compiler_sha256'] for key in ('arm64','amd64')},dict(entry.COMPILERS))
+        finally:sys.path.pop(0)
+
 class GuardianContractTests(unittest.TestCase):
     def test_complete_ledger_accounts_for_every_original_worker(self):
         rows=entry.worker_ledger('fleur-runtime-probe-123','sha256:'+'a'*64)

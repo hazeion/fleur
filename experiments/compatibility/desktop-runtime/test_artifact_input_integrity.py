@@ -31,8 +31,7 @@ class ArtifactPublicationIntegrity(unittest.TestCase):
             'runtimeAdmission': False, 'nativeQualification': False, 'sourceCommit': 'a' * 40,
             'controllerImageId': 'sha256:' + 'b' * 64, 'artifacts': pins,
             'cleanup': copy.deepcopy(cleanup['cleanup']), 'ok': True}
-        catalog = {'formatVersion': 1, 'scope': 'source-owned-desktop-preparation-inputs',
-            'runtimeAdmission': False, 'producer': {'workflowRunId': 123, 'artifactId': 456,
+        catalog = {'producer': {'workflowRunId': 123, 'artifactId': 456,
             'zipSha256': 'c' * 64, 'imageOriginSha256': ''}, 'origin': origin}
         self.publish_origin(directory, catalog)
         return catalog
@@ -90,7 +89,7 @@ class ArtifactPublicationIntegrity(unittest.TestCase):
             malformed = copy.deepcopy(catalog['origin'])
             malformed['formatVersion'] = True
             self.publish_origin(path, catalog, malformed)
-            self.assertTrue(loader.valid_catalog(catalog))
+            self.assertTrue(loader.valid_entry(catalog))
             with self.assertRaises(ValueError):
                 with loader.open_artifacts(path, catalog):
                     pass
@@ -105,7 +104,7 @@ class ArtifactPublicationIntegrity(unittest.TestCase):
             (path / 'preparation-cleanup.json').write_bytes(body)
             catalog['origin']['artifacts']['preparation-cleanup.json'] = {'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest()}
             self.publish_origin(path, catalog)
-            self.assertTrue(loader.valid_catalog(catalog))
+            self.assertTrue(loader.valid_entry(catalog))
             with self.assertRaises(ValueError):
                 with loader.open_artifacts(path, catalog):
                     pass

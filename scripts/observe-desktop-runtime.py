@@ -35,13 +35,14 @@ def module(name,path):
 processes=module('desktop_outer_processes',DIRECTORY/'processes.py')
 entry=module('desktop_outer_entry',DIRECTORY/'entry.py')
 artifacts=module('desktop_outer_artifacts',DIRECTORY/'artifact_inputs.py')
+oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py')
 sys.path.insert(0,str(ROOT/'experiments/compatibility/runtime-probe'))
 
 
 def native_mac_identity(system,machine,cpu,translated):
-    """Exact measured identities: Apple Silicon first, Intel second; `translated` is the proc_translated text or None when that OID is absent."""
+    """Exact measured identities: Apple Silicon first, Intel second; `translated` is the proc_translated text or None when that OID is absent. Apple Silicon always answers the OID, so its absence there is an unmeasured identity."""
     if system!='Darwin':return None
-    if machine=='arm64' and cpu=='16777228\n' and translated in ('0\n',None):return 'arm64'
+    if machine=='arm64' and cpu=='16777228\n' and translated=='0\n':return 'arm64'
     if machine=='x86_64' and cpu=='7\n' and translated is None:return 'x64'
     return None
 
@@ -59,6 +60,7 @@ def sha(value):return hashlib.sha256(value.encode() if type(value) is str else v
 def error_category(error):
     known={'inventory deadline':'HOST_INVENTORY_DEADLINE','inventory exit':'HOST_INVENTORY_EXIT','inventory size':'HOST_INVENTORY_OUTPUT_BOUND','inventory schema':'HOST_INVENTORY_SCHEMA','inventory identity':'HOST_INVENTORY_IDENTITY','inventory owned state':'HOST_INVENTORY_OWNED_STATE','leader absent':'HOST_RETAINED_LEADER_ABSENT','leader group':'HOST_RETAINED_LEADER_GROUP','waitid child differs':'HOST_WAITID_CHILD_CHANGED','waitid ABI response':'HOST_WAITID_ABI_RESPONSE'}
     message=str(error)
+    if type(error) is oci.ArchitectureMismatch:return 'PREPARED_IMAGE_ARCHITECTURE_MISMATCH'
     if type(error) is RuntimeError and message in known:return known[message]
     return message if type(error) is RuntimeError and re.fullmatch('[A-Z_]{1,80}',message) else 'DESKTOP_OBSERVATION_FAILED'
 
@@ -421,7 +423,7 @@ def observe(mode,images_directory):
         binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
         if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         phase='archive-validation'
-        oci=module('desktop_outer_oci',DIRECTORY/'oci_inputs.py');configs={};image_identities={}
+        configs={};image_identities={}
         for name,config_image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
             phase='archive-validation'
             fd=held.verify(name)

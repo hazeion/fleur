@@ -96,4 +96,20 @@ class ArchitectureSelection(unittest.TestCase):
             self.assertEqual((report['error'],report['failurePhase']),('FRESH_CONTROL_PREFLIGHT_REQUIRED','fresh-control-preflight'),host)
             self.assertNotIn('controlPreflight',report)
 
+class ArchiveArchitectureCategory(unittest.TestCase):
+    """A prepared archive whose OCI config architecture differs from the host is reported as an architecture mismatch, not a generic observation failure."""
+    def test_a_mismatched_oci_config_architecture_is_reported_as_prepared_image_architecture_mismatch(self):
+        import time
+        from test_oci_inputs import ImageArchiveTests
+        for host,other in (('arm64','amd64'),('amd64','arm64')):
+            stream,cid=ImageArchiveTests().archive(architecture=other)
+            with self.assertRaises(ValueError) as caught:outer.oci.validate_archive(stream,cid,time.monotonic()+5,host)
+            self.assertEqual(outer.error_category(caught.exception),'PREPARED_IMAGE_ARCHITECTURE_MISMATCH',host)
+    def test_other_archive_defects_remain_generic_observation_failures(self):
+        import time
+        from test_oci_inputs import ImageArchiveTests
+        stream,cid=ImageArchiveTests().archive(lambda m:m.update({'../escape':b'x'}))
+        with self.assertRaises(ValueError) as caught:outer.oci.validate_archive(stream,cid,time.monotonic()+5,'arm64')
+        self.assertEqual(outer.error_category(caught.exception),'DESKTOP_OBSERVATION_FAILED')
+
 if __name__=='__main__':unittest.main()

@@ -30,9 +30,11 @@ class ImageArchiveTests(unittest.TestCase):
     def test_an_archive_for_another_architecture_refuses_and_there_is_no_default(self):
         for architecture,other in (('arm64','amd64'),('amd64','arm64')):
             stream,cid=self.archive(architecture=architecture)
-            with self.assertRaises(ValueError):oci.validate_archive(stream,cid,time.monotonic()+5,other)
+            with self.assertRaises(oci.ArchitectureMismatch):oci.validate_archive(stream,cid,time.monotonic()+5,other)
             stream.seek(0)
-            with self.assertRaises(ValueError):oci.validate_archive(stream,cid,time.monotonic()+5,'aarch64' if architecture=='arm64' else 'x86_64')
+            # An expected architecture outside the two native names is a caller fault, not a prepared-image mismatch.
+            with self.assertRaises(ValueError) as caught:oci.validate_archive(stream,cid,time.monotonic()+5,'aarch64' if architecture=='arm64' else 'x86_64')
+            self.assertNotIsInstance(caught.exception,oci.ArchitectureMismatch)
         stream,cid=self.archive()
         with self.assertRaises(TypeError):oci.validate_archive(stream,cid,time.monotonic()+5)
     def test_manifest_execution_identity_is_bound_separately_from_config_digest(self):

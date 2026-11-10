@@ -23,6 +23,9 @@ def parse(body):
         return value
     return json.loads(body,object_pairs_hook=unique)
 
+class ArchitectureMismatch(ValueError):
+    """The archive's OCI config names a native architecture other than the one expected for this host."""
+
 def validate_archive(stream,image_id,deadline,architecture):
     if type(image_id) is not str or not re.fullmatch(r'sha256:[a-f0-9]{64}',image_id):raise ValueError('image identity invalid')
     def budget():
@@ -72,7 +75,9 @@ def validate_archive(stream,image_id,deadline,architecture):
             expected={x['digest']:x for x in root['layers']}
             if saved['LayerSources']!=expected:raise ValueError('Docker layer sources differ')
         config=document(config_path)
-        if architecture not in ('arm64','amd64') or config.get('architecture')!=architecture or config.get('os')!='linux' or config.get('rootfs')!={'type':'layers','diff_ids':['sha256:'+x.rsplit('/',1)[1] for x in saved['Layers']]}:raise ValueError('native image or layer diff binding')
+        if architecture not in ('arm64','amd64'):raise ValueError('expected architecture unknown')
+        if config.get('architecture')!=architecture:raise ArchitectureMismatch('OCI config architecture differs from the host')
+        if config.get('os')!='linux' or config.get('rootfs')!={'type':'layers','diff_ids':['sha256:'+x.rsplit('/',1)[1] for x in saved['Layers']]}:raise ValueError('native image or layer diff binding')
         if type(config.get('config')) is not dict or config['config'].get('Volumes') not in (None,{}):raise ValueError('image declares volumes')
         budget();return ImageIdentity(image_id,index['manifests'][0]['digest'],index['manifests'][0]['size'],config)
     except (KeyError,TypeError,AttributeError,tarfile.TarError) as error:raise ValueError('OCI archive invalid') from error

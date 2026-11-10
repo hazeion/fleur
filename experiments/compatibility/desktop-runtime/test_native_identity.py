@@ -8,9 +8,11 @@ spec=importlib.util.spec_from_file_location('native_identity_outer',Path(__file_
 outer=importlib.util.module_from_spec(spec);spec.loader.exec_module(outer)
 ARM='16777228\n'
 class NativeIdentity(unittest.TestCase):
-    def test_native_apple_silicon_cputype_without_translation_is_arm64(self):
+    def test_native_apple_silicon_cputype_with_translation_state_zero_is_arm64(self):
         self.assertEqual(outer.native_mac_identity('Darwin','arm64',ARM,'0\n'),'arm64')
-        self.assertEqual(outer.native_mac_identity('Darwin','arm64',ARM,None),'arm64')
+    def test_an_absent_translation_oid_on_apple_silicon_is_unmeasured_and_refuses(self):
+        # Every Apple Silicon kernel answers sysctl.proc_translated; its absence means the translation state was never measured.
+        self.assertIsNone(outer.native_mac_identity('Darwin','arm64',ARM,None))
     def test_native_intel_cputype_with_the_translation_oid_absent_is_x64(self):
         self.assertEqual(outer.native_mac_identity('Darwin','x86_64','7\n',None),'x64')
     def test_translated_execution_refuses_on_both_architectures(self):
@@ -47,6 +49,9 @@ class ObserverIdentityGate(unittest.TestCase):
             report,calls=self.observe('Darwin',machine,cpu,'1\n')
             self.assertEqual(report['error'],'EXPLICIT_NATIVE_MAC_REQUIRED',machine);self.assertIsNone(report['architecture'])
             self.assertTrue(calls and all(args[0]=='/usr/sbin/sysctl' for args in calls),calls)
+    def test_an_absent_translation_oid_on_apple_silicon_refuses_before_git_the_preflight_or_docker(self):
+        report,calls=self.observe('Darwin','arm64',ARM,None)
+        self.assertEqual((report['error'],report['architecture']),('EXPLICIT_NATIVE_MAC_REQUIRED',None));self.assertTrue(calls and all(args[0]=='/usr/sbin/sysctl' for args in calls),calls)
     def test_unknown_translation_oid_output_refuses_as_identity_failure(self):
         report,calls=self.observe('Darwin','arm64',ARM,'garbage\n')
         self.assertEqual(report['error'],'EXPLICIT_NATIVE_MAC_REQUIRED');self.assertTrue(all(args[0]=='/usr/sbin/sysctl' for args in calls))

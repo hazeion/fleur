@@ -132,6 +132,17 @@ budget plus the ordinary lane, and the amd64 lane shares the 40-minute explicit
 budget above; ordinary jobs keep ten minutes. The uploaded preparation records
 are kept for seven days.
 
+## Pinned development images
+
+Every job that starts development (CLI read-runtime, production artifact and
+workout proof, and the native workout cases) first runs
+`scripts/pull-pinned-development-images.ts`. For the runner's architecture it
+pulls, by digest, the smoke image, the native controller and worker bases and
+the PostgreSQL image, reading the pins from source rather than repeating them.
+Development start then never fetches a base image inside one of its
+300-second image builds. The controller build still installs its pinned
+packages from the Ubuntu archive within that budget.
+
 ## Workout acceptance
 
 CLI verification also requires the packed workout and production proof on native

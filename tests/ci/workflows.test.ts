@@ -83,18 +83,22 @@ test("Desktop image preparation runs both native lanes, Apple Silicon first, onl
   expect(upload.with?.["retention-days"]).toBe(7);
 });
 
-test("the read-runtime job pulls the pinned development images before the runtime tests", async () => {
+test("every CLI job that starts development pulls the pinned development images first", async () => {
   const workflow = Bun.YAML.parse(readFileSync(new URL("../../.github/workflows/cli.yml", import.meta.url), "utf8")) as { jobs: Record<string, { steps?: { name?: string; run?: string }[] }> };
   const production = "tests/runtime/production-artifact.integration.test.ts";
   // The artifact test moved to its own job: it must run exactly there, with the same prerequisites.
-  for (const [job, command] of [["read-runtime", `bun test tests/runtime --path-ignore-patterns=${production}`], ["production-artifact", `bun test ${production}`]] as const) {
+  for (const [job, command] of [
+    ["read-runtime", `bun test tests/runtime --path-ignore-patterns=${production}`],
+    ["production-artifact", `bun test ${production}`],
+    ["workout-proof", 'bun scripts/verify-workout.ts "$GITHUB_WORKSPACE/workout" > "$RUNNER_TEMP/workout-proof.json"'],
+  ] as const) {
     const steps = workflow.jobs[job]!.steps!;
     const pull = steps.findIndex((step) => step.run === "bun scripts/pull-pinned-development-images.ts");
     const runtime = steps.findIndex((step) => step.run === command);
     expect(pull, job).toBeGreaterThan(-1);
     expect(runtime, job).toBeGreaterThan(pull);
   }
-  // One source of truth: the script reads the compiled smoke and PostgreSQL pins rather than repeating digests.
+  // One source of truth: the script reads the compiled smoke, native base and PostgreSQL pins rather than repeating digests.
   const script = readFileSync(new URL("../../scripts/pull-pinned-development-images.ts", import.meta.url), "utf8");
   expect(script).toContain("smokeImages");
   expect(script).toContain("developmentPostgresImage");

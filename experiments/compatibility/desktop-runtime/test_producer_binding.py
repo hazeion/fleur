@@ -76,8 +76,8 @@ class ControllerImageInputs(unittest.TestCase):
         compilers=re.findall(r'^\s*(arm64|amd64)\) triplet=([a-z0-9_-]+); pin=([a-f0-9]{64}) ;;',dockerfile,re.M)
         self.assertEqual([lane for _,lane in bases],['arm64','amd64']);self.assertEqual([lane for lane,_,_ in compilers],['arm64','amd64'])
         self.assertEqual(len({digest for digest,_ in bases}),2)
-        shared=re.search(r'controllerBase = arm \? "([a-f0-9]{64})" : "([a-f0-9]{64})"',native)
-        self.assertEqual(dict((lane,digest) for digest,lane in bases),{'arm64':shared.group(1),'amd64':shared.group(2)})
+        controllers=dict(re.findall(r'^\s*(arm64|x64): \{ controller: "ubuntu@sha256:([a-f0-9]{64})"',native,re.M))
+        self.assertEqual(dict((lane,digest) for digest,lane in bases),{'arm64':controllers['arm64'],'amd64':controllers['x64']})
         for lane,triplet,pin in compilers:
             self.assertEqual(triplet,profiles.PROFILES[lane]['compiler_target'],lane)
             self.assertEqual(pin,entry.COMPILERS[lane],lane);self.assertEqual(pin,profiles.PROFILES[lane]['compiler_sha256'],lane)

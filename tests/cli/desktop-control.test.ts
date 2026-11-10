@@ -4,7 +4,7 @@ import { acceptDesktopControlProbe, acceptDesktopControlContainer } from "../../
 const binding = { nonce: "a1234567-1234-4234-8234-123456789abc", workerId: "a".repeat(64), workerPid: 123, managerPid: 456, kernel: "7.0.14-linuxkit", machine: "aarch64" as const };
 const intel = { ...binding, machine: "x86_64" as const };
 function complete(machine: string = binding.machine) {
-  const { machine: _bound, ...frame } = binding;
+  const frame: Record<string, unknown> = { ...binding }; delete frame.machine; // The frame reports the machine as `architecture`.
   return { formatVersion: 1, scope: "desktop-linux-control-capability", ok: true, runtimeAdmission: false,
     ...frame, architecture: machine, uid: 0, bootId: "b1234567-1234-4234-8234-123456789abc", vmMonotonicNs: "123456789000", custodyStable: true,
     worker: { startTime: "12345", cgroup: `0::/docker/${binding.workerId}\n`, pidNamespace: "pid:[222]" },

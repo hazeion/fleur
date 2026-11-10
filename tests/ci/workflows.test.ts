@@ -98,7 +98,7 @@ test("every CLI job that starts development pulls the pinned development images 
     expect(pull, job).toBeGreaterThan(-1);
     expect(runtime, job).toBeGreaterThan(pull);
   }
-  // One source of truth: the script reads the compiled smoke and PostgreSQL pins rather than repeating digests.
+  // One source of truth: the script reads the compiled smoke, native base and PostgreSQL pins rather than repeating digests.
   const script = readFileSync(new URL("../../scripts/pull-pinned-development-images.ts", import.meta.url), "utf8");
   expect(script).toContain("smokeImages");
   expect(script).toContain("developmentPostgresImage");

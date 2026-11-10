@@ -9,7 +9,7 @@ import { smokeImages } from "../src/setup/profiles.ts";
 import { developmentPostgresImage } from "../src/runtime/development/postgres.ts";
 import { nativeBaseImages } from "../src/runtime/native/build.ts";
 
-/** Every image a development start on this `process.arch` needs locally, or null for an unpinned architecture. */
+/** Every image a development start needs locally on a `process.arch` value, or null for an unpinned architecture. */
 export function pinnedDevelopmentImages(architecture: string): string[] | null {
   const smoke = smokeImages[architecture];
   const native = Object.hasOwn(nativeBaseImages, architecture) ? nativeBaseImages[architecture as keyof typeof nativeBaseImages] : undefined;

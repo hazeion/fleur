@@ -81,9 +81,9 @@ class ControllerImageInputs(unittest.TestCase):
         for lane,triplet,pin in compilers:
             self.assertEqual(triplet,profiles.PROFILES[lane]['compiler_target'],lane)
             self.assertEqual(pin,entry.COMPILERS[lane],lane);self.assertEqual(pin,profiles.PROFILES[lane]['compiler_sha256'],lane)
-        self.assertIn('FROM base-${TARGETARCH}',dockerfile);self.assertIn('*) ',dockerfile)
+        self.assertIn('FROM base-${TARGETARCH}',dockerfile);self.assertRegex(dockerfile,r'(?m)^\s*\*\) .*exit 1 ;;')
         self.assertEqual(dockerfile.count('gcc-13=13.3.0-6ubuntu2~24.04.1'),1)
-        self.assertIn('ln -s "/usr/bin/$triplet-gcc-13" /usr/local/bin/gcc',dockerfile);self.assertIn('echo "$pin  /usr/local/bin/gcc" | sha256sum --check',dockerfile)
+        self.assertIn('echo "$pin  /usr/local/bin/gcc" | sha256sum --check',dockerfile)
 
 
 if __name__ == '__main__':

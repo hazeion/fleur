@@ -110,14 +110,13 @@ def open_artifacts(path,entry,absolute_deadline=None):
     deadline=time.monotonic()+120 if absolute_deadline is None else absolute_deadline
     if type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic()>=deadline:raise ValueError('artifact deadline expired')
     if not valid_entry(entry):raise ValueError('source-owned artifact catalog entry invalid')
-    catalog=entry
     directory=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK)
     descriptors={}
     try:
         info=os.fstat(directory)
         if info.st_uid!=os.getuid() or info.st_mode&0o7777!=0o700 or not stat.S_ISDIR(info.st_mode):raise ValueError('private artifact directory required')
         if set(os.listdir(directory))!=FILES|{'image-origin.json'}:raise ValueError('closed artifact inventory required')
-        pins={**catalog['origin']['artifacts'],'image-origin.json':{'bytes':os.stat('image-origin.json',dir_fd=directory,follow_symlinks=False).st_size,'sha256':catalog['producer']['imageOriginSha256']}}
+        pins={**entry['origin']['artifacts'],'image-origin.json':{'bytes':os.stat('image-origin.json',dir_fd=directory,follow_symlinks=False).st_size,'sha256':entry['producer']['imageOriginSha256']}}
         if not 0<pins['image-origin.json']['bytes']<=1048576:raise ValueError('origin bound')
         originals={}
         for name,pin in pins.items():
@@ -126,12 +125,12 @@ def open_artifacts(path,entry,absolute_deadline=None):
             before=os.fstat(fd)
             if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or before.st_nlink!=1 or before.st_size!=pin['bytes'] or before.st_mode&0o7777!=0o600:raise ValueError('private owned regular artifact required')
             originals[name]=identity(before)
-        result=RetainedArtifacts(directory,descriptors,pins,originals,catalog,identity(info),deadline)
+        result=RetainedArtifacts(directory,descriptors,pins,originals,entry,identity(info),deadline)
         for name in pins:result.verify(name)
         parsed=result.read_json('image-origin.json')
-        if not valid_entry({**catalog,'origin':parsed}) or parsed!=catalog['origin']:raise ValueError('origin differs from source catalog')
+        if not valid_entry({**entry,'origin':parsed}) or parsed!=entry['origin']:raise ValueError('origin differs from source catalog')
         cleanup=result.read_json('preparation-cleanup.json')
-        if type(cleanup) is not dict or set(cleanup)!={'formatVersion','scope','cleanup','ok','runtimeAdmission','nativeQualification'} or type(cleanup['formatVersion']) is not int or cleanup['formatVersion']!=1 or cleanup['scope']!='disposable-image-preparation-retirement' or cleanup['ok'] is not True or cleanup['runtimeAdmission'] is not False or cleanup['nativeQualification'] is not False or cleanup['cleanup']!=catalog['origin']['cleanup'] or any(type(row.get('absent')) is not bool for row in cleanup['cleanup']):raise ValueError('producer cleanup unconfirmed')
+        if type(cleanup) is not dict or set(cleanup)!={'formatVersion','scope','cleanup','ok','runtimeAdmission','nativeQualification'} or type(cleanup['formatVersion']) is not int or cleanup['formatVersion']!=1 or cleanup['scope']!='disposable-image-preparation-retirement' or cleanup['ok'] is not True or cleanup['runtimeAdmission'] is not False or cleanup['nativeQualification'] is not False or cleanup['cleanup']!=entry['origin']['cleanup'] or any(type(row.get('absent')) is not bool for row in cleanup['cleanup']):raise ValueError('producer cleanup unconfirmed')
         return result
     except BaseException:
         for fd in descriptors.values():os.close(fd)

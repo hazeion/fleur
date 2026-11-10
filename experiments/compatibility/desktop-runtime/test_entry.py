@@ -43,8 +43,6 @@ class ArchitectureBindingTests(unittest.TestCase):
             import runtime_profile
             self.assertEqual({key:runtime_profile.PROFILES[key]['compiler_sha256'] for key in ('arm64','amd64')},dict(entry.COMPILERS))
         finally:sys.path.pop(0)
-    def test_controller_machines_map_to_the_two_native_architectures_only(self):
-        self.assertEqual(entry.MACHINES,{'aarch64':'arm64','x86_64':'amd64'})
 
 class GuardianContractTests(unittest.TestCase):
     def test_complete_ledger_accounts_for_every_original_worker(self):

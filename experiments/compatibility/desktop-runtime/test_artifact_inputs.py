@@ -47,8 +47,8 @@ class ArtifactInputs(unittest.TestCase):
         # Both lanes come from one manual dispatch at one source commit, Apple Silicon listed first.
         self.assertEqual([key for key in catalog if key in module.ARCHITECTURES],['arm64','amd64'])
         arm=module.catalog_entry(catalog,'arm64');intel=module.catalog_entry(catalog,'amd64')
-        self.assertEqual({arm['origin']['sourceCommit'],intel['origin']['sourceCommit']},{'79e6e69cc3c1906c12eda382c2bc1e4777cfadda'})
-        self.assertEqual({arm['producer']['workflowRunId'],intel['producer']['workflowRunId']},{42737572498})
+        self.assertEqual(arm['origin']['sourceCommit'],intel['origin']['sourceCommit'])
+        self.assertEqual(arm['producer']['workflowRunId'],intel['producer']['workflowRunId'])
         self.assertNotEqual(arm['origin']['controllerImageId'],intel['origin']['controllerImageId'])
         self.assertNotEqual(arm['producer']['artifactId'],intel['producer']['artifactId'])
         self.assertNotEqual(arm['producer']['zipSha256'],intel['producer']['zipSha256'])

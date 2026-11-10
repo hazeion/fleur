@@ -124,6 +124,14 @@ native proof fails qualification, including when the outer harness later removes
 its scratch. An uploaded report alone is not passing evidence. This manual lane
 adds no ordinary release profile and establishes no human-consent proof.
 
+The native workflow's `desktop_runtime_images` manual input prepares the
+source-bound Desktop qualification images on both native-setup matrix lanes,
+amd64 and arm64; without that input neither lane runs the preparation step. On
+that dispatch the arm64 job budget is 30 minutes, holding the 20-minute step
+budget plus the ordinary lane, and the amd64 lane shares the 40-minute explicit
+budget above; ordinary jobs keep ten minutes. The uploaded preparation records
+are kept for seven days.
+
 ## Workout acceptance
 
 CLI verification also requires the packed workout and production proof on native

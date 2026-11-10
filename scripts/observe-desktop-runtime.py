@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Intel Desktop candidate evidence, with independent guardian custody."""
+"""Native Mac (Apple Silicon or Intel) Desktop candidate evidence, with independent guardian custody."""
 import argparse
 import copy
 import hashlib
@@ -25,6 +25,7 @@ OWNER='dev.fleur.desktop-runtime-owner'
 ROLE='dev.fleur.desktop-runtime-role'
 SHA=r'[a-f0-9]{64}'
 UUID=r'[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}'
+PLATFORMS={'arm64':'arm64','x64':'amd64'}  # host identity -> Docker platform architecture, Apple Silicon first
 
 
 def module(name,path):
@@ -37,7 +38,19 @@ artifacts=module('desktop_outer_artifacts',DIRECTORY/'artifact_inputs.py')
 sys.path.insert(0,str(ROOT/'experiments/compatibility/runtime-probe'))
 
 
-def native_intel_identity(system,machine,cpu):return system=='Darwin' and machine=='x86_64' and cpu=='7\n'
+def native_mac_identity(system,machine,cpu,translated):
+    """Exact measured identities: Apple Silicon first, Intel second; `translated` is the proc_translated text or None when that OID is absent."""
+    if system!='Darwin':return None
+    if machine=='arm64' and cpu=='16777228\n' and translated in ('0\n',None):return 'arm64'
+    if machine=='x86_64' and cpu=='7\n' and translated is None:return 'x64'
+    return None
+
+
+def translation_state(result):
+    """proc_translated text when the OID answers, None when macOS reports it unknown (Intel); anything else is not a native Mac identity."""
+    if result.returncode==0 and result.stderr==b'':return result.stdout.decode('utf-8',errors='replace')
+    if result.returncode==1 and result.stdout==b'' and result.stderr==b"sysctl: unknown oid 'sysctl.proc_translated'\n":return None
+    raise RuntimeError('EXPLICIT_NATIVE_MAC_REQUIRED')
 
 
 def sha(value):return hashlib.sha256(value.encode() if type(value) is str else value).hexdigest()
@@ -284,8 +297,8 @@ def ready_frame(value,binding,raw,cid,pid,role):
 
 
 def observe(mode,images_directory):
-    report={'formatVersion':1,'scope':'native-intel-desktop-runtime-qualification','mode':mode,'ok':False,'runtimeAdmission':False,'nativeQualification':False,'installationVerified':False,'cleanup':[]}
-    end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None;phase='native-identity'
+    report={'formatVersion':1,'scope':'native-desktop-runtime-qualification','mode':mode,'architecture':None,'ok':False,'runtimeAdmission':False,'nativeQualification':False,'installationVerified':False,'cleanup':[]}
+    end=time.monotonic()+600;work_end=end-90;endpoint=None;original=None;owned=[];workers=[];imported=[];channels=[];held=None;guardian=None;ledger_dir=None;phase='native-identity';architecture=None
     environment={key:value for key,value in os.environ.items() if key not in ('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH','DOCKER_API_VERSION')}
     def raw(args,cleanup=False,timeout=6,extra_environment=None):
         budget=min(timeout,(end if cleanup else work_end)-time.monotonic())
@@ -360,7 +373,10 @@ def observe(mode,images_directory):
             docker(['rm','--force',adopted['cid']],True)
             if inspect(adopted['cid'],cleanup=True) is not None:raise RuntimeError('ROLE_REMOVAL_UNCONFIRMED')
     try:
-        if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or not native_intel_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype'])):raise RuntimeError('EXPLICIT_NATIVE_INTEL_MAC_REQUIRED')
+        if os.environ.get('FLEUR_DESKTOP_RUNTIME_QUALIFICATION')!='yes' or platform.system()!='Darwin':raise RuntimeError('EXPLICIT_NATIVE_MAC_REQUIRED')
+        host_architecture=native_mac_identity(platform.system(),platform.machine(),command(['/usr/sbin/sysctl','-n','hw.cputype']),translation_state(raw(['/usr/sbin/sysctl','-n','sysctl.proc_translated'])))
+        if host_architecture is None:raise RuntimeError('EXPLICIT_NATIVE_MAC_REQUIRED')
+        report['architecture']=host_architecture;architecture=PLATFORMS[host_architecture]
         commit=command(['git','rev-parse','HEAD']).strip()
         if not re.fullmatch('[a-f0-9]{40}',commit) or command(['git','diff','--exit-code','HEAD']):raise RuntimeError('CLEAN_COMMITTED_SOURCE_REQUIRED')
         phase='operator-source'
@@ -578,7 +594,7 @@ if __name__=='__main__':
     args=parser.parse_args()
     if args.mode=='--qualify':
         control=observe('--guardian-loss',args.images_directory)
-        result=observe(args.mode,args.images_directory) if control['ok'] is True else {'ok':False,'scope':'native-intel-desktop-runtime-qualification','runtimeAdmission':False,'nativeQualification':False,'error':'FRESH_MANAGER_LOSS_CONTROL_REQUIRED'}
+        result=observe(args.mode,args.images_directory) if control['ok'] is True else {'ok':False,'scope':'native-desktop-runtime-qualification','architecture':control.get('architecture'),'runtimeAdmission':False,'nativeQualification':False,'error':'FRESH_MANAGER_LOSS_CONTROL_REQUIRED'}
         result['managerLossControl']=control
     else:result=observe(args.mode,args.images_directory)
     print(json.dumps(result,separators=(',',':')));raise SystemExit(0 if result['ok'] else 4)

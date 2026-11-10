@@ -19,11 +19,40 @@ class ArtifactInputs(unittest.TestCase):
             pins[name]={'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest()}
         origin={'formatVersion':1,'scope':'desktop-qualification-image-preparation','runtimeAdmission':False,'nativeQualification':False,'sourceCommit':'a'*40,'controllerImageId':'sha256:'+'b'*64,'artifacts':pins,'cleanup':[{'resource':'container','absent':True},{'resource':'image','absent':True}],'ok':True}
         data=(json.dumps(origin)+'\n').encode();(path/'image-origin.json').write_bytes(data);(path/'image-origin.json').chmod(0o600)
-        return {'formatVersion':1,'scope':'source-owned-desktop-preparation-inputs','runtimeAdmission':False,'producer':{'workflowRunId':123,'artifactId':456,'zipSha256':'c'*64,'imageOriginSha256':hashlib.sha256(data).hexdigest()},'origin':origin}
+        return {'producer':{'workflowRunId':123,'artifactId':456,'zipSha256':'c'*64,'imageOriginSha256':hashlib.sha256(data).hexdigest()},'origin':origin}
+    def catalog(self,**entries):return {'formatVersion':1,'scope':'source-owned-desktop-preparation-inputs','runtimeAdmission':False,**entries}
+    def test_catalog_entry_is_selected_by_host_architecture_apple_silicon_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            arm=self.fixture(Path(directory));intel=json.loads(json.dumps(arm));intel['origin']['sourceCommit']='e'*40
+            catalog=self.catalog(arm64=arm,amd64=intel)
+            self.assertTrue(module.valid_catalog(catalog))
+            self.assertEqual(module.catalog_entry(catalog,'arm64'),arm)
+            self.assertEqual(module.catalog_entry(catalog,'amd64'),intel)
+            self.assertTrue(module.valid_catalog(self.catalog(arm64=arm)));self.assertTrue(module.valid_catalog(self.catalog(amd64=intel)))
+    def test_missing_architecture_entry_is_absent_not_a_substitute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            intel=self.fixture(Path(directory));catalog=self.catalog(amd64=intel)
+            self.assertIsNone(module.catalog_entry(catalog,'arm64'))
+            self.assertIsNone(module.catalog_entry(self.catalog(arm64=intel),'amd64'))
+            for foreign in ('x64','x86_64','aarch64','','ARM64',None):self.assertIsNone(module.catalog_entry(self.catalog(arm64=intel,amd64=intel),foreign),foreign)
+    def test_legacy_flat_unknown_keyed_or_empty_catalogs_refuse_before_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entry=self.fixture(Path(directory))
+            for catalog in (self.catalog(**entry),self.catalog(),self.catalog(x64=entry),self.catalog(arm64=entry,x86_64=entry),self.catalog(arm64={**entry,'architecture':'arm64'}),self.catalog(arm64=entry['origin']),self.catalog(arm64=entry,runtimeAdmission=True),self.catalog(arm64=entry,extra=True)):
+                self.assertFalse(module.valid_catalog(catalog),sorted(catalog))
+                with self.assertRaises(ValueError):module.catalog_entry(catalog,'arm64')
+    def test_source_owned_catalog_in_the_repository_selects_by_architecture(self):
+        catalog=module.canonical_json((Path(__file__).with_name('image-origin.json')).read_bytes())
+        self.assertTrue(module.valid_catalog(catalog))
+        self.assertEqual(set(catalog)-{'formatVersion','scope','runtimeAdmission'},{'amd64'})
+        entry=module.catalog_entry(catalog,'amd64')
+        self.assertEqual(entry['origin']['controllerImageId'],'sha256:f61198531491be2a9b33c9ade71399b1b1dc6c603a492897a3985cc45c680a66')
+        self.assertEqual(entry['origin']['sourceCommit'],'9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881')
+        self.assertEqual(entry['producer']['workflowRunId'],40116545670)
     def test_source_pinned_bytes_are_held_and_revalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);catalog=self.fixture(path)
-            self.assertTrue(module.valid_catalog(catalog))
+            self.assertTrue(module.valid_entry(catalog))
             with module.open_artifacts(path,catalog) as held:
                 fd=held.verify('runtime-image.tar')
                 self.assertEqual(os.read(fd,100),b'fixed authentic bytes\n')
@@ -50,13 +79,14 @@ class ArtifactInputs(unittest.TestCase):
                 with self.assertRaises((ValueError,OSError)):module.open_artifacts(path,catalog)
     def test_catalog_cannot_admit_runtime_or_coerce_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
-            catalog=self.fixture(Path(directory))
+            entry=self.fixture(Path(directory))
             for key,value in (('runtimeAdmission',True),('formatVersion',True),('extra',True)):
-                self.assertFalse(module.valid_catalog(dict(catalog,**{key:value})))
-            changed=json.loads(json.dumps(catalog));changed['producer']['artifactId']=True
-            self.assertFalse(module.valid_catalog(changed))
-            changed=json.loads(json.dumps(catalog));changed['origin']['artifacts']['runtime-image.tar']['bytes']=True
-            self.assertFalse(module.valid_catalog(changed))
+                self.assertFalse(module.valid_catalog(dict(self.catalog(arm64=entry),**{key:value})))
+                self.assertFalse(module.valid_entry(dict(entry,**{key:value})))
+            changed=json.loads(json.dumps(entry));changed['producer']['artifactId']=True
+            self.assertFalse(module.valid_entry(changed));self.assertFalse(module.valid_catalog(self.catalog(arm64=changed)))
+            changed=json.loads(json.dumps(entry));changed['origin']['artifacts']['runtime-image.tar']['bytes']=True
+            self.assertFalse(module.valid_entry(changed));self.assertFalse(module.valid_catalog(self.catalog(arm64=entry,amd64=changed)))
     def test_duplicate_json_keys_refuse(self):
         with self.assertRaises(ValueError):module.canonical_json('{"ok":false,"ok":true}')
 if __name__=='__main__':unittest.main()

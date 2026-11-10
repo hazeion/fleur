@@ -20,9 +20,24 @@ def canonical_json(body):
         return value
     return json.loads(body,object_pairs_hook=unique)
 
+ARCHITECTURES=('arm64','amd64')  # catalog keys and Docker platform architectures, Apple Silicon first
+
 def valid_catalog(value):
+    """One source-owned catalog keyed by architecture; every present entry must be a complete producer record."""
     try:
-        if type(value) is not dict or set(value)!={'formatVersion','scope','runtimeAdmission','producer','origin'} or type(value['formatVersion']) is not int or value['formatVersion']!=1 or value['scope']!='source-owned-desktop-preparation-inputs' or value['runtimeAdmission'] is not False:return False
+        if type(value) is not dict or not {'formatVersion','scope','runtimeAdmission'}<=set(value) or type(value['formatVersion']) is not int or value['formatVersion']!=1 or value['scope']!='source-owned-desktop-preparation-inputs' or value['runtimeAdmission'] is not False:return False
+        entries=set(value)-{'formatVersion','scope','runtimeAdmission'}
+        return bool(entries) and entries<=set(ARCHITECTURES) and all(valid_entry(value[key]) for key in entries)
+    except (KeyError,TypeError,AttributeError):return False
+
+def catalog_entry(catalog,architecture):
+    """The entry prepared for `architecture`, or None when the catalog holds none; an invalid catalog is refused outright."""
+    if not valid_catalog(catalog):raise ValueError('source-owned artifact catalog invalid')
+    return catalog.get(architecture) if architecture in ARCHITECTURES else None
+
+def valid_entry(value):
+    try:
+        if type(value) is not dict or set(value)!={'producer','origin'}:return False
         producer=value['producer'];origin=value['origin']
         if type(producer) is not dict or set(producer)!={'workflowRunId','artifactId','zipSha256','imageOriginSha256'}:return False
         if any(type(producer[key]) is not int or producer[key]<=0 for key in ('workflowRunId','artifactId')):return False
@@ -90,10 +105,12 @@ class RetainedArtifacts:
     def __enter__(self):return self
     def __exit__(self,*args):self.close()
 
-def open_artifacts(path,catalog,absolute_deadline=None):
+def open_artifacts(path,entry,absolute_deadline=None):
+    """Retain the artifacts of one selected catalog entry; selection by architecture happens before this call."""
     deadline=time.monotonic()+120 if absolute_deadline is None else absolute_deadline
     if type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic()>=deadline:raise ValueError('artifact deadline expired')
-    if not valid_catalog(catalog):raise ValueError('source-owned artifact catalog invalid')
+    if not valid_entry(entry):raise ValueError('source-owned artifact catalog entry invalid')
+    catalog=entry
     directory=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK)
     descriptors={}
     try:
@@ -112,7 +129,7 @@ def open_artifacts(path,catalog,absolute_deadline=None):
         result=RetainedArtifacts(directory,descriptors,pins,originals,catalog,identity(info),deadline)
         for name in pins:result.verify(name)
         parsed=result.read_json('image-origin.json')
-        if not valid_catalog({**catalog,'origin':parsed}) or parsed!=catalog['origin']:raise ValueError('origin differs from source catalog')
+        if not valid_entry({**catalog,'origin':parsed}) or parsed!=catalog['origin']:raise ValueError('origin differs from source catalog')
         cleanup=result.read_json('preparation-cleanup.json')
         if type(cleanup) is not dict or set(cleanup)!={'formatVersion','scope','cleanup','ok','runtimeAdmission','nativeQualification'} or type(cleanup['formatVersion']) is not int or cleanup['formatVersion']!=1 or cleanup['scope']!='disposable-image-preparation-retirement' or cleanup['ok'] is not True or cleanup['runtimeAdmission'] is not False or cleanup['nativeQualification'] is not False or cleanup['cleanup']!=catalog['origin']['cleanup'] or any(type(row.get('absent')) is not bool for row in cleanup['cleanup']):raise ValueError('producer cleanup unconfirmed')
         return result

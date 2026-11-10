@@ -1,60 +1,62 @@
 {
-  "formatVersion": 1,
-  "origin": {
-    "artifacts": {
-      "controller-image.tar": {
-        "bytes": 594262016,
-        "sha256": "d0ca3a1470798097f8cdcce1940254371a0a864b275d066e7f14de2e29ed7ec2"
+  "amd64": {
+    "origin": {
+      "artifacts": {
+        "controller-image.tar": {
+          "bytes": 594262016,
+          "sha256": "d0ca3a1470798097f8cdcce1940254371a0a864b275d066e7f14de2e29ed7ec2"
+        },
+        "controller-packages.tsv": {
+          "bytes": 5969,
+          "sha256": "cd3bff277d7c444f4466db5e78ff52eb5e6f00b321b0e4a9b2472b611dfa86c7"
+        },
+        "controller-tools.json": {
+          "bytes": 5934,
+          "sha256": "fa878c4525611b094afd3a93ed8e8652b648274547fc079932dc21feb26d35de"
+        },
+        "preparation-cleanup.json": {
+          "bytes": 299,
+          "sha256": "de4b5f358133f60f02303da611c61b7501f92c316e68a68c714a26bf021e1d2d"
+        },
+        "runtime-image.tar": {
+          "bytes": 218508288,
+          "sha256": "59152a50def20e7ab9190eb3f5abccc57be663dfbdfcbea1271e6e019fcc82e6"
+        },
+        "runtime-preparation.json": {
+          "bytes": 10316,
+          "sha256": "2e6647556c2f0b3adf5ca4caf2e193ffeedee9fdda413c0d73ba34804f58b8d5"
+        },
+        "source-manifest.json": {
+          "bytes": 9941,
+          "sha256": "a5e729fa8eaabe3e34b4c4054227e753d959b3e196ccb0fb2d555b07d73796ad"
+        }
       },
-      "controller-packages.tsv": {
-        "bytes": 5969,
-        "sha256": "cd3bff277d7c444f4466db5e78ff52eb5e6f00b321b0e4a9b2472b611dfa86c7"
-      },
-      "controller-tools.json": {
-        "bytes": 5934,
-        "sha256": "fa878c4525611b094afd3a93ed8e8652b648274547fc079932dc21feb26d35de"
-      },
-      "preparation-cleanup.json": {
-        "bytes": 299,
-        "sha256": "de4b5f358133f60f02303da611c61b7501f92c316e68a68c714a26bf021e1d2d"
-      },
-      "runtime-image.tar": {
-        "bytes": 218508288,
-        "sha256": "59152a50def20e7ab9190eb3f5abccc57be663dfbdfcbea1271e6e019fcc82e6"
-      },
-      "runtime-preparation.json": {
-        "bytes": 10316,
-        "sha256": "2e6647556c2f0b3adf5ca4caf2e193ffeedee9fdda413c0d73ba34804f58b8d5"
-      },
-      "source-manifest.json": {
-        "bytes": 9941,
-        "sha256": "a5e729fa8eaabe3e34b4c4054227e753d959b3e196ccb0fb2d555b07d73796ad"
-      }
+      "cleanup": [
+        {
+          "absent": true,
+          "resource": "container"
+        },
+        {
+          "absent": true,
+          "resource": "image"
+        }
+      ],
+      "controllerImageId": "sha256:f61198531491be2a9b33c9ade71399b1b1dc6c603a492897a3985cc45c680a66",
+      "formatVersion": 1,
+      "nativeQualification": false,
+      "ok": true,
+      "runtimeAdmission": false,
+      "scope": "desktop-qualification-image-preparation",
+      "sourceCommit": "9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881"
     },
-    "cleanup": [
-      {
-        "absent": true,
-        "resource": "container"
-      },
-      {
-        "absent": true,
-        "resource": "image"
-      }
-    ],
-    "controllerImageId": "sha256:f61198531491be2a9b33c9ade71399b1b1dc6c603a492897a3985cc45c680a66",
-    "formatVersion": 1,
-    "nativeQualification": false,
-    "ok": true,
-    "runtimeAdmission": false,
-    "scope": "desktop-qualification-image-preparation",
-    "sourceCommit": "9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881"
+    "producer": {
+      "artifactId": 12570070243,
+      "imageOriginSha256": "6916b2f4904fb5f126bc98ab68151ba34c41a62a81c0a67bbd997c3a4fcb8c55",
+      "workflowRunId": 40116545670,
+      "zipSha256": "a7f60b852917166ad5badca3aa316302df47d93b73229fbd0759d3d1ebec9153"
+    }
   },
-  "producer": {
-    "artifactId": 12570070243,
-    "imageOriginSha256": "6916b2f4904fb5f126bc98ab68151ba34c41a62a81c0a67bbd997c3a4fcb8c55",
-    "workflowRunId": 40116545670,
-    "zipSha256": "a7f60b852917166ad5badca3aa316302df47d93b73229fbd0759d3d1ebec9153"
-  },
+  "formatVersion": 1,
   "runtimeAdmission": false,
   "scope": "source-owned-desktop-preparation-inputs"
 }

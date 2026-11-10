@@ -387,12 +387,18 @@ def observe(mode,images_directory):
             if sha(command(['git','show',commit+':'+relative],timeout=8))!=sha(body):raise RuntimeError('OPERATOR_SOURCE_BYTES_CHANGED')
             operator_hashes[relative]=sha(body)
         report['operatorSource']={'commit':commit,'files':operator_hashes}
+        phase='prepared-image-selection'
+        # Select the prepared entry for this host before the preflight creates anything; a host without one refuses here.
+        catalog=artifacts.canonical_json((DIRECTORY/'image-origin.json').read_bytes());selected=artifacts.catalog_entry(catalog,architecture)
+        report['catalogArchitectures']=[key for key in artifacts.ARCHITECTURES if key in catalog]
+        if selected is None:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
+        origin=selected['origin']
         phase='fresh-control-preflight'
         preflight=raw([str(Path.home()/'.bun/bin/bun'),'scripts/observe-desktop-control.ts','--run'],timeout=95,extra_environment={'FLEUR_DESKTOP_CONTROL_PREFLIGHT':'yes'})
         # Explicitly pass the preflight flag only to this fixed command.
         if preflight.returncode:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
         proof=artifacts.canonical_json(preflight.stdout)
-        if proof.get('ok') is not True or proof.get('controlCapabilityVerified') is not True or proof.get('originalPreserved') is not True or proof.get('transportUncertain') is not False:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
+        if proof.get('ok') is not True or proof.get('controlCapabilityVerified') is not True or proof.get('originalPreserved') is not True or proof.get('transportUncertain') is not False or proof.get('architecture')!=host_architecture:raise RuntimeError('FRESH_CONTROL_PREFLIGHT_REQUIRED')
         report['controlPreflight']=proof
         context=command(['docker','context','show']).strip();resolved=artifacts.canonical_json(command(['docker','context','inspect',context,'--format','{{json .Endpoints.docker}}']))
         endpoint=os.environ.get('DOCKER_HOST') if os.environ.get('DOCKER_HOST') and not os.environ.get('DOCKER_CONTEXT') else resolved['Host']
@@ -402,17 +408,16 @@ def observe(mode,images_directory):
         version=artifacts.canonical_json(docker(['version','--format','{{json .Server}}']))
         if version!=proof['server']:raise RuntimeError('EXACT_DESKTOP_TUPLE_CHANGED')
         daemon=artifacts.canonical_json(docker(['info','--format','{{json .ID}}']));boot=proof['probe']['bootId'];nonce=str(uuid.uuid4())
-        catalog=artifacts.canonical_json((DIRECTORY/'image-origin.json').read_bytes())
         phase='source-artifact-custody'
-        held=artifacts.open_artifacts(images_directory,catalog,absolute_deadline=work_end)
+        held=artifacts.open_artifacts(images_directory,selected,absolute_deadline=work_end)
         source=held.read_json('source-manifest.json');prep=held.read_json('runtime-preparation.json')
-        origin=catalog['origin']
+        if prep.get('architecture')!=architecture:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
         if source.get('sourceCommit')!=origin['sourceCommit'] or prep.get('sourceCommit')!=origin['sourceCommit'] or prep.get('scope')!='prepared-native-runtime-image' or prep.get('runtimeAdmission') is not False or prep.get('nativeQualification') is not False or prep.get('preparationReport',{}).get('cleanup_complete') is not True:raise RuntimeError('PREPARATION_PROVENANCE_CHANGED')
         phase='payload-source-closure'
         for name,digest in source['sources'].items():
             relative='scripts/bun-floor.json' if name=='bun-floor.json' else 'experiments/compatibility/'+(name if name.startswith(('runtime-probe/','rendering/')) else 'desktop-runtime/'+name)
             if sha(command(['git','show',origin['sourceCommit']+':'+relative],timeout=8))!=digest or sha((ROOT/relative).read_bytes())!=digest:raise RuntimeError('PAYLOAD_SOURCE_BYTES_CHANGED')
-        report['preparation']={'producer':catalog['producer'],'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
+        report['preparation']={'producer':selected['producer'],'architecture':architecture,'sourceCommit':origin['sourceCommit'],'sources':source['sources']}
         binding={'nonce':nonce,'bootId':boot,'daemonId':daemon,'kernel':version['KernelVersion'],'sourceCommit':origin['sourceCommit'],'sources':source['sources'],'guardianId':None,'preparedImage':None}
         if not entry.valid_binding(binding):raise RuntimeError('SOURCE_BINDING_INVALID')
         phase='archive-validation'

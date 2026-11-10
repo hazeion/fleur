@@ -35,4 +35,12 @@ class ToolAndArtifactContracts(unittest.TestCase):
                 else:os.link(foreign,artifact)
                 with self.assertRaises(RuntimeError):worker.publish_readable_outputs(path)
                 self.assertEqual(foreign.stat().st_mode&0o777,0o600)
+
+class NativeLaneTests(unittest.TestCase):
+    def test_worker_runs_the_probe_for_the_controller_machine_apple_silicon_first(self):
+        self.assertEqual(worker.native_architecture('Linux','aarch64'),'arm64')
+        self.assertEqual(worker.native_architecture('Linux','x86_64'),'amd64')
+    def test_foreign_controller_machines_refuse_instead_of_defaulting_to_amd64(self):
+        for system,machine in (('Darwin','arm64'),('Linux','arm64'),('Linux','armv7l'),('Linux','i686'),('Linux',''),('Linux',None)):
+            with self.assertRaises(RuntimeError,msg=(system,machine)):worker.native_architecture(system,machine)
 if __name__=='__main__':unittest.main()

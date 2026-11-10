@@ -86,6 +86,21 @@ test("native ARM image preparation pairs the controller base with its native com
   }
 });
 
+test("CI pre-pulls every registry base the native images build from, Apple Silicon first", async () => {
+  // A base BuildKit has to fetch during development start spends the build budget on a live registry (#182).
+  const { pinnedDevelopmentImages } = await import("../../scripts/pull-pinned-development-images.ts");
+  for (const [daemon, architecture] of [["aarch64", "arm64"], ["x86_64", "x64"]] as const) {
+    const pulled = pinnedDevelopmentImages(architecture);
+    const bases = new Set(scenario("normal", daemon).dockerfiles.flatMap((dockerfile) =>
+      [...dockerfile.matchAll(/^FROM (\S+) AS (?:controller|worker)$/gm)].map((match) => match[1]!)));
+    expect(bases.size, daemon).toBe(2);
+    for (const base of bases) {
+      expect(base, daemon).toMatch(/@sha256:[a-f0-9]{64}$/);
+      expect(pulled, `${daemon} ${base}`).toContain(base);
+    }
+  }
+});
+
 test("native image disposal removes its owned tags and repeated disposal has no effects", () => {
   const result = scenario("normal");
   expect(result.refusal).toBeUndefined();

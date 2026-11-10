@@ -23,7 +23,7 @@ def parse(body):
         return value
     return json.loads(body,object_pairs_hook=unique)
 
-def validate_archive(stream,image_id,deadline):
+def validate_archive(stream,image_id,deadline,architecture):
     if type(image_id) is not str or not re.fullmatch(r'sha256:[a-f0-9]{64}',image_id):raise ValueError('image identity invalid')
     def budget():
         if time.monotonic()>=deadline:raise ValueError('OCI validation deadline expired')
@@ -72,7 +72,7 @@ def validate_archive(stream,image_id,deadline):
             expected={x['digest']:x for x in root['layers']}
             if saved['LayerSources']!=expected:raise ValueError('Docker layer sources differ')
         config=document(config_path)
-        if config.get('architecture')!='amd64' or config.get('os')!='linux' or config.get('rootfs')!={'type':'layers','diff_ids':['sha256:'+x.rsplit('/',1)[1] for x in saved['Layers']]}:raise ValueError('native image or layer diff binding')
+        if architecture not in ('arm64','amd64') or config.get('architecture')!=architecture or config.get('os')!='linux' or config.get('rootfs')!={'type':'layers','diff_ids':['sha256:'+x.rsplit('/',1)[1] for x in saved['Layers']]}:raise ValueError('native image or layer diff binding')
         if type(config.get('config')) is not dict or config['config'].get('Volumes') not in (None,{}):raise ValueError('image declares volumes')
         budget();return ImageIdentity(image_id,index['manifests'][0]['digest'],index['manifests'][0]['size'],config)
     except (KeyError,TypeError,AttributeError,tarfile.TarError) as error:raise ValueError('OCI archive invalid') from error

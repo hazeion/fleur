@@ -76,9 +76,9 @@ def native_config_projection(source):
     return projected
 
 
-def matches_image(value,identity):
+def matches_image(value,identity,architecture):
     try:
-        return (value['Id']==identity.manifest_image_id and value['Architecture']=='amd64' and value['Os']=='linux'
+        return (value['Id']==identity.manifest_image_id and architecture in PLATFORMS.values() and value['Architecture']==architecture and value['Os']=='linux'
             and value['Config']==native_config_projection(identity.configuration['config']) and value['RootFS']=={'Type':'layers','Layers':identity.configuration['rootfs']['diff_ids']}
             and value['Descriptor']=={'digest':identity.manifest_image_id,'mediaType':'application/vnd.oci.image.manifest.v1+json','size':identity.manifest_bytes})
     except (KeyError,TypeError,AttributeError,ValueError):return False
@@ -351,7 +351,7 @@ def observe(mode,images_directory):
         expected={'cid':None,'name':name,'image':image,'nonce':binding['nonce'],'binding':raw_binding,'mode':selected,'program':program,'control_environment':controls,'base_environment':base_env}
         owned.append(expected);persist(role+'-planned.json',{'name':name,'image':image,'binding':binding,'role':role})
         memory='268435456' if guardian_role else '2147483648';tmp_size='16777216' if guardian_role else '536870912'
-        args=['create','--interactive','--name',name,'--label',OWNER+'='+binding['nonce'],'--label',ROLE+'='+role,'--pull','never','--platform','linux/amd64','--entrypoint','/usr/bin/python3','--init=false','--user','0:0','--network','none','--read-only','--pid','host','--cgroupns','host','--cap-drop','ALL','--cap-add','KILL','--cap-add','SYS_PTRACE']
+        args=['create','--interactive','--name',name,'--label',OWNER+'='+binding['nonce'],'--label',ROLE+'='+role,'--pull','never','--platform','linux/'+architecture,'--entrypoint','/usr/bin/python3','--init=false','--user','0:0','--network','none','--read-only','--pid','host','--cgroupns','host','--cap-drop','ALL','--cap-add','KILL','--cap-add','SYS_PTRACE']
         if not guardian_role:args+=['--cap-add','SETUID','--cap-add','SETGID','--volume',SOCKET+':'+SOCKET+':rw']
         args+=['--security-opt','no-new-privileges:true','--security-opt','seccomp=unconfined','--memory',memory,'--memory-swap',memory,'--cpus','1' if guardian_role else '2','--pids-limit','64' if guardian_role else '256','--tmpfs','/tmp:rw,nosuid,nodev,noexec,size='+tmp_size+',mode=1777','--env','FLEUR_DESKTOP_BINDING='+raw_binding]
         for item in controls:args+=['--env',item]
@@ -425,7 +425,7 @@ def observe(mode,images_directory):
         for name,config_image in (('controller-image.tar',origin['controllerImageId']),('runtime-image.tar',prep['imageId'])):
             phase='archive-validation'
             fd=held.verify(name)
-            with os.fdopen(os.dup(fd),'rb') as stream:identity=oci.validate_archive(stream,config_image,work_end)
+            with os.fdopen(os.dup(fd),'rb') as stream:identity=oci.validate_archive(stream,config_image,work_end,architecture)
             configs[name]=identity.configuration;image_identities[name]=identity
             image=identity.manifest_image_id
             held.verify(name)
@@ -441,7 +441,8 @@ def observe(mode,images_directory):
                 report.setdefault('imageLoadReceipts',[]).append({'imageId':image,'exitCode':load.child.returncode,'stdout':stdout.decode('utf-8',errors='replace'),'stderr':stderr.decode('utf-8',errors='replace')})
                 if load.child.returncode or stderr or stdout.decode()!='Loaded image ID: '+image+'\n':raise RuntimeError('IMAGE_LOAD_UNCONFIRMED')
             actual=inspect(image,'image')
-            if not matches_image(actual,identity):raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
+            if type(actual) is dict and actual.get('Architecture')!=architecture:raise RuntimeError('PREPARED_IMAGE_ARCHITECTURE_MISMATCH')
+            if not matches_image(actual,identity,architecture):raise RuntimeError('LOADED_IMAGE_CONFIG_CHANGED')
         image=image_identities['controller-image.tar'].manifest_image_id;runtime_image=image_identities['runtime-image.tar'].manifest_image_id;base_env=configs['controller-image.tar']['config']['Env']
         phase='guardian-start'
         guardian,guardian_channel,guardian_ready=start_role('guardian',binding,image,base_env)
@@ -465,7 +466,7 @@ def observe(mode,images_directory):
             tag='fleur-runtime-probe-'+str(time.time_ns());row={'name':tag+'-run','owner':tag,'control':True}
             if inspect(row['name']) is not None:raise RuntimeError('FRESH_CONTROL_NAME_UNAVAILABLE')
             workers.append(row);persist('control-worker-planned.json',{'worker':row,'imageId':runtime_image,'nonce':nonce})
-            args=['create','--name',row['name'],'--label','fleur.compatibility.runtime-owner='+tag,'--pull','never','--platform','linux/amd64','--entrypoint','bun','--user','65534:65534','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp=unconfined','--cpus','1','--memory','536870912','--memory-swap','536870912','--pids-limit','64','--ulimit','core=0']
+            args=['create','--name',row['name'],'--label','fleur.compatibility.runtime-owner='+tag,'--pull','never','--platform','linux/'+architecture,'--entrypoint','bun','--user','65534:65534','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--security-opt','seccomp=unconfined','--cpus','1','--memory','536870912','--memory-swap','536870912','--pids-limit','64','--ulimit','core=0']
             for key,value in SAFE_ENVIRONMENT.items():args+=['--env',key+'='+value]
             cid=docker(args+[runtime_image,'-e',CONTROL_PROGRAM]).strip()
             current=inspect(cid)
@@ -575,7 +576,7 @@ def observe(mode,images_directory):
                 actual=inspect(image,'image',True)
                 if actual is not None:
                     mapped=next(value for value in image_identities.values() if value.manifest_image_id==image)
-                    if not matches_image(actual,mapped) or actual.get('RepoTags') not in (None,[]) or actual.get('RepoDigests') not in (None,[]):raise RuntimeError('IMPORTED_IMAGE_CUSTODY_CHANGED')
+                    if not matches_image(actual,mapped,architecture) or actual.get('RepoTags') not in (None,[]) or actual.get('RepoDigests') not in (None,[]):raise RuntimeError('IMPORTED_IMAGE_CUSTODY_CHANGED')
                     docker(['image','rm',image],True,timeout=15)
                     if inspect(image,'image',True) is not None:raise RuntimeError('IMPORTED_IMAGE_REMOVAL_UNCONFIRMED')
                 receipt['absent']=True

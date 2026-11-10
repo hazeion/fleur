@@ -1,12 +1,12 @@
-# Native Intel Desktop runtime qualification
+# Native Desktop runtime qualification
 
 This internal qualification driver must run the unchanged Linux runtime probe in
-Docker Desktop's native x86_64 Linux VM. Ubuntu is only the trusted controller's
+Docker Desktop's native Linux VM on Apple Silicon (arm64) or Intel (amd64). Ubuntu is only the trusted controller's
 userspace. It is not an Ubuntu host qualification or an owned full-system guest.
 
 Required behavior before runtime admission:
 
-- Bind native untranslated Intel macOS and the exact Desktop/Engine/kernel tuple,
+- Bind native untranslated macOS (Apple Silicon or Intel), the exact per-architecture Desktop/Engine/kernel tuple,
   source commit and all controller/probe files, immutable controller image, local
   Unix endpoint, daemon identity, VM boot identity, manager PID and namespaces.
 - Run the original compiler with its executed binary hash pin. Run every original
@@ -55,7 +55,7 @@ images/controllers are absent and original inventories preserved.
 
 The source-owned `image-origin.json` catalog authenticates the producer run, ZIP,
 origin and every artifact. The native observer retains private descriptors,
-validates one untagged amd64 OCI image per archive, loads through those same
+validates one untagged OCI image for the host architecture per archive, loads through those same
 descriptors, and rechecks the bytes after the load clients retire. The immutable
 identity chain retains the producer config digest separately from the native OCI
 manifest execution digest and verifies the native descriptor, config and layer

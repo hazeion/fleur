@@ -11,7 +11,15 @@ export interface DesktopControlBinding {
   readonly workerPid: number;
   readonly managerPid: number;
   readonly kernel: string;
+  readonly machine: DesktopMachine;
 }
+export type DesktopArchitecture = "arm64" | "x64";
+export type DesktopMachine = "aarch64" | "x86_64";
+/** Measured native Desktop identities per host architecture, Apple Silicon first; a tuple outside this table refuses. */
+export const desktops: Readonly<Record<DesktopArchitecture, { machine: DesktopMachine; platform: string; arch: string; image: string; name: string; version: string; commit: string }>> = {
+  arm64: { machine: "aarch64", platform: "linux/arm64", arch: "arm64", image: smokeImages.arm64!, name: "Docker Desktop 4.99.0 (245822)", version: "29.9.3", commit: "70efc0e" },
+  x64: { machine: "x86_64", platform: "linux/amd64", arch: "amd64", image: smokeImages.x64!, name: "Docker Desktop 4.96.1 (244132)", version: "29.9.2", commit: "0367cbe" },
+};
 export interface DesktopControlContainer {
   readonly name: string;
   readonly id?: string;
@@ -62,11 +70,11 @@ export function acceptDesktopControlProbe(value: unknown, binding: DesktopContro
   const positive = (value: unknown) => typeof value === "string" && /^[1-9][0-9]{0,23}$/.test(value);
   const namespace = (value: unknown) => typeof value === "string" && /^pid:\[[1-9][0-9]{0,15}\]$/.test(value);
   if (!uuid.test(binding.nonce) || !/^[a-f0-9]{64}$/.test(binding.workerId) || !pid(binding.workerPid) || !pid(binding.managerPid)
-      || binding.workerPid === binding.managerPid || !/^[A-Za-z0-9._+-]{1,128}$/.test(binding.kernel)) return false;
+      || binding.workerPid === binding.managerPid || !/^[A-Za-z0-9._+-]{1,128}$/.test(binding.kernel) || !["aarch64", "x86_64"].includes(binding.machine)) return false;
   if (!shape(value, "formatVersion,scope,ok,runtimeAdmission,nonce,workerId,workerPid,managerPid,kernel,architecture,uid,bootId,vmMonotonicNs,custodyStable,worker,managerPidNamespace,hostPidNamespace,pidfd")
       || value.formatVersion !== 1 || value.scope !== "desktop-linux-control-capability" || value.ok !== true || value.runtimeAdmission !== false
       || value.nonce !== binding.nonce || value.workerId !== binding.workerId || value.workerPid !== binding.workerPid || value.managerPid !== binding.managerPid
-      || value.kernel !== binding.kernel || value.architecture !== "x86_64" || value.uid !== 0 || typeof value.bootId !== "string"
+      || value.kernel !== binding.kernel || value.architecture !== binding.machine || value.uid !== 0 || typeof value.bootId !== "string"
       || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.bootId) || !positive(value.vmMonotonicNs) || value.custodyStable !== true
       || !namespace(value.managerPidNamespace) || value.managerPidNamespace !== value.hostPidNamespace
       || !shape(value.worker, "startTime,cgroup,pidNamespace") || !positive(value.worker.startTime)
@@ -83,7 +91,8 @@ const hash = (value: string | Uint8Array) => Bun.CryptoHasher.hash("sha256", val
 
 /** Test-only host seam; the executable always uses productionHost and fixed inputs. */
 export async function observeDesktopControl(host: SetupHost = productionHost()) {
-  const report: Record<string, unknown> = { formatVersion: 1, scope: "native-intel-desktop-control-preflight", ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, imageAcquisition: "none", containers: [], cleanup: [] };
+  const report: Record<string, unknown> = { formatVersion: 1, scope: "native-desktop-control-preflight", architecture: null, ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, imageAcquisition: "none", containers: [], cleanup: [] };
+  let desktop: (typeof desktops)[DesktopArchitecture] | undefined;
   const deadline = performance.now() + 90000;
   const workDeadline = deadline - 20000;
   let endpoint: string | undefined;
@@ -125,7 +134,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
     owned.push(planned);
     const manager = kind === "manager"; const memory = manager ? "268435456" : "536870912";
     const output = (await docker(["create", "--name", name, "--label", `dev.fleur.desktop-control-owner=${nonce}`, "--label", `dev.fleur.desktop-control-role=${kind}`,
-      "--pull", "never", "--platform", "linux/amd64", "--entrypoint", "/usr/local/bin/bun", "--init=false", "--user", manager ? "0:0" : "65534:65534",
+      "--pull", "never", "--platform", desktop!.platform, "--entrypoint", "/usr/local/bin/bun", "--init=false", "--user", manager ? "0:0" : "65534:65534",
       "--network", "none", "--read-only", "--cap-drop", "ALL", ...(manager ? ["--cap-add", "KILL", "--cap-add", "SYS_PTRACE", "--pid", "host"] : []),
       "--cgroupns", manager ? "host" : "private", "--security-opt", "no-new-privileges:true", ...(manager ? ["--security-opt", "seccomp=unconfined"] : []),
       "--memory", memory, "--memory-swap", memory, "--cpus", "1", "--pids-limit", "64", ...environment.flatMap((value) => ["--env", value]), image, ...planned.command])).trim();
@@ -147,7 +156,9 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
   };
   try {
     const native = await host.host();
-    if (native.system !== "darwin" || native.architecture !== "x64" || native.translated !== false || !bunAdmission(Bun.version).admitted) throw new Error("NATIVE_INTEL_MAC_REQUIRED");
+    // Native untranslated macOS on Apple Silicon or Intel; translated, uncertain and Linux identities refuse before any command.
+    if (native.system !== "darwin" || native.translated !== false || !(native.architecture === "arm64" || native.architecture === "x64") || !bunAdmission(Bun.version).admitted) throw new Error("NATIVE_MAC_REQUIRED");
+    desktop = desktops[native.architecture]; report.architecture = native.architecture;
     report.nativeHost = { system: native.system, architecture: native.architecture, release: native.release, translated: native.translated };
     const commit = (await command(["git", "rev-parse", "HEAD"])).trim();
     if (!/^[a-f0-9]{40}$/.test(commit) || await command(["git", "diff", "--exit-code", "HEAD"])) throw new Error("CLEAN_COMMITTED_SOURCE_REQUIRED");
@@ -171,14 +182,14 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
         || [...endpoint].some((character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127) || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(endpoint)) throw new Error("LOCAL_ENDPOINT_REQUIRED");
     report.endpointSha256 = hash(endpoint);
     const version: unknown = JSON.parse(await docker(["version", "--format", "{{json .Server}}"]));
-    if (!object(version) || !object(version.Platform) || version.Platform.Name !== "Docker Desktop 4.96.1 (244132)" || version.Version !== "29.9.2" || version.GitCommit !== "0367cbe" || version.Os !== "linux" || version.Arch !== "amd64" || version.KernelVersion !== "7.0.14-linuxkit") throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
+    if (!object(version) || !object(version.Platform) || version.Platform.Name !== desktop.name || version.Version !== desktop.version || version.GitCommit !== desktop.commit || version.Os !== "linux" || version.Arch !== desktop.arch || version.KernelVersion !== "7.0.14-linuxkit") throw new Error("EXACT_DESKTOP_TUPLE_REQUIRED");
     report.server = version;
     original = await inventory(); report.original = Object.fromEntries(Object.entries(original).map(([key, value]) => [key, hash(value)]));
-    const images: unknown = JSON.parse(await docker(["image", "inspect", smokeImages.x64!]));
+    const images: unknown = JSON.parse(await docker(["image", "inspect", desktop.image]));
     const image = Array.isArray(images) && images.length === 1 ? images[0] as Record<string, unknown> : undefined;
-    if (!image || typeof image.Id !== "string" || !/^sha256:[a-f0-9]{64}$/.test(image.Id) || image.Architecture !== "amd64" || image.Os !== "linux"
+    if (!image || typeof image.Id !== "string" || !/^sha256:[a-f0-9]{64}$/.test(image.Id) || image.Architecture !== desktop.arch || image.Os !== "linux"
         || !object(image.Config) || (image.Config.Volumes !== null && image.Config.Volumes !== undefined)) throw new Error("PREEXISTING_PINNED_IMAGE_REQUIRED");
-    report.image = { digest: smokeImages.x64, id: image.Id };
+    report.image = { digest: desktop.image, id: image.Id };
     const nonce = crypto.randomUUID(); report.nonce = nonce;
     const worker = await create("worker", image.Id, nonce, `setTimeout(()=>{},60000);void ${JSON.stringify(nonce)};`, []);
     const before = await inspect(worker.id!);
@@ -188,7 +199,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
     const manager = await create("manager", image.Id, nonce, managerSource, [`FLEUR_CONTROL_PID=${workerPid}`, `FLEUR_CONTROL_WORKER=${worker.id}`, `FLEUR_CONTROL_NONCE=${nonce}`, `FLEUR_CONTROL_BUN_FLOOR=${bunFloor}`]);
     const managerBefore = await inspect(manager.id!);
     if (!acceptDesktopControlContainer(managerBefore, manager) || !object(managerBefore?.State) || managerBefore.State.Running !== true || (managerBefore.State.Pid as number) <= 1) throw new Error("LIVE_OWNED_MANAGER_REQUIRED");
-    const binding = { nonce, workerId: worker.id!, workerPid, managerPid: managerBefore.State.Pid as number, kernel: version.KernelVersion as string };
+    const binding: DesktopControlBinding = { nonce, workerId: worker.id!, workerPid, managerPid: managerBefore.State.Pid as number, kernel: version.KernelVersion as string, machine: desktop.machine };
     let frame: unknown;
     while (performance.now() < workDeadline) {
       const output = await docker(["logs", "--tail", "2", manager.id!]);
@@ -229,7 +240,7 @@ export async function observeDesktopControl(host: SetupHost = productionHost()) 
 
 if (import.meta.main) {
   let report: Record<string, unknown>;
-  if (process.argv.slice(2).join(",") !== "--run" || process.env.FLEUR_DESKTOP_CONTROL_PREFLIGHT !== "yes") report = { formatVersion: 1, scope: "native-intel-desktop-control-preflight", ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, error: "EXPLICIT_PREFLIGHT_REQUIRED" };
+  if (process.argv.slice(2).join(",") !== "--run" || process.env.FLEUR_DESKTOP_CONTROL_PREFLIGHT !== "yes") report = { formatVersion: 1, scope: "native-desktop-control-preflight", architecture: null, ok: false, runtimeAdmission: false, nativeQualification: false, installationVerified: false, error: "EXPLICIT_PREFLIGHT_REQUIRED" };
   else report = await observeDesktopControl();
   process.stdout.write(JSON.stringify(report) + "\n"); process.exitCode = report.ok === true ? 0 : 4;
 }

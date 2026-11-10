@@ -1,34 +1,34 @@
 {
-  "amd64": {
+  "arm64": {
     "origin": {
       "artifacts": {
         "controller-image.tar": {
-          "bytes": 594262016,
-          "sha256": "d0ca3a1470798097f8cdcce1940254371a0a864b275d066e7f14de2e29ed7ec2"
+          "bytes": 602245120,
+          "sha256": "4a1766e52d4b147a188e5019c812aea0bcb4a10054e7218b4f99b5429c0fa977"
         },
         "controller-packages.tsv": {
-          "bytes": 5969,
-          "sha256": "cd3bff277d7c444f4466db5e78ff52eb5e6f00b321b0e4a9b2472b611dfa86c7"
+          "bytes": 5923,
+          "sha256": "8dd61408fd3f6ce6b4de584ee84f22ce3dd3921a4fe555e813c3fefc4b58b602"
         },
         "controller-tools.json": {
           "bytes": 5934,
-          "sha256": "fa878c4525611b094afd3a93ed8e8652b648274547fc079932dc21feb26d35de"
+          "sha256": "a5d745ab35cc1fc19af2b4d65d2a90a04cd41ea9a717079b36007be9f59fcc95"
         },
         "preparation-cleanup.json": {
           "bytes": 299,
           "sha256": "de4b5f358133f60f02303da611c61b7501f92c316e68a68c714a26bf021e1d2d"
         },
         "runtime-image.tar": {
-          "bytes": 218508288,
-          "sha256": "59152a50def20e7ab9190eb3f5abccc57be663dfbdfcbea1271e6e019fcc82e6"
+          "bytes": 240019456,
+          "sha256": "65dfbac2bbf03a7b61d3485f7695e2fd70ed8743509dd9b8c2c916955e38befc"
         },
         "runtime-preparation.json": {
-          "bytes": 10316,
-          "sha256": "2e6647556c2f0b3adf5ca4caf2e193ffeedee9fdda413c0d73ba34804f58b8d5"
+          "bytes": 10317,
+          "sha256": "130bae88ac896dd1f7cb51aa8c94d122903af7a9c41438981c8d20bbf8314940"
         },
         "source-manifest.json": {
-          "bytes": 9941,
-          "sha256": "a5e729fa8eaabe3e34b4c4054227e753d959b3e196ccb0fb2d555b07d73796ad"
+          "bytes": 10403,
+          "sha256": "527a5bfb72d7507243c5ec7f54fdc8c137018524cf36672f24f18fb671693cd1"
         }
       },
       "cleanup": [
@@ -41,19 +41,76 @@
           "resource": "image"
         }
       ],
-      "controllerImageId": "sha256:f61198531491be2a9b33c9ade71399b1b1dc6c603a492897a3985cc45c680a66",
+      "controllerImageId": "sha256:d582a7f3ef9ba6c507057c0fe3815f271f8936433969e0836619ebd3f1f28229",
       "formatVersion": 1,
       "nativeQualification": false,
       "ok": true,
       "runtimeAdmission": false,
       "scope": "desktop-qualification-image-preparation",
-      "sourceCommit": "9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881"
+      "sourceCommit": "79e6e69cc3c1906c12eda382c2bc1e4777cfadda"
     },
     "producer": {
-      "artifactId": 12570070243,
-      "imageOriginSha256": "6916b2f4904fb5f126bc98ab68151ba34c41a62a81c0a67bbd997c3a4fcb8c55",
-      "workflowRunId": 40116545670,
-      "zipSha256": "a7f60b852917166ad5badca3aa316302df47d93b73229fbd0759d3d1ebec9153"
+      "artifactId": 13727846982,
+      "imageOriginSha256": "90808bc1a4ae7bc9fbf6c52a280db5150e0c6cdab0939f4d90cd1a67d98bdfb1",
+      "workflowRunId": 42737572498,
+      "zipSha256": "29b5728523222d247757bf69f3f3e95aa909b9fbe2c07ccedac28ada3b620b93"
+    }
+  },
+  "amd64": {
+    "origin": {
+      "artifacts": {
+        "controller-image.tar": {
+          "bytes": 594393600,
+          "sha256": "20a8154204de392057d53f93b4db08c5eb3704623ba5dc9b99e6916b4560ac59"
+        },
+        "controller-packages.tsv": {
+          "bytes": 5969,
+          "sha256": "0acc753824e97cf525e35c63610ff5d0c14e764f5848e28d188d31d8a0874995"
+        },
+        "controller-tools.json": {
+          "bytes": 5934,
+          "sha256": "fa878c4525611b094afd3a93ed8e8652b648274547fc079932dc21feb26d35de"
+        },
+        "preparation-cleanup.json": {
+          "bytes": 299,
+          "sha256": "de4b5f358133f60f02303da611c61b7501f92c316e68a68c714a26bf021e1d2d"
+        },
+        "runtime-image.tar": {
+          "bytes": 218508288,
+          "sha256": "c03293d28c34c4d8bbbfee32c865c72da9f9dbbd742780b01710d4f4749e3f91"
+        },
+        "runtime-preparation.json": {
+          "bytes": 10313,
+          "sha256": "9801a37fb1a2ae7be7f543a7578f12e373d5cb979fa124ea21b7f24b2c6fb722"
+        },
+        "source-manifest.json": {
+          "bytes": 10403,
+          "sha256": "a0ec512f3f52eafe52772a050b3b1e9361546e9278459669649310b8a9be6452"
+        }
+      },
+      "cleanup": [
+        {
+          "absent": true,
+          "resource": "container"
+        },
+        {
+          "absent": true,
+          "resource": "image"
+        }
+      ],
+      "controllerImageId": "sha256:47fb3469e0630799ac173aeb048665fd0acc09dc1d8b1b1245e6a907af024f13",
+      "formatVersion": 1,
+      "nativeQualification": false,
+      "ok": true,
+      "runtimeAdmission": false,
+      "scope": "desktop-qualification-image-preparation",
+      "sourceCommit": "79e6e69cc3c1906c12eda382c2bc1e4777cfadda"
+    },
+    "producer": {
+      "artifactId": 13728250996,
+      "imageOriginSha256": "181a56a0ba816397289cf80990420bdb1876e27b5e1687158d228fbba6fde506",
+      "workflowRunId": 42737572498,
+      "zipSha256": "16d01b42ff790762f7a6f33f06630bf766cabb145dad9e308423c04356cc1f93"
     }
   },
   "formatVersion": 1,

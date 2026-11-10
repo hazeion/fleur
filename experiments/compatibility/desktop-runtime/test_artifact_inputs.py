@@ -44,11 +44,15 @@ class ArtifactInputs(unittest.TestCase):
     def test_source_owned_catalog_in_the_repository_selects_by_architecture(self):
         catalog=module.canonical_json((Path(__file__).with_name('image-origin.json')).read_bytes())
         self.assertTrue(module.valid_catalog(catalog))
-        self.assertEqual(set(catalog)-{'formatVersion','scope','runtimeAdmission'},{'amd64'})
-        entry=module.catalog_entry(catalog,'amd64')
-        self.assertEqual(entry['origin']['controllerImageId'],'sha256:f61198531491be2a9b33c9ade71399b1b1dc6c603a492897a3985cc45c680a66')
-        self.assertEqual(entry['origin']['sourceCommit'],'9e685b8acfb54bb463dc0b2c2b8588b1b0b6a881')
-        self.assertEqual(entry['producer']['workflowRunId'],40116545670)
+        # Both lanes come from one manual dispatch at one source commit, Apple Silicon listed first.
+        self.assertEqual([key for key in catalog if key in module.ARCHITECTURES],['arm64','amd64'])
+        arm=module.catalog_entry(catalog,'arm64');intel=module.catalog_entry(catalog,'amd64')
+        self.assertEqual({arm['origin']['sourceCommit'],intel['origin']['sourceCommit']},{'79e6e69cc3c1906c12eda382c2bc1e4777cfadda'})
+        self.assertEqual({arm['producer']['workflowRunId'],intel['producer']['workflowRunId']},{42737572498})
+        self.assertNotEqual(arm['origin']['controllerImageId'],intel['origin']['controllerImageId'])
+        self.assertNotEqual(arm['producer']['artifactId'],intel['producer']['artifactId'])
+        self.assertNotEqual(arm['producer']['zipSha256'],intel['producer']['zipSha256'])
+        self.assertNotEqual(arm['origin']['artifacts']['runtime-image.tar'],intel['origin']['artifacts']['runtime-image.tar'])
     def test_source_pinned_bytes_are_held_and_revalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);catalog=self.fixture(path)
